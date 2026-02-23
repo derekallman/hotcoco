@@ -131,6 +131,40 @@ pub struct License {
     pub url: Option<String>,
 }
 
+/// Summary statistics (min/max/mean/median) for a numeric field.
+#[derive(Debug, Clone)]
+pub struct SummaryStats {
+    pub min: f64,
+    pub max: f64,
+    pub mean: f64,
+    pub median: f64,
+}
+
+/// Per-category dataset statistics.
+#[derive(Debug, Clone)]
+pub struct CategoryStats {
+    pub id: u64,
+    pub name: String,
+    pub ann_count: usize,
+    pub img_count: usize,
+    pub crowd_count: usize,
+}
+
+/// Dataset health-check statistics returned by [`crate::COCO::stats`].
+#[derive(Debug, Clone)]
+pub struct DatasetStats {
+    pub image_count: usize,
+    pub annotation_count: usize,
+    pub category_count: usize,
+    pub crowd_count: usize,
+    /// Per-category breakdown, sorted by `ann_count` descending.
+    pub per_category: Vec<CategoryStats>,
+    pub image_width: SummaryStats,
+    pub image_height: SummaryStats,
+    /// Summary over annotations that have an `area` value.
+    pub annotation_area: SummaryStats,
+}
+
 /// Run-length encoding for masks.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rle {

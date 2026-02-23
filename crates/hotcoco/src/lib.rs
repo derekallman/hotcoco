@@ -7,4 +7,7 @@ pub mod types;
 pub use coco::COCO;
 pub use eval::{AccumulatedEval, COCOeval, EvalImg};
 pub use params::{IouType, Params};
-pub use types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
+pub use types::{
+    Annotation, Category, CategoryStats, Dataset, DatasetStats, Image, Rle, Segmentation,
+    SummaryStats,
+};

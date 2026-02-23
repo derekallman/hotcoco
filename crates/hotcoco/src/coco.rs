@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::mask;
-use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
+use crate::types::{
+    Annotation, Category, CategoryStats, Dataset, DatasetStats, Image, Rle, Segmentation,
+    SummaryStats,
+};
 
 /// The COCO dataset API for loading, querying, and indexing annotations.
 pub struct COCO {
@@ -380,6 +383,91 @@ impl COCO {
     /// Convert an annotation to a binary mask.
     pub fn ann_to_mask(&self, ann: &Annotation) -> Option<Vec<u8>> {
         self.ann_to_rle(ann).map(|rle| mask::decode(&rle))
+    }
+
+    /// Compute dataset health-check statistics.
+    pub fn stats(&self) -> DatasetStats {
+        let mut cat_ann_counts: HashMap<u64, usize> = HashMap::new();
+        let mut cat_crowd_counts: HashMap<u64, usize> = HashMap::new();
+        let mut areas: Vec<f64> = Vec::new();
+        let mut crowd_count = 0usize;
+
+        for ann in &self.dataset.annotations {
+            *cat_ann_counts.entry(ann.category_id).or_default() += 1;
+            if ann.iscrowd {
+                crowd_count += 1;
+                *cat_crowd_counts.entry(ann.category_id).or_default() += 1;
+            }
+            if let Some(area) = ann.area {
+                areas.push(area);
+            }
+        }
+
+        let widths: Vec<f64> = self
+            .dataset
+            .images
+            .iter()
+            .map(|img| img.width as f64)
+            .collect();
+        let heights: Vec<f64> = self
+            .dataset
+            .images
+            .iter()
+            .map(|img| img.height as f64)
+            .collect();
+
+        let mut per_category: Vec<CategoryStats> = self
+            .dataset
+            .categories
+            .iter()
+            .map(|cat| CategoryStats {
+                id: cat.id,
+                name: cat.name.clone(),
+                ann_count: cat_ann_counts.get(&cat.id).copied().unwrap_or(0),
+                img_count: self.cat_to_imgs.get(&cat.id).map(|v| v.len()).unwrap_or(0),
+                crowd_count: cat_crowd_counts.get(&cat.id).copied().unwrap_or(0),
+            })
+            .collect();
+        per_category.sort_by(|a, b| b.ann_count.cmp(&a.ann_count));
+
+        DatasetStats {
+            image_count: self.dataset.images.len(),
+            annotation_count: self.dataset.annotations.len(),
+            category_count: self.dataset.categories.len(),
+            crowd_count,
+            per_category,
+            image_width: summary_stats(&widths),
+            image_height: summary_stats(&heights),
+            annotation_area: summary_stats(&areas),
+        }
+    }
+}
+
+fn summary_stats(values: &[f64]) -> SummaryStats {
+    if values.is_empty() {
+        return SummaryStats {
+            min: 0.0,
+            max: 0.0,
+            mean: 0.0,
+            median: 0.0,
+        };
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let min = sorted[0];
+    let max = *sorted.last().unwrap();
+    let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+    let n = sorted.len();
+    let median = if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    };
+    SummaryStats {
+        min,
+        max,
+        mean,
+        median,
     }
 }
 

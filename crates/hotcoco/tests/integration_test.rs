@@ -477,6 +477,48 @@ fn test_zero_based_ids() {
     );
 }
 
+/// Test dataset statistics computed from the gt.json fixture.
+///
+/// gt.json has 3 images (all 100x100), 5 annotations (0 crowd), 2 categories.
+/// Annotations: img1/cat(400), img1/dog(900), img2/cat(1600), img2/cat(400), img3/dog(2500).
+#[test]
+fn test_dataset_stats() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let coco = COCO::new(&gt_path).expect("Failed to load GT");
+    let stats = coco.stats();
+
+    assert_eq!(stats.image_count, 3);
+    assert_eq!(stats.annotation_count, 5);
+    assert_eq!(stats.category_count, 2);
+    assert_eq!(stats.crowd_count, 0);
+
+    // per_category sorted by ann_count desc: cat(3) then dog(2)
+    assert_eq!(stats.per_category.len(), 2);
+    assert_eq!(stats.per_category[0].name, "cat");
+    assert_eq!(stats.per_category[0].ann_count, 3);
+    assert_eq!(stats.per_category[0].img_count, 2); // imgs 1 and 2
+    assert_eq!(stats.per_category[0].crowd_count, 0);
+    assert_eq!(stats.per_category[1].name, "dog");
+    assert_eq!(stats.per_category[1].ann_count, 2);
+    assert_eq!(stats.per_category[1].img_count, 2); // imgs 1 and 3
+    assert_eq!(stats.per_category[1].crowd_count, 0);
+
+    // All images are 100x100
+    assert_eq!(stats.image_width.min, 100.0);
+    assert_eq!(stats.image_width.max, 100.0);
+    assert_eq!(stats.image_width.mean, 100.0);
+    assert_eq!(stats.image_width.median, 100.0);
+    assert_eq!(stats.image_height.min, 100.0);
+    assert_eq!(stats.image_height.max, 100.0);
+
+    // areas: 400, 900, 1600, 400, 2500 → sorted: 400, 400, 900, 1600, 2500
+    assert_eq!(stats.annotation_area.min, 400.0);
+    assert_eq!(stats.annotation_area.max, 2500.0);
+    let expected_mean = (400.0 + 900.0 + 1600.0 + 400.0 + 2500.0) / 5.0;
+    assert!((stats.annotation_area.mean - expected_mean).abs() < 1e-9);
+    assert_eq!(stats.annotation_area.median, 900.0); // middle of 5 values
+}
+
 /// Test that `load_res` unconditionally reassigns annotation IDs.
 #[test]
 fn test_zero_based_ids_load_res() {
