@@ -77,9 +77,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Copy README for sdist
-        run: cp README.md crates/hotcoco-pyo3/README.md
-
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
