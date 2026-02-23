@@ -58,7 +58,8 @@ jobs:
         working-directory: crates/hotcoco-pyo3
         run: |
           source ../../.venv/bin/activate
-          maturin develop --release
+          maturin build --release --out dist
+          pip install dist/*.whl
 
       - name: Smoke test
         run: |
