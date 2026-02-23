@@ -22,3 +22,13 @@ target
 
 # MkDocs build output
 site/
+
+# Claude Code memory
+.claude/
+
+# Benchmark data (not ready for commit)
+data/
+
+# Python virtual environments and build artifacts
+.venv/
+crates/hotcoco-pyo3/uv.lock

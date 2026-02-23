@@ -7,20 +7,20 @@ Planned features and improvements, organized by theme.
 All core logic lives in the Rust library. The Python package and Rust CLI are thin wrappers.
 
 ```
-                       ┌──→ PyO3 ──→ Python Library + CLI (full-featured)
+                       ┌──→ PyO3 ──→ hotcoco (Python library + CLI)
 Rust Core (all logic) ─┤
-                       └──→ coco-eval (Rust CLI, eval only)
+                       └──→ hotcoco-cli (Rust CLI, eval only)
 ```
 
 - **Rust core** — types, masks, eval, dataset ops, format conversion, streaming
 - **Python CLI** (primary) — all subcommands: `$ coco eval`, `$ coco stats`, `$ coco merge`, `$ coco plot`, etc. Rich formatting, plots via matplotlib/plotly.
-- **Rust CLI** — evaluation only: `$ coco-eval`. JSON/CSV/markdown output, no plots, no Python. New features are added on request.
+- **Rust CLI** (`hotcoco-cli`) — evaluation only. JSON/CSV/markdown output, no plots, no Python. New features added on request.
 
 | Registry | Package | Contents |
 |----------|---------|----------|
-| PyPI | `coco-kit` | Python library + Python CLI + compiled Rust core |
-| crates.io | `coco-kit` | Rust library |
-| crates.io | `hotcoco-cli` | `coco-eval` binary (eval only, no Python) |
+| PyPI | `hotcoco` | Python library + Python CLI + compiled Rust core |
+| crates.io | `hotcoco` | Rust library |
+| crates.io | `hotcoco-cli` | Rust CLI binary (eval only, no Python) |
 
 ## Dataset Statistics
 

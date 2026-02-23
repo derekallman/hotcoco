@@ -57,9 +57,9 @@ cargo clippy                   # Lint
 cargo fmt --all                # Format (use --all, not --workspace)
 cargo fmt --all -- --check     # Check formatting
 
-# Python bindings
-cd crates/hotcoco-pyo3
-maturin develop --release      # Build + install into active Python env
+# Python bindings (from crates/hotcoco-pyo3/)
+# One-time setup: uv venv && uv pip install maturin ".[dev]"
+maturin develop --release --uv  # Build + install into .venv
 ```
 
 ## Refactoring
