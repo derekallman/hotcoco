@@ -68,7 +68,9 @@ Standard COCO evaluation protocol over 365 categories and ~2M images. Likely wor
 
 ### Confusion Matrices
 
-Per-category confusion matrix generation to identify systematic misclassifications. Self-contained, high value for practitioners debugging model failures, and the natural starting point for the visualization story.
+**Shipped.**
+
+~~Per-category confusion matrix generation to identify systematic misclassifications. Self-contained, high value for practitioners debugging model failures, and the natural starting point for the visualization story.~~
 
 ---
 

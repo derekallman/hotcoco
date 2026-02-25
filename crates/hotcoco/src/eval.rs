@@ -11,6 +11,52 @@ use crate::mask;
 use crate::params::{IouType, Params};
 use crate::types::Rle;
 
+/// Per-category confusion matrix for object detection.
+///
+/// Rows are ground truth categories, columns are predicted categories.
+/// Index `num_cats` (the last row/column) represents "background" — unmatched GTs
+/// (false negatives) land in the background column, unmatched DTs (false positives)
+/// land in the background row.
+///
+/// Use [`COCOeval::confusion_matrix`] to compute this.
+#[derive(Debug, Clone)]
+pub struct ConfusionMatrix {
+    /// Raw counts, row-major, shape (num_cats+1) × (num_cats+1).
+    /// Index `K = num_cats` is the background row/column.
+    pub matrix: Vec<u64>,
+    pub num_cats: usize,
+    /// Category IDs corresponding to rows/cols 0..num_cats-1.
+    pub cat_ids: Vec<u64>,
+    pub iou_thr: f64,
+}
+
+impl ConfusionMatrix {
+    /// Get the count at row `gt_idx`, column `pred_idx`.
+    pub fn get(&self, gt_idx: usize, pred_idx: usize) -> u64 {
+        let k = self.num_cats + 1;
+        self.matrix[gt_idx * k + pred_idx]
+    }
+
+    /// Row-normalized matrix as flat `Vec<f64>` (same shape as `matrix`).
+    ///
+    /// Each row is divided by its sum so rows sum to 1.0.
+    /// Zero rows remain all-zero.
+    pub fn normalized(&self) -> Vec<f64> {
+        let k = self.num_cats + 1;
+        let mut norm = vec![0.0f64; k * k];
+        for row in 0..k {
+            let row_sum: u64 = (0..k).map(|col| self.matrix[row * k + col]).sum();
+            if row_sum > 0 {
+                let denom = row_sum as f64;
+                for col in 0..k {
+                    norm[row * k + col] = self.matrix[row * k + col] as f64 / denom;
+                }
+            }
+        }
+        norm
+    }
+}
+
 /// Per-image, per-category evaluation result.
 #[derive(Debug, Clone)]
 pub struct EvalImg {
@@ -1484,6 +1530,256 @@ impl COCOeval {
                 format!("{:0.3}", val)
             };
             println!(" {:>10} = {}", key, val_str);
+        }
+    }
+
+    /// Compute a per-category confusion matrix across all images.
+    ///
+    /// Unlike `evaluate()`, this method compares **all** detections in an image against
+    /// **all** ground truth boxes regardless of category. This enables cross-category
+    /// confusion analysis ("the model keeps predicting `dog` on `cat` ground truth").
+    ///
+    /// This is a `&self` method — it does not call `evaluate()` and does not mutate state.
+    /// It can be called standalone at any point after constructing `COCOeval`.
+    ///
+    /// # Matrix layout (rows = GT, cols = predicted)
+    ///
+    /// - `matrix[gt_cat_idx][dt_cat_idx]` — matched pair (true positive if same category)
+    /// - `matrix[gt_cat_idx][num_cats]` — unmatched GT (false negative / missed detection)
+    /// - `matrix[num_cats][dt_cat_idx]` — unmatched DT (false positive / spurious detection)
+    ///
+    /// # Arguments
+    ///
+    /// - `iou_thr` — IoU threshold for a DT↔GT match (default 0.5)
+    /// - `max_det` — max detections per image after score sorting; `None` uses the last
+    ///   value of `params.max_dets`
+    /// - `min_score` — discard DTs below this confidence before the `max_det` truncation;
+    ///   `None` keeps all detections
+    pub fn confusion_matrix(
+        &self,
+        iou_thr: f64,
+        max_det: Option<usize>,
+        min_score: Option<f64>,
+    ) -> ConfusionMatrix {
+        // Resolve cat_ids / img_ids: respect user-set params filters but do not mutate.
+        let cat_ids: Vec<u64> = if !self.params.cat_ids.is_empty() {
+            self.params.cat_ids.clone()
+        } else {
+            let mut ids: Vec<u64> = self
+                .coco_gt
+                .dataset
+                .categories
+                .iter()
+                .map(|c| c.id)
+                .collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let img_ids: Vec<u64> = if !self.params.img_ids.is_empty() {
+            self.params.img_ids.clone()
+        } else {
+            let mut ids: Vec<u64> = self.coco_gt.dataset.images.iter().map(|i| i.id).collect();
+            ids.sort_unstable();
+            ids
+        };
+
+        let num_cats = cat_ids.len();
+        let k = num_cats + 1; // background index = num_cats
+        let eff_max_det = max_det.unwrap_or_else(|| *self.params.max_dets.last().unwrap_or(&100));
+        let iou_type = self.params.iou_type;
+
+        let coco_gt = &self.coco_gt;
+        let coco_dt = &self.coco_dt;
+
+        // Compute a (k×k) local matrix for each image in parallel, then sum.
+        let matrices: Vec<Vec<u64>> = img_ids
+            .par_iter()
+            .map(|&img_id| {
+                let mut local = vec![0u64; k * k];
+
+                // --- Collect non-crowd GTs: (cat_idx, ann_id) ---
+                let gt_pairs: Vec<(usize, u64)> = cat_ids
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(cat_idx, &cat_id)| {
+                        let ann_ids = coco_gt.get_ann_ids_for_img_cat(img_id, cat_id).to_vec();
+                        ann_ids
+                            .into_iter()
+                            .filter_map(move |ann_id| {
+                                let ann = coco_gt.get_ann(ann_id)?;
+                                if ann.iscrowd {
+                                    return None;
+                                }
+                                Some((cat_idx, ann_id))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                // --- Collect DTs: (cat_idx, score, ann_id), apply min_score ---
+                let mut dt_pairs: Vec<(usize, f64, u64)> = cat_ids
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(cat_idx, &cat_id)| {
+                        let ann_ids = coco_dt.get_ann_ids_for_img_cat(img_id, cat_id).to_vec();
+                        ann_ids
+                            .into_iter()
+                            .filter_map(move |ann_id| {
+                                let ann = coco_dt.get_ann(ann_id)?;
+                                let score = ann.score.unwrap_or(0.0);
+                                if min_score.is_some_and(|ms| score < ms) {
+                                    return None;
+                                }
+                                Some((cat_idx, score, ann_id))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+
+                // Sort DTs by score descending, then truncate to max_det.
+                dt_pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                if dt_pairs.len() > eff_max_det {
+                    dt_pairs.truncate(eff_max_det);
+                }
+
+                if gt_pairs.is_empty() && dt_pairs.is_empty() {
+                    return local;
+                }
+
+                let d = dt_pairs.len();
+                let g = gt_pairs.len();
+
+                // --- Compute cross-category IoU matrix [D × G] ---
+                let iou_matrix: Vec<Vec<f64>> = if d > 0 && g > 0 {
+                    match iou_type {
+                        IouType::Bbox | IouType::Keypoints => {
+                            let dt_bbs: Vec<[f64; 4]> = dt_pairs
+                                .iter()
+                                .filter_map(|&(_, _, ann_id)| coco_dt.get_ann(ann_id)?.bbox)
+                                .collect();
+                            let gt_bbs: Vec<[f64; 4]> = gt_pairs
+                                .iter()
+                                .filter_map(|&(_, ann_id)| coco_gt.get_ann(ann_id)?.bbox)
+                                .collect();
+                            let iscrowd = vec![false; gt_bbs.len()];
+                            if dt_bbs.len() == d && gt_bbs.len() == g {
+                                mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
+                            } else {
+                                vec![vec![0.0; g]; d]
+                            }
+                        }
+                        IouType::Segm => {
+                            // Try to get RLEs for all DTs and GTs.  Fall back to bbox
+                            // IoU for any image where an RLE cannot be produced.
+                            let dt_rles: Vec<Option<Rle>> = dt_pairs
+                                .iter()
+                                .map(|&(_, _, ann_id)| {
+                                    coco_dt
+                                        .get_ann(ann_id)
+                                        .and_then(|ann| coco_dt.ann_to_rle(ann))
+                                })
+                                .collect();
+                            let gt_rles: Vec<Option<Rle>> = gt_pairs
+                                .iter()
+                                .map(|&(_, ann_id)| {
+                                    coco_gt
+                                        .get_ann(ann_id)
+                                        .and_then(|ann| coco_gt.ann_to_rle(ann))
+                                })
+                                .collect();
+
+                            let all_have_rle = dt_rles.iter().all(|r| r.is_some())
+                                && gt_rles.iter().all(|r| r.is_some());
+
+                            if all_have_rle {
+                                let dt_rles_ok: Vec<Rle> =
+                                    dt_rles.into_iter().map(|r| r.unwrap()).collect();
+                                let gt_rles_ok: Vec<Rle> =
+                                    gt_rles.into_iter().map(|r| r.unwrap()).collect();
+                                let iscrowd = vec![false; g];
+                                mask::iou(&dt_rles_ok, &gt_rles_ok, &iscrowd)
+                            } else {
+                                // Bbox fallback
+                                let dt_bbs: Vec<[f64; 4]> = dt_pairs
+                                    .iter()
+                                    .filter_map(|&(_, _, ann_id)| coco_dt.get_ann(ann_id)?.bbox)
+                                    .collect();
+                                let gt_bbs: Vec<[f64; 4]> = gt_pairs
+                                    .iter()
+                                    .filter_map(|&(_, ann_id)| coco_gt.get_ann(ann_id)?.bbox)
+                                    .collect();
+                                let iscrowd = vec![false; gt_bbs.len()];
+                                if dt_bbs.len() == d && gt_bbs.len() == g {
+                                    mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
+                                } else {
+                                    vec![vec![0.0; g]; d]
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    vec![]
+                };
+
+                // --- Greedy matching at iou_thr (DTs already in score-sorted order) ---
+                let mut gt_matched = vec![false; g];
+
+                for di in 0..d {
+                    let mut best_iou = iou_thr;
+                    let mut best_gi: Option<usize> = None;
+
+                    if !iou_matrix.is_empty() {
+                        let row = &iou_matrix[di];
+                        for (gi, (&is_matched, &iou)) in
+                            gt_matched.iter().zip(row.iter()).enumerate()
+                        {
+                            if is_matched {
+                                continue;
+                            }
+                            if iou >= best_iou {
+                                best_iou = iou;
+                                best_gi = Some(gi);
+                            }
+                        }
+                    }
+
+                    if let Some(gi) = best_gi {
+                        gt_matched[gi] = true;
+                        let dt_cat_idx = dt_pairs[di].0;
+                        let gt_cat_idx = gt_pairs[gi].0;
+                        local[gt_cat_idx * k + dt_cat_idx] += 1;
+                    } else {
+                        // Unmatched DT → false positive (background row)
+                        let dt_cat_idx = dt_pairs[di].0;
+                        local[num_cats * k + dt_cat_idx] += 1;
+                    }
+                }
+
+                // Unmatched GTs → false negatives (background column)
+                for (is_matched, &(gt_cat_idx, _)) in gt_matched.iter().zip(gt_pairs.iter()) {
+                    if !is_matched {
+                        local[gt_cat_idx * k + num_cats] += 1;
+                    }
+                }
+
+                local
+            })
+            .collect();
+
+        // Reduce: element-wise sum of per-image matrices.
+        let mut matrix = vec![0u64; k * k];
+        for local in matrices {
+            for (i, &v) in local.iter().enumerate() {
+                matrix[i] += v;
+            }
+        }
+
+        ConfusionMatrix {
+            matrix,
+            num_cats,
+            cat_ids,
+            iou_thr,
         }
     }
 }

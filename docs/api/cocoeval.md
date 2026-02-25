@@ -212,3 +212,107 @@ Prints 12 lines for bbox/segm (10 for keypoints):
  Average Precision (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.584
  ...
 ```
+
+---
+
+### `run`
+
+```python
+run() -> None
+```
+
+Run the full pipeline in one call: `evaluate()` → `accumulate()` → `summarize()`. Primarily used with LVIS pipelines (Detectron2, MMDetection) that expect a single `run()` call.
+
+---
+
+### `get_results`
+
+```python
+get_results() -> dict[str, float]
+```
+
+Return the summary metrics as a dict. Must be called after `summarize()` (or `run()`). Returns an empty dict if `summarize()` has not been called.
+
+Standard bbox/segm keys: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`, `AR1`, `AR10`, `AR100`, `ARs`, `ARm`, `ARl`.
+
+Keypoint keys: `AP`, `AP50`, `AP75`, `APm`, `APl`, `AR`, `AR50`, `AR75`, `ARm`, `ARl`.
+
+LVIS keys: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`, `APr`, `APc`, `APf`, `AR@300`, `ARs@300`, `ARm@300`, `ARl@300`.
+
+```python
+ev.run()
+results = ev.get_results()
+print(f"AP: {results['AP']:.3f}, AP50: {results['AP50']:.3f}")
+```
+
+---
+
+### `print_results`
+
+```python
+print_results() -> None
+```
+
+Print a formatted results table to stdout. For LVIS, matches the lvis-api `print_results()` style. Must be called after `summarize()` (or `run()`).
+
+---
+
+### `confusion_matrix`
+
+```python
+confusion_matrix(
+    iou_thr: float = 0.5,
+    max_det: int | None = None,
+    min_score: float | None = None,
+) -> dict
+```
+
+Compute a per-category confusion matrix. Unlike `evaluate()`, this method compares **all** detections in an image against **all** ground truth boxes regardless of category, enabling cross-category confusion analysis.
+
+This method is **standalone** — no `evaluate()` call is needed first.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `iou_thr` | `float` | `0.5` | IoU threshold for a DT↔GT match |
+| `max_det` | `int \| None` | last `params.max_dets` value | Max detections per image by score |
+| `min_score` | `float \| None` | `None` | Discard detections below this confidence before `max_det` truncation |
+
+**Returns** a dict with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"matrix"` | `np.ndarray[int64]` shape `(K+1, K+1)` | Raw confusion counts. Rows = GT category, cols = predicted. Index `K` is background. |
+| `"normalized"` | `np.ndarray[float64]` shape `(K+1, K+1)` | Row-normalised version (rows sum to 1.0; zero rows stay zero). |
+| `"cat_ids"` | `list[int]` | Category IDs for rows/cols `0..K-1`. |
+| `"num_cats"` | `int` | Number of categories `K`. |
+| `"iou_thr"` | `float` | IoU threshold used. |
+
+**Matrix layout** (rows = GT, cols = predicted):
+
+- `matrix[i][j]` where `i ≠ K, j ≠ K` — GT category `i` matched to predicted category `j`. On-diagonal = TP; off-diagonal = class confusion.
+- `matrix[i][K]` — GT category `i` unmatched (false negative).
+- `matrix[K][j]` — Predicted category `j` unmatched (false positive).
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+cm = ev.confusion_matrix(iou_thr=0.5, max_det=100)
+
+matrix = cm["matrix"]
+cat_ids = cm["cat_ids"]
+
+# True positives per category
+tp = matrix.diagonal()[:-1]
+
+# False negatives per category
+fn = matrix[:-1, -1]
+
+# False positives per category
+fp = matrix[-1, :-1]
+
+# Normalised view
+print(cm["normalized"])
+```
+
+See [Confusion Matrix](../guide/evaluation.md#confusion-matrix) in the evaluation guide for a full walkthrough.

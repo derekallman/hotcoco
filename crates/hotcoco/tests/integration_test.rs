@@ -1002,3 +1002,326 @@ fn test_lvis_not_exhaustive_unmatched_ignored() {
         "Unmatched DT in not_exhaustive image should be ignored; AP should be 1.0, got {ap}"
     );
 }
+
+// ============================================================
+// Helpers shared by confusion_matrix tests
+// ============================================================
+
+fn cm_image(id: u64) -> Image {
+    Image {
+        id,
+        file_name: format!("img{id}.jpg"),
+        height: 200,
+        width: 200,
+        license: None,
+        coco_url: None,
+        flickr_url: None,
+        date_captured: None,
+        neg_category_ids: vec![],
+        not_exhaustive_category_ids: vec![],
+    }
+}
+
+fn cm_category(id: u64, name: &str) -> Category {
+    Category {
+        id,
+        name: name.into(),
+        supercategory: None,
+        skeleton: None,
+        keypoints: None,
+        frequency: None,
+    }
+}
+
+fn cm_gt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4]) -> Annotation {
+    Annotation {
+        id,
+        image_id: img_id,
+        category_id: cat_id,
+        bbox: Some(bbox),
+        area: Some(bbox[2] * bbox[3]),
+        iscrowd: false,
+        segmentation: None,
+        keypoints: None,
+        num_keypoints: None,
+        score: None,
+    }
+}
+
+fn cm_dt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4], score: f64) -> Annotation {
+    Annotation {
+        id,
+        image_id: img_id,
+        category_id: cat_id,
+        bbox: Some(bbox),
+        area: Some(bbox[2] * bbox[3]),
+        iscrowd: false,
+        segmentation: None,
+        keypoints: None,
+        num_keypoints: None,
+        score: Some(score),
+    }
+}
+
+fn cm_coco(images: Vec<Image>, anns: Vec<Annotation>, cats: Vec<Category>) -> COCO {
+    COCO::from_dataset(Dataset {
+        info: None,
+        images,
+        annotations: anns,
+        categories: cats,
+        licenses: vec![],
+    })
+}
+
+// ============================================================
+// confusion_matrix tests
+// ============================================================
+
+/// All DTs match their correct category → pure diagonal matrix.
+#[test]
+fn test_confusion_matrix_perfect() {
+    // 2 categories: cat(1)=idx 0, dog(2)=idx 1; background=idx 2
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0]),  // cat GT
+            cm_gt_ann(2, 1, 2, [60.0, 0.0, 50.0, 50.0]), // dog GT
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.9), // cat DT → matches cat GT
+            cm_dt_ann(102, 1, 2, [60.0, 0.0, 50.0, 50.0], 0.8), // dog DT → matches dog GT
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    let cm = ev.confusion_matrix(0.5, None, None);
+
+    assert_eq!(cm.num_cats, 2);
+    assert_eq!(cm.cat_ids, vec![1, 2]);
+
+    // Diagonal TPs
+    assert_eq!(cm.get(0, 0), 1, "cat→cat TP should be 1");
+    assert_eq!(cm.get(1, 1), 1, "dog→dog TP should be 1");
+
+    // No cross-category confusion
+    assert_eq!(cm.get(0, 1), 0, "cat should not be predicted as dog");
+    assert_eq!(cm.get(1, 0), 0, "dog should not be predicted as cat");
+
+    // No FPs or FNs
+    assert_eq!(cm.get(0, 2), 0, "no missed cats");
+    assert_eq!(cm.get(1, 2), 0, "no missed dogs");
+    assert_eq!(cm.get(2, 0), 0, "no spurious cat predictions");
+    assert_eq!(cm.get(2, 1), 0, "no spurious dog predictions");
+}
+
+/// DT of category dog overlaps GT of category cat → off-diagonal confusion cell.
+#[test]
+fn test_confusion_matrix_class_confusion() {
+    // 1 GT: cat(1) at [0,0,50,50]
+    // 1 DT: dog(2) at same location → IoU=1.0 with cat GT → recorded as gt=cat, pred=dog
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 2, [0.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    let cm = ev.confusion_matrix(0.5, None, None);
+
+    // GT cat (idx 0) was predicted as dog (idx 1) → off-diagonal confusion
+    assert_eq!(cm.get(0, 1), 1, "GT cat predicted as dog should be 1");
+    // No FN (GT was matched, just to wrong category)
+    assert_eq!(cm.get(0, 2), 0, "GT cat should not be a missed FN");
+    // No FP (DT matched a GT)
+    assert_eq!(cm.get(2, 1), 0, "dog DT should not be a spurious FP");
+    // No TP for cat
+    assert_eq!(cm.get(0, 0), 0);
+}
+
+/// DT with no nearby GT → lands in the background (FP) row.
+#[test]
+fn test_confusion_matrix_fp_background() {
+    // No GT annotations; one spurious DT
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![], // no GTs
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    let cm = ev.confusion_matrix(0.5, None, None);
+
+    // num_cats=1, k=2: cat=0, background=1
+    assert_eq!(cm.num_cats, 1);
+    // FP: background row (1), cat col (0)
+    assert_eq!(
+        cm.get(1, 0),
+        1,
+        "spurious cat DT should count as FP (background row)"
+    );
+    // No FN
+    assert_eq!(cm.get(0, 1), 0);
+}
+
+/// GT with no matching DT → lands in the background (FN) column.
+#[test]
+fn test_confusion_matrix_fn_missed() {
+    // One GT, no DTs
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![], // no detections
+        vec![cm_category(1, "cat")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    let cm = ev.confusion_matrix(0.5, None, None);
+
+    // num_cats=1, k=2: cat=0, background=1
+    // FN: cat row (0), background col (1)
+    assert_eq!(
+        cm.get(0, 1),
+        1,
+        "missed cat GT should count as FN (background col)"
+    );
+    // No FP
+    assert_eq!(cm.get(1, 0), 0);
+}
+
+/// Same data: matches at iou_thr=0.5, misses at iou_thr=0.9.
+///
+/// GT=[0,0,100,100], DT=[50,0,50,100] → IoU = 0.5 exactly.
+#[test]
+fn test_confusion_matrix_iou_threshold() {
+    // IoU between GT [0,0,100,100] and DT [50,0,50,100]:
+    //   intersection = 50×100 = 5000
+    //   union = 10000 + 5000 - 5000 = 10000
+    //   IoU = 0.5
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 100.0, 100.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [50.0, 0.0, 50.0, 100.0], 0.9)],
+        vec![cm_category(1, "cat")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+
+    // At threshold 0.5: IoU (0.5) >= 0.5 → TP
+    let cm_50 = ev.confusion_matrix(0.5, None, None);
+    assert_eq!(cm_50.get(0, 0), 1, "should match at iou_thr=0.5");
+    assert_eq!(cm_50.get(0, 1), 0);
+    assert_eq!(cm_50.get(1, 0), 0);
+
+    // At threshold 0.9: IoU (0.5) < 0.9 → FP + FN
+    let cm_90 = ev.confusion_matrix(0.9, None, None);
+    assert_eq!(cm_90.get(0, 0), 0, "should not match at iou_thr=0.9");
+    assert_eq!(cm_90.get(0, 1), 1, "GT should be FN");
+    assert_eq!(cm_90.get(1, 0), 1, "DT should be FP");
+}
+
+/// Low-score DT dropped by min_score → GT becomes a missed detection (FN).
+#[test]
+fn test_confusion_matrix_min_score() {
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.3)],
+        vec![cm_category(1, "cat")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+
+    // Without min_score: DT matches GT → TP
+    let cm_no_filter = ev.confusion_matrix(0.5, None, None);
+    assert_eq!(cm_no_filter.get(0, 0), 1, "should TP without score filter");
+    assert_eq!(cm_no_filter.get(0, 1), 0, "no FN without score filter");
+
+    // With min_score=0.5: DT (score=0.3) is dropped → GT missed → FN
+    let cm_filtered = ev.confusion_matrix(0.5, None, Some(0.5));
+    assert_eq!(
+        cm_filtered.get(0, 0),
+        0,
+        "DT below min_score should be dropped"
+    );
+    assert_eq!(
+        cm_filtered.get(0, 1),
+        1,
+        "GT should become FN when DT is filtered out"
+    );
+    assert_eq!(cm_filtered.get(1, 0), 0, "no FP when DT is filtered out");
+}
+
+/// Only the top-K detections by score are kept; lower-scoring DTs are excluded.
+#[test]
+fn test_confusion_matrix_max_det() {
+    // 2 GTs: cat at [0,0,50,50], dog at [60,0,50,50]
+    // 2 DTs: cat (score=0.9) and dog (score=0.5)
+    // With max_det=1: only cat DT kept → cat GT matches, dog GT missed (FN)
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0]),
+            cm_gt_ann(2, 1, 2, [60.0, 0.0, 50.0, 50.0]),
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.9),
+            cm_dt_ann(102, 1, 2, [60.0, 0.0, 50.0, 50.0], 0.5),
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+
+    // max_det=2 (default): both DTs included → both TPs
+    let cm_full = ev.confusion_matrix(0.5, Some(2), None);
+    assert_eq!(cm_full.get(0, 0), 1, "cat TP with max_det=2");
+    assert_eq!(cm_full.get(1, 1), 1, "dog TP with max_det=2");
+    assert_eq!(cm_full.get(0, 2), 0, "no missed cat with max_det=2");
+    assert_eq!(cm_full.get(1, 2), 0, "no missed dog with max_det=2");
+
+    // max_det=1: only cat DT (score=0.9) kept; dog DT dropped
+    let cm_1det = ev.confusion_matrix(0.5, Some(1), None);
+    // num_cats=2, k=3: cat=0, dog=1, background=2
+    assert_eq!(cm_1det.get(0, 0), 1, "cat GT matches cat DT → TP");
+    assert_eq!(
+        cm_1det.get(1, 2),
+        1,
+        "dog GT has no DT → FN (background col)"
+    );
+    assert_eq!(
+        cm_1det.get(2, 1),
+        0,
+        "no spurious dog FP (DT was truncated)"
+    );
+}

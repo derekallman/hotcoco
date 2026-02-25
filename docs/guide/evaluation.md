@@ -249,3 +249,82 @@ results = ev.get_results()
 The frequency split (rare / common / frequent) is determined by the `frequency` field on each category in the LVIS annotation file (`"r"`, `"c"`, `"f"`).
 
 `get_results()` returns all 13 metrics as a dict for programmatic access.
+
+## Confusion matrix
+
+The standard AP pipeline only ever matches detections against ground truth of the **same** category. That means it can't tell you *which* categories your model confuses. `confusion_matrix()` fixes this with a separate cross-category matching pass.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+cm = ev.confusion_matrix(iou_thr=0.5, max_det=100)
+```
+
+No `evaluate()` call is needed first — `confusion_matrix()` is fully standalone.
+
+### Reading the matrix
+
+`cm["matrix"]` is a `(K+1) × (K+1)` numpy int64 array where `K` is the number of categories. **Rows are ground truth, columns are predicted.** The extra row and column at index `K` represent "background" — unmatched ground truth (missed detections / false negatives) and unmatched detections (false positives) respectively.
+
+| | pred cat A | pred cat B | … | background |
+|---|---|---|---|---|
+| **gt cat A** | TP (same cat) | confusion | … | FN |
+| **gt cat B** | confusion | TP | … | FN |
+| **background** | FP | FP | … | 0 |
+
+```python
+cm = ev.confusion_matrix(iou_thr=0.5)
+
+# Raw counts
+matrix = cm["matrix"]          # np.ndarray int64, shape (K+1, K+1)
+cat_ids = cm["cat_ids"]        # list of category IDs for rows/cols 0..K-1
+
+# True positives per category (diagonal, excluding background)
+tp_per_cat = matrix.diagonal()[:-1]
+
+# False negatives per category (GT matched to background column)
+fn_per_cat = matrix[:-1, -1]
+
+# False positives per category (background row)
+fp_per_cat = matrix[-1, :-1]
+
+# Row-normalised version (each row sums to 1.0)
+norm = cm["normalized"]
+```
+
+### Finding class confusions
+
+The off-diagonal cells (excluding the background row and column) tell you about cross-category confusions:
+
+```python
+import numpy as np
+
+matrix = cm["matrix"][:-1, :-1]   # drop background row/col
+cat_ids = cm["cat_ids"]
+
+# Zero the diagonal (TPs) to see only confusions
+confusion_only = matrix.copy()
+np.fill_diagonal(confusion_only, 0)
+
+# Top confusions
+flat = confusion_only.flatten()
+top_idx = np.argsort(flat)[::-1][:10]
+for idx in top_idx:
+    if flat[idx] == 0:
+        break
+    gt_cat = cat_ids[idx // len(cat_ids)]
+    pred_cat = cat_ids[idx % len(cat_ids)]
+    print(f"GT {gt_cat} predicted as {pred_cat}: {flat[idx]} times")
+```
+
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `iou_thr` | `0.5` | IoU threshold for a DT↔GT match |
+| `max_det` | last `params.max_dets` value | Max detections per image, sorted by score |
+| `min_score` | `None` (keep all) | Drop detections below this confidence before `max_det` truncation |
+
+```python
+# Stricter threshold, limit to top 50 dets, ignore low-confidence dets
+cm = ev.confusion_matrix(iou_thr=0.75, max_det=50, min_score=0.3)
+```

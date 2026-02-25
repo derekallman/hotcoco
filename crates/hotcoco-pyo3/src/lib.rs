@@ -715,6 +715,76 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
     fn get_eval(&self, py: Python<'_>) -> PyResult<PyObject> {
         accumulated_eval_to_py(py, &self.inner.eval)
     }
+
+    #[doc = "Compute a per-category confusion matrix across all images.
+
+Unlike ``evaluate()``, this method compares **all** detections in an image against
+**all** ground truth boxes regardless of category, enabling cross-category confusion
+analysis (e.g. the model keeps predicting ``dog`` on ``cat`` ground truth).
+
+This method is standalone — no ``evaluate()`` call is needed first.
+
+Returns a dict with:
+
+- ``matrix``: ``np.ndarray`` of shape ``(K+1, K+1)``, dtype ``int64``.  Rows = GT
+  category, cols = predicted category.  Index ``K`` is the background row/column
+  (unmatched GTs = false negatives end up in the background column; unmatched DTs =
+  false positives end up in the background row).
+- ``normalized``: ``np.ndarray`` of shape ``(K+1, K+1)``, dtype ``float64``.
+  Each row is divided by its row sum (zero rows stay zero).
+- ``cat_ids``: ``list[int]`` — category IDs for rows/cols ``0..K-1``.
+- ``num_cats``: ``int`` — number of categories (``K``).
+- ``iou_thr``: ``float`` — IoU threshold used for matching.
+
+Parameters
+----------
+iou_thr : float, optional
+    IoU threshold for a DT↔GT match.  Default ``0.5``.
+max_det : int or None, optional
+    Max detections per image (by score, highest first).  ``None`` uses the last
+    value of ``params.max_dets``.
+min_score : float or None, optional
+    Discard detections below this confidence before the ``max_det`` truncation.
+    ``None`` keeps all detections.
+
+Example
+-------
+::
+
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\")
+    cm = ev.confusion_matrix(iou_thr=0.5, max_det=100)
+    print(cm['matrix'].shape)   # (K+1, K+1)
+    print(cm['cat_ids'])        # list of category IDs
+"]
+    #[pyo3(signature = (iou_thr=0.5, max_det=None, min_score=None))]
+    fn confusion_matrix(
+        &self,
+        py: Python<'_>,
+        iou_thr: f64,
+        max_det: Option<usize>,
+        min_score: Option<f64>,
+    ) -> PyResult<PyObject> {
+        let cm = self.inner.confusion_matrix(iou_thr, max_det, min_score);
+        let k = cm.num_cats + 1;
+
+        // matrix: Vec<u64> → numpy int64, reshaped to (k, k)
+        let matrix_i64: Vec<i64> = cm.matrix.iter().map(|&v| v as i64).collect();
+        let matrix_arr = PyArray1::<i64>::from_vec(py, matrix_i64);
+        let matrix_arr = matrix_arr.call_method1("reshape", ((k, k),))?.unbind();
+
+        // normalized: Vec<f64> → numpy float64, reshaped to (k, k)
+        let norm_arr = PyArray1::<f64>::from_vec(py, cm.normalized());
+        let norm_arr = norm_arr.call_method1("reshape", ((k, k),))?.unbind();
+
+        let dict = PyDict::new(py);
+        dict.set_item("matrix", matrix_arr)?;
+        dict.set_item("normalized", norm_arr)?;
+        dict.set_item("cat_ids", cm.cat_ids)?;
+        dict.set_item("num_cats", cm.num_cats)?;
+        dict.set_item("iou_thr", cm.iou_thr)?;
+
+        Ok(dict.into_any().unbind())
+    }
 }
 
 // ---------------------------------------------------------------------------
