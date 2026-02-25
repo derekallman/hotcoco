@@ -81,7 +81,27 @@ impl AccumulatedEval {
     }
 }
 
-/// The COCO evaluation object.
+/// COCO evaluation engine.
+///
+/// Computes AP and AR metrics for bbox, segmentation, and keypoint predictions.
+/// Also supports LVIS federated evaluation via [`COCOeval::new_lvis`].
+///
+/// The standard workflow is three steps:
+///
+/// ```rust,ignore
+/// let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+/// ev.evaluate();   // per-image IoU matching
+/// ev.accumulate(); // aggregate into precision/recall curves
+/// ev.summarize();  // print + store the summary metrics in ev.stats
+/// ```
+///
+/// For LVIS, use [`run`](COCOeval::run) as a convenience:
+///
+/// ```rust,ignore
+/// let mut ev = COCOeval::new_lvis(coco_gt, coco_dt, IouType::Segm);
+/// ev.run();
+/// let results = ev.get_results(); // HashMap<metric_name, f64>
+/// ```
 pub struct COCOeval {
     pub coco_gt: COCO,
     pub coco_dt: COCO,
@@ -90,6 +110,15 @@ pub struct COCOeval {
     ious: HashMap<(u64, u64), Vec<Vec<f64>>>,
     pub eval: Option<AccumulatedEval>,
     pub stats: Option<Vec<f64>>,
+    /// LVIS federated evaluation mode.
+    pub is_lvis: bool,
+    /// LVIS: k_indices bucketed by category frequency: [rare, common, frequent].
+    /// Populated during `evaluate()` when `is_lvis=true`.
+    freq_groups: [Vec<usize>; 3],
+    /// LVIS: img_id → set of neg_category_ids (unmatched DTs count as FP).
+    neg_cats: HashMap<u64, HashSet<u64>>,
+    /// LVIS: img_id → set of not_exhaustive_category_ids (unmatched DTs are ignored).
+    not_exhaustive: HashMap<u64, HashSet<u64>>,
 }
 
 impl COCOeval {
@@ -103,6 +132,56 @@ impl COCOeval {
             ious: HashMap::new(),
             eval: None,
             stats: None,
+            is_lvis: false,
+            freq_groups: [Vec::new(), Vec::new(), Vec::new()],
+            neg_cats: HashMap::new(),
+            not_exhaustive: HashMap::new(),
+        }
+    }
+
+    /// Create a new COCOeval configured for LVIS federated evaluation.
+    ///
+    /// LVIS uses federated annotation — each image is only exhaustively labeled
+    /// for a subset of categories. This constructor sets `max_dets=300` and enables
+    /// federated filtering so unmatched detections on unlabeled or unchecked categories
+    /// are not penalized as false positives.
+    ///
+    /// Behaviour controlled by per-image GT fields:
+    /// - `neg_category_ids`: categories confirmed absent → unmatched DTs count as FP.
+    /// - `not_exhaustive_category_ids`: categories not fully checked → unmatched DTs ignored.
+    ///
+    /// Produces 13 metrics: AP, AP50, AP75, APs, APm, APl, APr (rare), APc (common),
+    /// APf (frequent), AR@300, ARs@300, ARm@300, ARl@300.
+    pub fn new_lvis(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self {
+        let mut params = Params::new(iou_type);
+        params.max_dets = vec![300];
+
+        let mut neg_cats: HashMap<u64, HashSet<u64>> = HashMap::new();
+        let mut not_exhaustive: HashMap<u64, HashSet<u64>> = HashMap::new();
+        for img in &coco_gt.dataset.images {
+            if !img.neg_category_ids.is_empty() {
+                neg_cats.insert(img.id, img.neg_category_ids.iter().copied().collect());
+            }
+            if !img.not_exhaustive_category_ids.is_empty() {
+                not_exhaustive.insert(
+                    img.id,
+                    img.not_exhaustive_category_ids.iter().copied().collect(),
+                );
+            }
+        }
+
+        COCOeval {
+            coco_gt,
+            coco_dt,
+            params,
+            eval_imgs: Vec::new(),
+            ious: HashMap::new(),
+            eval: None,
+            stats: None,
+            is_lvis: true,
+            freq_groups: [Vec::new(), Vec::new(), Vec::new()],
+            neg_cats,
+            not_exhaustive,
         }
     }
 
@@ -134,6 +213,26 @@ impl COCOeval {
 
         let img_ids = self.params.img_ids.clone();
 
+        // LVIS: build freq_groups now that cat_ids are established.
+        if self.is_lvis {
+            let cat_id_to_k_idx: HashMap<u64, usize> =
+                cat_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+            let mut rare = Vec::new();
+            let mut common = Vec::new();
+            let mut frequent = Vec::new();
+            for cat in &self.coco_gt.dataset.categories {
+                if let Some(&k_idx) = cat_id_to_k_idx.get(&cat.id) {
+                    match cat.frequency.as_deref() {
+                        Some("r") => rare.push(k_idx),
+                        Some("c") => common.push(k_idx),
+                        Some("f") => frequent.push(k_idx),
+                        _ => {}
+                    }
+                }
+            }
+            self.freq_groups = [rare, common, frequent];
+        }
+
         // Build allowed sets from params (populated above, so always non-empty here).
         let allowed_imgs: HashSet<u64> = img_ids.iter().copied().collect();
         let allowed_cats: HashSet<u64> = cat_ids.iter().copied().collect();
@@ -141,16 +240,35 @@ impl COCOeval {
         // Build sparse pairs: union of non-empty GT and DT (img, cat) pairs filtered to params.
         // At large-scale (e.g. Objects365: 365 cats × 80K imgs = 29M pairs), ~96% of pairs
         // are empty. Driving evaluation from the index instead reduces pairs by ~35x.
+        //
+        // LVIS federated filtering: DT pairs are only included if GT exists for that
+        // (img, cat), or the category is in neg_category_ids for that image.
+        // DT-only pairs for not-checked categories are silently dropped.
         let mut sparse_set: HashSet<(u64, u64)> = HashSet::new();
         if self.params.use_cats {
+            // Collect GT pairs first (needed for LVIS DT filtering).
+            let mut gt_pairs: HashSet<(u64, u64)> = HashSet::new();
             for pair in self.coco_gt.nonempty_img_cat_pairs() {
                 if allowed_imgs.contains(&pair.0) && allowed_cats.contains(&pair.1) {
+                    gt_pairs.insert(pair);
                     sparse_set.insert(pair);
                 }
             }
             for pair in self.coco_dt.nonempty_img_cat_pairs() {
                 if allowed_imgs.contains(&pair.0) && allowed_cats.contains(&pair.1) {
-                    sparse_set.insert(pair);
+                    if self.is_lvis {
+                        // Keep DT pair only if GT exists OR cat is explicitly neg for this image.
+                        if gt_pairs.contains(&pair)
+                            || self
+                                .neg_cats
+                                .get(&pair.0)
+                                .is_some_and(|s| s.contains(&pair.1))
+                        {
+                            sparse_set.insert(pair);
+                        }
+                    } else {
+                        sparse_set.insert(pair);
+                    }
                 }
             }
         } else {
@@ -202,17 +320,23 @@ impl COCOeval {
         let max_det = *self.params.max_dets.last().unwrap_or(&100);
         let area_rngs = self.params.area_rng.clone();
 
-        let mut eval_tuples: Vec<(u64, [f64; 2], u64)> =
+        // Tuple: (cat_id, area_rng, img_id, not_exhaustive_cat)
+        let mut eval_tuples: Vec<(u64, [f64; 2], u64, bool)> =
             Vec::with_capacity(sparse_pairs.len() * area_rngs.len());
         for &(img_id, cat_id) in &sparse_pairs {
+            let not_exhaustive_cat = self.is_lvis
+                && self
+                    .not_exhaustive
+                    .get(&img_id)
+                    .is_some_and(|s| s.contains(&cat_id));
             for &area_rng in &area_rngs {
-                eval_tuples.push((cat_id, area_rng, img_id));
+                eval_tuples.push((cat_id, area_rng, img_id, not_exhaustive_cat));
             }
         }
 
         self.eval_imgs = eval_tuples
             .par_iter()
-            .map(|&(cat_id, area_rng, img_id)| {
+            .map(|&(cat_id, area_rng, img_id, not_exhaustive_cat)| {
                 Self::evaluate_img_static(
                     &self.coco_gt,
                     &self.coco_dt,
@@ -222,6 +346,7 @@ impl COCOeval {
                     cat_id,
                     area_rng,
                     max_det,
+                    not_exhaustive_cat,
                 )
             })
             .collect();
@@ -415,6 +540,9 @@ impl COCOeval {
     }
 
     /// Evaluate a single image+category combination.
+    ///
+    /// `not_exhaustive_cat` — when true (LVIS mode), unmatched detections are
+    /// ignored rather than counted as false positives.
     #[allow(clippy::too_many_arguments)]
     fn evaluate_img_static(
         coco_gt: &COCO,
@@ -425,6 +553,7 @@ impl COCOeval {
         cat_id: u64,
         area_rng: [f64; 2],
         max_det: usize,
+        not_exhaustive_cat: bool,
     ) -> Option<EvalImg> {
         let gt_ids = Self::get_anns_static(coco_gt, params, img_id, cat_id);
         let dt_ids = Self::get_anns_static(coco_dt, params, img_id, cat_id);
@@ -573,6 +702,18 @@ impl COCOeval {
                     } else {
                         // Unmatched DT: ignored if area out of range
                         dt_ignore_flags[t_idx][di] = dt_area_ignore[di];
+                    }
+                }
+            }
+        }
+
+        // LVIS: for not_exhaustive categories, mark all unmatched DTs as ignored
+        // so they don't count as false positives.
+        if not_exhaustive_cat {
+            for t_idx in 0..num_iou_thrs {
+                for di in 0..d {
+                    if !dt_matched[t_idx][di] {
+                        dt_ignore_flags[t_idx][di] = true;
                     }
                 }
             }
@@ -859,10 +1000,15 @@ impl COCOeval {
                     .to_string(),
             );
         }
-        if self.params.max_dets != defaults.max_dets {
+        let expected_max_dets = if self.is_lvis {
+            vec![300usize]
+        } else {
+            defaults.max_dets.clone()
+        };
+        if self.params.max_dets != expected_max_dets {
             warnings.push(format!(
-                "max_dets differ from default ({:?}). AR lines may use unexpected max_dets values.",
-                defaults.max_dets
+                "max_dets differ from expected ({:?}). AR lines may use unexpected max_dets values.",
+                expected_max_dets
             ));
         }
         if self.params.area_rng_lbl != defaults.area_rng_lbl {
@@ -1099,6 +1245,105 @@ impl COCOeval {
             ]
         };
 
+        if self.is_lvis {
+            // LVIS summarize: 13 metrics with max_dets=300.
+            // APr/APc/APf are computed as mean per-category AP within each freq group.
+            let a_idx_all = self
+                .params
+                .area_rng_lbl
+                .iter()
+                .position(|l| l == "all")
+                .unwrap_or(0);
+            let m_idx_last = self.params.max_dets.len().saturating_sub(1);
+
+            // Per-category AP for the freq-group metrics.
+            let per_cat_ap: Vec<f64> = (0..eval.k)
+                .map(|k_idx| {
+                    let mut vals = Vec::new();
+                    for t_idx in 0..eval.t {
+                        for r_idx in 0..eval.r {
+                            let idx =
+                                eval.precision_idx(t_idx, r_idx, k_idx, a_idx_all, m_idx_last);
+                            let v = eval.precision[idx];
+                            if v >= 0.0 {
+                                vals.push(v);
+                            }
+                        }
+                    }
+                    if vals.is_empty() {
+                        -1.0
+                    } else {
+                        vals.iter().sum::<f64>() / vals.len() as f64
+                    }
+                })
+                .collect();
+
+            let freq_group_ap = |indices: &[usize]| -> f64 {
+                if indices.is_empty() {
+                    return -1.0;
+                }
+                let valid: Vec<f64> = indices
+                    .iter()
+                    .filter_map(|&k| {
+                        let v = per_cat_ap[k];
+                        if v >= 0.0 {
+                            Some(v)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if valid.is_empty() {
+                    -1.0
+                } else {
+                    valid.iter().sum::<f64>() / valid.len() as f64
+                }
+            };
+
+            let ap = summarize_stat(true, None, "all", max_det_default);
+            let ap50 = summarize_stat(true, Some(0.5), "all", max_det_default);
+            let ap75 = summarize_stat(true, Some(0.75), "all", max_det_default);
+            let aps = summarize_stat(true, None, "small", max_det_default);
+            let apm = summarize_stat(true, None, "medium", max_det_default);
+            let apl = summarize_stat(true, None, "large", max_det_default);
+            let ap_r = freq_group_ap(&self.freq_groups[0]);
+            let ap_c = freq_group_ap(&self.freq_groups[1]);
+            let ap_f = freq_group_ap(&self.freq_groups[2]);
+            let ar = summarize_stat(false, None, "all", max_det_default);
+            let ar_s = summarize_stat(false, None, "small", max_det_default);
+            let ar_m = summarize_stat(false, None, "medium", max_det_default);
+            let ar_l = summarize_stat(false, None, "large", max_det_default);
+
+            let lvis_metrics: &[(&str, f64)] = &[
+                ("AP", ap),
+                ("AP50", ap50),
+                ("AP75", ap75),
+                ("APs", aps),
+                ("APm", apm),
+                ("APl", apl),
+                ("APr", ap_r),
+                ("APc", ap_c),
+                ("APf", ap_f),
+                ("AR@300", ar),
+                ("ARs@300", ar_s),
+                ("ARm@300", ar_m),
+                ("ARl@300", ar_l),
+            ];
+
+            let mut stats = Vec::with_capacity(lvis_metrics.len());
+            for (name, val) in lvis_metrics {
+                stats.push(*val);
+                let val_str = if *val < 0.0 {
+                    format!("{:0.3}", -1.0f64)
+                } else {
+                    format!("{:0.3}", val)
+                };
+                println!(" {:>10} = {}", name, val_str);
+            }
+            self.stats = Some(stats);
+            return;
+        }
+
         let metrics = if is_kp {
             metrics_kp(max_det_default)
         } else {
@@ -1150,5 +1395,95 @@ impl COCOeval {
 
         println!("Eval type: {}", iou_type_str);
         self.stats = Some(stats);
+    }
+
+    /// Run the full evaluation pipeline in one call: `evaluate` → `accumulate` → `summarize`.
+    ///
+    /// Equivalent to calling the three methods in sequence. Primarily used with LVIS
+    /// pipelines (e.g. Detectron2 / MMDetection) that expect a single `run()` entry point.
+    pub fn run(&mut self) {
+        self.evaluate();
+        self.accumulate();
+        self.summarize();
+    }
+
+    /// Return summary metrics as a `HashMap<metric_name, value>`.
+    ///
+    /// Must be called after [`summarize`](COCOeval::summarize). Returns an empty map
+    /// if `summarize` has not been run.
+    ///
+    /// For LVIS mode: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`, `APr`, `APc`, `APf`,
+    /// `AR@300`, `ARs@300`, `ARm@300`, `ARl@300`.
+    ///
+    /// For standard COCO bbox/segm: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`,
+    /// `AR1`, `AR10`, `AR100`, `ARs`, `ARm`, `ARl`.
+    ///
+    /// For keypoints: `AP`, `AP50`, `AP75`, `APm`, `APl`,
+    /// `AR`, `AR50`, `AR75`, `ARm`, `ARl`.
+    pub fn get_results(&self) -> HashMap<String, f64> {
+        let stats = match &self.stats {
+            Some(s) => s,
+            None => return HashMap::new(),
+        };
+
+        let keys: &[&str] = if self.is_lvis {
+            &[
+                "AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf", "AR@300",
+                "ARs@300", "ARm@300", "ARl@300",
+            ]
+        } else if self.params.iou_type == IouType::Keypoints {
+            &[
+                "AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl",
+            ]
+        } else {
+            &[
+                "AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm",
+                "ARl",
+            ]
+        };
+
+        keys.iter()
+            .zip(stats.iter())
+            .map(|(&k, &v)| (k.to_string(), v))
+            .collect()
+    }
+
+    /// Print a formatted results table to stdout.
+    ///
+    /// For LVIS, matches the lvis-api `print_results()` style (metric name + value per line).
+    /// For standard COCO, equivalent to the output already printed by `summarize()`.
+    /// Must be called after `summarize()`.
+    pub fn print_results(&self) {
+        let results = self.get_results();
+        if results.is_empty() {
+            eprintln!("No results to print. Run evaluate(), accumulate(), and summarize() first.");
+            return;
+        }
+
+        let keys: &[&str] = if self.is_lvis {
+            &[
+                "AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf", "AR@300",
+                "ARs@300", "ARm@300", "ARl@300",
+            ]
+        } else if self.params.iou_type == IouType::Keypoints {
+            &[
+                "AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl",
+            ]
+        } else {
+            &[
+                "AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm",
+                "ARl",
+            ]
+        };
+
+        for key in keys {
+            let val = results.get(*key).copied().unwrap_or(-1.0);
+            let val_str = if val < 0.0 {
+                format!("{:0.3}", -1.0f64)
+            } else {
+                format!("{:0.3}", val)
+            };
+            println!(" {:>10} = {}", key, val_str);
+        }
     }
 }

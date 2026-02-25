@@ -134,6 +134,15 @@ pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<PyObject> {
     if let Some(ref dc) = img.date_captured {
         dict.set_item("date_captured", dc)?;
     }
+    if !img.neg_category_ids.is_empty() {
+        dict.set_item("neg_category_ids", img.neg_category_ids.clone())?;
+    }
+    if !img.not_exhaustive_category_ids.is_empty() {
+        dict.set_item(
+            "not_exhaustive_category_ids",
+            img.not_exhaustive_category_ids.clone(),
+        )?;
+    }
     Ok(dict.into_any().unbind())
 }
 
@@ -150,6 +159,9 @@ pub fn category_to_py(py: Python<'_>, cat: &Category) -> PyResult<PyObject> {
     }
     if let Some(ref kpts) = cat.keypoints {
         dict.set_item("keypoints", kpts.clone())?;
+    }
+    if let Some(ref freq) = cat.frequency {
+        dict.set_item("frequency", freq)?;
     }
     Ok(dict.into_any().unbind())
 }

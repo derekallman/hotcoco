@@ -598,6 +598,24 @@ fn parse_iou_type(s: &str) -> PyResult<hotcoco_core::IouType> {
 // COCOeval
 // ---------------------------------------------------------------------------
 
+#[doc = "COCO evaluation engine.
+
+Computes AP and AR metrics for bbox, segmentation, and keypoint predictions.
+Also supports LVIS federated evaluation via ``lvis_style=True``.
+
+Standard COCO workflow::
+
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\")
+    ev.evaluate()    # per-image IoU matching
+    ev.accumulate()  # aggregate into precision/recall curves
+    ev.summarize()   # print + store the 12 summary metrics in ev.stats
+
+LVIS workflow::
+
+    ev = COCOeval(coco_gt, coco_dt, \"segm\", lvis_style=True)
+    ev.run()                    # evaluate + accumulate + summarize in one call
+    results = ev.get_results()  # dict with 13 metrics: AP, APr, APc, APf, AR@300, ...
+"]
 #[pyclass(name = "COCOeval")]
 struct PyCOCOeval {
     inner: hotcoco_core::COCOeval,
@@ -606,9 +624,14 @@ struct PyCOCOeval {
 #[pymethods]
 impl PyCOCOeval {
     #[new]
-    fn new(coco_gt: &PyCOCO, coco_dt: &PyCOCO, iou_type: &str) -> PyResult<Self> {
+    #[pyo3(signature = (coco_gt, coco_dt, iou_type, lvis_style=false))]
+    fn new(coco_gt: &PyCOCO, coco_dt: &PyCOCO, iou_type: &str, lvis_style: bool) -> PyResult<Self> {
         let iou = parse_iou_type(iou_type)?;
-        let inner = hotcoco_core::COCOeval::new(coco_gt.clone().inner, coco_dt.clone().inner, iou);
+        let inner = if lvis_style {
+            hotcoco_core::COCOeval::new_lvis(coco_gt.clone().inner, coco_dt.clone().inner, iou)
+        } else {
+            hotcoco_core::COCOeval::new(coco_gt.clone().inner, coco_dt.clone().inner, iou)
+        };
         Ok(PyCOCOeval { inner })
     }
 
@@ -622,6 +645,43 @@ impl PyCOCOeval {
 
     fn summarize(&mut self) {
         self.inner.summarize();
+    }
+
+    #[doc = "Run the full evaluation pipeline: evaluate → accumulate → summarize.
+
+Equivalent to calling the three methods in sequence. Primarily used with
+LVIS pipelines (Detectron2, MMDetection) that expect a single ``run()`` call."]
+    fn run(&mut self) {
+        self.inner.run();
+    }
+
+    #[doc = "Return summary metrics as a dict.
+
+Must be called after ``summarize()`` (or ``run()``). Returns an empty dict
+if ``summarize`` has not been run.
+
+LVIS keys: ``AP``, ``AP50``, ``AP75``, ``APs``, ``APm``, ``APl``,
+``APr``, ``APc``, ``APf``, ``AR@300``, ``ARs@300``, ``ARm@300``, ``ARl@300``.
+
+Standard COCO bbox/segm keys: ``AP``, ``AP50``, ``AP75``, ``APs``, ``APm``,
+``APl``, ``AR1``, ``AR10``, ``AR100``, ``ARs``, ``ARm``, ``ARl``.
+
+Keypoint keys: ``AP``, ``AP50``, ``AP75``, ``APm``, ``APl``,
+``AR``, ``AR50``, ``AR75``, ``ARm``, ``ARl``."]
+    fn get_results(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let dict = PyDict::new(py);
+        for (k, v) in self.inner.get_results() {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.into_any().unbind())
+    }
+
+    #[doc = "Print a formatted results table to stdout.
+
+For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
+``summarize()`` (or ``run()``)."]
+    fn print_results(&self) {
+        self.inner.print_results();
     }
 
     #[getter]
@@ -756,12 +816,40 @@ fn init_as_pycocotools(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
+/// Patch `sys.modules` so that `from lvis import LVIS, LVISEval, LVISResults` etc.
+/// transparently use hotcoco.
+///
+/// After calling this, existing Detectron2 / MMDetection LVIS pipelines work
+/// without any other code changes:
+///
+/// ```python
+/// from hotcoco import init_as_lvis
+/// init_as_lvis()
+///
+/// from lvis import LVIS, LVISEval, LVISResults
+/// lvis_results = LVISResults(lvis_gt, predictions, max_dets=300)
+/// lvis_eval = LVISEval(lvis_gt, lvis_results, "bbox")
+/// lvis_eval.run()
+/// ```
+#[pyfunction]
+fn init_as_lvis(py: Python<'_>) -> PyResult<()> {
+    let sys = py.import("sys")?;
+    let modules = sys.getattr("modules")?;
+    let hotcoco = py.import("hotcoco")?;
+    modules.set_item("lvis", &hotcoco)?;
+    modules.set_item("lvis.eval", &hotcoco)?;
+    modules.set_item("lvis.coco", &hotcoco)?;
+    modules.set_item("lvis.results", &hotcoco)?;
+    Ok(())
+}
+
 #[pymodule]
 fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCOCO>()?;
     m.add_class::<PyCOCOeval>()?;
     m.add_class::<PyParams>()?;
     m.add_function(wrap_pyfunction!(init_as_pycocotools, m)?)?;
+    m.add_function(wrap_pyfunction!(init_as_lvis, m)?)?;
 
     // mask submodule
     let mask_mod = PyModule::new(py, "mask")?;

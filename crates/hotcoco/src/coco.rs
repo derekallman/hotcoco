@@ -781,6 +781,8 @@ mod tests {
                     coco_url: None,
                     flickr_url: None,
                     date_captured: None,
+                    neg_category_ids: vec![],
+                    not_exhaustive_category_ids: vec![],
                 },
                 Image {
                     id: 2,
@@ -791,6 +793,8 @@ mod tests {
                     coco_url: None,
                     flickr_url: None,
                     date_captured: None,
+                    neg_category_ids: vec![],
+                    not_exhaustive_category_ids: vec![],
                 },
             ],
             annotations: vec![
@@ -838,6 +842,7 @@ mod tests {
                     supercategory: Some("animal".into()),
                     skeleton: None,
                     keypoints: None,
+                    frequency: None,
                 },
                 Category {
                     id: 2,
@@ -845,6 +850,7 @@ mod tests {
                     supercategory: Some("animal".into()),
                     skeleton: None,
                     keypoints: None,
+                    frequency: None,
                 },
             ],
             licenses: vec![],

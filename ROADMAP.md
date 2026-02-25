@@ -62,7 +62,9 @@ Standard COCO evaluation protocol over 365 categories and ~2M images. Likely wor
 
 ### LVIS
 
-~1,200 category long-tail dataset requiring **federated AP** evaluation — per-category results are computed independently across the subset of images that contain each category, rather than globally. Using standard pycocotools on LVIS gives subtly wrong numbers. Increasingly common in foundation model benchmarking (SAM, DINO, CLIP-based detectors). faster-coco-eval already supports this and is winning users there.
+**Shipped.**
+
+~~1,200 category long-tail dataset requiring **federated AP** evaluation — per-category results are computed independently across the subset of images that contain each category, rather than globally. Using standard pycocotools on LVIS gives subtly wrong numbers. Increasingly common in foundation model benchmarking (SAM, DINO, CLIP-based detectors). faster-coco-eval already supports this and is winning users there.~~
 
 ### Confusion Matrices
 

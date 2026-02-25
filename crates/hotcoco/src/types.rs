@@ -48,6 +48,12 @@ pub struct Image {
     pub flickr_url: Option<String>,
     #[serde(default)]
     pub date_captured: Option<String>,
+    /// LVIS: categories confirmed absent in this image (unmatched DTs are FP).
+    #[serde(default)]
+    pub neg_category_ids: Vec<u64>,
+    /// LVIS: categories not exhaustively checked in this image (unmatched DTs are ignored).
+    #[serde(default)]
+    pub not_exhaustive_category_ids: Vec<u64>,
 }
 
 /// A single object annotation (ground truth or detection result).
@@ -118,6 +124,9 @@ pub struct Category {
     pub skeleton: Option<Vec<[u32; 2]>>,
     #[serde(default)]
     pub keypoints: Option<Vec<String>>,
+    /// LVIS frequency bucket: "r" (rare), "c" (common), "f" (frequent).
+    #[serde(default)]
+    pub frequency: Option<String>,
 }
 
 /// Image license information.

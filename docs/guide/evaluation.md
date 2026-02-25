@@ -176,3 +176,76 @@ Modify `ev.params` before calling `evaluate()`:
     Changing `iou_thrs`, `max_dets`, or `area_rng_lbl` from their defaults affects what `summarize()` can display. The 12-metric output format is fixed — for example, AP50 looks for IoU=0.50 in your thresholds and shows `-1.000` if it's not there. A warning is printed when your parameters don't match the expected defaults. Filtering by `img_ids`, `cat_ids`, or setting `use_cats` is safe and won't trigger warnings.
 
 See [Params](../api/params.md) for the full list of configurable parameters.
+
+## LVIS evaluation
+
+[LVIS](https://www.lvisdataset.org/) is a large-vocabulary instance segmentation dataset with ~1,200 categories. It uses **federated annotation** — each image is only exhaustively labeled for a subset of categories. Running standard COCO eval on LVIS over-penalizes detectors by treating every unannotated category as a missed detection. hotcoco handles this correctly out of the box.
+
+### Drop-in replacement for lvis-api
+
+If your pipeline uses lvis-api (Detectron2, MMDetection, or any code that does `from lvis import LVISEval`), call `init_as_lvis()` once at startup:
+
+```python
+from hotcoco import init_as_lvis
+init_as_lvis()
+
+# Existing lvis-api code works unchanged
+from lvis import LVIS, LVISEval, LVISResults
+
+lvis_gt = LVIS("lvis_v1_val.json")
+lvis_dt = LVISResults(lvis_gt, "detections.json")
+ev = LVISEval(lvis_gt, lvis_dt, "bbox")
+ev.run()
+ev.print_results()
+results = ev.get_results()
+```
+
+### Direct usage
+
+If you're not using lvis-api, use `LVISeval` or pass `lvis_style=True` to `COCOeval`:
+
+```python
+from hotcoco import COCO, LVISeval
+
+lvis_gt = COCO("lvis_v1_val.json")
+lvis_dt = lvis_gt.load_res("detections.json")
+
+ev = LVISeval(lvis_gt, lvis_dt, "segm")  # lvis_style=True is set automatically
+ev.run()
+results = ev.get_results()
+# {"AP": 0.42, "APr": 0.38, "APc": 0.44, "APf": 0.45, "AR@300": ..., ...}
+```
+
+Or equivalently:
+
+```python
+from hotcoco import COCO, COCOeval
+
+ev = COCOeval(lvis_gt, lvis_dt, "segm", lvis_style=True)
+ev.evaluate()
+ev.accumulate()
+ev.summarize()
+results = ev.get_results()
+```
+
+### The 13 LVIS metrics
+
+| Metric | Description |
+|--------|-------------|
+| AP | mAP @ IoU[0.5:0.05:0.95] |
+| AP50 | mAP @ IoU=0.5 |
+| AP75 | mAP @ IoU=0.75 |
+| APs | AP for small objects (area < 32²) |
+| APm | AP for medium objects (32² ≤ area < 96²) |
+| APl | AP for large objects (area ≥ 96²) |
+| APr | AP for rare categories (1–10 instances) |
+| APc | AP for common categories (11–100 instances) |
+| APf | AP for frequent categories (100+ instances) |
+| AR@300 | Mean recall @ max 300 detections per image |
+| ARs@300 | AR for small objects |
+| ARm@300 | AR for medium objects |
+| ARl@300 | AR for large objects |
+
+The frequency split (rare / common / frequent) is determined by the `frequency` field on each category in the LVIS annotation file (`"r"`, `"c"`, `"f"`).
+
+`get_results()` returns all 13 metrics as a dict for programmatic access.

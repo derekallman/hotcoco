@@ -52,6 +52,29 @@ from pycocotools.cocoeval import COCOeval
 from pycocotools import mask
 ```
 
+#### LVIS evaluation
+
+hotcoco supports [LVIS](https://www.lvisdataset.org/) federated evaluation with all 13 metrics (AP, APr, APc, APf, AR@300, and more). Use `LVISeval` directly or call `init_as_lvis()` to drop into any existing lvis-api pipeline:
+
+```python
+from hotcoco import COCO, LVISeval
+
+lvis_gt = COCO("lvis_v1_val.json")
+lvis_dt = lvis_gt.load_res("detections.json")
+
+ev = LVISeval(lvis_gt, lvis_dt, "segm")
+ev.run()
+print(ev.get_results())  # {"AP": ..., "APr": ..., "APc": ..., "APf": ..., "AR@300": ...}
+```
+
+```python
+# Or as a drop-in for Detectron2 / MMDetection lvis-api pipelines
+from hotcoco import init_as_lvis
+init_as_lvis()
+
+from lvis import LVIS, LVISEval, LVISResults  # resolves to hotcoco
+```
+
 ### CLI
 
 ```bash

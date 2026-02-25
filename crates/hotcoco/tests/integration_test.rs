@@ -131,6 +131,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
             coco_url: None,
             flickr_url: None,
             date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
         }],
         annotations: vec![
             Annotation {
@@ -164,6 +166,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
             supercategory: None,
             skeleton: None,
             keypoints: None,
+            frequency: None,
         }],
         licenses: vec![],
     };
@@ -340,6 +343,8 @@ fn test_crowd_rematching() {
             coco_url: None,
             flickr_url: None,
             date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
         }],
         annotations: vec![Annotation {
             id: 1,
@@ -359,6 +364,7 @@ fn test_crowd_rematching() {
             supercategory: None,
             skeleton: None,
             keypoints: None,
+            frequency: None,
         }],
         licenses: vec![],
     };
@@ -793,4 +799,206 @@ fn test_sample_determinism() {
     let ids1: HashSet<u64> = s1.images.iter().map(|i| i.id).collect();
     let ids2: HashSet<u64> = s2.images.iter().map(|i| i.id).collect();
     assert_eq!(ids1, ids2, "Same seed must produce same sample");
+}
+
+// ---------------------------------------------------------------------------
+// LVIS federated evaluation tests
+// ---------------------------------------------------------------------------
+
+/// Helper: build a minimal Dataset from raw parts.
+fn make_lvis_dataset(
+    images: Vec<Image>,
+    annotations: Vec<Annotation>,
+    categories: Vec<Category>,
+) -> Dataset {
+    Dataset {
+        info: None,
+        images,
+        annotations,
+        categories,
+        licenses: vec![],
+    }
+}
+
+fn lvis_image(id: u64, neg_category_ids: Vec<u64>, not_exhaustive_category_ids: Vec<u64>) -> Image {
+    Image {
+        id,
+        file_name: format!("img{}.jpg", id),
+        height: 100,
+        width: 100,
+        license: None,
+        coco_url: None,
+        flickr_url: None,
+        date_captured: None,
+        neg_category_ids,
+        not_exhaustive_category_ids,
+    }
+}
+
+fn lvis_gt_ann(id: u64, image_id: u64, category_id: u64, area: f64) -> Annotation {
+    Annotation {
+        id,
+        image_id,
+        category_id,
+        bbox: Some([0.0, 0.0, area.sqrt(), area.sqrt()]),
+        area: Some(area),
+        segmentation: None,
+        iscrowd: false,
+        keypoints: None,
+        num_keypoints: None,
+        score: None,
+    }
+}
+
+fn lvis_dt_ann(id: u64, image_id: u64, category_id: u64, area: f64, score: f64) -> Annotation {
+    Annotation {
+        id,
+        image_id,
+        category_id,
+        bbox: Some([0.0, 0.0, area.sqrt(), area.sqrt()]),
+        area: Some(area),
+        segmentation: None,
+        iscrowd: false,
+        keypoints: None,
+        num_keypoints: None,
+        score: Some(score),
+    }
+}
+
+fn lvis_category(id: u64, frequency: Option<&str>) -> Category {
+    Category {
+        id,
+        name: format!("cat{}", id),
+        supercategory: None,
+        skeleton: None,
+        keypoints: None,
+        frequency: frequency.map(String::from),
+    }
+}
+
+/// LVIS test 1: neg_category_ids — unmatched DTs on an image where the
+/// category is confirmed absent must count as FP → AP = 0.
+#[test]
+fn test_lvis_neg_category_counts_as_fp() {
+    // 1 image, cat 1 listed in neg_category_ids (no GT). Detector fires.
+    // The DT is a false positive → AP should be 0.
+    let gt_ds = make_lvis_dataset(
+        vec![lvis_image(1, vec![1], vec![])],
+        vec![],
+        vec![lvis_category(1, Some("r"))],
+    );
+    let dt_ds = make_lvis_dataset(
+        vec![lvis_image(1, vec![], vec![])],
+        vec![lvis_dt_ann(101, 1, 1, 400.0, 0.9)],
+        vec![lvis_category(1, None)],
+    );
+
+    let coco_gt = COCO::from_dataset(gt_ds);
+    let coco_dt = COCO::from_dataset(dt_ds);
+
+    let mut ev = COCOeval::new_lvis(coco_gt, coco_dt, IouType::Bbox);
+    ev.run();
+
+    let results = ev.get_results();
+    let ap = results["AP"];
+    assert!(
+        ap <= 0.0,
+        "AP should be 0.0 when DT fires on neg_category image, got {ap}"
+    );
+}
+
+/// LVIS test 2: unlisted category — DT fires on an image where the category
+/// has neither GT nor a neg/not_exhaustive listing. The DT pair should be
+/// silently dropped (not included in evaluation at all), so AP is unaffected.
+#[test]
+fn test_lvis_unlisted_category_not_penalized() {
+    // Image A: has GT + matching DT (correct).
+    // Image B: no GT, cat not listed anywhere, but DT fires.
+    // Expected: the DT on image B is dropped; AP equals the single-image case.
+    let gt_ds = make_lvis_dataset(
+        vec![
+            lvis_image(1, vec![], vec![]), // image A: no neg, no not_exhaustive
+            lvis_image(2, vec![], vec![]), // image B: no neg, no not_exhaustive
+        ],
+        vec![lvis_gt_ann(1, 1, 1, 400.0)], // GT only on image A
+        vec![lvis_category(1, Some("f"))],
+    );
+    let dt_ds = make_lvis_dataset(
+        vec![lvis_image(1, vec![], vec![]), lvis_image(2, vec![], vec![])],
+        vec![
+            lvis_dt_ann(101, 1, 1, 400.0, 0.9), // matches GT on image A
+            lvis_dt_ann(102, 2, 1, 400.0, 0.8), // fires on image B — should be dropped
+        ],
+        vec![lvis_category(1, None)],
+    );
+
+    let coco_gt_two = COCO::from_dataset(gt_ds.clone());
+    let coco_dt_two = COCO::from_dataset(dt_ds);
+
+    let mut ev_two = COCOeval::new_lvis(coco_gt_two, coco_dt_two, IouType::Bbox);
+    ev_two.run();
+
+    // Baseline: only image A with its GT and matching DT (perfect AP = 1.0).
+    let gt_ds_one = make_lvis_dataset(
+        vec![lvis_image(1, vec![], vec![])],
+        vec![lvis_gt_ann(1, 1, 1, 400.0)],
+        vec![lvis_category(1, Some("f"))],
+    );
+    let dt_ds_one = make_lvis_dataset(
+        vec![lvis_image(1, vec![], vec![])],
+        vec![lvis_dt_ann(101, 1, 1, 400.0, 0.9)],
+        vec![lvis_category(1, None)],
+    );
+
+    let mut ev_one = COCOeval::new_lvis(
+        COCO::from_dataset(gt_ds_one),
+        COCO::from_dataset(dt_ds_one),
+        IouType::Bbox,
+    );
+    ev_one.run();
+
+    let ap_two = ev_two.get_results()["AP"];
+    let ap_one = ev_one.get_results()["AP"];
+
+    assert!(
+        (ap_two - ap_one).abs() < 1e-6,
+        "Unlisted DT on image B should not change AP: two-image AP={ap_two:.6}, one-image AP={ap_one:.6}"
+    );
+}
+
+/// LVIS test 3: not_exhaustive_category_ids — unmatched DTs in a
+/// not-exhaustively-checked image are ignored (not FP).
+#[test]
+fn test_lvis_not_exhaustive_unmatched_ignored() {
+    // 1 image, 1 category.
+    // GT: 1 annotation (area=400).
+    // DT: 2 detections — DT1 matches GT (TP), DT2 is unmatched.
+    // Image has cat 1 in not_exhaustive_category_ids.
+    // DT2 must be ignored → precision at recall=1 stays 1.0 → AP = 1.0.
+    let gt_ds = make_lvis_dataset(
+        vec![lvis_image(1, vec![], vec![1])], // not_exhaustive for cat 1
+        vec![lvis_gt_ann(1, 1, 1, 400.0)],
+        vec![lvis_category(1, Some("c"))],
+    );
+    let dt_ds = make_lvis_dataset(
+        vec![lvis_image(1, vec![], vec![])],
+        vec![
+            lvis_dt_ann(101, 1, 1, 400.0, 0.9), // matches GT
+            lvis_dt_ann(102, 1, 1, 100.0, 0.5), // unmatched — should be ignored
+        ],
+        vec![lvis_category(1, None)],
+    );
+
+    let mut ev = COCOeval::new_lvis(
+        COCO::from_dataset(gt_ds),
+        COCO::from_dataset(dt_ds),
+        IouType::Bbox,
+    );
+    ev.run();
+
+    let ap = ev.get_results()["AP"];
+    assert!(
+        (ap - 1.0).abs() < 1e-6,
+        "Unmatched DT in not_exhaustive image should be ignored; AP should be 1.0, got {ap}"
+    );
 }
