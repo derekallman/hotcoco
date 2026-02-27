@@ -82,7 +82,9 @@ COCO ↔ YOLO first (most requested), then COCO ↔ Pascal VOC and COCO ↔ CVAT
 
 ### TIDE Error Analysis
 
-Error decomposition following [TIDE](https://github.com/dbolya/tide) — classification, localization, duplicate, background, and missed errors. Builds naturally on confusion matrices and is a meaningful differentiator from faster-coco-eval.
+**Shipped.**
+
+~~Error decomposition following [TIDE](https://github.com/dbolya/tide) — classification, localization, duplicate, background, and missed errors. Builds naturally on confusion matrices and is a meaningful differentiator from faster-coco-eval.~~
 
 ### Streaming Evaluation
 
@@ -102,4 +104,6 @@ Open Images-style evaluation with category hierarchies, where a detection of a p
 
 ### Video Sequence Analysis
 
-Lightweight per-sequence metric breakdowns for video object detection, surfacing high-level trends like which clips perform worst. Not a substitute for dedicated tracking suites (MOT, HOTA) — just a quick diagnostic view. Pulls in a different audience than hotcoco's current users.
+Lightweight per-sequence metric breakdowns for video object detection, surfacing high-level trends like which clips perform worst. Track AP (used by TAO, BURST, YouTube-VIS) is a natural extension of the existing COCO AP pipeline and the most likely entry point here.
+
+Longer term, full multi-object tracking metrics — MOTA, HOTA, IDF1 — are worth exploring as a Phase 2 effort. TrackEval (the de-facto standard) is effectively unmaintained and slow; there's a real opening for a fast Rust alternative. This would be a meaningful scope expansion and is not planned for the near term, but the direction is intentional.

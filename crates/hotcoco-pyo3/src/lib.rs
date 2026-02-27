@@ -785,6 +785,61 @@ Example
 
         Ok(dict.into_any().unbind())
     }
+
+    #[doc = "Decompose detection errors into TIDE error types.\n\
+\n\
+Requires :meth:`evaluate` to have been called first.\n\
+\n\
+Returns a dict with keys:\n\
+\n\
+- ``delta_ap``: dict mapping error type → ΔAP (how much AP improves if fixed).\n\
+  Keys: ``'Cls'``, ``'Loc'``, ``'Both'``, ``'Dupe'``, ``'Bkg'``, ``'Miss'``, ``'FP'``, ``'FN'``.\n\
+- ``counts``: dict mapping error type → count across all categories.\n\
+  Keys: ``'Cls'``, ``'Loc'``, ``'Both'``, ``'Dupe'``, ``'Bkg'``, ``'Miss'``.\n\
+- ``ap_base``: float — baseline AP at ``pos_thr`` (mean over categories with GT).\n\
+- ``pos_thr``: float — IoU threshold used for TP/FP classification.\n\
+- ``bg_thr``: float — background IoU threshold used for Loc/Both/Bkg discrimination.\n\
+\n\
+Parameters\n\
+----------\n\
+pos_thr : float, optional\n\
+    IoU threshold for a match.  Default ``0.5``.\n\
+bg_thr : float, optional\n\
+    Minimum IoU to consider any GT overlap (below = pure background).  Default ``0.1``.\n\
+\n\
+Example\n\
+-------\n\
+::\n\
+\n\
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\")\n\
+    ev.evaluate()\n\
+    result = ev.tide_errors(pos_thr=0.5, bg_thr=0.1)\n\
+    print(result['delta_ap'])\n\
+    print(result['counts'])\n\
+"]
+    #[pyo3(signature = (pos_thr=0.5, bg_thr=0.1))]
+    fn tide_errors(&self, py: Python<'_>, pos_thr: f64, bg_thr: f64) -> PyResult<PyObject> {
+        let te = self.inner.tide_errors(pos_thr, bg_thr);
+
+        let delta_ap = PyDict::new(py);
+        for (k, v) in &te.delta_ap {
+            delta_ap.set_item(k, v)?;
+        }
+
+        let counts = PyDict::new(py);
+        for (k, v) in &te.counts {
+            counts.set_item(k, v)?;
+        }
+
+        let dict = PyDict::new(py);
+        dict.set_item("delta_ap", delta_ap)?;
+        dict.set_item("counts", counts)?;
+        dict.set_item("ap_base", te.ap_base)?;
+        dict.set_item("pos_thr", te.pos_thr)?;
+        dict.set_item("bg_thr", te.bg_thr)?;
+
+        Ok(dict.into_any().unbind())
+    }
 }
 
 // ---------------------------------------------------------------------------

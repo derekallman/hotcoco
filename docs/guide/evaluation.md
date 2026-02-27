@@ -328,3 +328,67 @@ for idx in top_idx:
 # Stricter threshold, limit to top 50 dets, ignore low-confidence dets
 cm = ev.confusion_matrix(iou_thr=0.75, max_det=50, min_score=0.3)
 ```
+
+---
+
+## TIDE error analysis
+
+Once AP tells you *how good* your model is, TIDE ([Bolya et al., ECCV 2020](https://github.com/dbolya/tide)) tells you *why* it falls short. `tide_errors()` decomposes every false positive and false negative into one of six mutually exclusive error types and reports the ΔAP — how much AP would improve if each error type were eliminated.
+
+`evaluate()` must be called before `tide_errors()`.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+result = ev.tide_errors(pos_thr=0.5, bg_thr=0.1)
+
+print(f"Baseline AP: {result['ap_base']:.3f}")
+print("\nΔAP by error type (higher = fixing this type gives more AP gain):")
+for name in ["Loc", "Bkg", "Miss", "Cls", "Both", "Dupe"]:
+    print(f"  {name:4s}: {result['delta_ap'][name]:.4f}")
+```
+
+### Error types
+
+Each false-positive detection is assigned exactly one error type (highest-priority match wins):
+
+| Type | Meaning | Priority |
+|------|---------|----------|
+| `Loc` | Right class, poor localization (`bg_thr` ≤ IoU < `pos_thr`) | 1 |
+| `Cls` | Wrong class, good location (cross-class IoU ≥ `pos_thr`) | 2 |
+| `Dupe` | Duplicate — correct GT already claimed by a higher-scored TP | 3 |
+| `Bkg` | Pure background (IoU < `bg_thr` with all GTs) | 4 |
+| `Both` | Wrong class AND poor localization (IoU ∈ [`bg_thr`, `pos_thr`)) | 5 |
+
+Every unmatched (non-ignored) ground-truth annotation that has no correctable FP DT targeting it is counted as `Miss`.
+
+### Return value
+
+`tide_errors()` returns a dict:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"delta_ap"` | `dict[str, float]` | ΔAP for each error type. Keys: `"Cls"`, `"Loc"`, `"Both"`, `"Dupe"`, `"Bkg"`, `"Miss"`, `"FP"` (all FP types combined), `"FN"` (same as `"Miss"`). |
+| `"counts"` | `dict[str, int]` | Count of each error type. Keys: `"Cls"`, `"Loc"`, `"Both"`, `"Dupe"`, `"Bkg"`, `"Miss"`. |
+| `"ap_base"` | `float` | Baseline mean AP at `pos_thr`. |
+| `"pos_thr"` | `float` | IoU threshold for TP/FP classification (default `0.5`). |
+| `"bg_thr"` | `float` | Background IoU threshold (default `0.1`). |
+
+### Prioritizing improvements
+
+The `delta_ap` values rank where to spend engineering effort:
+
+```python
+result = ev.tide_errors()
+
+# Sort errors by impact
+deltas = [(k, v) for k, v in result["delta_ap"].items()
+          if k not in ("FP", "FN")]
+deltas.sort(key=lambda x: -x[1])
+
+print("Priority order for improvement:")
+for rank, (name, delta) in enumerate(deltas, 1):
+    count = result["counts"].get(name, "—")
+    print(f"  {rank}. {name:4s}  ΔAP={delta:.4f}  n={count}")
+```
