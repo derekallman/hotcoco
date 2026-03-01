@@ -75,6 +75,26 @@ init_as_lvis()
 from lvis import LVIS, LVISEval, LVISResults  # resolves to hotcoco
 ```
 
+#### TIDE error analysis
+
+`tide_errors()` decomposes every false positive and false negative into six error types — Localization, Classification, Duplicate, Background, Both, and Miss — and reports the ΔAP for each. Use it to understand *why* your model falls short, not just how much:
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+result = ev.tide_errors()
+for name, delta in sorted(result["delta_ap"].items(), key=lambda x: -x[1]):
+    if name not in ("FP", "FN"):
+        print(f"  {name}: ΔAP={delta:.4f}  n={result['counts'].get(name, '—')}")
+```
+
+Or from the CLI:
+
+```bash
+coco eval --gt instances_val2017.json --dt bbox_results.json --tide
+```
+
 ### CLI
 
 ```bash

@@ -392,3 +392,15 @@ for rank, (name, delta) in enumerate(deltas, 1):
     count = result["counts"].get(name, "—")
     print(f"  {rank}. {name:4s}  ΔAP={delta:.4f}  n={count}")
 ```
+
+### From the CLI
+
+Pass `--tide` to `coco eval` to print the TIDE table after the standard metrics:
+
+```bash
+coco eval --gt instances_val2017.json --dt bbox_results.json --tide
+
+# Custom thresholds
+coco eval --gt instances_val2017.json --dt bbox_results.json \
+    --tide --tide-pos-thr 0.75 --tide-bg-thr 0.2
+```

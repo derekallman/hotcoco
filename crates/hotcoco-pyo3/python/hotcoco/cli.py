@@ -2,7 +2,7 @@
 hotcoco command-line interface.
 
 Usage:
-    coco eval --gt <gt.json> --dt <dt.json> [--iou-type bbox|segm|keypoints]
+    coco eval --gt <gt.json> --dt <dt.json> [--iou-type bbox|segm|keypoints] [--tide]
     coco stats <annotation_file>
     coco filter <file> -o <output> [options]
     coco merge <file1> <file2> ... -o <output>
@@ -207,6 +207,29 @@ def cmd_eval(args):
     ev.accumulate()
     ev.summarize()
 
+    if args.tide:
+        te = ev.tide_errors(pos_thr=args.tide_pos_thr, bg_thr=args.tide_bg_thr)
+        _print_tide(te)
+
+
+def _print_tide(te):
+    delta = te["delta_ap"]
+    counts = te["counts"]
+    print(
+        f"\nTIDE Error Analysis"
+        f"  (pos_thr={te['pos_thr']:.2f}, bg_thr={te['bg_thr']:.2f},"
+        f" baseline_AP={te['ap_base']:.4f})\n"
+    )
+    print(f"  {'Type':<6}  {'ΔAP':>7}  {'Count':>7}")
+    print(f"  {'─'*6}  {'─'*7}  {'─'*7}")
+    for error_type in ("Loc", "Cls", "Both", "Dupe", "Bkg", "Miss"):
+        dap = delta.get(error_type, 0.0)
+        cnt = counts.get(error_type, 0)
+        print(f"  {error_type:<6}  {dap:>7.4f}  {cnt:>7,}")
+    print(f"  {'─'*6}  {'─'*7}  {'─'*7}")
+    print(f"  {'FP':<6}  {delta.get('FP', 0.0):>7.4f}")
+    print(f"  {'FN':<6}  {delta.get('FN', 0.0):>7.4f}")
+
 
 def cmd_sample(args):
     coco = _load_coco(args.annotation_file)
@@ -263,6 +286,27 @@ def main():
         dest="no_cats",
         action="store_true",
         help="pool all categories (class-agnostic evaluation)",
+    )
+    eval_parser.add_argument(
+        "--tide",
+        action="store_true",
+        help="print TIDE error decomposition after standard metrics",
+    )
+    eval_parser.add_argument(
+        "--tide-pos-thr",
+        dest="tide_pos_thr",
+        type=float,
+        default=0.5,
+        metavar="THR",
+        help="IoU threshold for TP/FP classification in TIDE (default: 0.5)",
+    )
+    eval_parser.add_argument(
+        "--tide-bg-thr",
+        dest="tide_bg_thr",
+        type=float,
+        default=0.1,
+        metavar="THR",
+        help="minimum IoU with any GT for Loc/Both/Bkg distinction in TIDE (default: 0.1)",
     )
 
     stats_parser = subparsers.add_parser(
