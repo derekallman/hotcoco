@@ -5,7 +5,7 @@ pub mod params;
 pub mod types;
 
 pub use coco::COCO;
-pub use eval::{AccumulatedEval, COCOeval, ConfusionMatrix, EvalImg};
+pub use eval::{AccumulatedEval, COCOeval, ConfusionMatrix, EvalImg, TideErrors};
 pub use params::{IouType, Params};
 pub use types::{
     Annotation, Category, CategoryStats, Dataset, DatasetStats, Image, Rle, Segmentation,

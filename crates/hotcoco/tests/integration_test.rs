@@ -1325,3 +1325,351 @@ fn test_confusion_matrix_max_det() {
         "no spurious dog FP (DT was truncated)"
     );
 }
+
+// ============================================================
+// tide_errors tests
+// ============================================================
+//
+// Reuse the cm_* helpers defined above:
+//   cm_image, cm_category, cm_gt_ann, cm_dt_ann, cm_coco
+
+/// Run evaluate() and return tide_errors at the default thresholds.
+fn run_tide(coco_gt: COCO, coco_dt: COCO) -> hotcoco::TideErrors {
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    ev.tide_errors(0.5, 0.1)
+}
+
+/// Test 1: all DTs are perfect TPs → all ΔAP = 0, all counts = 0.
+#[test]
+fn test_tide_all_correct() {
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    for (key, &val) in &te.delta_ap {
+        assert!(
+            val.abs() < 1e-6,
+            "delta_ap[{key}] should be 0 for perfect detections, got {val}"
+        );
+    }
+    for (key, &val) in &te.counts {
+        assert_eq!(val, 0, "counts[{key}] should be 0 for perfect detections");
+    }
+    assert!(
+        te.ap_base > 0.99,
+        "ap_base should be ~1.0, got {}",
+        te.ap_base
+    );
+}
+
+/// Test 2: DT at right location but wrong class → Cls error with positive ΔAP.
+#[test]
+fn test_tide_cls_error() {
+    // GT cat(1) at [0,0,50,50]; GT dog(2) at [60,0,50,50].
+    // DT dog(2) at [0,0,50,50] (score=0.9): FP for dog category because no dog GT overlaps.
+    // Cross-IoU with cat(1) GT = 1.0 ≥ pos_thr → Cls.
+    // dog(2) has 1 GT so it contributes to ΔAP: fixing Cls converts FP→TP, AP goes 0→1 for dog.
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0]),  // cat GT
+            cm_gt_ann(2, 1, 2, [60.0, 0.0, 50.0, 50.0]), // dog GT (no overlap with DT)
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 2, [0.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Cls"], 1, "should be 1 Cls error");
+    assert_eq!(te.counts["Loc"], 0);
+    assert_eq!(te.counts["Bkg"], 0);
+    assert!(
+        te.delta_ap["Cls"] > 0.0,
+        "fixing Cls should improve AP (dog AP goes 0→1), got {}",
+        te.delta_ap["Cls"]
+    );
+}
+
+/// Test 3: DT right class, IoU = 0.3 (≥ bg_thr=0.1, < pos_thr=0.5) → Loc error.
+#[test]
+fn test_tide_loc_error() {
+    // GT: [0,0,50,50] area=2500; DT: [25,0,50,50] area=2500
+    // IoU = intersection/union = 25*50 / (50*50 + 50*50 - 25*50) = 1250/3750 = 1/3 ≈ 0.333
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [25.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Loc"], 1, "should be 1 Loc error");
+    assert_eq!(te.counts["Cls"], 0);
+    assert_eq!(te.counts["Bkg"], 0);
+    assert!(
+        te.delta_ap["Loc"] > 0.0,
+        "fixing Loc should improve AP, got {}",
+        te.delta_ap["Loc"]
+    );
+}
+
+/// Test 4: DT wrong class AND poor localization (IoU = 0.3 with other-class GT) → Both error.
+#[test]
+fn test_tide_both_error() {
+    // GT: cat(1) at [0,0,50,50]; DT: dog(2) at [25,0,50,50] → IoU≈0.333 with cat GT
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 2, [25.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Both"], 1, "should be 1 Both error");
+    assert_eq!(te.counts["Cls"], 0, "not Cls because IoU < pos_thr");
+    assert_eq!(te.counts["Loc"], 0, "not Loc because different class");
+}
+
+/// Test 5: two DTs for same GT → first is TP, second is Dupe.
+#[test]
+fn test_tide_dupe_error() {
+    // GT: [0,0,50,50]; DT1(score=0.9): exact match (TP); DT2(score=0.7): same box (Dupe)
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.9), // TP
+            cm_dt_ann(102, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.7), // Dupe
+        ],
+        vec![cm_category(1, "cat")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Dupe"], 1, "second DT should be Dupe");
+    assert_eq!(te.counts["Bkg"], 0);
+    assert_eq!(te.counts["Cls"], 0);
+}
+
+/// Test 6: DT with IoU < bg_thr with all GTs → Bkg error.
+#[test]
+fn test_tide_bkg_error() {
+    // GT: [0,0,10,10]; DT: [90,90,10,10] — no overlap at all → IoU=0 < bg_thr=0.1
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 10.0, 10.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [90.0, 90.0, 10.0, 10.0], 0.9)],
+        vec![cm_category(1, "cat")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Bkg"], 1, "far-away DT should be Bkg error");
+    assert_eq!(te.counts["Loc"], 0);
+    assert_eq!(te.counts["Cls"], 0);
+}
+
+/// Test 7: GT with no DT → Miss error, ΔAP["Miss"] > 0.
+#[test]
+fn test_tide_miss_error() {
+    // GT: [0,0,50,50]; no DT at all
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(vec![cm_image(1)], vec![], vec![cm_category(1, "cat")]);
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Miss"], 1, "GT with no DT should be Miss");
+    assert!(
+        te.delta_ap["Miss"] > 0.0,
+        "fixing Miss should improve AP, got {}",
+        te.delta_ap["Miss"]
+    );
+    assert!(
+        (te.delta_ap["Miss"] - 1.0).abs() < 1e-6,
+        "injecting 1 perfect TP should give AP=1, delta=1.0, got {}",
+        te.delta_ap["Miss"]
+    );
+}
+
+/// Test 8: DT with same-class IoU ∈ [bg_thr, pos_thr] AND cross-class IoU ≥ pos_thr
+/// → classified as Loc (tidecv priority: Loc > Cls, matching BoxError > ClassError).
+#[test]
+fn test_tide_priority_loc_over_cls() {
+    // Setup: two images.
+    // Image 1: GT cat(1) [0,0,50,50] matched by DT cat(1) score=0.95 (TP).
+    // Image 2: GT cat(1) [0,0,30,30] (small), GT dog(2) [0,0,50,50].
+    //   DT cat(1) at [0,0,50,50] (score=0.9):
+    //     - same-class IoU with cat GT [0,0,30,30] = 900/2500 = 0.36 ∈ [bg_thr=0.1, pos_thr=0.5] → Loc
+    //     - cross-class IoU with dog GT [0,0,50,50] = 1.0 ≥ pos_thr=0.5 → would be Cls if Loc lost
+    // tidecv/hotcoco priority: Loc fires first → Loc wins.
+    let coco_gt = cm_coco(
+        vec![cm_image(1), cm_image(2)],
+        vec![
+            cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0]), // img1 cat TP
+            cm_gt_ann(2, 2, 1, [0.0, 0.0, 30.0, 30.0]), // img2 cat (small)
+            cm_gt_ann(3, 2, 2, [0.0, 0.0, 50.0, 50.0]), // img2 dog
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1), cm_image(2)],
+        vec![
+            cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.95), // img1 cat TP
+            cm_dt_ann(102, 2, 1, [0.0, 0.0, 50.0, 50.0], 0.9),  // img2 cat FP: Loc wins over Cls
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(
+        te.counts["Loc"], 1,
+        "Loc should win over Cls by priority (tidecv: BoxError first)"
+    );
+    assert_eq!(
+        te.counts["Cls"], 0,
+        "Cls should not fire when same-class IoU ≥ bg_thr triggers Loc first"
+    );
+}
+
+/// Test 9: DT with IoU ≥ bg_thr to both correct-class and wrong-class GT → Loc wins.
+#[test]
+fn test_tide_priority_loc_over_both() {
+    // DT cat(1) at [15,0,50,50]: overlaps both cat GT [0,0,50,50] (same-class) and dog GT [10,0,50,50].
+    // Same-class IoU = intersection of [15,0,65,50] and [0,0,50,50] = [15,0,50,50] = 35*50=1750
+    //   / union ([0,0,65,50] area=3250) = 1750/3250 ≈ 0.538 but < pos_thr = just right...
+    // Let me use simpler numbers.
+    // GT cat(1): [0,0,50,50]; GT dog(2): [60,0,50,50] (no overlap with DT).
+    // DT cat(1): [25,0,50,50] → same-class IoU ≈ 0.333 ≥ bg_thr=0.1 → Loc
+    //             cross-IoU with dog GT [60,0,50,50] = 0 (no overlap) → can't be Both
+    // So Loc wins.
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0]),  // cat
+            cm_gt_ann(2, 1, 2, [60.0, 0.0, 50.0, 50.0]), // dog (no overlap with DT)
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(101, 1, 1, [25.0, 0.0, 50.0, 50.0], 0.9)],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Loc"], 1, "same-class overlap ≥ bg_thr → Loc");
+    assert_eq!(te.counts["Both"], 0);
+}
+
+/// Test 10: ΔAP["FP"] ≥ max of individual FP ΔAPs.
+#[test]
+fn test_tide_delta_ap_fp_ge_individuals() {
+    // Multiple FP error types in one scene
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0]),
+            cm_gt_ann(2, 1, 2, [60.0, 0.0, 50.0, 50.0]),
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![
+            // DT1 cat: matches cat GT (TP)
+            cm_dt_ann(101, 1, 1, [0.0, 0.0, 50.0, 50.0], 0.95),
+            // DT2 dog: far away → Bkg
+            cm_dt_ann(102, 1, 2, [150.0, 150.0, 10.0, 10.0], 0.8),
+            // DT3 cat: wrong class vs dog GT at [60,0,50,50] → cross-IoU=1.0 → Cls
+            cm_dt_ann(103, 1, 1, [60.0, 0.0, 50.0, 50.0], 0.7),
+        ],
+        vec![cm_category(1, "cat"), cm_category(2, "dog")],
+    );
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    let fp_delta = te.delta_ap["FP"];
+    let max_individual = te.delta_ap["Cls"]
+        .max(te.delta_ap["Loc"])
+        .max(te.delta_ap["Both"])
+        .max(te.delta_ap["Dupe"])
+        .max(te.delta_ap["Bkg"]);
+
+    assert!(
+        fp_delta >= max_individual - 1e-9,
+        "ΔAP[FP]={fp_delta:.4} should be ≥ max individual={max_individual:.4}"
+    );
+}
+
+/// Test 11: category with GTs but zero DTs → only Miss errors, no NaN in ΔAP.
+#[test]
+fn test_tide_empty_category() {
+    // cat(1): 1 GT, 0 DTs → Miss=1, all ΔAP values finite
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, [0.0, 0.0, 50.0, 50.0])],
+        vec![cm_category(1, "cat")],
+    );
+    let coco_dt = cm_coco(vec![cm_image(1)], vec![], vec![cm_category(1, "cat")]);
+
+    let te = run_tide(coco_gt, coco_dt);
+
+    assert_eq!(te.counts["Miss"], 1, "one missed GT");
+    assert_eq!(te.counts["Bkg"], 0);
+
+    for (key, &val) in &te.delta_ap {
+        assert!(
+            val.is_finite(),
+            "delta_ap[{key}] should be finite, got {val}"
+        );
+        assert!(
+            val >= 0.0,
+            "delta_ap[{key}] should be non-negative, got {val}"
+        );
+    }
+    // Fixing Miss should recover to AP=1.0 from baseline AP=0.0 → delta=1.0
+    assert!(
+        (te.delta_ap["Miss"] - 1.0).abs() < 1e-6,
+        "delta_ap[Miss] should be 1.0, got {}",
+        te.delta_ap["Miss"]
+    );
+}

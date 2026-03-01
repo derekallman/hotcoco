@@ -316,3 +316,48 @@ print(cm["normalized"])
 ```
 
 See [Confusion Matrix](../guide/evaluation.md#confusion-matrix) in the evaluation guide for a full walkthrough.
+
+---
+
+### `tide_errors`
+
+```python
+tide_errors(
+    pos_thr: float = 0.5,
+    bg_thr: float = 0.1,
+) -> dict
+```
+
+Decompose detection errors into six TIDE error types (Bolya et al., ECCV 2020) and compute ΔAP — the AP gain from eliminating each error type.
+
+Requires `evaluate()` to have been called first.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `pos_thr` | `float` | `0.5` | IoU threshold for TP/FP classification |
+| `bg_thr` | `float` | `0.1` | Background IoU threshold for Loc/Both/Bkg discrimination |
+
+**Returns** a dict with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"delta_ap"` | `dict[str, float]` | ΔAP for each error type. Keys: `"Cls"`, `"Loc"`, `"Both"`, `"Dupe"`, `"Bkg"`, `"Miss"`, `"FP"`, `"FN"`. |
+| `"counts"` | `dict[str, int]` | Count of each error type. Keys: `"Cls"`, `"Loc"`, `"Both"`, `"Dupe"`, `"Bkg"`, `"Miss"`. |
+| `"ap_base"` | `float` | Baseline mean AP at `pos_thr`. |
+| `"pos_thr"` | `float` | IoU threshold used. |
+| `"bg_thr"` | `float` | Background threshold used. |
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+result = ev.tide_errors(pos_thr=0.5, bg_thr=0.1)
+
+print(f"ap_base: {result['ap_base']:.3f}")
+for k, v in sorted(result["delta_ap"].items(), key=lambda x: -x[1]):
+    if k not in ("FP", "FN"):
+        print(f"  {k}: ΔAP={v:.4f}  n={result['counts'].get(k, '—')}")
+```
+
+See [TIDE Error Analysis](../guide/evaluation.md#tide-error-analysis) in the evaluation guide for a detailed walkthrough.

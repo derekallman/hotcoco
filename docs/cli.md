@@ -29,6 +29,9 @@ coco eval --gt <gt.json> --dt <dt.json> [options]
 | `--img-ids 1,2,3` | Evaluate only these image IDs | all |
 | `--cat-ids 1,2,3` | Evaluate only these category IDs | all |
 | `--no-cats` | Pool all categories (class-agnostic evaluation) | off |
+| `--tide` | Print TIDE error decomposition after standard metrics | off |
+| `--tide-pos-thr` | IoU threshold for TP/FP classification in TIDE | `0.5` |
+| `--tide-bg-thr` | Minimum IoU with any GT for Loc/Both/Bkg distinction | `0.1` |
 
 ```bash
 # Bounding box evaluation
@@ -39,6 +42,12 @@ coco eval --gt instances_val2017.json --dt segm_results.json --iou-type segm
 
 # Keypoints
 coco eval --gt person_keypoints_val2017.json --dt kpt_results.json --iou-type keypoints
+
+# With TIDE error decomposition
+coco eval --gt instances_val2017.json --dt bbox_results.json --tide
+
+# TIDE at a stricter localization threshold
+coco eval --gt instances_val2017.json --dt bbox_results.json --tide --tide-pos-thr 0.75
 ```
 
 ### `coco stats`
