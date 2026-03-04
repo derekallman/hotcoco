@@ -1548,6 +1548,100 @@ impl COCOeval {
             .collect()
     }
 
+    /// Compute F-beta scores after `accumulate()`.
+    ///
+    /// Returns three metrics analogous to AP/AP50/AP75, but using max F-beta instead of
+    /// mean precision. For each (IoU threshold, category), finds the recall operating point
+    /// that maximises F-beta, then averages across categories.
+    ///
+    /// `beta` controls the precision/recall trade-off:
+    /// - `beta = 1.0`  → F1 (harmonic mean, equal weight)
+    /// - `beta < 1.0`  → weights precision more heavily
+    /// - `beta > 1.0`  → weights recall more heavily
+    ///
+    /// Returns an empty map if `accumulate()` has not been run.
+    pub fn f_scores(&self, beta: f64) -> HashMap<String, f64> {
+        let eval = match &self.eval {
+            Some(e) => e,
+            None => return HashMap::new(),
+        };
+
+        let beta2 = beta * beta;
+        let a_idx = self
+            .params
+            .area_rng_lbl
+            .iter()
+            .position(|l| l == "all")
+            .unwrap_or(0);
+        let m_idx = eval.m - 1; // last max_dets entry (100 for bbox/segm, 300 for LVIS)
+
+        // For a given set of IoU threshold indices, compute mean max-F-beta across categories.
+        let summarize_f = |t_indices: &[usize]| -> f64 {
+            let mut vals = Vec::new();
+            for &t_idx in t_indices {
+                for k_idx in 0..eval.k {
+                    let max_f = self
+                        .params
+                        .rec_thrs
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(r_idx, &r)| {
+                            let p_idx = eval.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
+                            let p = eval.precision[p_idx];
+                            if p < 0.0 {
+                                return None; // no data for this category
+                            }
+                            let denom = beta2 * p + r;
+                            if denom < f64::EPSILON {
+                                return Some(0.0);
+                            }
+                            Some((1.0 + beta2) * p * r / denom)
+                        })
+                        .fold(f64::NEG_INFINITY, f64::max);
+
+                    if max_f > f64::NEG_INFINITY {
+                        vals.push(max_f);
+                    }
+                }
+            }
+            if vals.is_empty() {
+                -1.0
+            } else {
+                vals.iter().sum::<f64>() / vals.len() as f64
+            }
+        };
+
+        let all_t: Vec<usize> = (0..eval.t).collect();
+        let t50: Vec<usize> = self
+            .params
+            .iou_thrs
+            .iter()
+            .enumerate()
+            .filter(|(_, &t)| (t - 0.5).abs() < 1e-9)
+            .map(|(i, _)| i)
+            .collect();
+        let t75: Vec<usize> = self
+            .params
+            .iou_thrs
+            .iter()
+            .enumerate()
+            .filter(|(_, &t)| (t - 0.75).abs() < 1e-9)
+            .map(|(i, _)| i)
+            .collect();
+
+        let prefix = if (beta - 1.0).abs() < 1e-9 {
+            "F1".to_string()
+        } else {
+            format!("F{beta}")
+        };
+
+        let mut results = HashMap::new();
+        results.insert(prefix.clone(), summarize_f(&all_t));
+        results.insert(format!("{prefix}50"), summarize_f(&t50));
+        results.insert(format!("{prefix}75"), summarize_f(&t75));
+        results
+    }
+
     /// Print a formatted results table to stdout.
     ///
     /// For LVIS, matches the lvis-api `print_results()` style (metric name + value per line).

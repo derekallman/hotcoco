@@ -896,6 +896,42 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
         self.inner.print_results();
     }
 
+    #[doc = "Compute F-beta scores. Must be called after ``accumulate()`` (or ``run()``).
+
+Returns three metrics analogous to AP/AP50/AP75, but based on the maximum
+achievable F-beta score across confidence thresholds for each category.
+
+Parameters
+----------
+beta : float, optional
+    Trade-off between precision and recall. ``beta=1.0`` (default) gives
+    equal weight (F1). ``beta<1`` weights precision more; ``beta>1`` weights
+    recall more.
+
+Returns
+-------
+dict[str, float]
+    For ``beta=1.0``: ``{\"F1\": ..., \"F1_50\": ..., \"F1_75\": ...}``.
+    For other beta values: ``{\"F<beta>\": ..., \"F<beta>50\": ..., \"F<beta>75\": ...}``.
+    Returns an empty dict if ``accumulate()`` has not been run.
+
+Examples
+--------
+>>> ev = COCOeval(gt, dt, \"bbox\")
+>>> ev.run()
+>>> ev.f_scores()
+{'F1': 0.523, 'F1_50': 0.712, 'F1_75': 0.581}
+>>> ev.f_scores(beta=0.5)   # precision-weighted
+>>> ev.f_scores(beta=2.0)   # recall-weighted"]
+    #[pyo3(signature = (beta = 1.0))]
+    fn f_scores(&self, py: Python<'_>, beta: f64) -> PyResult<PyObject> {
+        let dict = PyDict::new(py);
+        for (k, v) in self.inner.f_scores(beta) {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.into_any().unbind())
+    }
+
     #[getter]
     fn params(&self) -> PyParams {
         PyParams {

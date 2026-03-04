@@ -404,3 +404,26 @@ coco eval --gt instances_val2017.json --dt bbox_results.json --tide
 coco eval --gt instances_val2017.json --dt bbox_results.json \
     --tide --tide-pos-thr 0.75 --tide-bg-thr 0.2
 ```
+
+## F-scores
+
+`f_scores()` computes F-beta scores from the precision/recall curves built by `accumulate()`. It finds the confidence threshold that maximises F-beta for each (IoU, category) combination, then averages — the same summarisation strategy as mAP.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+scores = ev.f_scores()
+# {"F1": 0.523, "F150": 0.712, "F175": 0.581}
+```
+
+Use `beta` to shift the precision/recall trade-off:
+
+```python
+ev.f_scores(beta=0.5)  # precision-weighted  → {"F0.5": ..., "F0.550": ..., "F0.575": ...}
+ev.f_scores(beta=2.0)  # recall-weighted     → {"F2.0": ..., "F2.050": ..., "F2.075": ...}
+```
+
+F-scores complement `get_results()` when you care about a specific operating point rather than area-under-curve. A high AP with a low F1 often signals that performance is concentrated at high recall or high precision, not both simultaneously.
+
+See [`f_scores`](../api/cocoeval.md#f_scores) in the API reference for full parameter details.

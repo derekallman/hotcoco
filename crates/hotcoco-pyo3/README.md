@@ -99,6 +99,19 @@ coco convert --from coco --to yolo --input annotations.json --output labels/
 coco convert --from yolo --to coco --input labels/ --output annotations.json --images-dir images/
 ```
 
+#### F-scores
+
+`f_scores()` computes F-beta scores from the precision/recall curves. For each IoU threshold and category it finds the operating point that maximises F-beta, then averages — analogous to mAP:
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+ev.f_scores()          # {"F1": 0.523, "F150": 0.712, "F175": 0.581}
+ev.f_scores(beta=0.5)  # precision-weighted F-score
+ev.f_scores(beta=2.0)  # recall-weighted F-score
+```
+
 #### TIDE error analysis
 
 `tide_errors()` decomposes every false positive and false negative into six error types — Localization, Classification, Duplicate, Background, Both, and Miss — and reports the ΔAP for each. Use it to understand *why* your model falls short, not just how much:

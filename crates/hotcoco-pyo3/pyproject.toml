@@ -12,7 +12,6 @@ authors = [{ name = "Derek Allman", email = "derek.allman@yahoo.com" }]
 keywords = ["coco", "pycocotools", "object-detection", "evaluation", "computer-vision", "segmentation", "keypoints", "instance-segmentation"]
 readme = "README.md"
 dependencies = [
-    "lvis>=0.5.3",
     "numpy>=1.22",
 ]
 classifiers = [
@@ -34,6 +33,7 @@ classifiers = [
 dev = [
     "pycocotools",
     "faster-coco-eval",
+    "lvis>=0.5.3",
     "pytest",
 ]
 torch = [

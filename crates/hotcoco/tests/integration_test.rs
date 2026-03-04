@@ -2238,3 +2238,109 @@ fn test_yolo_round_trip() {
         }
     }
 }
+
+// ── f_scores tests ────────────────────────────────────────────────────────────
+
+fn make_perfect_eval() -> COCOeval {
+    // One image, one GT bbox, one perfectly matching DT.
+    let image = Image {
+        id: 1,
+        file_name: "img.jpg".into(),
+        height: 100,
+        width: 100,
+        license: None,
+        coco_url: None,
+        flickr_url: None,
+        date_captured: None,
+        neg_category_ids: vec![],
+        not_exhaustive_category_ids: vec![],
+    };
+    let gt_ann = Annotation {
+        id: 1,
+        image_id: 1,
+        category_id: 1,
+        bbox: Some([10.0, 10.0, 50.0, 50.0]),
+        area: Some(2500.0),
+        segmentation: None,
+        iscrowd: false,
+        keypoints: None,
+        num_keypoints: None,
+        score: None,
+    };
+    let dt_ann = Annotation {
+        id: 0,
+        score: Some(1.0),
+        ..gt_ann.clone()
+    };
+    let cat = Category {
+        id: 1,
+        name: "thing".into(),
+        supercategory: None,
+        skeleton: None,
+        keypoints: None,
+        frequency: None,
+    };
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![image],
+        annotations: vec![gt_ann],
+        categories: vec![cat],
+        licenses: vec![],
+    };
+    let dt_dataset = Dataset {
+        annotations: vec![dt_ann],
+        ..gt_dataset.clone()
+    };
+    let mut ev = COCOeval::new(
+        COCO::from_dataset(gt_dataset),
+        COCO::from_dataset(dt_dataset),
+        IouType::Bbox,
+    );
+    ev.evaluate();
+    ev.accumulate();
+    ev
+}
+
+#[test]
+fn test_f_scores_empty_before_accumulate() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("load DT");
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    assert!(ev.f_scores(1.0).is_empty());
+}
+
+#[test]
+fn test_f_scores_keys_and_range() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("load DT");
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    ev.accumulate();
+
+    let f1 = ev.f_scores(1.0);
+    assert_eq!(f1.len(), 3);
+    assert!(f1.contains_key("F1") && f1.contains_key("F150") && f1.contains_key("F175"));
+    for (k, v) in &f1 {
+        assert!((0.0..=1.0).contains(v), "{k} = {v} outside [0, 1]");
+    }
+
+    // beta variant gets correct key prefix
+    let fb = ev.f_scores(0.5);
+    assert!(fb.contains_key("F0.5") && fb.contains_key("F0.550") && fb.contains_key("F0.575"));
+}
+
+#[test]
+fn test_f_scores_perfect_detection() {
+    let scores = make_perfect_eval().f_scores(1.0);
+    assert!((scores["F1"] - 1.0).abs() < 1e-9, "F1={}", scores["F1"]);
+    assert!(
+        (scores["F150"] - 1.0).abs() < 1e-9,
+        "F150={}",
+        scores["F150"]
+    );
+}

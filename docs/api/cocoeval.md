@@ -361,3 +361,46 @@ for k, v in sorted(result["delta_ap"].items(), key=lambda x: -x[1]):
 ```
 
 See [TIDE Error Analysis](../guide/evaluation.md#tide-error-analysis) in the evaluation guide for a detailed walkthrough.
+
+---
+
+### `f_scores`
+
+```python
+f_scores(beta: float = 1.0) -> dict[str, float]
+```
+
+Compute F-beta scores after `accumulate()` (or `run()`).
+
+For each (IoU threshold, category), finds the confidence operating point that maximises F-beta, then averages across categories — analogous to how mAP averages precision. Returns three metrics mirroring AP/AP50/AP75.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `beta` | `float` | `1.0` | Trade-off weight. `beta=1` → F1 (equal weight). `beta<1` → weights precision. `beta>1` → weights recall. |
+
+**Returns** a dict with three keys:
+
+| Key | Description |
+|-----|-------------|
+| `"F1"` | Mean max-F1 across IoU 0.50:0.05:0.95, all categories |
+| `"F150"` | Max-F1 at IoU=0.50 |
+| `"F175"` | Max-F1 at IoU=0.75 |
+
+Key names reflect `beta`: `"F0.5"`, `"F0.550"`, `"F0.575"` for `beta=0.5`, etc.
+
+Returns an empty dict if `accumulate()` has not been called.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+# F1 (default)
+scores = ev.f_scores()
+print(f"F1: {scores['F1']:.3f}, F1@50: {scores['F150']:.3f}")
+
+# Precision-weighted
+print(ev.f_scores(beta=0.5))   # {"F0.5": ..., "F0.550": ..., "F0.575": ...}
+
+# Recall-weighted
+print(ev.f_scores(beta=2.0))   # {"F2.0": ..., "F2.050": ..., "F2.075": ...}
+```
