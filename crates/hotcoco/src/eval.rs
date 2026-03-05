@@ -166,7 +166,7 @@ impl AccumulatedEval {
 /// ```rust,ignore
 /// let mut ev = COCOeval::new_lvis(coco_gt, coco_dt, IouType::Segm);
 /// ev.run();
-/// let results = ev.get_results(); // HashMap<metric_name, f64>
+/// let results = ev.get_results(None, false); // HashMap<metric_name, f64>
 /// ```
 pub struct COCOeval {
     pub coco_gt: COCO,
@@ -1512,6 +1512,17 @@ impl COCOeval {
     /// Must be called after [`summarize`](COCOeval::summarize). Returns an empty map
     /// if `summarize` has not been run.
     ///
+    /// # Arguments
+    ///
+    /// * `prefix` — When `Some("val/bbox")`, keys become `"val/bbox/AP"` etc.
+    ///   When `None`, keys are bare metric names (`"AP"`, `"AR100"`, …).
+    /// * `per_class` — When `true` and [`accumulate`](COCOeval::accumulate) has been
+    ///   run, adds per-category AP entries keyed as `"AP/{cat_name}"` (or
+    ///   `"{prefix}/AP/{cat_name}"` with a prefix). Categories where all precision
+    ///   values are −1 are skipped.
+    ///
+    /// # Metric keys
+    ///
     /// For LVIS mode: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`, `APr`, `APc`, `APf`,
     /// `AR@300`, `ARs@300`, `ARm@300`, `ARl@300`.
     ///
@@ -1520,7 +1531,7 @@ impl COCOeval {
     ///
     /// For keypoints: `AP`, `AP50`, `AP75`, `APm`, `APl`,
     /// `AR`, `AR50`, `AR75`, `ARm`, `ARl`.
-    pub fn get_results(&self) -> HashMap<String, f64> {
+    pub fn get_results(&self, prefix: Option<&str>, per_class: bool) -> HashMap<String, f64> {
         let stats = match &self.stats {
             Some(s) => s,
             None => return HashMap::new(),
@@ -1542,10 +1553,56 @@ impl COCOeval {
             ]
         };
 
-        keys.iter()
+        let make_key = |metric: &str| -> String {
+            match prefix {
+                Some(p) => format!("{p}/{metric}"),
+                None => metric.to_string(),
+            }
+        };
+
+        let mut results: HashMap<String, f64> = keys
+            .iter()
             .zip(stats.iter())
-            .map(|(&k, &v)| (k.to_string(), v))
-            .collect()
+            .map(|(&k, &v)| (make_key(k), v))
+            .collect();
+
+        if per_class {
+            if let Some(eval) = &self.eval {
+                let a_idx = self
+                    .params
+                    .area_rng_lbl
+                    .iter()
+                    .position(|l| l == "all")
+                    .unwrap_or(0);
+                let m_idx = eval.m - 1;
+
+                for k_idx in 0..eval.k {
+                    let cat_id = self.params.cat_ids[k_idx];
+                    let cats = self.coco_gt.load_cats(&[cat_id]);
+                    let name = match cats.first() {
+                        Some(c) => &c.name,
+                        None => continue,
+                    };
+
+                    let mut vals = Vec::new();
+                    for t_idx in 0..eval.t {
+                        for r_idx in 0..eval.r {
+                            let idx = eval.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
+                            let v = eval.precision[idx];
+                            if v >= 0.0 {
+                                vals.push(v);
+                            }
+                        }
+                    }
+                    if !vals.is_empty() {
+                        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+                        results.insert(make_key(&format!("AP/{name}")), mean);
+                    }
+                }
+            }
+        }
+
+        results
     }
 
     /// Compute F-beta scores after `accumulate()`.
@@ -1648,7 +1705,7 @@ impl COCOeval {
     /// For standard COCO, equivalent to the output already printed by `summarize()`.
     /// Must be called after `summarize()`.
     pub fn print_results(&self) {
-        let results = self.get_results();
+        let results = self.get_results(None, false);
         if results.is_empty() {
             eprintln!("No results to print. Run evaluate(), accumulate(), and summarize() first.");
             return;

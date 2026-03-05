@@ -427,3 +427,40 @@ ev.f_scores(beta=2.0)  # recall-weighted     → {"F2.0": ..., "F2.050": ..., "F
 F-scores complement `get_results()` when you care about a specific operating point rather than area-under-curve. A high AP with a low F1 often signals that performance is concentrated at high recall or high precision, not both simultaneously.
 
 See [`f_scores`](../api/cocoeval.md#f_scores) in the API reference for full parameter details.
+
+## Logging metrics
+
+`get_results()` accepts an optional `prefix` and `per_class` flag, returning a flat `dict[str, float]` that plugs directly into any experiment tracker.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+metrics = ev.get_results(prefix="val/bbox", per_class=True)
+# {"val/bbox/AP": 0.578, ..., "val/bbox/AP/person": 0.82, "val/bbox/AP/car": 0.71, ...}
+```
+
+### Weights & Biases
+
+```python
+import wandb
+wandb.log(ev.get_results(prefix="val/bbox", per_class=True), step=epoch)
+```
+
+### MLflow
+
+```python
+import mlflow
+mlflow.log_metrics(ev.get_results(prefix="val/bbox"), step=epoch)
+```
+
+### TensorBoard
+
+```python
+from torch.utils.tensorboard import SummaryWriter
+writer = SummaryWriter()
+for k, v in ev.get_results(prefix="val/bbox").items():
+    writer.add_scalar(k, v, global_step=epoch)
+```
+
+See [`get_results`](../api/cocoeval.md#get_results) in the API reference for full parameter details.

@@ -900,7 +900,7 @@ fn test_lvis_neg_category_counts_as_fp() {
     let mut ev = COCOeval::new_lvis(coco_gt, coco_dt, IouType::Bbox);
     ev.run();
 
-    let results = ev.get_results();
+    let results = ev.get_results(None, false);
     let ap = results["AP"];
     assert!(
         ap <= 0.0,
@@ -958,8 +958,8 @@ fn test_lvis_unlisted_category_not_penalized() {
     );
     ev_one.run();
 
-    let ap_two = ev_two.get_results()["AP"];
-    let ap_one = ev_one.get_results()["AP"];
+    let ap_two = ev_two.get_results(None, false)["AP"];
+    let ap_one = ev_one.get_results(None, false)["AP"];
 
     assert!(
         (ap_two - ap_one).abs() < 1e-6,
@@ -997,7 +997,7 @@ fn test_lvis_not_exhaustive_unmatched_ignored() {
     );
     ev.run();
 
-    let ap = ev.get_results()["AP"];
+    let ap = ev.get_results(None, false)["AP"];
     assert!(
         (ap - 1.0).abs() < 1e-6,
         "Unmatched DT in not_exhaustive image should be ignored; AP should be 1.0, got {ap}"

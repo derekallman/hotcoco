@@ -132,31 +132,16 @@ Longer term, full multi-object tracking metrics — MOTA, HOTA, IDF1 — are wor
 
 `MeanAveragePrecision(backend="hotcoco")` via a setuptools entry point that torchmetrics discovers at runtime. One-word change in training code; no other modifications needed.
 
-### Experiment Tracking Integrations
+### Experiment Tracking Integrations — **Shipped.**
 
-Logging COCO metrics to experiment trackers is boilerplate every practitioner rewrites. A
-`hotcoco.loggers` submodule with a `log_metrics(eval, logger, step=None)` helper would
-eliminate this, providing sensible default metric names (`eval/AP`, `eval/AP50`, etc.) and
-handling the flat dict format each platform expects:
+~~Logging COCO metrics to experiment trackers is boilerplate every practitioner rewrites.~~
+~~A `hotcoco.loggers` submodule with a `log_metrics(eval, logger, step=None)` helper would~~
+~~eliminate this, providing sensible default metric names (`eval/AP`, `eval/AP50`, etc.) and~~
+~~handling the flat dict format each platform expects.~~
 
-- **MLflow** — `mlflow.log_metrics()` expects a flat `{str: float}` dict. Helper maps all
-  active metrics (bbox, segm, or keypoints depending on `iou_type`) to prefixed keys and
-  calls `log_metrics` in one shot.
-
-- **Weights & Biases** — same flat dict via `wandb.log()`, with optional `step` and a
-  `prefix` argument so multi-task runs (bbox + segm) don't collide.
-
-- **TensorBoard** — `SummaryWriter.add_scalar()` must be called once per metric. Helper
-  iterates the results dict and handles the writer call loop, which is where most of the
-  per-project boilerplate lives.
-
-An optional `per_class=True` flag would additionally log per-category AP (e.g.
-`eval/AP/person`, `eval/AP/car`) — something no tracker integration in the ecosystem
-currently exposes despite the data being available inside `accumulate()`. Particularly
-useful for multi-class models where aggregate AP hides regressions on individual categories.
-
-Works with any framework (PyTorch, JAX, TensorFlow) — the only dependency is the tracker
-library itself, which is already present in the user's environment.
+Implemented as `get_results(prefix, per_class)` — returns a flat `dict[str, float]` with
+prefixed keys and optional per-category AP, ready for `wandb.log()`, `mlflow.log_metrics()`,
+or any tracker. No framework-specific wrappers needed.
 
 ### Hugging Face Integration
 

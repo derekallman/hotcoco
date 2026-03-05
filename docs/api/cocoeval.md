@@ -228,10 +228,15 @@ Run the full pipeline in one call: `evaluate()` → `accumulate()` → `summariz
 ### `get_results`
 
 ```python
-get_results() -> dict[str, float]
+get_results(prefix: str | None = None, per_class: bool = False) -> dict[str, float]
 ```
 
 Return the summary metrics as a dict. Must be called after `summarize()` (or `run()`). Returns an empty dict if `summarize()` has not been called.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `prefix` | <code>str &#124; None</code> | `None` | If given, each key is prefixed as `"{prefix}/{metric}"`. |
+| `per_class` | `bool` | `False` | If `True`, include per-category AP values keyed as `"AP/{cat_name}"` (or `"{prefix}/AP/{cat_name}"` with a prefix). |
 
 Standard bbox/segm keys: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`, `AR1`, `AR10`, `AR100`, `ARs`, `ARm`, `ARl`.
 
@@ -241,8 +246,18 @@ LVIS keys: `AP`, `AP50`, `AP75`, `APs`, `APm`, `APl`, `APr`, `APc`, `APf`, `AR@3
 
 ```python
 ev.run()
+
+# Basic usage (unchanged)
 results = ev.get_results()
 print(f"AP: {results['AP']:.3f}, AP50: {results['AP50']:.3f}")
+
+# Prefixed keys — ready for any logger
+results = ev.get_results(prefix="val/bbox")
+# {"val/bbox/AP": 0.578, "val/bbox/AP50": 0.861, ...}
+
+# With per-class AP
+results = ev.get_results(prefix="val/bbox", per_class=True)
+# {"val/bbox/AP": 0.578, ..., "val/bbox/AP/person": 0.82, ...}
 ```
 
 ---

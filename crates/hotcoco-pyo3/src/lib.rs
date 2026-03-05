@@ -879,10 +879,24 @@ Standard COCO bbox/segm keys: ``AP``, ``AP50``, ``AP75``, ``APs``, ``APm``,
 ``APl``, ``AR1``, ``AR10``, ``AR100``, ``ARs``, ``ARm``, ``ARl``.
 
 Keypoint keys: ``AP``, ``AP50``, ``AP75``, ``APm``, ``APl``,
-``AR``, ``AR50``, ``AR75``, ``ARm``, ``ARl``."]
-    fn get_results(&self, py: Python<'_>) -> PyResult<PyObject> {
+``AR``, ``AR50``, ``AR75``, ``ARm``, ``ARl``.
+
+Parameters
+----------
+prefix : str or None
+    If given, each key is prefixed as ``\"{prefix}/{metric}\"``.
+per_class : bool
+    If True, include per-category AP values keyed as ``\"AP/{cat_name}\"``
+    (or ``\"{prefix}/AP/{cat_name}\"`` with a prefix)."]
+    #[pyo3(signature = (prefix=None, per_class=false))]
+    fn get_results(
+        &self,
+        py: Python<'_>,
+        prefix: Option<&str>,
+        per_class: bool,
+    ) -> PyResult<PyObject> {
         let dict = PyDict::new(py);
-        for (k, v) in self.inner.get_results() {
+        for (k, v) in self.inner.get_results(prefix, per_class) {
             dict.set_item(k, v)?;
         }
         Ok(dict.into_any().unbind())
@@ -930,6 +944,30 @@ Examples
             dict.set_item(k, v)?;
         }
         Ok(dict.into_any().unbind())
+    }
+
+    #[getter]
+    fn coco_gt(&self) -> PyCOCO {
+        PyCOCO {
+            inner: hotcoco_core::COCO::from_dataset(self.inner.coco_gt.dataset.clone()),
+        }
+    }
+
+    #[getter(cocoGt)]
+    fn coco_gt_camel(&self) -> PyCOCO {
+        self.coco_gt()
+    }
+
+    #[getter]
+    fn coco_dt(&self) -> PyCOCO {
+        PyCOCO {
+            inner: hotcoco_core::COCO::from_dataset(self.inner.coco_dt.dataset.clone()),
+        }
+    }
+
+    #[getter(cocoDt)]
+    fn coco_dt_camel(&self) -> PyCOCO {
+        self.coco_dt()
     }
 
     #[getter]

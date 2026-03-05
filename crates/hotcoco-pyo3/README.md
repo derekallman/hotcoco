@@ -112,6 +112,19 @@ ev.f_scores(beta=0.5)  # precision-weighted F-score
 ev.f_scores(beta=2.0)  # recall-weighted F-score
 ```
 
+#### Logging metrics
+
+`get_results()` accepts an optional prefix and per-class flag, returning a flat dict that plugs directly into any experiment tracker:
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+import wandb
+wandb.log(ev.get_results(prefix="val/bbox", per_class=True), step=epoch)
+# {"val/bbox/AP": 0.578, ..., "val/bbox/AP/person": 0.82, "val/bbox/AP/car": 0.71, ...}
+```
+
 #### TIDE error analysis
 
 `tide_errors()` decomposes every false positive and false negative into six error types — Localization, Classification, Duplicate, Background, Both, and Miss — and reports the ΔAP for each. Use it to understand *why* your model falls short, not just how much:
