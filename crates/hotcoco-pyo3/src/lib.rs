@@ -1184,27 +1184,33 @@ fn accumulated_eval_to_py(
         None => Ok(py.None()),
         Some(e) => {
             let dict = PyDict::new(py);
-            let counts = vec![e.t, e.r, e.k, e.a, e.m];
+            let counts = vec![e.shape.t, e.shape.r, e.shape.k, e.shape.a, e.shape.m];
             dict.set_item("counts", counts)?;
 
             // precision: flat Vec<f64> → numpy array, then reshape to (T, R, K, A, M)
             let precision = PyArray1::from_vec(py, e.precision.clone());
             let precision = precision
-                .call_method1("reshape", ((e.t, e.r, e.k, e.a, e.m),))?
+                .call_method1(
+                    "reshape",
+                    ((e.shape.t, e.shape.r, e.shape.k, e.shape.a, e.shape.m),),
+                )?
                 .unbind();
             dict.set_item("precision", precision)?;
 
             // recall: flat Vec<f64> → numpy array, then reshape to (T, K, A, M)
             let recall = PyArray1::from_vec(py, e.recall.clone());
             let recall = recall
-                .call_method1("reshape", ((e.t, e.k, e.a, e.m),))?
+                .call_method1("reshape", ((e.shape.t, e.shape.k, e.shape.a, e.shape.m),))?
                 .unbind();
             dict.set_item("recall", recall)?;
 
             // scores: flat Vec<f64> → numpy array, then reshape to (T, R, K, A, M)
             let scores = PyArray1::from_vec(py, e.scores.clone());
             let scores = scores
-                .call_method1("reshape", ((e.t, e.r, e.k, e.a, e.m),))?
+                .call_method1(
+                    "reshape",
+                    ((e.shape.t, e.shape.r, e.shape.k, e.shape.a, e.shape.m),),
+                )?
                 .unbind();
             dict.set_item("scores", scores)?;
 

@@ -33,7 +33,9 @@ classifiers = [
 dev = [
     "pycocotools",
     "faster-coco-eval",
+    "hypothesis",
     "lvis>=0.5.3",
+    "psutil",
     "pytest",
 ]
 torch = [

@@ -46,11 +46,11 @@ fn test_bbox_evaluation_runs() {
     let eval = coco_eval.eval.as_ref().expect("Accumulate should set eval");
 
     // Verify dimensions
-    assert_eq!(eval.t, 10); // IoU thresholds
-    assert_eq!(eval.r, 101); // recall thresholds
-    assert_eq!(eval.k, 2); // categories
-    assert_eq!(eval.a, 4); // area ranges
-    assert_eq!(eval.m, 3); // max_dets
+    assert_eq!(eval.shape.t, 10); // IoU thresholds
+    assert_eq!(eval.shape.r, 101); // recall thresholds
+    assert_eq!(eval.shape.k, 2); // categories
+    assert_eq!(eval.shape.a, 4); // area ranges
+    assert_eq!(eval.shape.m, 3); // max_dets
 
     // The precision array should have valid values (not all -1)
     let has_valid = eval.precision.iter().any(|&v| v >= 0.0);
@@ -238,7 +238,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
     coco_eval.accumulate();
 
     let eval = coco_eval.eval.as_ref().unwrap();
-    let m_idx = eval.m - 1;
+    let m_idx = eval.shape.m - 1;
 
     // Correct behavior:
     //   Sorted by score: DT1(0.9), DT2(0.8), DT3(0.7)
@@ -252,7 +252,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
     // Buggy behavior (gt_ignore instead of iscrowd):
     //   DT2 re-matches area-ignored GT_A → DT2 also "ignored".
     //   Non-ignored dets: only DT3(TP). AP@0.5 = 1.0.
-    let ap_sum: f64 = (0..eval.r)
+    let ap_sum: f64 = (0..eval.shape.r)
         .map(|r| {
             let idx = eval.precision_idx(0, r, 0, 0, m_idx);
             let p = eval.precision[idx];
@@ -263,7 +263,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
             }
         })
         .sum();
-    let ap = ap_sum / eval.r as f64;
+    let ap = ap_sum / eval.shape.r as f64;
 
     assert!(
         ap < 0.9,
@@ -424,7 +424,7 @@ fn test_crowd_rematching() {
     coco_eval.accumulate();
 
     let eval = coco_eval.eval.as_ref().unwrap();
-    let m_idx = eval.m - 1; // maxDets=100
+    let m_idx = eval.shape.m - 1; // maxDets=100
 
     // With only a crowd GT and no non-crowd GTs:
     // - All 3 detections should match the crowd GT (re-matching allowed)
@@ -444,7 +444,7 @@ fn test_crowd_rematching() {
     // Verify no FPs: if crowd re-matching is broken, some detections would be
     // FP and precision would show valid (non-negative) values at some recall points.
     // With correct behavior, all precision values should be -1.
-    let all_neg = (0..eval.r).all(|r| {
+    let all_neg = (0..eval.shape.r).all(|r| {
         let idx = eval.precision_idx(0, r, 0, 0, m_idx);
         eval.precision[idx] < 0.0
     });

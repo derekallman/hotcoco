@@ -278,16 +278,14 @@ impl COCO {
     /// with an `annotations` field. The result COCO object shares the images
     /// and categories from self.
     pub fn load_res(&self, res_file: &Path) -> Result<COCO, Box<dyn std::error::Error>> {
-        let file = std::fs::File::open(res_file)?;
-        let reader = std::io::BufReader::new(file);
+        // Read once into memory so we can retry parsing without re-opening.
+        let bytes = std::fs::read(res_file)?;
 
-        // Try to parse as array first, then as Dataset
-        let anns: Vec<Annotation> = match serde_json::from_reader::<_, Vec<Annotation>>(reader) {
+        // Try to parse as array first, then as Dataset.
+        let anns: Vec<Annotation> = match serde_json::from_slice::<Vec<Annotation>>(&bytes) {
             Ok(a) => a,
             Err(_) => {
-                let file = std::fs::File::open(res_file)?;
-                let reader = std::io::BufReader::new(file);
-                let ds: Dataset = serde_json::from_reader(reader)?;
+                let ds: Dataset = serde_json::from_slice(&bytes)?;
                 ds.annotations
             }
         };
@@ -356,12 +354,21 @@ impl COCO {
                 // keypoints results: area and bbox from keypoint extent
                 for ann in &mut dataset.annotations {
                     if let Some(ref kpts) = ann.keypoints {
-                        let xs: Vec<f64> = kpts.iter().step_by(3).copied().collect();
-                        let ys: Vec<f64> = kpts.iter().skip(1).step_by(3).copied().collect();
-                        let x0 = xs.iter().copied().fold(f64::INFINITY, f64::min);
-                        let x1 = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                        let y0 = ys.iter().copied().fold(f64::INFINITY, f64::min);
-                        let y1 = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                        let (x0, x1) = kpts
+                            .iter()
+                            .step_by(3)
+                            .copied()
+                            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
+                                (mn.min(v), mx.max(v))
+                            });
+                        let (y0, y1) = kpts
+                            .iter()
+                            .skip(1)
+                            .step_by(3)
+                            .copied()
+                            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
+                                (mn.min(v), mx.max(v))
+                            });
                         ann.area = Some((x1 - x0) * (y1 - y0));
                         ann.bbox = Some([x0, y0, x1 - x0, y1 - y0]);
                     }
@@ -549,24 +556,26 @@ impl COCO {
             let ann_offset = current_max_ann_id;
             let cat_remap = &cat_remaps[i];
 
+            let mut max_img_id = 0u64;
             for img in &ds.images {
                 let mut new_img = img.clone();
                 new_img.id = img.id + img_offset;
                 all_images.push(new_img);
+                max_img_id = max_img_id.max(img.id);
             }
 
+            let mut max_ann_id = 0u64;
             for ann in &ds.annotations {
                 let mut new_ann = ann.clone();
                 new_ann.id = ann.id + ann_offset;
                 new_ann.image_id = ann.image_id + img_offset;
                 new_ann.category_id = *cat_remap.get(&ann.category_id).unwrap_or(&ann.category_id);
                 all_anns.push(new_ann);
+                max_ann_id = max_ann_id.max(ann.id);
             }
 
-            let max_img = ds.images.iter().map(|img| img.id).max().unwrap_or(0) + img_offset;
-            let max_ann = ds.annotations.iter().map(|a| a.id).max().unwrap_or(0) + ann_offset;
-            current_max_img_id = max_img;
-            current_max_ann_id = max_ann;
+            current_max_img_id = max_img_id + img_offset;
+            current_max_ann_id = max_ann_id + ann_offset;
         }
 
         Ok(Dataset {
@@ -683,18 +692,12 @@ impl COCO {
             }
         }
 
-        let widths: Vec<f64> = self
+        let (widths, heights): (Vec<f64>, Vec<f64>) = self
             .dataset
             .images
             .iter()
-            .map(|img| img.width as f64)
-            .collect();
-        let heights: Vec<f64> = self
-            .dataset
-            .images
-            .iter()
-            .map(|img| img.height as f64)
-            .collect();
+            .map(|img| (img.width as f64, img.height as f64))
+            .unzip();
 
         let mut per_category: Vec<CategoryStats> = self
             .dataset

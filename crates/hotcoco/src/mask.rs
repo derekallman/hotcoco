@@ -25,7 +25,7 @@ pub fn encode(mask: &[u8], h: u32, w: u32) -> Rle {
     let mut c: u32 = 0;
 
     for &v in mask.iter().take(n) {
-        let v = if v != 0 { 1 } else { 0 };
+        let v = (v != 0) as u8;
         if v != p {
             counts.push(c);
             c = 0;

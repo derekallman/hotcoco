@@ -7,7 +7,7 @@ pub mod types;
 
 pub use coco::COCO;
 pub use convert::{ConvertError, YoloStats};
-pub use eval::{AccumulatedEval, COCOeval, ConfusionMatrix, EvalImg, TideErrors};
+pub use eval::{AccumulatedEval, COCOeval, ConfusionMatrix, EvalImg, EvalShape, TideErrors};
 pub use params::{IouType, Params};
 pub use types::{
     Annotation, Category, CategoryStats, Dataset, DatasetStats, Image, Rle, Segmentation,
