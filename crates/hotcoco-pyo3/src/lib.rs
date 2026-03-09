@@ -12,7 +12,8 @@ mod convert;
 mod mask;
 
 use convert::{
-    annotation_to_py, category_to_py, dataset_stats_to_py, image_to_py, py_to_annotation, rle_to_py,
+    annotation_to_py, category_to_py, dataset_stats_to_py, image_to_py, py_to_annotation,
+    py_to_dataset, rle_to_py,
 };
 
 // ---------------------------------------------------------------------------
@@ -36,12 +37,24 @@ impl Clone for PyCOCO {
 impl PyCOCO {
     #[new]
     #[pyo3(signature = (annotation_file=None))]
-    fn new(annotation_file: Option<&str>) -> PyResult<Self> {
+    fn new(annotation_file: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         match annotation_file {
-            Some(path) => {
-                let inner = hotcoco_core::COCO::new(Path::new(path))
-                    .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{}", e)))?;
-                Ok(PyCOCO { inner })
+            Some(obj) => {
+                // Try as str (file path)
+                if let Ok(path) = obj.extract::<String>() {
+                    let inner = hotcoco_core::COCO::new(Path::new(&path))
+                        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{}", e)))?;
+                    return Ok(PyCOCO { inner });
+                }
+                // Try as dict (in-memory dataset)
+                if let Ok(dict) = obj.downcast::<PyDict>() {
+                    let dataset = py_to_dataset(dict)?;
+                    let inner = hotcoco_core::COCO::from_dataset(dataset);
+                    return Ok(PyCOCO { inner });
+                }
+                Err(pyo3::exceptions::PyTypeError::new_err(
+                    "COCO() argument must be a file path (str) or dataset dict",
+                ))
             }
             None => {
                 let inner = hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset {
@@ -492,13 +505,13 @@ impl PyCOCO {
     #[classmethod]
     #[pyo3(signature = (yolo_dir, images_dir=None))]
     fn from_yolo(
-        _cls: &Bound<'_, PyType>,
+        cls: &Bound<'_, PyType>,
         yolo_dir: &str,
         images_dir: Option<&str>,
     ) -> PyResult<PyCOCO> {
         use std::collections::HashMap;
 
-        let py = _cls.py();
+        let py = cls.py();
         let mut image_dims: HashMap<String, (u32, u32)> = HashMap::new();
 
         if let Some(dir) = images_dir {
@@ -628,12 +641,8 @@ impl PyParams {
     }
 
     #[getter]
-    fn iou_type(&self) -> &str {
-        match self.inner.iou_type {
-            hotcoco_core::IouType::Bbox => "bbox",
-            hotcoco_core::IouType::Segm => "segm",
-            hotcoco_core::IouType::Keypoints => "keypoints",
-        }
+    fn iou_type(&self) -> String {
+        self.inner.iou_type.to_string()
     }
 
     #[setter]
@@ -719,7 +728,7 @@ impl PyParams {
     // PyO3 doesn't support macros or multiple #[getter] attrs on one method,
     // so each alias forwards manually.
     #[getter(iouType)]
-    fn iou_type_camel(&self) -> &str {
+    fn iou_type_camel(&self) -> String {
         self.iou_type()
     }
     #[setter(iouType)]
@@ -793,15 +802,8 @@ impl PyParams {
 }
 
 fn parse_iou_type(s: &str) -> PyResult<hotcoco_core::IouType> {
-    match s {
-        "bbox" => Ok(hotcoco_core::IouType::Bbox),
-        "segm" => Ok(hotcoco_core::IouType::Segm),
-        "keypoints" => Ok(hotcoco_core::IouType::Keypoints),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "Unknown iou_type: '{}'. Expected 'bbox', 'segm', or 'keypoints'",
-            s
-        ))),
-    }
+    s.parse::<hotcoco_core::IouType>()
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 // ---------------------------------------------------------------------------

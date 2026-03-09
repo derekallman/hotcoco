@@ -80,7 +80,7 @@ An RLE dict looks like:
     bbox = mask.to_bbox(rle)    # numpy array, shape (4,)
 
     # Batch
-    areas = mask.area(rles)     # numpy uint32 array
+    areas = mask.area(rles)     # numpy uint64 array
     bboxes = mask.to_bbox(rles) # numpy float64 array, shape (N, 4)
     ```
 

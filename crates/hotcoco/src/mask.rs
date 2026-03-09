@@ -20,7 +20,7 @@ pub fn encode(mask: &[u8], h: u32, w: u32) -> Rle {
     let n = (h as usize) * (w as usize);
     assert_eq!(mask.len(), n, "mask length must equal h*w");
 
-    let mut counts = Vec::new();
+    let mut counts = Vec::with_capacity(h.min(w) as usize * 2);
     let mut p: u8 = 0;
     let mut c: u32 = 0;
 
@@ -47,9 +47,7 @@ pub fn decode(rle: &Rle) -> Vec<u8> {
     for &c in &rle.counts {
         let c = c as usize;
         let end = (idx.saturating_add(c)).min(n);
-        for slot in &mut mask[idx..end] {
-            *slot = v;
-        }
+        mask[idx..end].fill(v);
         idx = end;
         v = 1 - v;
     }
@@ -60,13 +58,12 @@ pub fn decode(rle: &Rle) -> Vec<u8> {
 ///
 /// Only sums the odd-indexed runs (which represent 1s).
 pub fn area(rle: &Rle) -> u64 {
-    let mut a = 0u64;
-    for (i, &c) in rle.counts.iter().enumerate() {
-        if i % 2 == 1 {
-            a += c as u64;
-        }
-    }
-    a
+    rle.counts
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .map(|&c| c as u64)
+        .sum()
 }
 
 /// Compute the bounding box `[x, y, w, h]` of an RLE mask.
@@ -159,7 +156,7 @@ fn merge_two(a: &Rle, b: &Rle, intersect: bool) -> Rle {
     let w = a.w;
     let n = (h as u64) * (w as u64);
 
-    let mut counts = Vec::new();
+    let mut counts = Vec::with_capacity(a.counts.len() + b.counts.len());
     let mut ca = 0u64; // remaining in current run of a
     let mut cb = 0u64; // remaining in current run of b
     let mut va = false; // current value of a
@@ -341,17 +338,21 @@ pub fn bbox_iou(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<Vec<f
         return vec![vec![]; d];
     }
 
+    // Pre-compute GT areas and right/bottom coordinates (loop-invariant over DT rows).
+    let gt_areas: Vec<f64> = gt.iter().map(|b| b[2] * b[3]).collect();
+    let gt_x2: Vec<f64> = gt.iter().map(|b| b[0] + b[2]).collect();
+    let gt_y2: Vec<f64> = gt.iter().map(|b| b[1] + b[3]).collect();
+
     let compute_row = |i: usize| {
         let da = dt[i][2] * dt[i][3]; // w * h
+        let dt_x2 = dt[i][0] + dt[i][2];
+        let dt_y2 = dt[i][1] + dt[i][3];
         let mut row = vec![0.0f64; g];
         for j in 0..g {
-            let ga = gt[j][2] * gt[j][3];
-
-            // Intersection
             let x1 = dt[i][0].max(gt[j][0]);
             let y1 = dt[i][1].max(gt[j][1]);
-            let x2 = (dt[i][0] + dt[i][2]).min(gt[j][0] + gt[j][2]);
-            let y2 = (dt[i][1] + dt[i][3]).min(gt[j][1] + gt[j][3]);
+            let x2 = dt_x2.min(gt_x2[j]);
+            let y2 = dt_y2.min(gt_y2[j]);
             let iw = (x2 - x1).max(0.0);
             let ih = (y2 - y1).max(0.0);
             let inter = iw * ih;
@@ -363,7 +364,7 @@ pub fn bbox_iou(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<Vec<f
                     inter / da
                 }
             } else {
-                let union = da + ga - inter;
+                let union = da + gt_areas[j] - inter;
                 if union == 0.0 {
                     0.0
                 } else {
@@ -613,7 +614,7 @@ pub fn fr_bbox(bb: &[f64; 4], h: u32, w: u32) -> Rle {
 /// This matches the `rleToString` function in maskApi.c exactly,
 /// including delta encoding for indices > 2 (stride-2 differencing).
 pub fn rle_to_string(rle: &Rle) -> String {
-    let mut s = String::new();
+    let mut s = String::with_capacity(rle.counts.len() * 3);
     for (i, &cnt) in rle.counts.iter().enumerate() {
         // maskApi.c: x = (long) cnts[i]; if(i>2) x -= (long) cnts[i-2];
         let x = if i > 2 {

@@ -34,17 +34,7 @@ impl COCO {
         let file = std::fs::File::open(annotation_file)?;
         let reader = std::io::BufReader::new(file);
         let dataset: Dataset = serde_json::from_reader(reader)?;
-        let mut coco = COCO {
-            dataset,
-            anns: HashMap::new(),
-            imgs: HashMap::new(),
-            cats: HashMap::new(),
-            img_to_anns: HashMap::new(),
-            cat_to_imgs: HashMap::new(),
-            img_cat_to_anns: HashMap::new(),
-        };
-        coco.create_index();
-        Ok(coco)
+        Ok(Self::from_dataset(dataset))
     }
 
     /// Build a COCO object from an already-loaded Dataset.
@@ -64,11 +54,20 @@ impl COCO {
 
     /// Build internal index structures from the dataset.
     fn create_index(&mut self) {
+        let n_anns = self.dataset.annotations.len();
+        let n_imgs = self.dataset.images.len();
+        let n_cats = self.dataset.categories.len();
+
         self.anns.clear();
+        self.anns.reserve(n_anns);
         self.imgs.clear();
+        self.imgs.reserve(n_imgs);
         self.cats.clear();
+        self.cats.reserve(n_cats);
         self.img_to_anns.clear();
+        self.img_to_anns.reserve(n_imgs);
         self.cat_to_imgs.clear();
+        self.cat_to_imgs.reserve(n_cats);
         self.img_cat_to_anns.clear();
 
         // Single pass over annotations: build all annotation-derived indices at once
@@ -419,17 +418,22 @@ impl COCO {
         area_rng: Option<[f64; 2]>,
         drop_empty_images: bool,
     ) -> Dataset {
+        let cat_set: Option<std::collections::HashSet<u64>> =
+            cat_ids.map(|ids| ids.iter().copied().collect());
+        let img_set: Option<std::collections::HashSet<u64>> =
+            img_ids.map(|ids| ids.iter().copied().collect());
+
         let filtered_anns: Vec<Annotation> = self
             .dataset
             .annotations
             .iter()
             .filter(|ann| {
-                if let Some(cids) = cat_ids {
+                if let Some(ref cids) = cat_set {
                     if !cids.contains(&ann.category_id) {
                         return false;
                     }
                 }
-                if let Some(iids) = img_ids {
+                if let Some(ref iids) = img_set {
                     if !iids.contains(&ann.image_id) {
                         return false;
                     }
@@ -455,7 +459,7 @@ impl COCO {
             .filter(|img| {
                 if drop_empty_images {
                     img_ids_with_anns.contains(&img.id)
-                } else if let Some(iids) = img_ids {
+                } else if let Some(ref iids) = img_set {
                     iids.contains(&img.id)
                 } else {
                     true
@@ -574,6 +578,32 @@ impl COCO {
         })
     }
 
+    /// Create a dataset subset containing only the given image IDs and their annotations.
+    fn subset_by_img_ids(&self, ids: &[u64]) -> Dataset {
+        let id_set: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        let images: Vec<Image> = self
+            .dataset
+            .images
+            .iter()
+            .filter(|img| id_set.contains(&img.id))
+            .cloned()
+            .collect();
+        let annotations: Vec<Annotation> = self
+            .dataset
+            .annotations
+            .iter()
+            .filter(|ann| id_set.contains(&ann.image_id))
+            .cloned()
+            .collect();
+        Dataset {
+            info: self.dataset.info.clone(),
+            images,
+            annotations,
+            categories: self.dataset.categories.clone(),
+            licenses: self.dataset.licenses.clone(),
+        }
+    }
+
     /// Split the dataset into train/val (and optionally test) subsets.
     ///
     /// Images are shuffled deterministically using `seed`, then partitioned.
@@ -606,34 +636,9 @@ impl COCO {
             None
         };
 
-        let build_split = |ids: &[u64]| {
-            let id_set: std::collections::HashSet<u64> = ids.iter().copied().collect();
-            let images: Vec<Image> = self
-                .dataset
-                .images
-                .iter()
-                .filter(|img| id_set.contains(&img.id))
-                .cloned()
-                .collect();
-            let annotations: Vec<Annotation> = self
-                .dataset
-                .annotations
-                .iter()
-                .filter(|ann| id_set.contains(&ann.image_id))
-                .cloned()
-                .collect();
-            Dataset {
-                info: self.dataset.info.clone(),
-                images,
-                annotations,
-                categories: self.dataset.categories.clone(),
-                licenses: self.dataset.licenses.clone(),
-            }
-        };
-
-        let train = build_split(train_ids);
-        let val = build_split(val_ids);
-        let test = test_ids.map(build_split);
+        let train = self.subset_by_img_ids(train_ids);
+        let val = self.subset_by_img_ids(val_ids);
+        let test = test_ids.map(|ids| self.subset_by_img_ids(ids));
 
         (train, val, test)
     }
@@ -657,31 +662,7 @@ impl COCO {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
         img_ids.shuffle(&mut rng);
 
-        let sampled_ids = &img_ids[..count];
-        let id_set: std::collections::HashSet<u64> = sampled_ids.iter().copied().collect();
-
-        let images: Vec<Image> = self
-            .dataset
-            .images
-            .iter()
-            .filter(|img| id_set.contains(&img.id))
-            .cloned()
-            .collect();
-        let annotations: Vec<Annotation> = self
-            .dataset
-            .annotations
-            .iter()
-            .filter(|ann| id_set.contains(&ann.image_id))
-            .cloned()
-            .collect();
-
-        Dataset {
-            info: self.dataset.info.clone(),
-            images,
-            annotations,
-            categories: self.dataset.categories.clone(),
-            licenses: self.dataset.licenses.clone(),
-        }
+        self.subset_by_img_ids(&img_ids[..count])
     }
 
     /// Compute dataset health-check statistics.
@@ -735,14 +716,14 @@ impl COCO {
             category_count: self.dataset.categories.len(),
             crowd_count,
             per_category,
-            image_width: summary_stats(&widths),
-            image_height: summary_stats(&heights),
-            annotation_area: summary_stats(&areas),
+            image_width: summary_stats(widths),
+            image_height: summary_stats(heights),
+            annotation_area: summary_stats(areas),
         }
     }
 }
 
-fn summary_stats(values: &[f64]) -> SummaryStats {
+fn summary_stats(mut values: Vec<f64>) -> SummaryStats {
     if values.is_empty() {
         return SummaryStats {
             min: 0.0,
@@ -751,8 +732,8 @@ fn summary_stats(values: &[f64]) -> SummaryStats {
             median: 0.0,
         };
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let sorted = values;
     let min = sorted[0];
     let max = *sorted.last().unwrap();
     let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;

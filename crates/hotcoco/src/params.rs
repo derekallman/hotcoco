@@ -1,3 +1,6 @@
+use std::fmt;
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 /// The type of IoU (intersection over union) computation to use.
@@ -9,6 +12,32 @@ pub enum IouType {
     Segm,
     /// Keypoint OKS (object keypoint similarity).
     Keypoints,
+}
+
+impl fmt::Display for IouType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IouType::Bbox => write!(f, "bbox"),
+            IouType::Segm => write!(f, "segm"),
+            IouType::Keypoints => write!(f, "keypoints"),
+        }
+    }
+}
+
+impl FromStr for IouType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "bbox" => Ok(IouType::Bbox),
+            "segm" => Ok(IouType::Segm),
+            "keypoints" => Ok(IouType::Keypoints),
+            _ => Err(format!(
+                "Unknown iou_type: '{}'. Expected 'bbox', 'segm', or 'keypoints'",
+                s
+            )),
+        }
+    }
 }
 
 /// Evaluation parameters controlling IoU thresholds, area ranges, and detection limits.

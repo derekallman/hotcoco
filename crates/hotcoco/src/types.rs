@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Top-level COCO dataset structure.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Dataset {
     #[serde(default)]
     pub info: Option<Info>,

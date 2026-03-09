@@ -1,4 +1,4 @@
-"""Tests for .imgs/.anns/.cats getters, CocoEvaluator, and CocoDetection."""
+"""Tests for .imgs/.anns/.cats getters, CocoEvaluator, CocoDetection, and COCO(dict)."""
 
 import json
 import os
@@ -326,3 +326,87 @@ class TestCocoDetection:
             assert len(transform_called) == 1
             assert len(target_transform_called) == 1
             assert len(joint_called) == 1
+
+
+# ---------------------------------------------------------------------------
+# COCO(dict) constructor
+# ---------------------------------------------------------------------------
+
+
+class TestCOCODict:
+    def test_coco_from_dict_empty(self):
+        """COCO(dict) with empty lists works."""
+        c = COCO({"images": [], "annotations": [], "categories": []})
+        assert c.imgs == {}
+        assert c.anns == {}
+        assert c.cats == {}
+
+    def test_coco_from_dict_basic(self):
+        """COCO(dict) with images, annotations, categories."""
+        dataset = {
+            "images": [
+                {"id": 1, "width": 640, "height": 480, "file_name": "a.jpg"},
+                {"id": 2, "width": 800, "height": 600, "file_name": "b.jpg"},
+            ],
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 1,
+                    "category_id": 1,
+                    "bbox": [10, 20, 30, 40],
+                    "area": 1200,
+                    "iscrowd": 0,
+                },
+                {
+                    "id": 2,
+                    "image_id": 2,
+                    "category_id": 2,
+                    "bbox": [50, 60, 70, 80],
+                    "area": 5600,
+                    "iscrowd": 0,
+                },
+            ],
+            "categories": [
+                {"id": 1, "name": "cat"},
+                {"id": 2, "name": "dog"},
+            ],
+        }
+        c = COCO(dataset)
+        assert len(c.imgs) == 2
+        assert len(c.anns) == 2
+        assert len(c.cats) == 2
+        assert set(c.get_cat_ids()) == {1, 2}
+        assert c.cats[1]["name"] == "cat"
+        assert c.anns[1]["bbox"] == pytest.approx([10, 20, 30, 40])
+
+    def test_coco_from_dict_load_res(self):
+        """COCO(dict) -> load_res works for detection results."""
+        dataset = {
+            "images": [{"id": 1, "width": 640, "height": 480}],
+            "annotations": [
+                {
+                    "id": 1,
+                    "image_id": 1,
+                    "category_id": 1,
+                    "bbox": [10, 20, 30, 40],
+                    "area": 1200,
+                    "iscrowd": 0,
+                },
+            ],
+            "categories": [{"id": 1, "name": "cat"}],
+        }
+        gt = COCO(dataset)
+        dt = gt.load_res([
+            {
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [12, 22, 28, 38],
+                "score": 0.9,
+            },
+        ])
+        assert len(dt.anns) == 1
+
+    def test_coco_from_dict_type_error(self):
+        """COCO() with invalid type raises TypeError."""
+        with pytest.raises(TypeError):
+            COCO(42)

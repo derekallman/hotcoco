@@ -2243,59 +2243,18 @@ fn test_yolo_round_trip() {
 
 fn make_perfect_eval() -> COCOeval {
     // One image, one GT bbox, one perfectly matching DT.
-    let image = Image {
-        id: 1,
-        file_name: "img.jpg".into(),
-        height: 100,
-        width: 100,
-        license: None,
-        coco_url: None,
-        flickr_url: None,
-        date_captured: None,
-        neg_category_ids: vec![],
-        not_exhaustive_category_ids: vec![],
-    };
-    let gt_ann = Annotation {
-        id: 1,
-        image_id: 1,
-        category_id: 1,
-        bbox: Some([10.0, 10.0, 50.0, 50.0]),
-        area: Some(2500.0),
-        segmentation: None,
-        iscrowd: false,
-        keypoints: None,
-        num_keypoints: None,
-        score: None,
-    };
-    let dt_ann = Annotation {
-        id: 0,
-        score: Some(1.0),
-        ..gt_ann.clone()
-    };
-    let cat = Category {
-        id: 1,
-        name: "thing".into(),
-        supercategory: None,
-        skeleton: None,
-        keypoints: None,
-        frequency: None,
-    };
-    let gt_dataset = Dataset {
-        info: None,
-        images: vec![image],
-        annotations: vec![gt_ann],
-        categories: vec![cat],
-        licenses: vec![],
-    };
-    let dt_dataset = Dataset {
-        annotations: vec![dt_ann],
-        ..gt_dataset.clone()
-    };
-    let mut ev = COCOeval::new(
-        COCO::from_dataset(gt_dataset),
-        COCO::from_dataset(dt_dataset),
-        IouType::Bbox,
+    let bbox = [10.0, 10.0, 50.0, 50.0];
+    let coco_gt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_gt_ann(1, 1, 1, bbox)],
+        vec![cm_category(1, "thing")],
     );
+    let coco_dt = cm_coco(
+        vec![cm_image(1)],
+        vec![cm_dt_ann(1, 1, 1, bbox, 1.0)],
+        vec![cm_category(1, "thing")],
+    );
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     ev.evaluate();
     ev.accumulate();
     ev

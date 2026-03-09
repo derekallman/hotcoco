@@ -178,17 +178,17 @@ pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<PyObject> {
 /// Parameters
 /// ----------
 /// rle : dict or list[dict]
-///     Single RLE dict → scalar uint32.
-///     List of RLE dicts → numpy uint32 array.
+///     Single RLE dict → scalar uint64.
+///     List of RLE dicts → numpy uint64 array.
 #[pyfunction]
 pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<PyObject> {
     if let Ok(dict) = rle.downcast::<PyDict>() {
         let r = py_to_rle(dict)?;
-        let a = rmask::area(&r) as u32;
+        let a = rmask::area(&r);
         Ok(a.into_pyobject(py)?.into_any().unbind())
     } else {
         let rles = extract_rle_list(rle)?;
-        let areas: Vec<u32> = rles.iter().map(|r| rmask::area(r) as u32).collect();
+        let areas: Vec<u64> = rles.iter().map(rmask::area).collect();
         let arr = PyArray1::from_vec(py, areas);
         Ok(arr.into_any().unbind())
     }

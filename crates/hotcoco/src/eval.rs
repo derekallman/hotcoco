@@ -139,12 +139,6 @@ impl AccumulatedEval {
     pub fn recall_idx(&self, t: usize, k: usize, a: usize, m: usize) -> usize {
         (((t * self.k + k) * self.a + a) * self.m) + m
     }
-
-    /// Compute the flat index into `scores` (same layout as `precision`).
-    #[allow(dead_code)]
-    fn scores_idx(&self, t: usize, r: usize, k: usize, a: usize, m: usize) -> usize {
-        self.precision_idx(t, r, k, a, m)
-    }
 }
 
 /// COCO evaluation engine.
@@ -1348,35 +1342,7 @@ impl COCOeval {
         if self.is_lvis {
             // LVIS summarize: 13 metrics with max_dets=300.
             // APr/APc/APf are computed as mean per-category AP within each freq group.
-            let a_idx_all = self
-                .params
-                .area_rng_lbl
-                .iter()
-                .position(|l| l == "all")
-                .unwrap_or(0);
-            let m_idx_last = self.params.max_dets.len().saturating_sub(1);
-
-            // Per-category AP for the freq-group metrics.
-            let per_cat_ap: Vec<f64> = (0..eval.k)
-                .map(|k_idx| {
-                    let mut vals = Vec::new();
-                    for t_idx in 0..eval.t {
-                        for r_idx in 0..eval.r {
-                            let idx =
-                                eval.precision_idx(t_idx, r_idx, k_idx, a_idx_all, m_idx_last);
-                            let v = eval.precision[idx];
-                            if v >= 0.0 {
-                                vals.push(v);
-                            }
-                        }
-                    }
-                    if vals.is_empty() {
-                        -1.0
-                    } else {
-                        vals.iter().sum::<f64>() / vals.len() as f64
-                    }
-                })
-                .collect();
+            let per_cat_ap = self.per_cat_ap(eval);
 
             let freq_group_ap = |indices: &[usize]| -> f64 {
                 if indices.is_empty() {
@@ -1433,11 +1399,7 @@ impl COCOeval {
             let mut stats = Vec::with_capacity(lvis_metrics.len());
             for (name, val) in lvis_metrics {
                 stats.push(*val);
-                let val_str = if *val < 0.0 {
-                    format!("{:0.3}", -1.0f64)
-                } else {
-                    format!("{:0.3}", val)
-                };
+                let val_str = Self::format_metric(*val);
                 println!(" {:>10} = {}", name, val_str);
             }
             self.stats = Some(stats);
@@ -1450,11 +1412,7 @@ impl COCOeval {
             metrics_bbox_segm(max_det_default, max_det_small, max_det_med)
         };
 
-        let iou_type_str = match self.params.iou_type {
-            IouType::Bbox => "bbox",
-            IouType::Segm => "segm",
-            IouType::Keypoints => "keypoints",
-        };
+        let iou_type_str = self.params.iou_type.to_string();
 
         let mut stats = Vec::with_capacity(metrics.len());
 
@@ -1477,11 +1435,7 @@ impl COCOeval {
             let area_str = m.area_lbl;
             let det_str = m.max_det;
 
-            let val_str = if val < 0.0 {
-                format!("{:0.3}", -1.0)
-            } else {
-                format!("{:0.3}", val)
-            };
+            let val_str = Self::format_metric(val);
 
             println!(
                 " {:<18} @[ IoU={:<9} | area={:>6} | maxDets={:>3} ] = {}",
@@ -1495,6 +1449,72 @@ impl COCOeval {
 
         println!("Eval type: {}", iou_type_str);
         self.stats = Some(stats);
+    }
+
+    /// Format a metric value: -1.0 sentinel stays as "-1.000", positive values use 3 decimal places.
+    fn format_metric(val: f64) -> String {
+        if val < 0.0 {
+            format!("{:0.3}", -1.0f64)
+        } else {
+            format!("{:0.3}", val)
+        }
+    }
+
+    /// Index of the "all" area range label, or 0 if not found.
+    fn area_all_idx(&self) -> usize {
+        self.params
+            .area_rng_lbl
+            .iter()
+            .position(|l| l == "all")
+            .unwrap_or(0)
+    }
+
+    /// Metric key names for the current evaluation mode.
+    fn metric_keys(&self) -> &[&str] {
+        if self.is_lvis {
+            &[
+                "AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf", "AR@300",
+                "ARs@300", "ARm@300", "ARl@300",
+            ]
+        } else if self.params.iou_type == IouType::Keypoints {
+            &[
+                "AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl",
+            ]
+        } else {
+            &[
+                "AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm",
+                "ARl",
+            ]
+        }
+    }
+
+    /// Per-category mean AP (averaged over all IoU thresholds and recall thresholds,
+    /// at area="all" and the last max_dets setting). Returns one value per `params.cat_ids`
+    /// entry; -1.0 for categories with no valid precision data.
+    fn per_cat_ap(&self, eval: &AccumulatedEval) -> Vec<f64> {
+        let a_idx = self.area_all_idx();
+        let m_idx = eval.m - 1;
+        (0..eval.k)
+            .map(|k_idx| {
+                let mut sum = 0.0;
+                let mut count = 0_usize;
+                for t_idx in 0..eval.t {
+                    for r_idx in 0..eval.r {
+                        let idx = eval.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
+                        let v = eval.precision[idx];
+                        if v >= 0.0 {
+                            sum += v;
+                            count += 1;
+                        }
+                    }
+                }
+                if count == 0 {
+                    -1.0
+                } else {
+                    sum / count as f64
+                }
+            })
+            .collect()
     }
 
     /// Run the full evaluation pipeline in one call: `evaluate` → `accumulate` → `summarize`.
@@ -1537,21 +1557,7 @@ impl COCOeval {
             None => return HashMap::new(),
         };
 
-        let keys: &[&str] = if self.is_lvis {
-            &[
-                "AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf", "AR@300",
-                "ARs@300", "ARm@300", "ARl@300",
-            ]
-        } else if self.params.iou_type == IouType::Keypoints {
-            &[
-                "AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl",
-            ]
-        } else {
-            &[
-                "AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm",
-                "ARl",
-            ]
-        };
+        let keys = self.metric_keys();
 
         let make_key = |metric: &str| -> String {
             match prefix {
@@ -1568,35 +1574,13 @@ impl COCOeval {
 
         if per_class {
             if let Some(eval) = &self.eval {
-                let a_idx = self
-                    .params
-                    .area_rng_lbl
-                    .iter()
-                    .position(|l| l == "all")
-                    .unwrap_or(0);
-                let m_idx = eval.m - 1;
-
-                for k_idx in 0..eval.k {
-                    let cat_id = self.params.cat_ids[k_idx];
-                    let cats = self.coco_gt.load_cats(&[cat_id]);
-                    let name = match cats.first() {
-                        Some(c) => &c.name,
-                        None => continue,
-                    };
-
-                    let mut vals = Vec::new();
-                    for t_idx in 0..eval.t {
-                        for r_idx in 0..eval.r {
-                            let idx = eval.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
-                            let v = eval.precision[idx];
-                            if v >= 0.0 {
-                                vals.push(v);
-                            }
+                let per_cat = self.per_cat_ap(eval);
+                for (ap, cat_id) in per_cat.iter().zip(self.params.cat_ids.iter()) {
+                    if *ap >= 0.0 {
+                        let cats = self.coco_gt.load_cats(&[*cat_id]);
+                        if let Some(cat) = cats.first() {
+                            results.insert(make_key(&format!("AP/{}", cat.name)), *ap);
                         }
-                    }
-                    if !vals.is_empty() {
-                        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-                        results.insert(make_key(&format!("AP/{name}")), mean);
                     }
                 }
             }
@@ -1624,67 +1608,72 @@ impl COCOeval {
         };
 
         let beta2 = beta * beta;
-        let a_idx = self
-            .params
-            .area_rng_lbl
-            .iter()
-            .position(|l| l == "all")
-            .unwrap_or(0);
-        let m_idx = eval.m - 1; // last max_dets entry (100 for bbox/segm, 300 for LVIS)
+        let a_idx = self.area_all_idx();
+        let m_idx = eval.m - 1;
 
-        // For a given set of IoU threshold indices, compute mean max-F-beta across categories.
-        let summarize_f = |t_indices: &[usize]| -> f64 {
-            let mut vals = Vec::new();
-            for &t_idx in t_indices {
-                for k_idx in 0..eval.k {
-                    let max_f = self
-                        .params
-                        .rec_thrs
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(r_idx, &r)| {
-                            let p_idx = eval.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
-                            let p = eval.precision[p_idx];
-                            if p < 0.0 {
-                                return None; // no data for this category
-                            }
-                            let denom = beta2 * p + r;
-                            if denom < f64::EPSILON {
-                                return Some(0.0);
-                            }
-                            Some((1.0 + beta2) * p * r / denom)
-                        })
-                        .fold(f64::NEG_INFINITY, f64::max);
+        // Identify which IoU threshold indices correspond to 0.5 and 0.75.
+        let mut is_t50 = vec![false; eval.t];
+        let mut is_t75 = vec![false; eval.t];
+        for (i, &thr) in self.params.iou_thrs.iter().enumerate() {
+            if (thr - 0.5).abs() < 1e-9 {
+                is_t50[i] = true;
+            }
+            if (thr - 0.75).abs() < 1e-9 {
+                is_t75[i] = true;
+            }
+        }
 
-                    if max_f > f64::NEG_INFINITY {
-                        vals.push(max_f);
+        // Single pass: compute max-F-beta per (t_idx, k_idx), accumulate into three buckets.
+        let mut sum_all = 0.0_f64;
+        let mut count_all = 0_usize;
+        let mut sum_50 = 0.0_f64;
+        let mut count_50 = 0_usize;
+        let mut sum_75 = 0.0_f64;
+        let mut count_75 = 0_usize;
+
+        for t_idx in 0..eval.t {
+            for k_idx in 0..eval.k {
+                let max_f = self
+                    .params
+                    .rec_thrs
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(r_idx, &r)| {
+                        let p_idx = eval.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
+                        let p = eval.precision[p_idx];
+                        if p < 0.0 {
+                            return None;
+                        }
+                        let denom = beta2 * p + r;
+                        if denom < f64::EPSILON {
+                            return Some(0.0);
+                        }
+                        Some((1.0 + beta2) * p * r / denom)
+                    })
+                    .fold(f64::NEG_INFINITY, f64::max);
+
+                if max_f > f64::NEG_INFINITY {
+                    sum_all += max_f;
+                    count_all += 1;
+                    if is_t50[t_idx] {
+                        sum_50 += max_f;
+                        count_50 += 1;
+                    }
+                    if is_t75[t_idx] {
+                        sum_75 += max_f;
+                        count_75 += 1;
                     }
                 }
             }
-            if vals.is_empty() {
+        }
+
+        let mean_or_neg1 = |sum: f64, count: usize| -> f64 {
+            if count == 0 {
                 -1.0
             } else {
-                vals.iter().sum::<f64>() / vals.len() as f64
+                sum / count as f64
             }
         };
-
-        let all_t: Vec<usize> = (0..eval.t).collect();
-        let t50: Vec<usize> = self
-            .params
-            .iou_thrs
-            .iter()
-            .enumerate()
-            .filter(|(_, &t)| (t - 0.5).abs() < 1e-9)
-            .map(|(i, _)| i)
-            .collect();
-        let t75: Vec<usize> = self
-            .params
-            .iou_thrs
-            .iter()
-            .enumerate()
-            .filter(|(_, &t)| (t - 0.75).abs() < 1e-9)
-            .map(|(i, _)| i)
-            .collect();
 
         let prefix = if (beta - 1.0).abs() < 1e-9 {
             "F1".to_string()
@@ -1693,9 +1682,9 @@ impl COCOeval {
         };
 
         let mut results = HashMap::new();
-        results.insert(prefix.clone(), summarize_f(&all_t));
-        results.insert(format!("{prefix}50"), summarize_f(&t50));
-        results.insert(format!("{prefix}75"), summarize_f(&t75));
+        results.insert(prefix.clone(), mean_or_neg1(sum_all, count_all));
+        results.insert(format!("{prefix}50"), mean_or_neg1(sum_50, count_50));
+        results.insert(format!("{prefix}75"), mean_or_neg1(sum_75, count_75));
         results
     }
 
@@ -1711,29 +1700,11 @@ impl COCOeval {
             return;
         }
 
-        let keys: &[&str] = if self.is_lvis {
-            &[
-                "AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf", "AR@300",
-                "ARs@300", "ARm@300", "ARl@300",
-            ]
-        } else if self.params.iou_type == IouType::Keypoints {
-            &[
-                "AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl",
-            ]
-        } else {
-            &[
-                "AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm",
-                "ARl",
-            ]
-        };
+        let keys = self.metric_keys();
 
         for key in keys {
             let val = results.get(*key).copied().unwrap_or(-1.0);
-            let val_str = if val < 0.0 {
-                format!("{:0.3}", -1.0f64)
-            } else {
-                format!("{:0.3}", val)
-            };
+            let val_str = Self::format_metric(val);
             println!(" {:>10} = {}", key, val_str);
         }
     }
@@ -1753,6 +1724,76 @@ impl COCOeval {
     /// - `matrix[gt_cat_idx][num_cats]` — unmatched GT (false negative / missed detection)
     /// - `matrix[num_cats][dt_cat_idx]` — unmatched DT (false positive / spurious detection)
     ///
+    /// Compute a cross-category IoU matrix between DT and GT annotations.
+    ///
+    /// Returns `Vec<Vec<f64>>` of shape `[D × G]`. Falls back to bbox IoU for segm mode
+    /// when RLEs cannot be produced for all annotations.
+    fn cross_category_iou(
+        dt_ann_ids: &[u64],
+        gt_ann_ids: &[u64],
+        coco_dt: &COCO,
+        coco_gt: &COCO,
+        iou_type: IouType,
+    ) -> Vec<Vec<f64>> {
+        let d = dt_ann_ids.len();
+        let g = gt_ann_ids.len();
+        if d == 0 || g == 0 {
+            return vec![];
+        }
+
+        match iou_type {
+            IouType::Bbox | IouType::Keypoints => {
+                let dt_bbs: Vec<[f64; 4]> = dt_ann_ids
+                    .iter()
+                    .filter_map(|&id| coco_dt.get_ann(id)?.bbox)
+                    .collect();
+                let gt_bbs: Vec<[f64; 4]> = gt_ann_ids
+                    .iter()
+                    .filter_map(|&id| coco_gt.get_ann(id)?.bbox)
+                    .collect();
+                if dt_bbs.len() == d && gt_bbs.len() == g {
+                    let iscrowd = vec![false; g];
+                    mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
+                } else {
+                    vec![vec![0.0; g]; d]
+                }
+            }
+            IouType::Segm => {
+                let dt_rles: Vec<Option<Rle>> = dt_ann_ids
+                    .iter()
+                    .map(|&id| coco_dt.get_ann(id).and_then(|a| coco_dt.ann_to_rle(a)))
+                    .collect();
+                let gt_rles: Vec<Option<Rle>> = gt_ann_ids
+                    .iter()
+                    .map(|&id| coco_gt.get_ann(id).and_then(|a| coco_gt.ann_to_rle(a)))
+                    .collect();
+
+                if dt_rles.iter().all(|r| r.is_some()) && gt_rles.iter().all(|r| r.is_some()) {
+                    let dt_r: Vec<Rle> = dt_rles.into_iter().map(|r| r.unwrap()).collect();
+                    let gt_r: Vec<Rle> = gt_rles.into_iter().map(|r| r.unwrap()).collect();
+                    let iscrowd = vec![false; g];
+                    mask::iou(&dt_r, &gt_r, &iscrowd)
+                } else {
+                    // Bbox fallback
+                    let dt_bbs: Vec<[f64; 4]> = dt_ann_ids
+                        .iter()
+                        .filter_map(|&id| coco_dt.get_ann(id)?.bbox)
+                        .collect();
+                    let gt_bbs: Vec<[f64; 4]> = gt_ann_ids
+                        .iter()
+                        .filter_map(|&id| coco_gt.get_ann(id)?.bbox)
+                        .collect();
+                    if dt_bbs.len() == d && gt_bbs.len() == g {
+                        let iscrowd = vec![false; g];
+                        mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
+                    } else {
+                        vec![vec![0.0; g]; d]
+                    }
+                }
+            }
+        }
+    }
+
     /// # Arguments
     ///
     /// - `iou_thr` — IoU threshold for a DT↔GT match (default 0.5)
@@ -1856,76 +1897,10 @@ impl COCOeval {
                 let g = gt_pairs.len();
 
                 // --- Compute cross-category IoU matrix [D × G] ---
-                let iou_matrix: Vec<Vec<f64>> = if d > 0 && g > 0 {
-                    match iou_type {
-                        IouType::Bbox | IouType::Keypoints => {
-                            let dt_bbs: Vec<[f64; 4]> = dt_pairs
-                                .iter()
-                                .filter_map(|&(_, _, ann_id)| coco_dt.get_ann(ann_id)?.bbox)
-                                .collect();
-                            let gt_bbs: Vec<[f64; 4]> = gt_pairs
-                                .iter()
-                                .filter_map(|&(_, ann_id)| coco_gt.get_ann(ann_id)?.bbox)
-                                .collect();
-                            let iscrowd = vec![false; gt_bbs.len()];
-                            if dt_bbs.len() == d && gt_bbs.len() == g {
-                                mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
-                            } else {
-                                vec![vec![0.0; g]; d]
-                            }
-                        }
-                        IouType::Segm => {
-                            // Try to get RLEs for all DTs and GTs.  Fall back to bbox
-                            // IoU for any image where an RLE cannot be produced.
-                            let dt_rles: Vec<Option<Rle>> = dt_pairs
-                                .iter()
-                                .map(|&(_, _, ann_id)| {
-                                    coco_dt
-                                        .get_ann(ann_id)
-                                        .and_then(|ann| coco_dt.ann_to_rle(ann))
-                                })
-                                .collect();
-                            let gt_rles: Vec<Option<Rle>> = gt_pairs
-                                .iter()
-                                .map(|&(_, ann_id)| {
-                                    coco_gt
-                                        .get_ann(ann_id)
-                                        .and_then(|ann| coco_gt.ann_to_rle(ann))
-                                })
-                                .collect();
-
-                            let all_have_rle = dt_rles.iter().all(|r| r.is_some())
-                                && gt_rles.iter().all(|r| r.is_some());
-
-                            if all_have_rle {
-                                let dt_rles_ok: Vec<Rle> =
-                                    dt_rles.into_iter().map(|r| r.unwrap()).collect();
-                                let gt_rles_ok: Vec<Rle> =
-                                    gt_rles.into_iter().map(|r| r.unwrap()).collect();
-                                let iscrowd = vec![false; g];
-                                mask::iou(&dt_rles_ok, &gt_rles_ok, &iscrowd)
-                            } else {
-                                // Bbox fallback
-                                let dt_bbs: Vec<[f64; 4]> = dt_pairs
-                                    .iter()
-                                    .filter_map(|&(_, _, ann_id)| coco_dt.get_ann(ann_id)?.bbox)
-                                    .collect();
-                                let gt_bbs: Vec<[f64; 4]> = gt_pairs
-                                    .iter()
-                                    .filter_map(|&(_, ann_id)| coco_gt.get_ann(ann_id)?.bbox)
-                                    .collect();
-                                let iscrowd = vec![false; gt_bbs.len()];
-                                if dt_bbs.len() == d && gt_bbs.len() == g {
-                                    mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
-                                } else {
-                                    vec![vec![0.0; g]; d]
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    vec![]
-                };
+                let dt_ids: Vec<u64> = dt_pairs.iter().map(|&(_, _, ann_id)| ann_id).collect();
+                let gt_ids: Vec<u64> = gt_pairs.iter().map(|&(_, ann_id)| ann_id).collect();
+                let iou_matrix =
+                    Self::cross_category_iou(&dt_ids, &gt_ids, coco_dt, coco_gt, iou_type);
 
                 // --- Greedy matching at iou_thr (DTs already in score-sorted order) ---
                 let mut gt_matched = vec![false; g];
@@ -2152,65 +2127,11 @@ impl COCOeval {
                     return (img_id, dt_max_cross);
                 }
 
-                let d = dt_pairs.len();
-                let g = gt_pairs.len();
-
                 // Compute cross-category IoU matrix [D × G]
-                let iou_matrix: Vec<Vec<f64>> = match iou_type {
-                    IouType::Bbox | IouType::Keypoints => {
-                        let dt_bbs: Vec<[f64; 4]> = dt_pairs
-                            .iter()
-                            .filter_map(|&(_, ann_id)| coco_dt.get_ann(ann_id)?.bbox)
-                            .collect();
-                        let gt_bbs: Vec<[f64; 4]> = gt_pairs
-                            .iter()
-                            .filter_map(|&(_, ann_id)| coco_gt.get_ann(ann_id)?.bbox)
-                            .collect();
-                        if dt_bbs.len() == d && gt_bbs.len() == g {
-                            let iscrowd = vec![false; g];
-                            mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
-                        } else {
-                            vec![vec![0.0; g]; d]
-                        }
-                    }
-                    IouType::Segm => {
-                        let dt_rles: Vec<Option<Rle>> = dt_pairs
-                            .iter()
-                            .map(|&(_, ann_id)| {
-                                coco_dt.get_ann(ann_id).and_then(|a| coco_dt.ann_to_rle(a))
-                            })
-                            .collect();
-                        let gt_rles: Vec<Option<Rle>> = gt_pairs
-                            .iter()
-                            .map(|&(_, ann_id)| {
-                                coco_gt.get_ann(ann_id).and_then(|a| coco_gt.ann_to_rle(a))
-                            })
-                            .collect();
-                        if dt_rles.iter().all(|r| r.is_some())
-                            && gt_rles.iter().all(|r| r.is_some())
-                        {
-                            let dt_r: Vec<Rle> = dt_rles.into_iter().map(|r| r.unwrap()).collect();
-                            let gt_r: Vec<Rle> = gt_rles.into_iter().map(|r| r.unwrap()).collect();
-                            let iscrowd = vec![false; g];
-                            mask::iou(&dt_r, &gt_r, &iscrowd)
-                        } else {
-                            let dt_bbs: Vec<[f64; 4]> = dt_pairs
-                                .iter()
-                                .filter_map(|&(_, ann_id)| coco_dt.get_ann(ann_id)?.bbox)
-                                .collect();
-                            let gt_bbs: Vec<[f64; 4]> = gt_pairs
-                                .iter()
-                                .filter_map(|&(_, ann_id)| coco_gt.get_ann(ann_id)?.bbox)
-                                .collect();
-                            if dt_bbs.len() == d && gt_bbs.len() == g {
-                                let iscrowd = vec![false; g];
-                                mask::bbox_iou(&dt_bbs, &gt_bbs, &iscrowd)
-                            } else {
-                                vec![vec![0.0; g]; d]
-                            }
-                        }
-                    }
-                };
+                let dt_ids: Vec<u64> = dt_pairs.iter().map(|&(_, ann_id)| ann_id).collect();
+                let gt_ids: Vec<u64> = gt_pairs.iter().map(|&(_, ann_id)| ann_id).collect();
+                let iou_matrix =
+                    Self::cross_category_iou(&dt_ids, &gt_ids, coco_dt, coco_gt, iou_type);
 
                 // For each DT, find max IoU with any *other-category* GT and record that GT's id
                 for (di, &(dt_cat_idx, dt_ann_id)) in dt_pairs.iter().enumerate() {

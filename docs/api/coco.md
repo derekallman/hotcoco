@@ -26,12 +26,12 @@ Load and query COCO-format datasets.
 === "Python"
 
     ```python
-    COCO(annotation_file: str | None = None)
+    COCO(annotation_file: str | dict | None = None)
     ```
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
-    | `annotation_file` | <code>str &#124; None</code> | `None` | Path to a COCO JSON annotation file. `None` creates an empty instance. |
+    | `annotation_file` | <code>str &#124; dict &#124; None</code> | `None` | Path to a COCO JSON file, an in-memory dataset dict, or `None` for an empty instance. |
 
 === "Rust"
 

@@ -1,4 +1,4 @@
-use hotcoco_core::{Annotation, Category, DatasetStats, Image, Rle, Segmentation};
+use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Image, Rle, Segmentation};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
@@ -283,4 +283,137 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
         .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'counts'"))?
         .extract()?;
     Ok(Rle { h, w, counts })
+}
+
+pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
+    let id: u64 = dict
+        .get_item("id")?
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("image dict missing 'id'"))?
+        .extract()?;
+    let file_name: String = dict
+        .get_item("file_name")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or_default();
+    let height: u32 = dict
+        .get_item("height")?
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("image dict missing 'height'"))?
+        .extract()?;
+    let width: u32 = dict
+        .get_item("width")?
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("image dict missing 'width'"))?
+        .extract()?;
+    let license: Option<u64> = dict.get_item("license")?.map(|v| v.extract()).transpose()?;
+    let coco_url: Option<String> = dict
+        .get_item("coco_url")?
+        .map(|v| v.extract())
+        .transpose()?;
+    let flickr_url: Option<String> = dict
+        .get_item("flickr_url")?
+        .map(|v| v.extract())
+        .transpose()?;
+    let date_captured: Option<String> = dict
+        .get_item("date_captured")?
+        .map(|v| v.extract())
+        .transpose()?;
+    let neg_category_ids: Vec<u64> = dict
+        .get_item("neg_category_ids")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or_default();
+    let not_exhaustive_category_ids: Vec<u64> = dict
+        .get_item("not_exhaustive_category_ids")?
+        .map(|v| v.extract())
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(Image {
+        id,
+        file_name,
+        height,
+        width,
+        license,
+        coco_url,
+        flickr_url,
+        date_captured,
+        neg_category_ids,
+        not_exhaustive_category_ids,
+    })
+}
+
+pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
+    let id: u64 = dict
+        .get_item("id")?
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("category dict missing 'id'"))?
+        .extract()?;
+    let name: String = dict
+        .get_item("name")?
+        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("category dict missing 'name'"))?
+        .extract()?;
+    let supercategory: Option<String> = dict
+        .get_item("supercategory")?
+        .map(|v| v.extract())
+        .transpose()?;
+    let skeleton: Option<Vec<[u32; 2]>> = dict
+        .get_item("skeleton")?
+        .map(|v| v.extract())
+        .transpose()?;
+    let keypoints: Option<Vec<String>> = dict
+        .get_item("keypoints")?
+        .map(|v| v.extract())
+        .transpose()?;
+    let frequency: Option<String> = dict
+        .get_item("frequency")?
+        .map(|v| v.extract())
+        .transpose()?;
+
+    Ok(Category {
+        id,
+        name,
+        supercategory,
+        skeleton,
+        keypoints,
+        frequency,
+    })
+}
+
+/// Extract a list of dicts from a parent dict, converting each element with `convert_fn`.
+/// Returns an empty Vec if the key is absent.
+fn extract_dict_list<'py, T>(
+    dict: &Bound<'py, PyDict>,
+    key: &str,
+    convert_fn: impl Fn(&Bound<'py, PyDict>) -> PyResult<T>,
+) -> PyResult<Vec<T>> {
+    match dict.get_item(key)? {
+        None => Ok(Vec::new()),
+        Some(v) => v
+            .downcast::<PyList>()
+            .map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err(format!("'{key}' must be a list of dicts"))
+            })?
+            .iter()
+            .map(|item| {
+                let d = item.downcast::<PyDict>().map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(format!(
+                        "each item in '{key}' must be a dict"
+                    ))
+                })?;
+                convert_fn(d)
+            })
+            .collect(),
+    }
+}
+
+pub fn py_to_dataset(dict: &Bound<'_, PyDict>) -> PyResult<Dataset> {
+    let images = extract_dict_list(dict, "images", py_to_image)?;
+    let annotations = extract_dict_list(dict, "annotations", py_to_annotation)?;
+    let categories = extract_dict_list(dict, "categories", py_to_category)?;
+
+    Ok(Dataset {
+        info: None,
+        images,
+        annotations,
+        categories,
+        licenses: vec![],
+    })
 }

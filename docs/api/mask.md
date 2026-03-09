@@ -134,8 +134,8 @@ Compute the area (number of foreground pixels) of RLE mask(s).
 
     | Input | Returns |
     |-------|---------|
-    | Single dict | `int` (uint32) |
-    | List of dicts | `numpy.ndarray` of uint32 |
+    | Single dict | `int` (uint64) |
+    | List of dicts | `numpy.ndarray` of uint64 |
 
     ```python
     a = mask.area(rle)        # scalar

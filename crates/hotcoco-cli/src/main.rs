@@ -20,7 +20,7 @@ struct Cli {
 
     /// IoU type: bbox, segm, or keypoints
     #[arg(long, default_value = "bbox")]
-    iou_type: String,
+    iou_type: IouType,
 
     /// Filter to specific image IDs (comma-separated)
     #[arg(long, value_delimiter = ',')]
@@ -38,26 +38,13 @@ struct Cli {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let iou_type = match cli.iou_type.as_str() {
-        "bbox" => IouType::Bbox,
-        "segm" => IouType::Segm,
-        "keypoints" => IouType::Keypoints,
-        other => {
-            eprintln!(
-                "Unknown IoU type: '{}'. Use bbox, segm, or keypoints.",
-                other
-            );
-            std::process::exit(1);
-        }
-    };
-
     eprintln!("Loading ground truth from {:?}...", cli.gt);
     let coco_gt = COCO::new(&cli.gt)?;
 
     eprintln!("Loading detections from {:?}...", cli.dt);
     let coco_dt = coco_gt.load_res(&cli.dt)?;
 
-    let mut coco_eval = COCOeval::new(coco_gt, coco_dt, iou_type);
+    let mut coco_eval = COCOeval::new(coco_gt, coco_dt, cli.iou_type);
 
     if let Some(img_ids) = cli.img_ids {
         coco_eval.params.img_ids = img_ids;
