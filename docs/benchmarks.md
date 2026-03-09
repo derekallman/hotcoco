@@ -94,4 +94,72 @@ Keypoint metrics are exact.
 - **Wall clock time** includes file I/O, evaluation, and accumulation. Excludes Python import time.
 - **Only detections are scaled** for the 10x benchmark — ground truth annotations are unchanged.
 - All three tools were verified to produce identical metrics before timing.
-- Benchmark scripts are in the repository under `data/`.
+- Benchmark scripts are in the repository under `crates/hotcoco-pyo3/data/`.
+
+## Reproducing the benchmarks
+
+### Prerequisites
+
+You'll need:
+
+- Rust (stable, 1.70+) and [uv](https://docs.astral.sh/uv/)
+- COCO val2017 annotation and results files — see below
+
+### 1. Build hotcoco
+
+```bash
+git clone https://github.com/derekallman/hotcoco.git
+cd hotcoco/crates/hotcoco-pyo3
+uv venv
+uv pip install maturin ".[dev]"
+uv run maturin develop --release
+```
+
+### 2. Get the data
+
+All required files should be placed in `crates/hotcoco-pyo3/data/`:
+
+```
+data/
+  annotations/
+    instances_val2017.json
+    person_keypoints_val2017.json
+  bbox_val2017_results.json
+  segm_val2017_results.json
+  kpt_val2017_results.json
+```
+
+Download COCO val2017 annotations from the [COCO dataset page](https://cocodataset.org/#download). For detection results, use any COCO-format model output or generate synthetic ones with the bench script's `--scale` flag.
+
+### 3. Run the speed benchmark
+
+```bash
+cd crates/hotcoco-pyo3
+uv run python data/bench.py
+```
+
+Options:
+
+```bash
+uv run python data/bench.py --scale 10      # 10x detections
+uv run python data/bench.py --types bbox    # bbox only
+uv run python data/bench.py --types bbox segm keypoints
+```
+
+### 4. Verify metric parity
+
+```bash
+uv run python data/parity.py
+```
+
+This runs hotcoco and pycocotools on the same data and prints a diff for all 34 metrics. Expected tolerances: bbox ≤ 1e-4, segm ≤ 2e-4, keypoints exact.
+
+### 5. Large-scale benchmark (Objects365)
+
+To reproduce the O365 memory and speed numbers, you'll additionally need the Objects365 val annotations. The script auto-generates synthetic detections and caches them:
+
+```bash
+uv run python data/bench_objects365.py --dt data/objects365_val_synth_det_100per.json
+```
+
+Peak memory is measured via subprocess RSS polling — run on a machine with at least 32 GB RAM for faster-coco-eval to complete.

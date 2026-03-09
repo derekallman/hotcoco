@@ -1,5 +1,10 @@
 # hotcoco
 
+[![CI](https://github.com/derekallman/hotcoco/actions/workflows/ci.yml/badge.svg)](https://github.com/derekallman/hotcoco/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/hotcoco)](https://pypi.org/project/hotcoco/)
+[![Crates.io](https://img.shields.io/crates/v/hotcoco)](https://crates.io/crates/hotcoco)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 11-26x faster COCO evaluation — a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) that works with Ultralytics YOLO, Detectron2, mmdetection, RF-DETR, and any pycocotools-based pipeline.
 
 Available as a **Python package**, **CLI tool**, and **Rust library**. Pure Rust — no Cython, no C compiler, no Microsoft Build Tools. Prebuilt wheels for Linux, macOS, and Windows.

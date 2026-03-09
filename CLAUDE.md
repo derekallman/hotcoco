@@ -84,7 +84,7 @@ When updating documentation (`docs/`) or `README.md`, always ensure both reflect
 
 ## Pre-Commit Checks
 
-A git pre-commit hook in `hooks/pre-commit` runs these three checks automatically — they mirror CI exactly. All three must pass or the commit is rejected.
+A git pre-commit hook in `.github/hooks/pre-commit` runs these three checks automatically — they mirror CI exactly. All three must pass or the commit is rejected.
 
 ```bash
 cargo fmt --all -- --check                              # 1. Formatting
@@ -95,7 +95,7 @@ cargo test                                              # 3. Tests
 To install the hook (one-time setup):
 
 ```bash
-ln -sf ../../hooks/pre-commit .git/hooks/pre-commit
+ln -sf ../../.github/hooks/pre-commit .git/hooks/pre-commit
 ```
 
 If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fails, fix the warning before committing. Never suppress clippy warnings with allows. Never skip the hook with `--no-verify`.
