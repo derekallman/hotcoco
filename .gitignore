@@ -84,6 +84,7 @@ venv.bak/
 # Jupyter
 .ipynb_checkpoints
 *.ipynb
+!examples/*.ipynb
 
 # mypy
 .mypy_cache/
@@ -126,7 +127,13 @@ site/
 .claude/
 
 # Benchmark / annotation data (large files, not in repo)
-data/
+# Root-level data dir (large JSON + zip files)
+/data/
+# pyo3 data dir: ignore large files but track scripts and fixtures
+crates/hotcoco-pyo3/data/annotations/
+crates/hotcoco-pyo3/data/*.json
+crates/hotcoco-pyo3/data/__pycache__/
 
 # uv lock file (transient dev env)
 crates/hotcoco-pyo3/uv.lock
+external/
