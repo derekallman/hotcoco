@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `CONTRIBUTING.md` — contributor guide covering build setup, pre-commit hook, parity workflow, and PR process
+- `CODE_OF_CONDUCT.md` — Contributor Covenant
+- `SECURITY.md` — vulnerability disclosure policy
+- `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
+- `.github/pull_request_template.md` — PR checklist with parity output section
+- `examples/coco_evaluation_101.ipynb` — Jupyter notebook: quickstart, per-class AP, F-scores, TIDE error analysis, drop-in replacement, and experiment logging
+- `docs/benchmarks.md` — "Reproducing the benchmarks" section with step-by-step clone, build, data setup, and benchmark commands
+- CI, PyPI, Crates.io, and MIT license badges in `README.md`
+
+### Changed
+
+- Pre-commit hook relocated from `hooks/pre-commit` to `.github/hooks/pre-commit` (standard location)
+- `crates/hotcoco-pyo3/README.md` converted to a symlink to root `README.md` — always in sync, no manual copy needed
+- `.gitignore` tightened: `data/` blanket exclusion replaced with targeted patterns so benchmark scripts and test fixtures are now tracked; `examples/*.ipynb` exempted from `*.ipynb` exclusion
+- `data/bench_lvis_parity.py` → `data/parity_lvis.py`; `data/bench_tide_parity.py` → `data/parity_tide.py` — consistent `parity_*` naming
+- Deleted stale investigation and one-off run scripts from `data/`
+
 - `COCO(dict)` — constructor now accepts an in-memory dataset dict in addition to a file path or `None`
 - `COCOeval.f_scores(beta=1.0)` — compute F-beta scores after `accumulate()`; for each (IoU threshold, category) finds the confidence operating point that maximises F-beta, then averages across categories; returns `{"F1": ..., "F150": ..., "F175": ...}` (key prefix reflects beta value); supports arbitrary beta for precision/recall trade-off weighting
 - `get_results(prefix, per_class)` — optional `prefix` parameter prepends a path to all metric keys (e.g. `"val/bbox/AP"`), and `per_class=True` adds per-category AP entries keyed as `"AP/{cat_name}"`; returns a flat dict ready for `wandb.log()`, `mlflow.log_metrics()`, or any experiment tracker
