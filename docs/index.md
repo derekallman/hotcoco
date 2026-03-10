@@ -14,6 +14,7 @@ A drop-in replacement for pycocotools that doesn't become the bottleneck — in 
 
 [Get Started](getting-started/installation.md){ .md-button .md-button--primary }
 [API Reference](api/coco.md){ .md-button }
+[Open Notebook](../examples/coco_evaluation_101.ipynb){ .md-button }
 
 </div>
 

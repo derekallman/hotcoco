@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{generate, Shell};
 use hotcoco::params::IouType;
 use hotcoco::{COCOeval, COCO};
 
@@ -37,10 +38,24 @@ struct Cli {
     /// Write evaluation results to a JSON file
     #[arg(long, short)]
     output: Option<PathBuf>,
+
+    /// Print shell completion script and exit
+    #[arg(long, value_name = "SHELL", hide = true)]
+    completions: Option<Shell>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+
+    if let Some(shell) = cli.completions {
+        generate(
+            shell,
+            &mut Cli::command(),
+            "coco-eval",
+            &mut std::io::stdout(),
+        );
+        return Ok(());
+    }
 
     eprintln!("Loading ground truth from {:?}...", cli.gt);
     let coco_gt = COCO::new(&cli.gt)?;

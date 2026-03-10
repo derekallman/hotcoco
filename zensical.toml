@@ -11,12 +11,15 @@ nav = [
     { "Installation" = "getting-started/installation.md" },
     { "Quick Start" = "getting-started/quickstart.md" },
     { "Migrating from pycocotools" = "getting-started/migration.md" },
+    { "Troubleshooting" = "getting-started/troubleshooting.md" },
   ] },
   { "User Guide" = [
     { "Evaluation" = "guide/evaluation.md" },
     { "Dataset Operations" = "guide/datasets.md" },
     { "Working with Results" = "guide/results.md" },
     { "Mask Operations" = "guide/masks.md" },
+    { "PyTorch Integration" = "guide/pytorch.md" },
+    { "Framework Integrations" = "guide/frameworks.md" },
   ] },
   { "API Reference" = [
     { "COCO" = "api/coco.md" },

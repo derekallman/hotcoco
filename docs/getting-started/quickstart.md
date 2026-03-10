@@ -201,5 +201,9 @@ Output:
 ## Next steps
 
 - [Evaluation](../guide/evaluation.md) — bbox, segm, and keypoint workflows explained
+- [LVIS Evaluation](../guide/evaluation.md#lvis-evaluation) — federated annotation, 13-metric LVIS output
+- [TIDE Error Analysis](../guide/evaluation.md#tide-error-analysis) — decompose errors into Loc, Cls, Bkg, Miss, and more
+- [PyTorch Integration](../guide/pytorch.md) — `CocoDetection` dataset and `CocoEvaluator` for training loops
 - [Working with Results](../guide/results.md) — load_res, eval_imgs, precision/recall arrays
 - [API Reference](../api/coco.md) — full class and method reference
+- [Notebook: COCO Evaluation 101](../../examples/coco_evaluation_101.ipynb) — end-to-end walkthrough with per-class AP, experiment tracking, TIDE, and more

@@ -1,3 +1,4 @@
+# PYTHON_ARGCOMPLETE_OK
 """
 hotcoco command-line interface.
 
@@ -465,6 +466,12 @@ def main():
         default=None,
         help="directory of images (YOLO → COCO only; used to read image dimensions via Pillow)",
     )
+
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
 
     args = parser.parse_args()
 

@@ -252,3 +252,84 @@ The standard 12 COCO metrics (10 for keypoints):
  Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.935
  Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.997
 ```
+
+---
+
+## Shell completions
+
+Both CLIs support tab completion for flags, subcommands, and values.
+
+### `coco` (Python)
+
+Install `argcomplete`:
+
+```bash
+pip install "hotcoco[completions]"
+```
+
+Then register the completion for your shell. The one-time setup depends on your shell:
+
+=== "bash"
+
+    Add to `~/.bashrc`:
+
+    ```bash
+    eval "$(register-python-argcomplete coco)"
+    ```
+
+=== "zsh"
+
+    Add to `~/.zshrc`:
+
+    ```zsh
+    autoload -U bashcompinit && bashcompinit
+    eval "$(register-python-argcomplete coco)"
+    ```
+
+=== "fish"
+
+    ```fish
+    register-python-argcomplete --shell fish coco | source
+    ```
+
+After restarting your shell (or sourcing the config), `coco <TAB>` completes subcommands and `coco eval --<TAB>` completes flags.
+
+### `coco-eval` (Rust)
+
+`coco-eval --completions <SHELL>` prints a completion script to stdout. Pipe it to the right location for your shell:
+
+=== "bash"
+
+    ```bash
+    coco-eval --completions bash > ~/.bash_completion.d/coco-eval
+    # or for system-wide:
+    coco-eval --completions bash | sudo tee /etc/bash_completion.d/coco-eval
+    ```
+
+    Then add to `~/.bashrc` if not already sourcing `~/.bash_completion.d/`:
+
+    ```bash
+    source ~/.bash_completion.d/coco-eval
+    ```
+
+=== "zsh"
+
+    ```zsh
+    mkdir -p ~/.zsh/completions
+    coco-eval --completions zsh > ~/.zsh/completions/_coco-eval
+    ```
+
+    Make sure `~/.zsh/completions` is on your `fpath` in `~/.zshrc`:
+
+    ```zsh
+    fpath=(~/.zsh/completions $fpath)
+    autoload -U compinit && compinit
+    ```
+
+=== "fish"
+
+    ```fish
+    coco-eval --completions fish > ~/.config/fish/completions/coco-eval.fish
+    ```
+
+Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
