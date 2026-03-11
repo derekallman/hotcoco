@@ -17,21 +17,30 @@ Benchmarked on COCO val2017 (5,000 images, 36,781 synthetic detections), Apple M
 
 | Eval Type | pycocotools | faster-coco-eval | hotcoco |
 |-----------|-------------|------------------|-----------|
-| bbox      | 9.46s  | 2.45s (3.9x)  | **0.41s (23.0x)** |
-| segm      | 9.16s  | 4.36s (2.1x)  | **0.49s (18.6x)** |
-| keypoints | 2.62s  | 1.78s (1.5x)  | **0.21s (12.7x)** |
+| bbox      | 9.46s | 2.45s (3.9×) | **0.41s (23.0×)** |
+| segm      | 9.16s | 4.36s (2.1×) | **0.49s (18.6×)** |
+| keypoints | 2.62s | 1.78s (1.5×) | **0.21s (12.7×)** |
 
 Speedups in parentheses are vs pycocotools. Results verified against pycocotools on COCO val2017 with a 10,000+ case parity test suite — your AP scores won't change.
 
-At scale (Objects365 val — 80k images, 365 categories, 1.2M detections), hotcoco completes in **18s** vs 721s for pycocotools (**39x**) and 251s for faster-coco-eval (**14x**) — while using half the memory. See the [full benchmarks](https://derekallman.github.io/hotcoco/benchmarks/).
+At scale (Objects365 val — 80k images, 365 categories, 1.2M detections), hotcoco completes in **18s** vs 721s for pycocotools (**39×**) and 251s for faster-coco-eval (**14×**) — while using half the memory. See the [full benchmarks](https://derekallman.github.io/hotcoco/benchmarks/).
 
-## Quick Start
-
-### Python
+## Get started
 
 ```bash
 pip install hotcoco
 ```
+
+No Cython, no C compiler, no Microsoft Build Tools. Prebuilt wheels for Linux, macOS, and Windows.
+
+Already using pycocotools? One line:
+
+```python
+from hotcoco import init_as_pycocotools
+init_as_pycocotools()
+```
+
+Or use it directly — the API is identical:
 
 ```python
 from hotcoco import COCO, COCOeval
@@ -40,155 +49,37 @@ coco_gt = COCO("instances_val2017.json")
 coco_dt = coco_gt.load_res("detections.json")
 
 ev = COCOeval(coco_gt, coco_dt, "bbox")
-ev.evaluate()
-ev.accumulate()
-ev.summarize()
-```
-
-#### Drop-in replacement for pycocotools
-
-If you use Detectron2, Ultralytics YOLO, mmdetection, or any other pycocotools-based pipeline, call `init_as_pycocotools()` once at startup — no other code changes needed:
-
-```python
-from hotcoco import init_as_pycocotools
-init_as_pycocotools()
-
-# Existing code works unchanged
-from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
-from pycocotools import mask
-```
-
-#### LVIS evaluation
-
-hotcoco supports [LVIS](https://www.lvisdataset.org/) federated evaluation with all 13 metrics (AP, APr, APc, APf, AR@300, and more). Use `LVISeval` directly or call `init_as_lvis()` to drop into any existing lvis-api pipeline:
-
-```python
-from hotcoco import COCO, LVISeval
-
-lvis_gt = COCO("lvis_v1_val.json")
-lvis_dt = lvis_gt.load_res("detections.json")
-
-ev = LVISeval(lvis_gt, lvis_dt, "segm")
 ev.run()
-print(ev.get_results())  # {"AP": ..., "APr": ..., "APc": ..., "APf": ..., "AR@300": ...}
 ```
 
-```python
-# Or as a drop-in for Detectron2 / MMDetection lvis-api pipelines
-from hotcoco import init_as_lvis
-init_as_lvis()
+## What's included
 
-from lvis import LVIS, LVISEval, LVISResults  # resolves to hotcoco
-```
+- **COCO & LVIS evaluation** — bbox, segmentation, and keypoints; all standard metrics plus LVIS federated eval (APr/APc/APf). See the [evaluation guide](https://derekallman.github.io/hotcoco/guide/evaluation/).
+- **TIDE error analysis** — breaks down every FP and FN into six error types so you know *why* your model falls short, not just by how much. See [TIDE errors](https://derekallman.github.io/hotcoco/guide/tide/).
+- **Confusion matrix** — cross-category matching with per-class breakdowns. See [confusion matrix](https://derekallman.github.io/hotcoco/guide/confusion-matrix/).
+- **F-scores** — F-beta averaging over precision/recall curves, analogous to mAP. See [F-scores](https://derekallman.github.io/hotcoco/guide/f-scores/).
+- **Format conversion** — COCO ↔ YOLO in either direction, from Python or the CLI. See [format conversion](https://derekallman.github.io/hotcoco/guide/conversion/).
+- **PyTorch integrations** — `CocoDetection` and `CocoEvaluator` drop-in replacements for torchvision's detection classes; no torchvision or pycocotools dependency required. See [PyTorch integration](https://derekallman.github.io/hotcoco/integrations/).
+- **Experiment tracker integration** — `get_results(prefix="val/bbox", per_class=True)` returns a flat dict ready for W&B, MLflow, or any logger. See [logging metrics](https://derekallman.github.io/hotcoco/guide/logging/).
+- **Python CLI** (`coco`) — included with `pip install hotcoco`; `eval`, `stats`, `filter`, `merge`, `split`, `sample`, and `convert` subcommands. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
+- **Rust CLI** (`coco-eval`) — lightweight eval-only binary; `cargo install hotcoco-cli`. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
+- **Rust library** — use hotcoco directly in your Rust projects via `cargo add hotcoco`. See [Rust API](https://docs.rs/hotcoco).
 
-#### Format conversion
+See the [documentation](https://derekallman.github.io/hotcoco/) for full API reference and examples.
 
-Convert between COCO JSON and YOLO label format in either direction:
+## Contributing
 
-```python
-from hotcoco import COCO
+Contributions are welcome. The core library is pure Rust in `crates/hotcoco/` — if you're new to Rust but comfortable with Python and the COCO spec, the PyO3 bindings in `crates/hotcoco-pyo3/` are a gentler entry point.
 
-# COCO → YOLO
-coco = COCO("instances_val2017.json")
-stats = coco.to_yolo("labels/val2017/")
-print(stats)  # {'images': 5000, 'annotations': 36781, 'skipped_crowd': 12, 'missing_bbox': 0}
-
-# YOLO → COCO (with Pillow to read image dims)
-coco2 = COCO.from_yolo("labels/val2017/", images_dir="images/val2017/")
-coco2.save("reconstructed.json")
-```
-
-Or from the CLI:
+Before submitting a PR, run the pre-commit checks locally:
 
 ```bash
-coco convert --from coco --to yolo --input annotations.json --output labels/
-coco convert --from yolo --to coco --input labels/ --output annotations.json --images-dir images/
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test
 ```
 
-#### F-scores
-
-`f_scores()` computes F-beta scores from the precision/recall curves. For each IoU threshold and category it finds the operating point that maximises F-beta, then averages — analogous to mAP:
-
-```python
-ev = COCOeval(coco_gt, coco_dt, "bbox")
-ev.run()
-
-ev.f_scores()          # {"F1": 0.523, "F150": 0.712, "F175": 0.581}
-ev.f_scores(beta=0.5)  # precision-weighted F-score
-ev.f_scores(beta=2.0)  # recall-weighted F-score
-```
-
-#### Logging metrics
-
-`get_results()` accepts an optional prefix and per-class flag, returning a flat dict that plugs directly into any experiment tracker:
-
-```python
-ev = COCOeval(coco_gt, coco_dt, "bbox")
-ev.run()
-
-import wandb
-wandb.log(ev.get_results(prefix="val/bbox", per_class=True), step=epoch)
-# {"val/bbox/AP": 0.578, ..., "val/bbox/AP/person": 0.82, "val/bbox/AP/car": 0.71, ...}
-```
-
-#### Saving results
-
-`results()` returns a serializable dict; `save_results()` writes it as JSON:
-
-```python
-ev.run()
-ev.save_results("results.json", per_class=True)
-# {"params": {"iou_type": "bbox", ...}, "metrics": {"AP": 0.378, ...}, "per_class": {...}}
-```
-
-#### TIDE error analysis
-
-`tide_errors()` decomposes every false positive and false negative into six error types — Localization, Classification, Duplicate, Background, Both, and Miss — and reports the ΔAP for each. Use it to understand *why* your model falls short, not just how much:
-
-```python
-ev = COCOeval(coco_gt, coco_dt, "bbox")
-ev.evaluate()
-
-result = ev.tide_errors()
-for name, delta in sorted(result["delta_ap"].items(), key=lambda x: -x[1]):
-    if name not in ("FP", "FN"):
-        print(f"  {name}: ΔAP={delta:.4f}  n={result['counts'].get(name, '—')}")
-```
-
-Or from the CLI:
-
-```bash
-coco eval --gt instances_val2017.json --dt bbox_results.json --tide
-```
-
-### CLI
-
-```bash
-cargo install hotcoco-cli
-coco-eval --gt annotations.json --dt detections.json --iou-type bbox
-coco-eval --gt annotations.json --dt detections.json --output results.json  # save JSON
-```
-
-### Rust
-
-```bash
-cargo add hotcoco
-```
-
-```rust
-use hotcoco::{COCO, COCOeval};
-use hotcoco::params::IouType;
-use std::path::Path;
-
-let coco_gt = COCO::new(Path::new("annotations.json"))?;
-let coco_dt = coco_gt.load_res(Path::new("detections.json"))?;
-
-let mut eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-eval.evaluate();
-eval.accumulate();
-eval.summarize();
-```
+Parity with pycocotools is a hard requirement — if your change touches evaluation logic, verify metrics haven't shifted with `python data/parity.py` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 
 ## License
 
