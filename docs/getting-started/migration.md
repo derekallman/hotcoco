@@ -94,6 +94,6 @@ ev.summarize()
 
 ## Metric parity
 
-All 34 COCO metrics match pycocotools to within 1e-4 — your AP and AR scores won't change. Verified on COCO val2017.
+All 34 COCO metrics match pycocotools within tolerance — your AP and AR scores won't change. Verified on COCO val2017: bbox ≤1e-4, segmentation ≤2e-4, keypoints exact.
 
 See [Benchmarks](../benchmarks.md) for detailed parity verification.

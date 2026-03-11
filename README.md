@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/hotcoco)](https://crates.io/crates/hotcoco)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-11-26x faster COCO evaluation — a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) that works with Ultralytics YOLO, Detectron2, mmdetection, RF-DETR, and any pycocotools-based pipeline.
+Fast enough for every epoch, lean enough for every dataset. A drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) that doesn't become the bottleneck — in your training loop or at foundation model scale. Up to 23× faster on standard COCO, 39× faster on Objects365, and fits comfortably in memory where alternatives run out.
 
 Available as a **Python package**, **CLI tool**, and **Rust library**. Pure Rust — no Cython, no C compiler, no Microsoft Build Tools. Prebuilt wheels for Linux, macOS, and Windows.
 
@@ -13,13 +13,13 @@ Available as a **Python package**, **CLI tool**, and **Rust library**. Pure Rust
 
 ## Performance
 
-Benchmarked on COCO val2017 (5,000 images, 36,781 ground truth annotations, ~43,700 detections), Apple M1 MacBook Air:
+Benchmarked on COCO val2017 (5,000 images, 36,781 synthetic detections), Apple M1 MacBook Air:
 
 | Eval Type | pycocotools | faster-coco-eval | hotcoco |
 |-----------|-------------|------------------|-----------|
-| bbox      | 11.79s      | 3.47s (3.4x)    | 0.74s (15.9x) |
-| segm      | 19.49s      | 10.52s (1.9x)   | 1.58s (12.3x) |
-| keypoints | 4.79s       | 3.08s (1.6x)    | 0.19s (25.0x) |
+| bbox      | 9.46s  | 2.45s (3.9x)  | **0.41s (23.0x)** |
+| segm      | 9.16s  | 4.36s (2.1x)  | **0.49s (18.6x)** |
+| keypoints | 2.62s  | 1.78s (1.5x)  | **0.21s (12.7x)** |
 
 Speedups in parentheses are vs pycocotools. Results verified against pycocotools on COCO val2017 with a 10,000+ case parity test suite — your AP scores won't change.
 

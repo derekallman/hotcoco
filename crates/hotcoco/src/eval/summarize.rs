@@ -819,6 +819,7 @@ impl COCOeval {
         };
 
         Ok(EvalResults {
+            hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
             params: EvalParams::from_params(&self.params, self.is_lvis),
             metrics,
             per_class: per_class_map,

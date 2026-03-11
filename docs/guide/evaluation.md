@@ -96,7 +96,7 @@ Detection format — each result needs `image_id`, `category_id`, `keypoints` as
 
 Each keypoint has an `(x, y)` position and a visibility flag `v` (0 = not labeled, 1 = labeled but not visible, 2 = labeled and visible).
 
-Similarity is measured using Object Keypoint Similarity (OKS) instead of IoU. OKS uses per-keypoint sigma values that account for annotation noise — keypoints with higher variance (like hips) are weighted less strictly than precise ones (like eyes).
+Similarity is measured using Object Keypoint Similarity ([OKS](https://cocodataset.org/#keypoints-eval)) instead of IoU. OKS uses per-keypoint sigma values that account for annotation noise — keypoints with higher variance (like hips) are weighted less strictly than precise ones (like eyes).
 
 **Differences from bbox/segm:**
 
@@ -106,7 +106,7 @@ Similarity is measured using Object Keypoint Similarity (OKS) instead of IoU. OK
 
 ## The 12 COCO metrics
 
-`summarize()` computes and prints these metrics (10 for keypoints):
+`summarize()` computes and prints these metrics (10 for keypoints). The evaluation protocol is defined in the [COCO detection evaluation](https://cocodataset.org/#detection-eval) specification ([Lin et al., ECCV 2014](https://arxiv.org/abs/1405.0312)):
 
 | Index | Metric | IoU | Area | MaxDets |
 |-------|--------|-----|------|---------|
@@ -125,7 +125,7 @@ Similarity is measured using Object Keypoint Similarity (OKS) instead of IoU. OK
 
 - **AP** (Average Precision) is the area under the precision-recall curve, averaged across IoU thresholds.
 - **AR** (Average Recall) is the maximum recall at a fixed number of detections per image, averaged across IoU thresholds.
-- **Area ranges**: small (0-32²), medium (32²-96²), large (96²+) pixels.
+- **Area ranges**: small (area < 32² px²), medium (32² ≤ area < 96² px²), large (area ≥ 96² px²).
 
 ## Customizing parameters
 
@@ -179,7 +179,7 @@ See [Params](../api/params.md) for the full list of configurable parameters.
 
 ## LVIS evaluation
 
-[LVIS](https://www.lvisdataset.org/) is a large-vocabulary instance segmentation dataset with ~1,200 categories. It uses **federated annotation** — each image is only exhaustively labeled for a subset of categories. Running standard COCO eval on LVIS over-penalizes detectors by treating every unannotated category as a missed detection. hotcoco handles this correctly out of the box.
+[LVIS](https://www.lvisdataset.org/) ([Gupta et al., ECCV 2019](https://arxiv.org/abs/1908.03195)) is a large-vocabulary instance segmentation dataset with ~1,200 categories. It uses **federated annotation** — each image is only exhaustively labeled for a subset of categories. Running standard COCO eval on LVIS over-penalizes detectors by treating every unannotated category as a missed detection. hotcoco handles this correctly out of the box.
 
 ### Drop-in replacement for lvis-api
 
@@ -238,15 +238,15 @@ results = ev.get_results()
 | APs | AP for small objects (area < 32²) |
 | APm | AP for medium objects (32² ≤ area < 96²) |
 | APl | AP for large objects (area ≥ 96²) |
-| APr | AP for rare categories (1–10 instances) |
-| APc | AP for common categories (11–100 instances) |
-| APf | AP for frequent categories (100+ instances) |
+| APr | AP for rare categories (1–10 training images) |
+| APc | AP for common categories (11–100 training images) |
+| APf | AP for frequent categories (100+ training images) |
 | AR@300 | Mean recall @ max 300 detections per image |
 | ARs@300 | AR for small objects |
 | ARm@300 | AR for medium objects |
 | ARl@300 | AR for large objects |
 
-The frequency split (rare / common / frequent) is determined by the `frequency` field on each category in the LVIS annotation file (`"r"`, `"c"`, `"f"`).
+The frequency split (rare / common / frequent) is determined by the `frequency` field on each category in the LVIS annotation file (`"r"`, `"c"`, `"f"`). These correspond to the number of training images in which the category appears, as defined in the LVIS paper.
 
 `get_results()` returns all 13 metrics as a dict for programmatic access.
 
@@ -333,7 +333,7 @@ cm = ev.confusion_matrix(iou_thr=0.75, max_det=50, min_score=0.3)
 
 ## TIDE error analysis
 
-Once AP tells you *how good* your model is, TIDE ([Bolya et al., ECCV 2020](https://github.com/dbolya/tide)) tells you *why* it falls short. `tide_errors()` decomposes every false positive and false negative into one of six mutually exclusive error types and reports the ΔAP — how much AP would improve if each error type were eliminated.
+Once AP tells you *how good* your model is, TIDE ([Bolya et al., ECCV 2020](https://arxiv.org/abs/2008.08115), [code](https://github.com/dbolya/tide)) tells you *why* it falls short. `tide_errors()` decomposes every false positive and false negative into one of six mutually exclusive error types and reports the ΔAP — how much AP would improve if each error type were eliminated.
 
 `evaluate()` must be called before `tide_errors()`.
 

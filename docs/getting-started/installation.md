@@ -58,7 +58,7 @@ Full API documentation is on [docs.rs](https://docs.rs/hotcoco).
 
 ## Sample data
 
-The fastest way to get something running is to use the COCO val2014 annotations and the synthetic detection results from the [cocoapi repository](https://github.com/ppwwyyxx/cocoapi). Everything downloads in seconds and no images are needed.
+The fastest way to get something running is to use the [COCO](https://cocodataset.org/) val2014 annotations and the synthetic detection results from the [cocoapi repository](https://github.com/ppwwyyxx/cocoapi). Everything downloads in seconds and no images are needed.
 
 ```bash
 # Annotations (~240 MB — instances + keypoints)

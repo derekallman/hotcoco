@@ -955,6 +955,7 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
 
 Must be called after ``summarize()`` (or ``run()``). Returns a dict with:
 
+- ``hotcoco_version``: hotcoco version string that produced these results.
 - ``params``: evaluation parameters (iou_type, iou_thresholds, area_ranges, max_dets)
 - ``metrics``: summary metrics (AP, AP50, AP75, etc.)
 - ``per_class``: per-category AP values (only if ``per_class=True``)
@@ -975,7 +976,7 @@ dict
             .results(per_class)
             .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
         let json_str = results
-            .to_json_string()
+            .to_json()
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
         let json_mod = py.import("json")?;
         let dict = json_mod.call_method1("loads", (json_str,))?;
@@ -1128,6 +1129,7 @@ Returns a dict with:
 - ``normalized``: ``np.ndarray`` of shape ``(K+1, K+1)``, dtype ``float64``.
   Each row is divided by its row sum (zero rows stay zero).
 - ``cat_ids``: ``list[int]`` — category IDs for rows/cols ``0..K-1``.
+- ``cat_names``: ``list[str]`` — category names for rows/cols ``0..K-1``, same order as ``cat_ids``.
 - ``num_cats``: ``int`` — number of categories (``K``).
 - ``iou_thr``: ``float`` — IoU threshold used for matching.
 
@@ -1175,6 +1177,7 @@ Example
         dict.set_item("matrix", matrix_arr)?;
         dict.set_item("normalized", norm_arr)?;
         dict.set_item("cat_ids", cm.cat_ids)?;
+        dict.set_item("cat_names", cm.cat_names)?;
         dict.set_item("num_cats", cm.num_cats)?;
         dict.set_item("iou_thr", cm.iou_thr)?;
 

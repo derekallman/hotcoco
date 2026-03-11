@@ -4,13 +4,13 @@
 
 | Feature | pycocotools | faster-coco-eval | hotcoco |
 |---------|-------------|------------------|---------|
-| **Installation** | Requires C compiler | Requires C compiler | Prebuilt wheels — `pip install` just works |
-| **Metric parity** | Reference | Within 1e-3 | Within 1e-4 (keypoints exact) |
-| **LVIS evaluation** | No | No | Yes — 13 metrics, federated annotation |
+| **Installation** | Requires C compiler | Prebuilt wheels available | Prebuilt wheels — `pip install` just works |
+| **Metric parity** | Reference | Exact | ≤1e-4 bbox, ≤2e-4 segm, exact keypoints |
+| **LVIS evaluation** | No | Yes — via `lvis_style=True` flag | Yes — 13 metrics, `LVISeval` class, `init_as_lvis()` |
 | **TIDE error analysis** | No | No | Yes — 6 error types, ΔAP per type |
 | **Confusion matrix** | No | No | Yes — cross-category, configurable threshold |
 | **F-scores** | No | No | Yes — F-beta at any β |
-| **Per-class AP** | Manual only | Manual only | Built-in via `get_results(per_class=True)` |
+| **Per-class AP** | Manual only | Yes — via `extended_metrics` | Built-in via `get_results(per_class=True)` |
 | **Dataset operations** | No | No | Yes — filter, merge, split, sample, stats |
 | **Format conversion** | No | No | Yes — COCO ↔ YOLO |
 | **PyTorch integration** | Via torchvision | No | Yes — `CocoDetection`, `CocoEvaluator` |
@@ -18,7 +18,7 @@
 | **CLI** | No | No | Yes — `coco` (Python) + `coco-eval` (Rust) |
 | **Results export** | No | No | Yes — JSON with params + metrics + per-class |
 | **Memory at scale** | 24 GB committed on O365 | 30 GB committed on O365 | 8 GB committed on O365 |
-| **Python versions** | 3.7+ | 3.8+ | 3.9+ |
+| **Python versions** | 3.7+ | 3.7+ | 3.9+ |
 | **License** | BSD | BSD | MIT |
 
 ## Speed benchmarks
@@ -27,7 +27,7 @@
 **Dataset:** COCO val2017 — 5,000 images
 **Detections:** 36,781 synthetic (seed=42; AP scores are not meaningful)
 **Timing:** Wall clock time, single run
-**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.1.0
+**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.2.0
 
 ### Results (1x detections)
 
@@ -57,7 +57,7 @@ hotcoco scales better at higher detection counts due to multi-threaded evaluatio
 **Dataset:** Objects365 val — 80,000 images, 1.2M annotations, 365 categories
 **Detections:** ~1.2M synthetic bbox (capped at 100/image, seed=42)
 **Timing:** Wall clock time, single run
-**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.1.0
+**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.2.0
 
 | Library | Time | Peak RAM | Committed | Speedup |
 |---------|------|----------|-----------|---------|
@@ -71,7 +71,7 @@ Peak RAM is the peak working set (physical memory). Committed includes swap — 
 
 **Dataset:** COCO val2017 — 5,000 images, synthetic detections (included in repository)
 
-All 34 metrics accurate to within 1e-4 of pycocotools:
+All 34 metrics match pycocotools within tolerance (bbox ≤1e-4, segm ≤2e-4, keypoints exact):
 
 ### Bounding box
 

@@ -1,0 +1,75 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 640,
+      "height": 480,
+      "file_name": "img_1.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cat_1",
+      "supercategory": "thing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        0.0,
+        50.0,
+        50.0
+      ],
+      "area": 2500.0,
+      "iscrowd": 1,
+      "segmentation": []
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        300.0,
+        300.0,
+        80.0,
+        60.0
+      ],
+      "area": 4800.0,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        302.0,
+        302.0,
+        76.0,
+        56.0
+      ],
+      "score": 0.9
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.5
+    }
+  ]
+}

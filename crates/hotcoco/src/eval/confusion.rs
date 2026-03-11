@@ -244,10 +244,21 @@ impl COCOeval {
             }
         }
 
+        let cat_names: Vec<String> = cat_ids
+            .iter()
+            .map(|&id| {
+                self.coco_gt
+                    .get_cat(id)
+                    .map(|c| c.name.clone())
+                    .unwrap_or_else(|| format!("cat_{id}"))
+            })
+            .collect();
+
         ConfusionMatrix {
             matrix,
             num_cats,
             cat_ids,
+            cat_names,
             iou_thr,
         }
     }

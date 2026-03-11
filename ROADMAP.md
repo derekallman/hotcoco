@@ -56,7 +56,7 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 **Shipped.**
 
-~~Standard COCO evaluation protocol over 365 categories and ~2M images.~~ Verified working on real O365 annotation data. Published benchmark numbers coming soon — pending runs on more capable hardware.
+~~Standard COCO evaluation protocol over 365 categories and ~2M images.~~ Verified working on real O365 annotation data. Benchmark numbers published: 39× vs pycocotools, 14× vs faster-coco-eval on 80k images / 365 categories / 1.2M detections, using 8 GB committed vs 24–30 GB for alternatives.
 
 ### LVIS
 
@@ -69,14 +69,6 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 **Shipped.**
 
 ~~Per-category confusion matrix generation to identify systematic misclassifications. Self-contained, high value for practitioners debugging model failures, and the natural starting point for the visualization story.~~
-
----
-
-## Tier 1 — Next
-
-### O365 Benchmark Numbers
-
-Publish benchmark results for Objects365-scale evaluation once runs on more capable hardware are complete.
 
 ---
 

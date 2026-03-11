@@ -3,7 +3,11 @@
 # hotcoco
 
 <p class="hero-tagline">
-COCO evaluation shouldn't be the slowest part of your training loop.
+Fast enough for every epoch, lean enough for every dataset.
+</p>
+
+<p class="hero-sub">
+A drop-in replacement for pycocotools that doesn't become the bottleneck — in your training loop or at foundation model scale. Up to 23× faster on standard COCO, 39× faster on Objects365, and fits comfortably in memory where alternatives run out.
 </p>
 
 <div class="hero-actions" markdown>
@@ -19,7 +23,7 @@ COCO evaluation shouldn't be the slowest part of your training loop.
 
 <div class="feature-card" markdown>
 <strong>Eval in under a second</strong>
-<p>Up to 25× faster than pycocotools. Eval goes from a bottleneck to background noise.</p>
+<p>Up to 23× faster than pycocotools. Eval goes from a bottleneck to background noise.</p>
 </div>
 
 <div class="feature-card" markdown>
@@ -92,15 +96,15 @@ pip install hotcoco
 
 ## Performance
 
-Benchmarked on COCO val2017 (5,000 images, 36,781 GT annotations, ~43,700 detections), Apple M1 MacBook Air:
+Benchmarked on COCO val2017 (5,000 images, 36,781 synthetic detections), Apple M1 MacBook Air:
 
 <div class="benchmark-table" markdown>
 
 | Eval Type | pycocotools | faster-coco-eval | hotcoco |
 |-----------|-------------|------------------|---------|
-| bbox      | 11.79s | 3.47s (3.4×) | **0.74s (15.9×)** |
-| segm      | 19.49s | 10.52s (1.9×) | **1.58s (12.3×)** |
-| keypoints | 4.79s  | 3.08s (1.6×) | **0.19s (25.0×)** |
+| bbox      | 9.46s | 2.45s (3.9×) | **0.41s (23.0×)** |
+| segm      | 9.16s | 4.36s (2.1×) | **0.49s (18.6×)** |
+| keypoints | 2.62s | 1.78s (1.5×) | **0.21s (12.7×)** |
 
 </div>
 

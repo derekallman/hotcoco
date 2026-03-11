@@ -15,7 +15,7 @@ name = "hotcoco"
 crate-type = ["cdylib"]
 
 [dependencies]
-hotcoco-core = { version = "0.1.0", path = "../hotcoco", package = "hotcoco" }
+hotcoco-core = { version = "0.2.0", path = "../hotcoco", package = "hotcoco" }
 pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39"] }
 numpy = "0.23"
 serde_json = "1"

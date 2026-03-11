@@ -2356,7 +2356,7 @@ fn test_results_save_roundtrip() {
     ev.run();
 
     let results = ev.results(true).unwrap();
-    let json = results.to_json_string().unwrap();
+    let json = results.to_json().unwrap();
 
     // Verify it's valid JSON with expected structure
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

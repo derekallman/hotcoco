@@ -1,0 +1,18 @@
+{
+  "info": {},
+  "licenses": [],
+  "images": [
+    {"id": 1, "width": 640, "height": 480, "file_name": "img1.jpg"}
+  ],
+  "categories": [
+    {"id": 1, "name": "cat", "supercategory": "animal"}
+  ],
+  "annotations": [
+    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 100, 80], "area": 8000, "iscrowd": 0, "segmentation": []},
+    {"id": 2, "image_id": 1, "category_id": 1, "bbox": [200, 150, 60, 40], "area": 2400, "iscrowd": 0, "segmentation": []}
+  ],
+  "detections": [
+    {"id": 101, "image_id": 1, "category_id": 1, "bbox": [12, 22, 98, 78], "score": 0.95, "area": 7644, "segmentation": []},
+    {"id": 102, "image_id": 1, "category_id": 1, "bbox": [205, 155, 55, 35], "score": 0.70, "area": 1925, "segmentation": []}
+  ]
+}

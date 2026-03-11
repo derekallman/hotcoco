@@ -130,7 +130,7 @@ Maximum detections per image. The summary metrics report results at each of thes
 
 ### `area_rng`
 
-Area ranges for size-based evaluation. Each range is `[min_area, max_area]` in pixels.
+Area ranges for size-based evaluation. Each range is `[min_area, max_area]` in square pixels (pixel area).
 
 | | Python | Rust |
 |---|---|---|
@@ -138,7 +138,7 @@ Area ranges for size-based evaluation. Each range is `[min_area, max_area]` in p
 | **Default (bbox/segm)** | `[[0, 1e10], [0, 1024], [1024, 9216], [9216, 1e10]]` | Same |
 | **Default (keypoints)** | `[[0, 1e10], [1024, 9216], [9216, 1e10]]` | Same |
 
-The defaults correspond to: all, small (0-32²), medium (32²-96²), large (96²+). Keypoints skip the small range.
+The defaults correspond to: all, small (area < 32² px²), medium (32² ≤ area < 96² px²), large (area ≥ 96² px²). Keypoints skip the small range.
 
 !!! note "camelCase alias"
     Also available as `areaRng` in Python.

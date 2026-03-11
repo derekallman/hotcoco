@@ -1,0 +1,127 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 640,
+      "height": 480,
+      "file_name": "img_1.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "person",
+      "supercategory": "person",
+      "keypoints": [
+        "nose",
+        "left_eye",
+        "right_eye"
+      ],
+      "skeleton": []
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        10.0,
+        10.0,
+        100.0,
+        150.0
+      ],
+      "area": 15000.0,
+      "iscrowd": 0,
+      "segmentation": [],
+      "keypoints": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "num_keypoints": 0
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        200.0,
+        10.0,
+        100.0,
+        150.0
+      ],
+      "area": 15000.0,
+      "iscrowd": 0,
+      "segmentation": [],
+      "keypoints": [
+        250,
+        50,
+        2,
+        250,
+        60,
+        2,
+        250,
+        55,
+        2
+      ],
+      "num_keypoints": 3
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        12.0,
+        12.0,
+        96.0,
+        146.0
+      ],
+      "score": 0.9,
+      "keypoints": [
+        60,
+        80,
+        1,
+        62,
+        82,
+        1,
+        61,
+        81,
+        1
+      ]
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        202.0,
+        12.0,
+        96.0,
+        146.0
+      ],
+      "score": 0.85,
+      "keypoints": [
+        252,
+        52,
+        1,
+        252,
+        62,
+        1,
+        252,
+        57,
+        1
+      ]
+    }
+  ]
+}

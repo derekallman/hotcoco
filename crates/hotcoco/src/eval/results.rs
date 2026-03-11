@@ -26,9 +26,11 @@ pub struct EvalParams {
 /// evaluation parameters, and optional per-class breakdown.
 ///
 /// Use [`save`](EvalResults::save) to write JSON to a file, or
-/// [`to_json_string`](EvalResults::to_json_string) to get a JSON string.
+/// [`to_json`](EvalResults::to_json) to get a JSON string.
 #[derive(Debug, Clone, Serialize)]
 pub struct EvalResults {
+    /// hotcoco version that produced these results.
+    pub hotcoco_version: String,
     /// Evaluation parameters used to produce these metrics.
     pub params: EvalParams,
     /// Summary metrics (AP, AP50, AP75, AR1, AR10, AR100, etc.).
@@ -40,7 +42,7 @@ pub struct EvalResults {
 
 impl EvalResults {
     /// Serialize results to a pretty-printed JSON string.
-    pub fn to_json_string(&self) -> Result<String, io::Error> {
+    pub fn to_json(&self) -> Result<String, io::Error> {
         serde_json::to_string_pretty(self).map_err(io::Error::other)
     }
 

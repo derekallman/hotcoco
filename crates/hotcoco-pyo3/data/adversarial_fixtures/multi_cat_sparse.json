@@ -1,0 +1,147 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 640,
+      "height": 480,
+      "file_name": "img_1.jpg"
+    },
+    {
+      "id": 2,
+      "width": 640,
+      "height": 480,
+      "file_name": "img_2.jpg"
+    },
+    {
+      "id": 3,
+      "width": 640,
+      "height": 480,
+      "file_name": "img_3.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cat_1",
+      "supercategory": "thing"
+    },
+    {
+      "id": 2,
+      "name": "cat_2",
+      "supercategory": "thing"
+    },
+    {
+      "id": 3,
+      "name": "cat_3",
+      "supercategory": "thing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        10.0,
+        10.0,
+        80.0,
+        60.0
+      ],
+      "area": 4800.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 2,
+      "image_id": 2,
+      "category_id": 2,
+      "bbox": [
+        10.0,
+        10.0,
+        80.0,
+        60.0
+      ],
+      "area": 4800.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 3,
+      "image_id": 3,
+      "category_id": 3,
+      "bbox": [
+        10.0,
+        10.0,
+        80.0,
+        60.0
+      ],
+      "area": 4800.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 4,
+      "image_id": 1,
+      "category_id": 2,
+      "bbox": [
+        100.0,
+        10.0,
+        80.0,
+        60.0
+      ],
+      "area": 4800.0,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        12.0,
+        12.0,
+        76.0,
+        56.0
+      ],
+      "score": 0.9
+    },
+    {
+      "image_id": 2,
+      "category_id": 2,
+      "bbox": [
+        12.0,
+        12.0,
+        76.0,
+        56.0
+      ],
+      "score": 0.85
+    },
+    {
+      "image_id": 3,
+      "category_id": 3,
+      "bbox": [
+        12.0,
+        12.0,
+        76.0,
+        56.0
+      ],
+      "score": 0.8
+    },
+    {
+      "image_id": 1,
+      "category_id": 3,
+      "bbox": [
+        12.0,
+        12.0,
+        76.0,
+        56.0
+      ],
+      "score": 0.7
+    }
+  ]
+}

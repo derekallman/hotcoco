@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use serde::Serialize;
+
 use crate::coco::COCO;
 use crate::params::Params;
 
@@ -48,6 +50,8 @@ pub struct ConfusionMatrix {
     pub num_cats: usize,
     /// Category IDs corresponding to rows/cols 0..num_cats-1.
     pub cat_ids: Vec<u64>,
+    /// Category names corresponding to rows/cols 0..num_cats-1.
+    pub cat_names: Vec<String>,
     pub iou_thr: f64,
 }
 
@@ -82,7 +86,7 @@ impl ConfusionMatrix {
 ///
 /// Produced by [`super::COCOeval::tide_errors`]. Each ΔAP value measures how much
 /// average AP would improve if all errors of that type were fixed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TideErrors {
     /// ΔAP for each error type (fixing all errors of that type).
     /// Keys: `"Cls"`, `"Loc"`, `"Both"`, `"Dupe"`, `"Bkg"`, `"Miss"`, `"FP"`, `"FN"`.

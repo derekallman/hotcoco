@@ -1,0 +1,150 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 1000,
+      "height": 1000,
+      "file_name": "img_1.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cat_1",
+      "supercategory": "thing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        0.0,
+        97.0,
+        97.0
+      ],
+      "area": 9409.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        100.0,
+        0.0,
+        97.0,
+        97.0
+      ],
+      "area": 9409.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 3,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        200.0,
+        0.0,
+        97.0,
+        97.0
+      ],
+      "area": 9409.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 4,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        300.0,
+        0.0,
+        97.0,
+        97.0
+      ],
+      "area": 9409.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 5,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        0.0,
+        97.0,
+        97.0
+      ],
+      "area": 9409.0,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        1.0,
+        1.0,
+        95.0,
+        95.0
+      ],
+      "score": 0.9
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        101.0,
+        1.0,
+        95.0,
+        95.0
+      ],
+      "score": 0.8
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        201.0,
+        1.0,
+        95.0,
+        95.0
+      ],
+      "score": 0.7
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        301.0,
+        1.0,
+        95.0,
+        95.0
+      ],
+      "score": 0.6
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        401.0,
+        1.0,
+        95.0,
+        95.0
+      ],
+      "score": 0.5
+    }
+  ]
+}

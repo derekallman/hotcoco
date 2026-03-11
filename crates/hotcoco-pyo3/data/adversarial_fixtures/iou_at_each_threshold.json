@@ -1,0 +1,275 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 2000,
+      "height": 2000,
+      "file_name": "img_1.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cat_1",
+      "supercategory": "thing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        0.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        0.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 3,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        200.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 4,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        400.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 5,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        600.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 6,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        800.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 7,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        1000.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 8,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        1200.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 9,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        1400.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 10,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        1600.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        32.83333333333333,
+        0.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.99
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        28.532258064516128,
+        200.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.98
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        24.5,
+        400.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.97
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        20.712121212121204,
+        600.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.96
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        17.147058823529406,
+        800.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.95
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        13.785714285714292,
+        1000.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.94
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        10.611111111111114,
+        1200.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.93
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        7.608108108108112,
+        1400.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.92
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        4.763157894736835,
+        1600.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.91
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        2.064102564102555,
+        1800.0,
+        100.0,
+        100.0
+      ],
+      "score": 0.9
+    }
+  ]
+}

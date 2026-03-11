@@ -1,0 +1,259 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 640,
+      "height": 480,
+      "file_name": "img_1.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cat_1",
+      "supercategory": "thing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        10.0,
+        10.0,
+        50.0,
+        50.0
+      ],
+      "area": 2500.0,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.99
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.98
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.97
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.96
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.95
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.94
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.93
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.92
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.91
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.9
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.89
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.88
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.87
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.86
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.85
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.84
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.83
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.82
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.81
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        400.0,
+        400.0,
+        50.0,
+        50.0
+      ],
+      "score": 0.8
+    }
+  ]
+}

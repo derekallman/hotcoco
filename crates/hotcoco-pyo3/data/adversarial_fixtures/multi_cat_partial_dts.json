@@ -1,0 +1,99 @@
+{
+  "info": {
+    "description": "adversarial parity fixture"
+  },
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "width": 500,
+      "height": 500,
+      "file_name": "img_1.jpg"
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "cat_1",
+      "supercategory": "thing"
+    },
+    {
+      "id": 2,
+      "name": "cat_2",
+      "supercategory": "thing"
+    },
+    {
+      "id": 3,
+      "name": "cat_3",
+      "supercategory": "thing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        0.0,
+        0.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 2,
+      "bbox": [
+        200.0,
+        0.0,
+        100.0,
+        100.0
+      ],
+      "area": 10000.0,
+      "iscrowd": 0,
+      "segmentation": []
+    },
+    {
+      "id": 3,
+      "image_id": 1,
+      "category_id": 3,
+      "bbox": [
+        400.0,
+        0.0,
+        80.0,
+        80.0
+      ],
+      "area": 6400.0,
+      "iscrowd": 0,
+      "segmentation": []
+    }
+  ],
+  "detections": [
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        2.0,
+        2.0,
+        96.0,
+        96.0
+      ],
+      "score": 0.9
+    },
+    {
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [
+        102.0,
+        2.0,
+        80.0,
+        80.0
+      ],
+      "score": 0.6
+    }
+  ]
+}

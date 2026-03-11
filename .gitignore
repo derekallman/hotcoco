@@ -133,6 +133,8 @@ site/
 crates/hotcoco-pyo3/data/annotations/
 crates/hotcoco-pyo3/data/*.json
 crates/hotcoco-pyo3/data/__pycache__/
+# Adversarial harness output (generated, not committed)
+crates/hotcoco-pyo3/data/parity_failures/
 
 # uv lock file (transient dev env)
 crates/hotcoco-pyo3/uv.lock

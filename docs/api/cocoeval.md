@@ -288,6 +288,7 @@ Return evaluation results as a serializable dict. Must be called after `summariz
 
 | Key | Type | Description |
 |-----|------|-------------|
+| `"hotcoco_version"` | `str` | hotcoco version that produced these results. |
 | `"params"` | `dict` | Evaluation parameters: `iou_type`, `iou_thresholds`, `area_ranges`, `max_dets`, `is_lvis`. |
 | `"metrics"` | `dict[str, float]` | Summary metrics keyed by name (same keys as `get_results()`). |
 | `"per_class"` | `dict[str, float]` \| absent | Per-category AP values keyed by category name. Only present if `per_class=True`. |
@@ -359,6 +360,7 @@ This method is **standalone** — no `evaluate()` call is needed first.
 | `"matrix"` | `np.ndarray[int64]` shape `(K+1, K+1)` | Raw confusion counts. Rows = GT category, cols = predicted. Index `K` is background. |
 | `"normalized"` | `np.ndarray[float64]` shape `(K+1, K+1)` | Row-normalised version (rows sum to 1.0; zero rows stay zero). |
 | `"cat_ids"` | `list[int]` | Category IDs for rows/cols `0..K-1`. |
+| `"cat_names"` | `list[str]` | Category names for rows/cols `0..K-1`, in the same order as `cat_ids`. |
 | `"num_cats"` | `int` | Number of categories `K`. |
 | `"iou_thr"` | `float` | IoU threshold used. |
 
@@ -401,7 +403,7 @@ tide_errors(
 ) -> dict
 ```
 
-Decompose detection errors into six TIDE error types (Bolya et al., ECCV 2020) and compute ΔAP — the AP gain from eliminating each error type.
+Decompose detection errors into six TIDE error types ([Bolya et al., ECCV 2020](https://arxiv.org/abs/2008.08115)) and compute ΔAP — the AP gain from eliminating each error type.
 
 Requires `evaluate()` to have been called first.
 

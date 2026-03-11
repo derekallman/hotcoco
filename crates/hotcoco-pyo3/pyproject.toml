@@ -4,8 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "hotcoco"
-version = "0.1.0"
-description = "Drop-in pycocotools replacement — 11-26x faster COCO evaluation in pure Rust"
+version = "0.2.0"
+description = "Drop-in pycocotools replacement — up to 23x faster COCO evaluation in pure Rust"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "Derek Allman", email = "derek.allman@yahoo.com" }]
