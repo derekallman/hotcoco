@@ -55,3 +55,46 @@ hotcoco = "0.1"
 ```
 
 Full API documentation is on [docs.rs](https://docs.rs/hotcoco).
+
+## Sample data
+
+The fastest way to get something running is to use the COCO val2014 annotations and the synthetic detection results from the [cocoapi repository](https://github.com/ppwwyyxx/cocoapi). Everything downloads in seconds and no images are needed.
+
+```bash
+# Annotations (~240 MB — instances + keypoints)
+wget http://images.cocodataset.org/annotations/annotations_trainval2014.zip
+unzip annotations_trainval2014.zip
+
+# Synthetic detection results (a few KB each)
+BASE=https://raw.githubusercontent.com/ppwwyyxx/cocoapi/master/results
+wget $BASE/instances_val2014_fakebbox100_results.json
+wget $BASE/instances_val2014_fakesegm100_results.json
+wget $BASE/person_keypoints_val2014_fakekeypoints100_results.json
+```
+
+Expected directory layout after the downloads:
+
+```
+.
+├── annotations/
+│   ├── instances_val2014.json
+│   └── person_keypoints_val2014.json
+├── instances_val2014_fakebbox100_results.json
+├── instances_val2014_fakesegm100_results.json
+└── person_keypoints_val2014_fakekeypoints100_results.json
+```
+
+Then run a quick sanity check:
+
+```python
+from hotcoco import COCO, COCOeval
+
+coco_gt = COCO("annotations/instances_val2014.json")
+coco_dt = coco_gt.load_res("instances_val2014_fakebbox100_results.json")
+
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+```
+
+!!! tip
+    The images (13 GB for val2014) are only needed if you're loading them for visualization or using `CocoDetection` with a dataloader. For evaluation alone, only the JSON files are required.

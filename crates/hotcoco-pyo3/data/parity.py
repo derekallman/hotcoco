@@ -1,6 +1,8 @@
 """Parity check: hotcoco vs pycocotools on COCO val2017.
 
-Verifies all three eval types (bbox, segm, keypoints) against pycocotools.
+Uses third-party published fake result files from ppwwyyxx/cocoapi.
+See docs/getting-started/installation.md for download instructions.
+
 Tolerances match documented verified parity:
   bbox:      <= 1e-4
   segm:      <= 2e-4

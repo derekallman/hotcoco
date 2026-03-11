@@ -235,16 +235,16 @@ coco-eval --gt instances_val2017.json --dt results.json --no-cats
 The standard 12 COCO metrics (10 for keypoints):
 
 ```
- Average Precision (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.783
- Average Precision (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.971
- Average Precision (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.849
- Average Precision (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.621
- Average Precision (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.893
- Average Precision (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.988
- Average Recall (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.502
- Average Recall (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.835
- Average Recall (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.854
- Average Recall (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.701
- Average Recall (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.935
- Average Recall (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.997
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.783
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.971
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.849
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.621
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.893
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.988
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.502
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.835
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.854
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.701
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.935
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.997
 ```

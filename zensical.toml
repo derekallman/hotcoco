@@ -23,6 +23,7 @@ nav = [
     { "COCOeval" = "api/cocoeval.md" },
     { "Params" = "api/params.md" },
     { "mask" = "api/mask.md" },
+    { "PyTorch Integrations" = "api/integrations.md" },
     { "CLI" = "cli.md" },
   ] },
   { "Performance" = [

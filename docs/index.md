@@ -3,7 +3,7 @@
 # hotcoco
 
 <p class="hero-tagline">
-11-26x faster drop-in replacement for pycocotools.
+COCO evaluation shouldn't be the slowest part of your training loop.
 </p>
 
 <div class="hero-actions" markdown>
@@ -18,28 +18,32 @@
 <div class="feature-grid" markdown>
 
 <div class="feature-card" markdown>
-<strong>11-26x faster</strong>
-<p>Keypoints in 0.19s, bbox in 0.74s on COCO val2017. Faster than faster-coco-eval across every eval type.</p>
+<strong>Eval in under a second</strong>
+<p>Up to 25× faster than pycocotools. Eval goes from a bottleneck to background noise.</p>
 </div>
 
 <div class="feature-card" markdown>
-<strong>Same numbers, every time</strong>
-<p>Verified against pycocotools with a 10,000+ case parity test suite. Your AP scores won't change.</p>
+<strong>Your metrics, unchanged</strong>
+<p>10,000+ parity tests against pycocotools. Your AP scores won't budge.</p>
 </div>
 
 <div class="feature-card" markdown>
-<strong>No compiler required</strong>
-<p>Pure Rust, prebuilt wheels for Linux, macOS, and Windows. No Cython, no C extensions, no Microsoft Build Tools.</p>
+<strong>Just pip install</strong>
+<p>Prebuilt wheels for Linux, macOS, and Windows. No Cython, no compiler, nothing to build.</p>
 </div>
 
 <div class="feature-card" markdown>
-<strong>One line to migrate</strong>
-<p>Call <code>init_as_pycocotools()</code> and your existing Detectron2, YOLO, mmdetection, or RF-DETR code works unchanged.</p>
+<strong>Already works with your stack</strong>
+<p><code>init_as_pycocotools()</code> patches imports in-place. Detectron2, mmdetection, RF-DETR — no code changes.</p>
 </div>
 
 </div>
 
 ## Quick start
+
+```bash
+pip install hotcoco
+```
 
 === "Python"
 
@@ -50,9 +54,24 @@
     coco_dt = coco_gt.load_res("detections.json")
 
     ev = COCOeval(coco_gt, coco_dt, "bbox")
-    ev.evaluate()
-    ev.accumulate()
-    ev.summarize()
+    ev.run()
+    ```
+
+=== "Drop-in replacement"
+
+    ```python
+    from hotcoco import init_as_pycocotools
+    init_as_pycocotools()
+
+    # All pycocotools imports now resolve to hotcoco
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+    ```
+
+=== "CLI"
+
+    ```bash
+    coco eval --gt instances_val2017.json --dt detections.json --iou-type bbox
     ```
 
 === "Rust"
@@ -71,12 +90,6 @@
     ev.summarize();
     ```
 
-=== "CLI"
-
-    ```bash
-    coco-eval --gt instances_val2017.json --dt detections.json --iou-type bbox
-    ```
-
 ## Performance
 
 Benchmarked on COCO val2017 (5,000 images, 36,781 GT annotations, ~43,700 detections), Apple M1 MacBook Air:
@@ -84,33 +97,14 @@ Benchmarked on COCO val2017 (5,000 images, 36,781 GT annotations, ~43,700 detect
 <div class="benchmark-table" markdown>
 
 | Eval Type | pycocotools | faster-coco-eval | hotcoco |
-|-----------|-------------|------------------|-----------|
-| bbox      | 11.79s      | 3.47s (3.4x)     | 0.74s (15.9x) |
-| segm      | 19.49s      | 10.52s (1.9x)    | 1.58s (12.3x) |
-| keypoints | 4.79s       | 3.08s (1.6x)     | 0.19s (25.0x) |
+|-----------|-------------|------------------|---------|
+| bbox      | 11.79s | 3.47s (3.4×) | **0.74s (15.9×)** |
+| segm      | 19.49s | 10.52s (1.9×) | **1.58s (12.3×)** |
+| keypoints | 4.79s  | 3.08s (1.6×) | **0.19s (25.0×)** |
 
 </div>
 
-Speedups in parentheses are vs pycocotools. Verified on COCO val2017 with a 10,000+ case parity test suite — your AP scores won't change.
-
-## Zero-code migration
-
-Already using pycocotools? You don't need to touch your existing code:
-
-```python
-from hotcoco import init_as_pycocotools
-init_as_pycocotools()
-
-# All pycocotools imports now use hotcoco
-from pycocotools.coco import COCO
-from pycocotools.cocoeval import COCOeval
-```
-
-See [Migrating from pycocotools](getting-started/migration.md) for the full guide.
-
-## Rust API
-
-For Rust users, the `hotcoco` crate is available on [crates.io](https://crates.io/crates/hotcoco). Full API documentation is on [docs.rs](https://docs.rs/hotcoco).
+All 12 metrics verified against pycocotools on COCO val2017 with a 10,000+ case parity test suite.
 
 ## License
 

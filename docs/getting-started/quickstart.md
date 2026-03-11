@@ -113,18 +113,18 @@ Your results file should be a JSON array of detection dicts:
 Output:
 
 ```
- Average Precision (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.382
- Average Precision (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.584
- Average Precision (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.412
- Average Precision (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.209
- Average Precision (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.420
- Average Precision (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.529
- Average Recall (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.323
- Average Recall (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.498
- Average Recall (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.520
- Average Recall (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.308
- Average Recall (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.562
- Average Recall (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.680
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.382
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.584
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.412
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.209
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.420
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.529
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.323
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.498
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.520
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.308
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.562
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.680
 ```
 
 ## 5. Access metrics programmatically
@@ -132,20 +132,19 @@ Output:
 === "Python"
 
     ```python
-    stats = ev.stats
+    results = ev.get_results()
+    # {"AP": 0.382, "AP50": 0.584, "AP75": 0.412, "APs": 0.209, "APm": 0.420, "APl": 0.529, ...}
 
-    ap = stats[0]       # AP @ IoU=0.50:0.95, area=all
-    ap_50 = stats[1]    # AP @ IoU=0.50
-    ap_75 = stats[2]    # AP @ IoU=0.75
-    ap_s = stats[3]     # AP @ area=small
-    ap_m = stats[4]     # AP @ area=medium
-    ap_l = stats[5]     # AP @ area=large
-    ar_1 = stats[6]     # AR @ maxDets=1
-    ar_10 = stats[7]    # AR @ maxDets=10
-    ar_100 = stats[8]   # AR @ maxDets=100
-    ar_s = stats[9]     # AR @ area=small
-    ar_m = stats[10]    # AR @ area=medium
-    ar_l = stats[11]    # AR @ area=large
+    ap = results["AP"]
+    ap_50 = results["AP50"]
+    ```
+
+    For per-class breakdowns or experiment tracker integration:
+
+    ```python
+    import wandb
+    wandb.log(ev.get_results(prefix="val/bbox", per_class=True), step=epoch)
+    # {"val/bbox/AP": 0.382, ..., "val/bbox/AP/person": 0.72, ...}
     ```
 
 === "Rust"

@@ -208,8 +208,8 @@ Compute and print the standard COCO metrics. Populates `stats`.
 Prints 12 lines for bbox/segm (10 for keypoints):
 
 ```
- Average Precision (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.382
- Average Precision (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.584
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.382
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.584
  ...
 ```
 

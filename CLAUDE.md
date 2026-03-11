@@ -39,6 +39,16 @@ All 12 COCO evaluation metrics (AP, AP50, AP75, APs, APm, APl, AR1, AR10, AR100,
 - Verified on val2017: keypoints exact, bbox within 0.0001, segm within 0.0002.
 - When in doubt, run differential tests against pycocotools on real COCO data before declaring a task complete.
 
+### Verification Sequence (after any eval.rs change)
+
+```bash
+cargo test                                                    # 1. All tests pass
+cd crates/hotcoco-pyo3 && uv run python data/parity.py       # 2. Parity vs pycocotools
+uv run python data/bench.py                                   # 3. (optional) speed check
+```
+
+Tolerances: bbox ≤1e-4, segm ≤2e-4, kpts exact.
+
 ## Benchmarking
 
 - **Use wall clock time**, not CPU time.
@@ -49,7 +59,17 @@ All 12 COCO evaluation metrics (AP, AP50, AP75, APs, APm, APl, AR1, AR10, AR100,
 ## Testing
 
 - Run `cargo test` after any Rust code changes and verify all tests pass before committing.
-- For Python binding changes, also run `maturin develop --release --uv && python -c 'import hotcoco'` as a smoke test.
+- For Python binding changes, run from `crates/hotcoco-pyo3/`: `uv run maturin develop --release && uv run python -c 'import hotcoco'` as a smoke test.
+
+## Skills
+
+Custom skills for this project (invoke with `/skill-name`):
+- `/parity` — run parity check vs pycocotools
+- `/bench` — run benchmarks and update README tables
+- `/docs` — documentation workflow for new API surface
+- `/ship` — feature-complete: sync docs/changelog, then commit
+- `/adversarial-parity` — attacker/fixer loop to find parity bugs
+- `/voice` — audit tone and style in a single doc file
 
 ## Workflow Preferences
 
@@ -66,8 +86,8 @@ cargo clippy                   # Lint
 cargo fmt --all                # Format (use --all, not --workspace)
 cargo fmt --all -- --check     # Check formatting
 
-# Python bindings (from crates/hotcoco-pyo3/)
-# One-time setup: uv venv && uv pip install maturin ".[dev]"
+# Python bindings (run from crates/hotcoco-pyo3/)
+# One-time setup: cd crates/hotcoco-pyo3 && uv venv && uv pip install maturin ".[dev]"
 uv run maturin develop --release  # Build + install into .venv
 ```
 
@@ -79,6 +99,8 @@ Use a task agent to find every file and line that references the old naming conv
 
 - This project targets Python users first, Rust users second. Documentation, README, and examples should lead with Python usage in a Python-first tone similar to Polars. Do not be Rust-centric.
 - Before writing the full documentation, show me an outline with 2-3 example sections so I can confirm the tone, structure, and audience focus. Do not generate all pages until I approve.
+
+Docs are built with Zensical (config: `zensical.toml`). Preview locally with `zensical serve`.
 
 When updating documentation (`docs/`) or `README.md`, always ensure both reflect the same information. Any change to one must be checked against the other — benchmark numbers, API examples, CLI flags, installation instructions, and feature descriptions must stay consistent across both.
 

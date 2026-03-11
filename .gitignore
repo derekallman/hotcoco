@@ -137,3 +137,4 @@ crates/hotcoco-pyo3/data/__pycache__/
 # uv lock file (transient dev env)
 crates/hotcoco-pyo3/uv.lock
 external/
+.claude.local.md
