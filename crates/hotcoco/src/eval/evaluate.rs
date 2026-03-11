@@ -124,20 +124,18 @@ impl COCOeval {
         if self.is_lvis {
             let cat_id_to_k_idx: HashMap<u64, usize> =
                 cat_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-            let mut rare = Vec::new();
-            let mut common = Vec::new();
-            let mut frequent = Vec::new();
+            let mut freq_groups = super::types::FreqGroups::default();
             for cat in &self.coco_gt.dataset.categories {
                 if let Some(&k_idx) = cat_id_to_k_idx.get(&cat.id) {
                     match cat.frequency.as_deref() {
-                        Some("r") => rare.push(k_idx),
-                        Some("c") => common.push(k_idx),
-                        Some("f") => frequent.push(k_idx),
+                        Some("r") => freq_groups.rare.push(k_idx),
+                        Some("c") => freq_groups.common.push(k_idx),
+                        Some("f") => freq_groups.frequent.push(k_idx),
                         _ => {}
                     }
                 }
             }
-            self.freq_groups = [rare, common, frequent];
+            self.freq_groups = freq_groups;
         }
 
         let sparse_pairs = self.collect_sparse_pairs(&cat_ids, &neg_cats);
@@ -170,9 +168,8 @@ impl COCOeval {
         }
 
         // Evaluate each (image, category, area_range) combination in parallel.
-        // sparse_pairs × area_rngs replaces the old cat_ids × area_rngs × img_ids product.
+        // sparse_pairs × area_ranges replaces the old cat_ids × area_ranges × img_ids product.
         let max_det = *self.params.max_dets.last().unwrap_or(&100);
-        let area_rngs = self.params.area_rng.clone();
 
         // Build shared context (borrows self after self.ious is fully populated).
         let ctx = EvalImgContext {
@@ -184,14 +181,14 @@ impl COCOeval {
 
         // Tuple: (cat_id, area_rng, img_id, not_exhaustive_cat)
         let mut eval_tuples: Vec<(u64, [f64; 2], u64, bool)> =
-            Vec::with_capacity(sparse_pairs.len() * area_rngs.len());
+            Vec::with_capacity(sparse_pairs.len() * self.params.area_ranges.len());
         for &(img_id, cat_id) in &sparse_pairs {
             let not_exhaustive_cat = self.is_lvis
                 && not_exhaustive
                     .get(&img_id)
                     .is_some_and(|s| s.contains(&cat_id));
-            for &area_rng in &area_rngs {
-                eval_tuples.push((cat_id, area_rng, img_id, not_exhaustive_cat));
+            for ar in &self.params.area_ranges {
+                eval_tuples.push((cat_id, ar.range, img_id, not_exhaustive_cat));
             }
         }
 

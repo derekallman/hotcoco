@@ -173,7 +173,7 @@ Modify `ev.params` before calling `evaluate()`:
     ```
 
 !!! note
-    Changing `iou_thrs`, `max_dets`, or `area_rng_lbl` from their defaults affects what `summarize()` can display. The 12-metric output format is fixed — for example, AP50 looks for IoU=0.50 in your thresholds and shows `-1.000` if it's not there. A warning is printed when your parameters don't match the expected defaults. Filtering by `img_ids`, `cat_ids`, or setting `use_cats` is safe and won't trigger warnings.
+    Changing `iou_thrs`, `max_dets`, or `area_ranges` from their defaults affects what `summarize()` can display. The 12-metric output format is fixed — for example, AP50 looks for IoU=0.50 in your thresholds and shows `-1.000` if it's not there. A warning is printed when your parameters don't match the expected defaults. Filtering by `img_ids`, `cat_ids`, or setting `use_cats` is safe and won't trigger warnings.
 
 See [Params](../api/params.md) for the full list of configurable parameters.
 
@@ -427,6 +427,54 @@ ev.f_scores(beta=2.0)  # recall-weighted     → {"F2.0": ..., "F2.050": ..., "F
 F-scores complement `get_results()` when you care about a specific operating point rather than area-under-curve. A high AP with a low F1 often signals that performance is concentrated at high recall or high precision, not both simultaneously.
 
 See [`f_scores`](../api/cocoeval.md#f_scores) in the API reference for full parameter details.
+
+## Saving results to JSON
+
+`results()` and `save_results()` serialize the full evaluation output — parameters, summary metrics, and optionally per-category AP — to a JSON dict or file. Both require `summarize()` (or `run()`) first.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+# Get results as a dict
+r = ev.results()
+print(r["metrics"]["AP"])      # 0.378
+print(r["params"]["iou_type"]) # "bbox"
+
+# Save to a file
+ev.save_results("results.json")
+
+# Include per-category AP
+ev.save_results("results.json", per_class=True)
+```
+
+The JSON structure:
+
+```json
+{
+  "params": {
+    "iou_type": "bbox",
+    "iou_thresholds": [0.5, 0.55, ...],
+    "area_ranges": {"all": [0, 10000000000.0], "small": [0, 1024.0], ...},
+    "max_dets": [1, 10, 100],
+    "is_lvis": false
+  },
+  "metrics": {
+    "AP": 0.378, "AP50": 0.584, "AP75": 0.412, ...
+  },
+  "per_class": {
+    "person": 0.58, "car": 0.41, ...
+  }
+}
+```
+
+From the `coco-eval` CLI, pass `--output <path>` to write the same JSON automatically (always includes per-category AP):
+
+```bash
+coco-eval --gt instances_val2017.json --dt bbox_results.json --output results.json
+```
+
+---
 
 ## Logging metrics
 

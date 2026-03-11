@@ -3,6 +3,16 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+/// A single area-range filter: a human-readable label paired with its `[min, max]` bounds.
+///
+/// Used in [`Params::area_ranges`] to keep labels and ranges in sync.
+/// Standard COCO labels are `"all"`, `"small"`, `"medium"`, `"large"`.
+#[derive(Debug, Clone)]
+pub struct AreaRange {
+    pub label: String,
+    pub range: [f64; 2],
+}
+
 /// The type of IoU (intersection over union) computation to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum IouType {
@@ -59,10 +69,9 @@ pub struct Params {
     pub rec_thrs: Vec<f64>,
     /// Maximum detections per image for each summary metric (default: [1, 10, 100]).
     pub max_dets: Vec<usize>,
-    /// Area ranges as `[min, max]` for filtering (default: all/small/medium/large).
-    pub area_rng: Vec<[f64; 2]>,
-    /// Labels for each area range (e.g. "all", "small", "medium", "large").
-    pub area_rng_lbl: Vec<String>,
+    /// Area ranges for filtering, each with a label and `[min, max]` bounds.
+    /// Default labels: `"all"`, `"small"`, `"medium"`, `"large"` (3 ranges for keypoints).
+    pub area_ranges: Vec<AreaRange>,
     /// Whether to evaluate per-category (true) or pool all categories (false).
     pub use_cats: bool,
     /// Per-keypoint OKS sigmas (default: 17 COCO keypoint sigmas).
@@ -70,35 +79,54 @@ pub struct Params {
 }
 
 impl Params {
+    /// Index of the area range with the given label, or `None` if not found.
+    pub fn area_range_idx(&self, label: &str) -> Option<usize> {
+        self.area_ranges.iter().position(|ar| ar.label == label)
+    }
+
     /// Create default parameters for the given evaluation type.
     ///
     /// Keypoint evaluation uses 3 area ranges (all/medium/large) and a single
     /// max-detections value of 20. All other types use 4 area ranges
     /// (all/small/medium/large) and max-detections of [1, 10, 100].
     pub fn new(iou_type: IouType) -> Self {
-        let (max_dets, area_rng, area_rng_lbl) = match iou_type {
+        let (max_dets, area_ranges) = match iou_type {
             IouType::Keypoints => (
                 vec![20],
                 vec![
-                    [0.0, 1e10],
-                    [32_f64.powi(2), 96_f64.powi(2)],
-                    [96_f64.powi(2), 1e10],
+                    AreaRange {
+                        label: "all".into(),
+                        range: [0.0, 1e10],
+                    },
+                    AreaRange {
+                        label: "medium".into(),
+                        range: [32_f64.powi(2), 96_f64.powi(2)],
+                    },
+                    AreaRange {
+                        label: "large".into(),
+                        range: [96_f64.powi(2), 1e10],
+                    },
                 ],
-                vec!["all".into(), "medium".into(), "large".into()],
             ),
             _ => (
                 vec![1, 10, 100],
                 vec![
-                    [0.0, 1e10],
-                    [0.0, 32_f64.powi(2)],
-                    [32_f64.powi(2), 96_f64.powi(2)],
-                    [96_f64.powi(2), 1e10],
-                ],
-                vec![
-                    "all".into(),
-                    "small".into(),
-                    "medium".into(),
-                    "large".into(),
+                    AreaRange {
+                        label: "all".into(),
+                        range: [0.0, 1e10],
+                    },
+                    AreaRange {
+                        label: "small".into(),
+                        range: [0.0, 32_f64.powi(2)],
+                    },
+                    AreaRange {
+                        label: "medium".into(),
+                        range: [32_f64.powi(2), 96_f64.powi(2)],
+                    },
+                    AreaRange {
+                        label: "large".into(),
+                        range: [96_f64.powi(2), 1e10],
+                    },
                 ],
             ),
         };
@@ -119,8 +147,7 @@ impl Params {
             iou_thrs,
             rec_thrs,
             max_dets,
-            area_rng,
-            area_rng_lbl,
+            area_ranges,
             use_cats: true,
             kpt_oks_sigmas,
         }

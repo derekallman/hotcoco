@@ -272,6 +272,64 @@ Print a formatted results table to stdout. For LVIS, matches the lvis-api `print
 
 ---
 
+### `results`
+
+```python
+results(per_class: bool = False) -> dict
+```
+
+Return evaluation results as a serializable dict. Must be called after `summarize()` (or `run()`). Raises `RuntimeError` if `summarize()` has not been called.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `per_class` | `bool` | `False` | If `True`, include per-category AP values under the `"per_class"` key. |
+
+**Returns** a dict with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"params"` | `dict` | Evaluation parameters: `iou_type`, `iou_thresholds`, `area_ranges`, `max_dets`, `is_lvis`. |
+| `"metrics"` | `dict[str, float]` | Summary metrics keyed by name (same keys as `get_results()`). |
+| `"per_class"` | `dict[str, float]` \| absent | Per-category AP values keyed by category name. Only present if `per_class=True`. |
+
+```python
+ev.run()
+r = ev.results()
+print(r["metrics"]["AP"])
+
+# With per-category breakdown
+r = ev.results(per_class=True)
+print(r["per_class"]["person"])
+```
+
+---
+
+### `save_results`
+
+```python
+save_results(path: str, per_class: bool = False) -> None
+```
+
+Save evaluation results to a JSON file. Must be called after `summarize()` (or `run()`). Raises `RuntimeError` if `summarize()` has not been called, or `IOError` if the file cannot be written.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `path` | `str` | — | Output file path. |
+| `per_class` | `bool` | `False` | If `True`, include per-category AP values. |
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+ev.save_results("results.json")
+
+# With per-category AP
+ev.save_results("results_per_class.json", per_class=True)
+```
+
+The JSON structure matches the dict returned by `results()`.
+
+---
+
 ### `confusion_matrix`
 
 ```python

@@ -2,11 +2,14 @@ use std::collections::HashMap;
 
 use crate::params::{IouType, Params};
 
-use super::types::AccumulatedEval;
+use super::results::{EvalParams, EvalResults};
+use super::types::{AccumulatedEval, FreqGroup};
 use super::COCOeval;
 
 /// Definition of a single summary metric (one row in the COCO output table).
 pub(super) struct MetricDef {
+    /// Short metric name, e.g. "AP", "AP50", "ARs". Used as the key in `get_results()`.
+    pub name: &'static str,
     /// true = Average Precision, false = Average Recall.
     pub ap: bool,
     /// Specific IoU threshold, or None to average over all thresholds.
@@ -15,81 +18,108 @@ pub(super) struct MetricDef {
     pub area_lbl: &'static str,
     /// Maximum detections per image for this metric.
     pub max_det: usize,
+    /// LVIS frequency-group AP. When `Some(_)`, all other fields are unused;
+    /// value is mean per-category AP for that frequency bucket.
+    pub freq_group: Option<FreqGroup>,
 }
 
 pub(super) fn metrics_bbox_segm(max_d: usize, max_d_s: usize, max_d_m: usize) -> Vec<MetricDef> {
     vec![
         MetricDef {
+            name: "AP",
             ap: true,
             iou_thr: None,
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AP50",
             ap: true,
             iou_thr: Some(0.5),
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AP75",
             ap: true,
             iou_thr: Some(0.75),
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "APs",
             ap: true,
             iou_thr: None,
             area_lbl: "small",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "APm",
             ap: true,
             iou_thr: None,
             area_lbl: "medium",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "APl",
             ap: true,
             iou_thr: None,
             area_lbl: "large",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AR1",
             ap: false,
             iou_thr: None,
             area_lbl: "all",
             max_det: max_d_s,
+            freq_group: None,
         },
         MetricDef {
+            name: "AR10",
             ap: false,
             iou_thr: None,
             area_lbl: "all",
             max_det: max_d_m,
+            freq_group: None,
         },
         MetricDef {
+            name: "AR100",
             ap: false,
             iou_thr: None,
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "ARs",
             ap: false,
             iou_thr: None,
             area_lbl: "small",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "ARm",
             ap: false,
             iou_thr: None,
             area_lbl: "medium",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "ARl",
             ap: false,
             iou_thr: None,
             area_lbl: "large",
             max_det: max_d,
+            freq_group: None,
         },
     ]
 }
@@ -97,64 +127,193 @@ pub(super) fn metrics_bbox_segm(max_d: usize, max_d_s: usize, max_d_m: usize) ->
 pub(super) fn metrics_kp(max_d: usize) -> Vec<MetricDef> {
     vec![
         MetricDef {
+            name: "AP",
             ap: true,
             iou_thr: None,
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AP50",
             ap: true,
             iou_thr: Some(0.5),
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AP75",
             ap: true,
             iou_thr: Some(0.75),
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "APm",
             ap: true,
             iou_thr: None,
             area_lbl: "medium",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "APl",
             ap: true,
             iou_thr: None,
             area_lbl: "large",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AR",
             ap: false,
             iou_thr: None,
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AR50",
             ap: false,
             iou_thr: Some(0.5),
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "AR75",
             ap: false,
             iou_thr: Some(0.75),
             area_lbl: "all",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "ARm",
             ap: false,
             iou_thr: None,
             area_lbl: "medium",
             max_det: max_d,
+            freq_group: None,
         },
         MetricDef {
+            name: "ARl",
             ap: false,
             iou_thr: None,
             area_lbl: "large",
             max_det: max_d,
+            freq_group: None,
+        },
+    ]
+}
+
+pub(super) fn metrics_lvis(max_d: usize) -> Vec<MetricDef> {
+    vec![
+        MetricDef {
+            name: "AP",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "AP50",
+            ap: true,
+            iou_thr: Some(0.5),
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "AP75",
+            ap: true,
+            iou_thr: Some(0.75),
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "APs",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "small",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "APm",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "medium",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "APl",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "large",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "APr",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: Some(FreqGroup::Rare),
+        },
+        MetricDef {
+            name: "APc",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: Some(FreqGroup::Common),
+        },
+        MetricDef {
+            name: "APf",
+            ap: true,
+            iou_thr: None,
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: Some(FreqGroup::Frequent),
+        },
+        MetricDef {
+            name: "AR@300",
+            ap: false,
+            iou_thr: None,
+            area_lbl: "all",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "ARs@300",
+            ap: false,
+            iou_thr: None,
+            area_lbl: "small",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "ARm@300",
+            ap: false,
+            iou_thr: None,
+            area_lbl: "medium",
+            max_det: max_d,
+            freq_group: None,
+        },
+        MetricDef {
+            name: "ARl@300",
+            ap: false,
+            iou_thr: None,
+            area_lbl: "large",
+            max_det: max_d,
+            freq_group: None,
         },
     ]
 }
@@ -194,10 +353,21 @@ impl COCOeval {
                 expected_max_dets
             ));
         }
-        if self.params.area_rng_lbl != defaults.area_rng_lbl {
+        if !self
+            .params
+            .area_ranges
+            .iter()
+            .map(|ar| ar.label.as_str())
+            .eq(defaults.area_ranges.iter().map(|ar| ar.label.as_str()))
+        {
+            let default_labels: Vec<&str> = defaults
+                .area_ranges
+                .iter()
+                .map(|ar| ar.label.as_str())
+                .collect();
             warnings.push(format!(
-                "area_rng_lbl differ from default ({:?}). Per-size metrics may fall back to index 0.",
-                defaults.area_rng_lbl
+                "area range labels differ from default ({:?}). Per-size metrics may not find their area range.",
+                default_labels
             ));
         }
 
@@ -209,12 +379,7 @@ impl COCOeval {
         // of the precision or recall array. Returns -1.0 if no valid data exists.
         let summarize_stat =
             |ap: bool, iou_thr: Option<f64>, area_lbl: &str, max_det: usize| -> f64 {
-                let a_idx = self
-                    .params
-                    .area_rng_lbl
-                    .iter()
-                    .position(|l| l == area_lbl)
-                    .unwrap_or(0);
+                let a_idx = self.params.area_range_idx(area_lbl).unwrap_or(0);
                 let m_idx = self
                     .params
                     .max_dets
@@ -274,115 +439,81 @@ impl COCOeval {
             max_det_default
         };
 
-        if self.is_lvis {
-            // LVIS summarize: 13 metrics with max_dets=300.
-            // APr/APc/APf are computed as mean per-category AP within each freq group.
-            let per_cat_ap = self.per_cat_ap(eval);
+        // Build the per-category AP lookup for LVIS frequency-group metrics.
+        // Computed once here; used only when a MetricDef has freq_group: Some(_).
+        let per_cat_ap = if self.is_lvis {
+            Some(self.per_cat_ap(eval))
+        } else {
+            None
+        };
 
-            let freq_group_ap = |indices: &[usize]| -> f64 {
-                if indices.is_empty() {
-                    return -1.0;
-                }
-                let valid: Vec<f64> = indices
-                    .iter()
-                    .filter_map(|&k| {
-                        let v = per_cat_ap[k];
-                        if v >= 0.0 {
-                            Some(v)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if valid.is_empty() {
-                    -1.0
-                } else {
-                    valid.iter().sum::<f64>() / valid.len() as f64
-                }
-            };
-
-            let ap = summarize_stat(true, None, "all", max_det_default);
-            let ap50 = summarize_stat(true, Some(0.5), "all", max_det_default);
-            let ap75 = summarize_stat(true, Some(0.75), "all", max_det_default);
-            let aps = summarize_stat(true, None, "small", max_det_default);
-            let apm = summarize_stat(true, None, "medium", max_det_default);
-            let apl = summarize_stat(true, None, "large", max_det_default);
-            let ap_r = freq_group_ap(&self.freq_groups[0]);
-            let ap_c = freq_group_ap(&self.freq_groups[1]);
-            let ap_f = freq_group_ap(&self.freq_groups[2]);
-            let ar = summarize_stat(false, None, "all", max_det_default);
-            let ar_s = summarize_stat(false, None, "small", max_det_default);
-            let ar_m = summarize_stat(false, None, "medium", max_det_default);
-            let ar_l = summarize_stat(false, None, "large", max_det_default);
-
-            let lvis_metrics: &[(&str, f64)] = &[
-                ("AP", ap),
-                ("AP50", ap50),
-                ("AP75", ap75),
-                ("APs", aps),
-                ("APm", apm),
-                ("APl", apl),
-                ("APr", ap_r),
-                ("APc", ap_c),
-                ("APf", ap_f),
-                ("AR@300", ar),
-                ("ARs@300", ar_s),
-                ("ARm@300", ar_m),
-                ("ARl@300", ar_l),
-            ];
-
-            let mut stats = Vec::with_capacity(lvis_metrics.len());
-            for (name, val) in lvis_metrics {
-                stats.push(*val);
-                let val_str = Self::format_metric(*val);
-                println!(" {:>10} = {}", name, val_str);
+        let freq_group_ap = |indices: &[usize]| -> f64 {
+            let per_cat = per_cat_ap.as_deref().unwrap_or(&[]);
+            let valid: Vec<f64> = indices
+                .iter()
+                .filter_map(|&k| {
+                    let v = per_cat[k];
+                    if v >= 0.0 {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if valid.is_empty() {
+                -1.0
+            } else {
+                valid.iter().sum::<f64>() / valid.len() as f64
             }
-            self.stats = Some(stats);
-            return;
-        }
+        };
 
-        let metrics = if is_kp {
+        let metrics = if self.is_lvis {
+            metrics_lvis(max_det_default)
+        } else if is_kp {
             metrics_kp(max_det_default)
         } else {
             metrics_bbox_segm(max_det_default, max_det_small, max_det_med)
         };
 
-        let iou_type_str = self.params.iou_type.to_string();
-
         let mut stats = Vec::with_capacity(metrics.len());
 
         for m in &metrics {
-            let val = summarize_stat(m.ap, m.iou_thr, m.area_lbl, m.max_det);
-            stats.push(val);
-
-            let metric_name = if m.ap {
-                "Average Precision"
+            let val = if let Some(fg) = m.freq_group {
+                freq_group_ap(self.freq_groups.get(fg))
             } else {
-                "Average Recall"
+                summarize_stat(m.ap, m.iou_thr, m.area_lbl, m.max_det)
             };
-            let metric_short = if m.ap { "AP" } else { "AR" };
-
-            let iou_str = match m.iou_thr {
-                Some(thr) => format!("{:.2}", thr),
-                None => "0.50:0.95".to_string(),
-            };
-
-            let area_str = m.area_lbl;
-            let det_str = m.max_det;
+            stats.push(val);
 
             let val_str = Self::format_metric(val);
 
-            println!(
-                " {:<18} @[ IoU={:<9} | area={:>6} | maxDets={:>3} ] = {}",
-                format!("{} ({})", metric_name, metric_short),
-                iou_str,
-                area_str,
-                det_str,
-                val_str
-            );
+            if self.is_lvis {
+                println!(" {:>10} = {}", m.name, val_str);
+            } else {
+                let metric_name = if m.ap {
+                    "Average Precision"
+                } else {
+                    "Average Recall"
+                };
+                let metric_short = if m.ap { "AP" } else { "AR" };
+                let iou_str = match m.iou_thr {
+                    Some(thr) => format!("{:.2}", thr),
+                    None => "0.50:0.95".to_string(),
+                };
+                println!(
+                    " {:<18} @[ IoU={:<9} | area={:>6} | maxDets={:>3} ] = {}",
+                    format!("{} ({})", metric_name, metric_short),
+                    iou_str,
+                    m.area_lbl,
+                    m.max_det,
+                    val_str
+                );
+            }
         }
 
-        println!("Eval type: {}", iou_type_str);
+        if !self.is_lvis {
+            println!("Eval type: {}", self.params.iou_type);
+        }
         self.stats = Some(stats);
     }
 
@@ -395,32 +526,35 @@ impl COCOeval {
         }
     }
 
-    /// Index of the "all" area range label, or 0 if not found.
+    /// Index of the "all" area range, or 0 if not found.
     fn area_all_idx(&self) -> usize {
-        self.params
-            .area_rng_lbl
-            .iter()
-            .position(|l| l == "all")
-            .unwrap_or(0)
+        self.params.area_range_idx("all").unwrap_or(0)
     }
 
-    /// Metric key names for the current evaluation mode.
-    fn metric_keys(&self) -> &[&str] {
-        if self.is_lvis {
-            &[
-                "AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf", "AR@300",
-                "ARs@300", "ARm@300", "ARl@300",
-            ]
-        } else if self.params.iou_type == IouType::Keypoints {
-            &[
-                "AP", "AP50", "AP75", "APm", "APl", "AR", "AR50", "AR75", "ARm", "ARl",
-            ]
+    /// Metric key names for the current evaluation mode, derived from the same
+    /// `MetricDef` vec that drives computation in `summarize()`.
+    fn metric_keys(&self) -> Vec<&'static str> {
+        let max_det_default = *self.params.max_dets.last().unwrap_or(&100);
+        let metrics = if self.is_lvis {
+            metrics_lvis(max_det_default)
         } else {
-            &[
-                "AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm",
-                "ARl",
-            ]
-        }
+            let max_det_small = if self.params.max_dets.len() >= 3 {
+                self.params.max_dets[0]
+            } else {
+                max_det_default
+            };
+            let max_det_med = if self.params.max_dets.len() >= 3 {
+                self.params.max_dets[1]
+            } else {
+                max_det_default
+            };
+            if self.params.iou_type == IouType::Keypoints {
+                metrics_kp(max_det_default)
+            } else {
+                metrics_bbox_segm(max_det_default, max_det_small, max_det_med)
+            }
+        };
+        metrics.into_iter().map(|m| m.name).collect()
     }
 
     /// Per-category mean AP (averaged over all IoU thresholds and recall thresholds,
@@ -512,8 +646,7 @@ impl COCOeval {
                 let per_cat = self.per_cat_ap(eval);
                 for (ap, cat_id) in per_cat.iter().zip(self.params.cat_ids.iter()) {
                     if *ap >= 0.0 {
-                        let cats = self.coco_gt.load_cats(&[*cat_id]);
-                        if let Some(cat) = cats.first() {
+                        if let Some(cat) = self.coco_gt.get_cat(*cat_id) {
                             results.insert(make_key(&format!("AP/{}", cat.name)), *ap);
                         }
                     }
@@ -637,9 +770,58 @@ impl COCOeval {
         let keys = self.metric_keys();
 
         for key in keys {
-            let val = results.get(*key).copied().unwrap_or(-1.0);
+            let val = results.get(key).copied().unwrap_or(-1.0);
             let val_str = Self::format_metric(val);
             println!(" {:>10} = {}", key, val_str);
         }
+    }
+
+    /// Build a serializable [`EvalResults`] from the current evaluation state.
+    ///
+    /// Must be called after [`summarize`](COCOeval::summarize). Returns an error
+    /// if `summarize` has not been run.
+    ///
+    /// # Arguments
+    ///
+    /// * `per_class` — When `true`, includes per-category AP values in the result.
+    ///   Categories where all precision values are −1 are excluded.
+    pub fn results(&self, per_class: bool) -> Result<EvalResults, String> {
+        let stats = self.stats.as_ref().ok_or_else(|| {
+            "summarize() must be called before results(). \
+             Run evaluate(), accumulate(), and summarize() first."
+                .to_string()
+        })?;
+
+        let keys = self.metric_keys();
+
+        let metrics: HashMap<String, f64> = keys
+            .iter()
+            .zip(stats.iter())
+            .map(|(&k, &v)| (k.to_string(), v))
+            .collect();
+
+        let per_class_map = if per_class {
+            self.eval.as_ref().map(|eval| {
+                let per_cat = self.per_cat_ap(eval);
+                per_cat
+                    .iter()
+                    .zip(self.params.cat_ids.iter())
+                    .filter(|(&ap, _)| ap >= 0.0)
+                    .filter_map(|(&ap, &cat_id)| {
+                        self.coco_gt
+                            .get_cat(cat_id)
+                            .map(|cat| (cat.name.clone(), ap))
+                    })
+                    .collect()
+            })
+        } else {
+            None
+        };
+
+        Ok(EvalResults {
+            params: EvalParams::from_params(&self.params, self.is_lvis),
+            metrics,
+            per_class: per_class_map,
+        })
     }
 }

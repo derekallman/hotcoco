@@ -33,6 +33,10 @@ struct Cli {
     /// Pool all categories (disable per-category evaluation)
     #[arg(long)]
     no_cats: bool,
+
+    /// Write evaluation results to a JSON file
+    #[arg(long, short)]
+    output: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +72,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(ref stats) = coco_eval.stats {
         let stats_strs: Vec<String> = stats.iter().map(|v| format!("{:.15}", v)).collect();
         println!("stats: [{}]", stats_strs.join(", "));
+    }
+
+    if let Some(ref output_path) = cli.output {
+        let results = coco_eval
+            .results(true)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+        results.save(output_path)?;
+        eprintln!("Results saved to {}", output_path.display());
     }
 
     Ok(())

@@ -74,7 +74,11 @@ impl COCOeval {
 
         let cat_ids = self.params.cat_ids.clone();
         let iou_type = self.params.iou_type;
-        let target_area_rng = self.params.area_rng[0];
+        let target_area_rng = self
+            .params
+            .area_range_idx("all")
+            .map(|idx| self.params.area_ranges[idx].range)
+            .unwrap_or(self.params.area_ranges[0].range);
         let max_det = *self.params.max_dets.last().unwrap_or(&100);
 
         // Find t_idx for pos_thr (nearest threshold in params.iou_thrs)

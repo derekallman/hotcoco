@@ -8,15 +8,18 @@ pub(super) mod accumulate;
 mod confusion;
 mod evaluate;
 mod iou;
+mod results;
 mod summarize;
 mod tide;
 
+pub use results::EvalResults;
 pub use types::{AccumulatedEval, ConfusionMatrix, EvalImg, EvalShape, TideErrors};
 
 use std::collections::HashMap;
 
 use crate::coco::COCO;
 use crate::params::{IouType, Params};
+use types::FreqGroups;
 
 /// COCO evaluation engine.
 ///
@@ -49,9 +52,9 @@ pub struct COCOeval {
     pub stats: Option<Vec<f64>>,
     /// LVIS federated evaluation mode.
     pub is_lvis: bool,
-    /// LVIS: k_indices bucketed by category frequency: [rare, common, frequent].
+    /// LVIS: k_indices bucketed by category frequency.
     /// Populated during `evaluate()` when `is_lvis=true`.
-    freq_groups: [Vec<usize>; 3],
+    freq_groups: FreqGroups,
 }
 
 impl COCOeval {
@@ -66,7 +69,7 @@ impl COCOeval {
             eval: None,
             stats: None,
             is_lvis: false,
-            freq_groups: [Vec::new(), Vec::new(), Vec::new()],
+            freq_groups: FreqGroups::default(),
         }
     }
 
@@ -96,7 +99,7 @@ impl COCOeval {
             eval: None,
             stats: None,
             is_lvis: true,
-            freq_groups: [Vec::new(), Vec::new(), Vec::new()],
+            freq_groups: FreqGroups::default(),
         }
     }
 }

@@ -3,6 +3,35 @@ use std::collections::HashMap;
 use crate::coco::COCO;
 use crate::params::Params;
 
+/// LVIS category frequency bucket, as stored in `Category.frequency`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FreqGroup {
+    Rare,
+    Common,
+    Frequent,
+}
+
+/// LVIS category-index buckets grouped by frequency.
+///
+/// Each field holds the `k_idx` (position in `params.cat_ids`) of all categories
+/// in that frequency bucket. Populated during `evaluate()` when `is_lvis=true`.
+#[derive(Debug, Clone, Default)]
+pub(super) struct FreqGroups {
+    pub rare: Vec<usize>,
+    pub common: Vec<usize>,
+    pub frequent: Vec<usize>,
+}
+
+impl FreqGroups {
+    pub fn get(&self, group: FreqGroup) -> &[usize] {
+        match group {
+            FreqGroup::Rare => &self.rare,
+            FreqGroup::Common => &self.common,
+            FreqGroup::Frequent => &self.frequent,
+        }
+    }
+}
+
 /// Per-category confusion matrix for object detection.
 ///
 /// Rows are ground truth categories, columns are predicted categories.
@@ -80,13 +109,18 @@ pub struct EvalImg {
     pub dt_ids: Vec<u64>,
     /// Ground truth annotation IDs (sorted: non-ignored first, then ignored)
     pub gt_ids: Vec<u64>,
-    /// Detection matches for each IoU threshold: `dt_matches\[t\]\[d\]` = matched gt_id or 0
+    /// Matched GT annotation id per IoU threshold: `dt_matches[t][d]` = GT id, or **0 as a
+    /// sentinel for unmatched**. Do not use a non-zero check for presence — `Annotation.id`
+    /// defaults to 0, so a real GT can have id=0. Use `dt_matched[t][d]` instead.
     pub dt_matches: Vec<Vec<u64>>,
-    /// Ground truth matches for each IoU threshold: `gt_matches\[t\]\[g\]` = matched dt_id or 0
+    /// Matched DT annotation id per IoU threshold: `gt_matches[t][g]` = DT id, or **0 as a
+    /// sentinel for unmatched**. Same caveat as `dt_matches`. Use `gt_matched[t][g]` instead.
     pub gt_matches: Vec<Vec<u64>>,
-    /// Whether each detection is matched per IoU threshold (reliable for id=0)
+    /// Whether each detection was matched at each IoU threshold. Authoritative presence check;
+    /// avoids the id=0 sentinel ambiguity in `dt_matches`.
     pub dt_matched: Vec<Vec<bool>>,
-    /// Whether each GT is matched per IoU threshold (reliable for id=0)
+    /// Whether each GT was matched at each IoU threshold. Authoritative presence check;
+    /// avoids the id=0 sentinel ambiguity in `gt_matches`.
     pub gt_matched: Vec<Vec<bool>>,
     /// Detection scores
     pub dt_scores: Vec<f64>,

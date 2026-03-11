@@ -69,7 +69,7 @@ impl COCOeval {
         } else {
             1
         };
-        let a = self.params.area_rng.len();
+        let a = self.params.area_ranges.len();
         let m = self.params.max_dets.len();
 
         // Build category_id → k_idx mapping for grouping eval_imgs.
@@ -84,14 +84,14 @@ impl COCOeval {
             std::iter::once((u64::MAX, 0usize)).collect()
         };
 
-        // Build area_rng → index lookup using bit-exact f64 keys (avoids linear search).
-        // area_rng values are copied verbatim from params, so bit-exact equality is safe.
+        // Build area_range → index lookup using bit-exact f64 keys (avoids linear search).
+        // range values are copied verbatim from params, so bit-exact equality is safe.
         let area_rng_to_idx: HashMap<[u64; 2], usize> = self
             .params
-            .area_rng
+            .area_ranges
             .iter()
             .enumerate()
-            .map(|(i, &rng)| ([rng[0].to_bits(), rng[1].to_bits()], i))
+            .map(|(i, ar)| ([ar.range[0].to_bits(), ar.range[1].to_bits()], i))
             .collect();
 
         // Group eval_imgs by (k_idx, a_idx) — O(eval_imgs) once.

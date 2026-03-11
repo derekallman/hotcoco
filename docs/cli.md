@@ -210,6 +210,7 @@ coco-eval --gt annotations.json --dt detections.json --iou-type bbox
 | `--img-ids <ids>` | Filter to specific image IDs (comma-separated) | all images |
 | `--cat-ids <ids>` | Filter to specific category IDs (comma-separated) | all categories |
 | `--no-cats` | Pool all categories (disable per-category evaluation) | off |
+| `-o / --output <path>` | Write evaluation results to a JSON file | off |
 
 ### Examples
 
@@ -228,6 +229,9 @@ coco-eval --gt instances_val2017.json --dt results.json --cat-ids 1,3
 
 # Category-agnostic evaluation
 coco-eval --gt instances_val2017.json --dt results.json --no-cats
+
+# Save results as JSON (includes per-category AP)
+coco-eval --gt instances_val2017.json --dt bbox_results.json --output results.json
 ```
 
 ### Output

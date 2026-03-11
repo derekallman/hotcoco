@@ -693,19 +693,46 @@ impl PyParams {
     }
     #[getter]
     fn area_rng(&self) -> Vec<[f64; 2]> {
-        self.inner.area_rng.clone()
+        self.inner.area_ranges.iter().map(|ar| ar.range).collect()
     }
     #[setter]
     fn set_area_rng(&mut self, val: Vec<[f64; 2]>) {
-        self.inner.area_rng = val;
+        // Preserve existing labels when lengths match; otherwise use empty string labels.
+        let existing: Vec<String> = self
+            .inner
+            .area_ranges
+            .iter()
+            .map(|ar| ar.label.clone())
+            .collect();
+        self.inner.area_ranges = val
+            .into_iter()
+            .enumerate()
+            .map(|(i, range)| hotcoco_core::AreaRange {
+                label: existing.get(i).cloned().unwrap_or_default(),
+                range,
+            })
+            .collect();
     }
     #[getter]
     fn area_rng_lbl(&self) -> Vec<String> {
-        self.inner.area_rng_lbl.clone()
+        self.inner
+            .area_ranges
+            .iter()
+            .map(|ar| ar.label.clone())
+            .collect()
     }
     #[setter]
     fn set_area_rng_lbl(&mut self, val: Vec<String>) {
-        self.inner.area_rng_lbl = val;
+        // Preserve existing ranges when lengths match; otherwise use zero ranges.
+        let existing: Vec<[f64; 2]> = self.inner.area_ranges.iter().map(|ar| ar.range).collect();
+        self.inner.area_ranges = val
+            .into_iter()
+            .enumerate()
+            .map(|(i, label)| hotcoco_core::AreaRange {
+                label,
+                range: existing.get(i).copied().unwrap_or([0.0, 0.0]),
+            })
+            .collect();
     }
     #[getter]
     fn use_cats(&self) -> bool {
@@ -922,6 +949,68 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
 ``summarize()`` (or ``run()``)."]
     fn print_results(&self) {
         self.inner.print_results();
+    }
+
+    #[doc = "Return evaluation results as a dict.
+
+Must be called after ``summarize()`` (or ``run()``). Returns a dict with:
+
+- ``params``: evaluation parameters (iou_type, iou_thresholds, area_ranges, max_dets)
+- ``metrics``: summary metrics (AP, AP50, AP75, etc.)
+- ``per_class``: per-category AP values (only if ``per_class=True``)
+
+Parameters
+----------
+per_class : bool, optional
+    If True, include per-category AP values. Default False.
+
+Returns
+-------
+dict
+    Serializable evaluation results."]
+    #[pyo3(signature = (per_class=false))]
+    fn results(&self, py: Python<'_>, per_class: bool) -> PyResult<PyObject> {
+        let results = self
+            .inner
+            .results(per_class)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let json_str = results
+            .to_json_string()
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let json_mod = py.import("json")?;
+        let dict = json_mod.call_method1("loads", (json_str,))?;
+        Ok(dict.unbind())
+    }
+
+    #[doc = "Save evaluation results to a JSON file.
+
+Must be called after ``summarize()`` (or ``run()``).
+
+Parameters
+----------
+path : str
+    Output file path for the JSON results.
+per_class : bool, optional
+    If True, include per-category AP values. Default False.
+
+Example
+-------
+::
+
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\")
+    ev.run()
+    ev.save_results(\"results.json\", per_class=True)
+"]
+    #[pyo3(signature = (path, per_class=false))]
+    fn save_results(&self, path: &str, per_class: bool) -> PyResult<()> {
+        let results = self
+            .inner
+            .results(per_class)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        results
+            .save(std::path::Path::new(path))
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        Ok(())
     }
 
     #[doc = "Compute F-beta scores. Must be called after ``accumulate()`` (or ``run()``).
