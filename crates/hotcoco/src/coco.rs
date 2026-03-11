@@ -2,7 +2,7 @@
 //!
 //! Faithful port of `pycocotools/coco.py`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::mask;
@@ -303,6 +303,29 @@ impl COCO {
     /// a round-trip through the filesystem. The Python binding uses this internally
     /// when `load_res` is called with a list of dicts or a numpy array.
     pub fn load_res_anns(&self, anns: Vec<Annotation>) -> Result<COCO, Box<dyn std::error::Error>> {
+        // Warn on the first annotation whose image_id or category_id isn't in the GT —
+        // a common mistake that causes DTs to silently produce misleadingly low metrics.
+        let gt_img_ids: HashSet<u64> = self.dataset.images.iter().map(|i| i.id).collect();
+        if let Some(ann) = anns.iter().find(|a| !gt_img_ids.contains(&a.image_id)) {
+            eprintln!(
+                "hotcoco: load_res() warning — found annotation with image_id {} not in the \
+                 GT dataset. These DTs will never match. Check your results file matches the \
+                 correct GT split.",
+                ann.image_id
+            );
+        }
+
+        if !self.dataset.categories.is_empty() {
+            let gt_cat_ids: HashSet<u64> = self.dataset.categories.iter().map(|c| c.id).collect();
+            if let Some(ann) = anns.iter().find(|a| !gt_cat_ids.contains(&a.category_id)) {
+                eprintln!(
+                    "hotcoco: load_res() warning — found annotation with category_id {} not \
+                     in the GT dataset. These DTs will never match.",
+                    ann.category_id
+                );
+            }
+        }
+
         let mut dataset = Dataset {
             info: self.dataset.info.clone(),
             images: self.dataset.images.clone(),

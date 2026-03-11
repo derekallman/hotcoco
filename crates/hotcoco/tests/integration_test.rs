@@ -2303,3 +2303,134 @@ fn test_f_scores_perfect_detection() {
         scores["F150"]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Error handling and ordering-violation tests
+// ---------------------------------------------------------------------------
+
+/// load_res_anns with image_ids not in GT: succeeds but those DTs never match.
+#[test]
+fn test_load_res_unknown_image_id_does_not_panic() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+
+    // Annotation referencing image_id 9999 which does not exist in GT.
+    let unknown_ann = Annotation {
+        id: 1,
+        image_id: 9999,
+        category_id: 1,
+        bbox: Some([10.0, 10.0, 20.0, 20.0]),
+        area: Some(400.0),
+        score: Some(0.9),
+        segmentation: None,
+        iscrowd: false,
+        keypoints: None,
+        num_keypoints: None,
+    };
+    // Should succeed without panicking; the DT just won't match anything.
+    let coco_dt = coco_gt
+        .load_res_anns(vec![unknown_ann])
+        .expect("load_res_anns should not fail for unknown image_id");
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+    // No metric should be positive: AP=0 when DTs never match GT, AR=-1 for empty area ranges.
+    let stats = ev.get_results(None, false);
+    assert!(
+        !stats.is_empty(),
+        "get_results() should return metrics after summarize()"
+    );
+    assert!(
+        stats.values().all(|&v| v <= 0.0),
+        "Expected no positive metrics when all DTs have unknown image_id, got: {stats:?}"
+    );
+}
+
+/// load_res_anns with category_ids not in GT: succeeds but those DTs never match.
+#[test]
+fn test_load_res_unknown_category_id_does_not_panic() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+
+    // Annotation with a valid image_id but unknown category_id 99.
+    let unknown_ann = Annotation {
+        id: 1,
+        image_id: 1,
+        category_id: 99,
+        bbox: Some([10.0, 10.0, 20.0, 20.0]),
+        area: Some(400.0),
+        score: Some(0.9),
+        segmentation: None,
+        iscrowd: false,
+        keypoints: None,
+        num_keypoints: None,
+    };
+    let coco_dt = coco_gt
+        .load_res_anns(vec![unknown_ann])
+        .expect("load_res_anns should not fail for unknown category_id");
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+    // No metric should be positive: DT with unknown category never matches any GT.
+    let stats = ev.get_results(None, false);
+    assert!(
+        !stats.is_empty(),
+        "get_results() should return metrics after summarize()"
+    );
+    assert!(
+        stats.values().all(|&v| v <= 0.0),
+        "Expected no positive metrics when all DTs have unknown category_id, got: {stats:?}"
+    );
+}
+
+/// tide_errors before evaluate returns a descriptive Err, not a panic.
+#[test]
+fn test_tide_errors_before_evaluate_returns_err() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    let result = ev.tide_errors(0.5, 0.1);
+    assert!(
+        result.is_err(),
+        "tide_errors() before evaluate() should return Err"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("evaluate"),
+        "Error message should mention evaluate(), got: {msg}"
+    );
+}
+
+/// accumulate before evaluate does not panic and produces empty eval.
+#[test]
+fn test_accumulate_before_evaluate_does_not_panic() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    // Skip evaluate(), call accumulate() directly — should not panic.
+    ev.accumulate();
+}
+
+/// summarize before accumulate does not panic; stats remains None.
+#[test]
+fn test_summarize_before_accumulate_does_not_panic() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    // Skip accumulate(), call summarize() directly — should not panic.
+    ev.summarize();
+}

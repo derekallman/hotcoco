@@ -854,10 +854,22 @@ impl PyCOCOeval {
     }
 
     fn accumulate(&mut self) {
+        if self.inner.eval_imgs.is_empty() {
+            eprintln!(
+                "hotcoco: accumulate() called before evaluate(). \
+                 Call evaluate() first or the results will be empty."
+            );
+        }
         self.inner.accumulate();
     }
 
     fn summarize(&mut self) {
+        if self.inner.eval.is_none() {
+            eprintln!(
+                "hotcoco: summarize() called before accumulate(). \
+                 Call evaluate() then accumulate() first."
+            );
+        }
         self.inner.summarize();
     }
 
@@ -941,6 +953,12 @@ Examples
 >>> ev.f_scores(beta=2.0)   # recall-weighted"]
     #[pyo3(signature = (beta = 1.0))]
     fn f_scores(&self, py: Python<'_>, beta: f64) -> PyResult<PyObject> {
+        if self.inner.eval.is_none() {
+            eprintln!(
+                "hotcoco: f_scores() called before accumulate(). \
+                 Call evaluate() then accumulate() first. Returning empty dict."
+            );
+        }
         let dict = PyDict::new(py);
         for (k, v) in self.inner.f_scores(beta) {
             dict.set_item(k, v)?;
