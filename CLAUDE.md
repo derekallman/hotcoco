@@ -139,3 +139,18 @@ If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fai
 - Keep commits clean: never include build artifacts, compiled files, or `__pycache__` directories. Review staged files carefully before committing. If unsure, ask before committing.
 - Commit message body: use bullet points, not prose paragraphs.
 - Main branch: `main`.
+
+### Before every commit — communication surfaces
+
+Run `/ship` before committing. It enforces these gates in order:
+
+1. **CHANGELOG.md** — every meaningful change has a bullet under `[Unreleased]`, grouped Added / Changed / Fixed. Be specific.
+2. **ROADMAP.md** — newly completed items marked `**Shipped.**` with sub-bullets struck through.
+3. **Docs sync** — for any new or changed public API:
+   - `cargo doc --no-deps 2>&1 | grep warning` is clean
+   - PyO3 `#[doc]` strings present; `help(hotcoco.Thing)` looks correct
+   - `docs/` site has a page or section for the feature
+   - `README.md` and `docs/` are consistent (numbers, flags, examples, install steps)
+4. **Parity** — if eval logic changed, `just parity` must pass first.
+
+Do not commit and then update docs/CHANGELOG after. Update everything first, then commit once.
