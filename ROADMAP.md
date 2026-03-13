@@ -26,6 +26,12 @@ Rust Core (all logic) ─┤
 
 ## Shipped
 
+### Plotting & PDF Report
+
+**Shipped.**
+
+~~Publication-quality matplotlib plots (`pr_curve`, `confusion_matrix`, `top_confusions`, `per_category_ap`, `tide_errors`) and a single-page PDF evaluation report (`report()`). Mode-aware metrics table adapts rows for bbox/segm, keypoints, and LVIS. Available via Python API and `coco report` CLI subcommand.~~
+
 ### Python CLI Evaluation
 
 `coco eval` — full COCO evaluation from the Python CLI, matching all flags of the Rust `coco-eval` binary: `--gt`, `--dt`, `--iou-type`, `--img-ids`, `--cat-ids`, `--no-cats`.

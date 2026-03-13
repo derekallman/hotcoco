@@ -79,7 +79,7 @@ Custom skills for this project (invoke with `/skill-name`):
 
 ## Workflow Preferences
 
-- Before making large-scale changes (docs revamps, major refactors), present a concrete preview or small example for approval first. Do not rewrite everything at once.
+- Before making large-scale changes (docs revamps, major refactors), present a concrete preview or small example for approval first. Do not rewrite everything at once. For small additions (a single new page, a new section), just write it directly.
 
 ## Build Commands
 
@@ -108,7 +108,7 @@ Note: `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expecte
 ## Documentation
 
 - This project targets Python users first, Rust users second. Documentation, README, and examples should lead with Python usage in a Python-first tone similar to Polars. Do not be Rust-centric.
-- Before writing the full documentation, show me an outline with 2-3 example sections so I can confirm the tone, structure, and audience focus. Do not generate all pages until I approve.
+- For bulk documentation rewrites (multiple pages, full revamps), show me an outline with 2-3 example sections so I can confirm the tone, structure, and audience focus. Do not generate all pages until I approve. For small additions (one new guide page, one new API page), just write it directly.
 
 Docs are built with Zensical (config: `zensical.toml`). Preview locally with `zensical serve`.
 

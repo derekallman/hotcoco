@@ -1,7 +1,7 @@
 # plot
 
 ```python
-from hotcoco.plot import pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors
+from hotcoco.plot import report, pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors
 ```
 
 Requires `pip install hotcoco[plot]` (matplotlib >= 3.5).
@@ -124,6 +124,47 @@ Plot TIDE error breakdown as horizontal bars.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `tide_dict` | `dict` | Output of `coco_eval.tide_errors()`. |
+
+---
+
+## `report`
+
+```python
+report(
+    coco_eval, *,
+    save_path,
+    gt_path=None,
+    dt_path=None,
+    title="COCO Evaluation Report",
+)
+```
+
+Generate a publication-quality single-page PDF report. Requires `pip install hotcoco[plot]`.
+
+The report contains:
+
+- **Header** — title and timestamp
+- **Run context** — GT/DT file paths, eval params, and dataset statistics (images, annotations, categories, detections)
+- **Summary metrics** — AP and AR tables with a PR-curve panel and KPI tiles
+- **Per-category AP** — bar chart sorted descending, three columns
+
+The metric rows adapt automatically to the evaluation mode:
+
+| Mode | AP rows | AR rows |
+|------|---------|---------|
+| `bbox` / `segm` | AP AP50 AP75 APs APm APl | AR1 AR10 AR100 ARs ARm ARl |
+| `keypoints` | AP AP50 AP75 APm APl | AR AR50 AR75 ARm ARl |
+| LVIS | AP AP50 AP75 APs APm APl APr APc APf | AR@300 ARs@300 ARm@300 ARl@300 |
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `coco_eval` | `COCOeval` | Must have `run()` called first. |
+| `save_path` | <code>str &#124; Path</code> | Output PDF path. |
+| `gt_path` | <code>str &#124; None</code> | Ground-truth JSON path shown in the run context block. |
+| `dt_path` | <code>str &#124; None</code> | Detections JSON path shown in the run context block. |
+| `title` | `str` | Report title shown in the header. Default `"COCO Evaluation Report"`. |
+
+Returns `None`. Raises on I/O error or if `run()` was not called first.
 
 ---
 

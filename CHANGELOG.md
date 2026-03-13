@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `hotcoco.plot.report()` — single-page PDF evaluation report: run context block, mode-aware metrics table (correct rows for bbox/segm, keypoints, and LVIS), PR curves at IoU 0.50/0.75/mean, F1 peak tile, and per-category AP chart; "hotcoco" brand mark in header
+- `coco report` CLI subcommand — runs evaluation and saves a PDF report; flags: `--gt`, `--dt`, `-o`, `--iou-type`, `--lvis`, `--title`; requires `pip install hotcoco[plot]`
 - `hotcoco.plot` module — publication-quality matplotlib plots for evaluation results: `pr_curve`, `confusion_matrix`, `top_confusions`, `per_category_ap`, `tide_errors`
 - `styled=False` parameter on all plot functions — skips hotcoco visual theme for users who bring their own rcParams or seaborn/corporate styles
 - Bundled Inter font (Medium + Bold) in `python/hotcoco/_fonts/` for consistent typography across platforms

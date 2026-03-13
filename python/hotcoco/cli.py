@@ -4,6 +4,7 @@ hotcoco command-line interface.
 
 Usage:
     coco eval --gt <gt.json> --dt <dt.json> [--iou-type bbox|segm|keypoints] [--tide]
+    coco report --gt <gt.json> --dt <dt.json> -o <report.pdf> [--iou-type ...] [--lvis]
     coco stats <annotation_file>
     coco filter <file> -o <output> [options]
     coco merge <file1> <file2> ... -o <output>
@@ -57,30 +58,19 @@ def cmd_stats(args):
         print(f"{label}:")
         for c in shown:
             name = c["name"].ljust(max_name_len)
-            print(
-                f"  {name}  {c['ann_count']:>6,} anns   {c['img_count']:>5,} imgs"
-            )
+            print(f"  {name}  {c['ann_count']:>6,} anns   {c['img_count']:>5,} imgs")
 
     w = s["image_width"]
     h = s["image_height"]
     print()
     print("Image dimensions:")
-    print(
-        f"  width   min={w['min']:.0f}    max={w['max']:.0f}"
-        f"   mean={w['mean']:.1f}  median={w['median']:.1f}"
-    )
-    print(
-        f"  height  min={h['min']:.0f}    max={h['max']:.0f}"
-        f"   mean={h['mean']:.1f}  median={h['median']:.1f}"
-    )
+    print(f"  width   min={w['min']:.0f}    max={w['max']:.0f}   mean={w['mean']:.1f}  median={w['median']:.1f}")
+    print(f"  height  min={h['min']:.0f}    max={h['max']:.0f}   mean={h['mean']:.1f}  median={h['median']:.1f}")
 
     a = s["annotation_area"]
     print()
     print("Annotation areas:")
-    print(
-        f"  min={a['min']:.1f}   max={a['max']:.1f}"
-        f"   mean={a['mean']:.1f}   median={a['median']:.1f}"
-    )
+    print(f"  min={a['min']:.1f}   max={a['max']:.1f}   mean={a['mean']:.1f}   median={a['median']:.1f}")
 
 
 def _load_coco(path):
@@ -224,14 +214,49 @@ def _print_tide(te):
         f" baseline_AP={te['ap_base']:.4f})\n"
     )
     print(f"  {'Type':<6}  {'ΔAP':>7}  {'Count':>7}")
-    print(f"  {'─'*6}  {'─'*7}  {'─'*7}")
+    print(f"  {'─' * 6}  {'─' * 7}  {'─' * 7}")
     for error_type in ("Loc", "Cls", "Both", "Dupe", "Bkg", "Miss"):
         dap = delta.get(error_type, 0.0)
         cnt = counts.get(error_type, 0)
         print(f"  {error_type:<6}  {dap:>7.4f}  {cnt:>7,}")
-    print(f"  {'─'*6}  {'─'*7}  {'─'*7}")
+    print(f"  {'─' * 6}  {'─' * 7}  {'─' * 7}")
     print(f"  {'FP':<6}  {delta.get('FP', 0.0):>7.4f}")
     print(f"  {'FN':<6}  {delta.get('FN', 0.0):>7.4f}")
+
+
+def cmd_report(args):
+    try:
+        from hotcoco import COCO, COCOeval
+        from hotcoco.plot import report
+    except ImportError as e:
+        print(f"error: {e}", file=sys.stderr)
+        print("hint: install plot dependencies with:  pip install hotcoco[plot]", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        gt = COCO(args.gt)
+    except Exception as e:
+        print(f"error loading ground truth: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        dt = gt.load_res(args.dt)
+    except Exception as e:
+        print(f"error loading detections: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    ev = COCOeval(gt, dt, args.iou_type, lvis_style=args.lvis)
+    ev.evaluate()
+    ev.accumulate()
+    ev.summarize()
+
+    try:
+        report(ev, save_path=args.output, gt_path=args.gt, dt_path=args.dt, title=args.title)
+    except Exception as e:
+        print(f"error generating report: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"report saved to {args.output}")
 
 
 def cmd_convert(args):
@@ -245,7 +270,7 @@ def cmd_convert(args):
         except Exception as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
-        print(f"convert: COCO → YOLO")
+        print("convert: COCO → YOLO")
         print(f"  input:       {os.path.basename(args.input)}")
         print(f"  output dir:  {args.output}")
         print(f"  images:      {stats['images']:,}")
@@ -273,7 +298,7 @@ def cmd_convert(args):
             sys.exit(1)
         n_imgs = len(coco.dataset["images"])
         n_anns = len(coco.dataset["annotations"])
-        print(f"convert: YOLO → COCO")
+        print("convert: YOLO → COCO")
         print(f"  input dir:   {args.input}")
         print(f"  output:      {os.path.basename(args.output)}")
         print(f"  images:      {n_imgs:,}")
@@ -309,16 +334,10 @@ def cmd_sample(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="coco",
-        description="hotcoco command-line tools for COCO datasets",
-    )
+    parser = argparse.ArgumentParser(prog="coco", description="hotcoco command-line tools for COCO datasets")
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
-    eval_parser = subparsers.add_parser(
-        "eval",
-        help="evaluate detections against ground truth",
-    )
+    eval_parser = subparsers.add_parser("eval", help="evaluate detections against ground truth")
     eval_parser.add_argument("--gt", required=True, help="path to ground truth annotations JSON")
     eval_parser.add_argument("--dt", required=True, help="path to detection results JSON")
     eval_parser.add_argument(
@@ -328,22 +347,13 @@ def main():
         choices=["bbox", "segm", "keypoints"],
         help="evaluation type (default: bbox)",
     )
+    eval_parser.add_argument("--img-ids", metavar="1,2,3", help="evaluate only these image IDs (comma-separated)")
+    eval_parser.add_argument("--cat-ids", metavar="1,2,3", help="evaluate only these category IDs (comma-separated)")
     eval_parser.add_argument(
-        "--img-ids", metavar="1,2,3", help="evaluate only these image IDs (comma-separated)"
+        "--no-cats", dest="no_cats", action="store_true", help="pool all categories (class-agnostic evaluation)"
     )
     eval_parser.add_argument(
-        "--cat-ids", metavar="1,2,3", help="evaluate only these category IDs (comma-separated)"
-    )
-    eval_parser.add_argument(
-        "--no-cats",
-        dest="no_cats",
-        action="store_true",
-        help="pool all categories (class-agnostic evaluation)",
-    )
-    eval_parser.add_argument(
-        "--tide",
-        action="store_true",
-        help="print TIDE error decomposition after standard metrics",
+        "--tide", action="store_true", help="print TIDE error decomposition after standard metrics"
     )
     eval_parser.add_argument(
         "--tide-pos-thr",
@@ -362,55 +372,30 @@ def main():
         help="minimum IoU with any GT for Loc/Both/Bkg distinction in TIDE (default: 0.1)",
     )
 
-    stats_parser = subparsers.add_parser(
-        "stats",
-        help="print dataset health-check statistics",
-    )
-    stats_parser.add_argument(
-        "annotation_file",
-        help="path to COCO annotation JSON file",
-    )
-    stats_parser.add_argument(
-        "--all-cats",
-        action="store_true",
-        help="show all categories instead of top 20",
-    )
+    stats_parser = subparsers.add_parser("stats", help="print dataset health-check statistics")
+    stats_parser.add_argument("annotation_file", help="path to COCO annotation JSON file")
+    stats_parser.add_argument("--all-cats", action="store_true", help="show all categories instead of top 20")
 
-    filter_parser = subparsers.add_parser(
-        "filter",
-        help="filter a dataset by category, image, or area",
-    )
+    filter_parser = subparsers.add_parser("filter", help="filter a dataset by category, image, or area")
     filter_parser.add_argument("annotation_file", help="input COCO JSON file")
     filter_parser.add_argument("-o", "--output", required=True, help="output JSON file")
+    filter_parser.add_argument("--cat-ids", metavar="1,2,3", help="comma-separated category IDs to keep")
+    filter_parser.add_argument("--img-ids", metavar="1,2,3", help="comma-separated image IDs to keep")
+    filter_parser.add_argument("--area-rng", metavar="MIN,MAX", help="annotation area range (inclusive)")
     filter_parser.add_argument(
-        "--cat-ids", metavar="1,2,3", help="comma-separated category IDs to keep"
-    )
-    filter_parser.add_argument(
-        "--img-ids", metavar="1,2,3", help="comma-separated image IDs to keep"
-    )
-    filter_parser.add_argument(
-        "--area-rng", metavar="MIN,MAX", help="annotation area range (inclusive)"
-    )
-    filter_parser.add_argument(
-        "--keep-empty-images",
-        action="store_true",
-        help="keep images with no matching annotations",
+        "--keep-empty-images", action="store_true", help="keep images with no matching annotations"
     )
 
-    merge_parser = subparsers.add_parser(
-        "merge",
-        help="merge multiple datasets into one",
-    )
+    merge_parser = subparsers.add_parser("merge", help="merge multiple datasets into one")
     merge_parser.add_argument("files", nargs="+", help="input COCO JSON files")
     merge_parser.add_argument("-o", "--output", required=True, help="output JSON file")
 
-    split_parser = subparsers.add_parser(
-        "split",
-        help="split a dataset into train/val[/test] subsets",
-    )
+    split_parser = subparsers.add_parser("split", help="split a dataset into train/val[/test] subsets")
     split_parser.add_argument("annotation_file", help="input COCO JSON file")
     split_parser.add_argument(
-        "-o", "--output", required=True,
+        "-o",
+        "--output",
+        required=True,
         metavar="PREFIX",
         help="output prefix; writes <prefix>_train.json, <prefix>_val.json, [<prefix>_test.json]",
     )
@@ -422,44 +407,34 @@ def main():
     )
     split_parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
 
-    sample_parser = subparsers.add_parser(
-        "sample",
-        help="sample a random subset of images",
-    )
+    sample_parser = subparsers.add_parser("sample", help="sample a random subset of images")
     sample_parser.add_argument("annotation_file", help="input COCO JSON file")
     sample_parser.add_argument("-o", "--output", required=True, help="output JSON file")
     sample_parser.add_argument("--n", type=int, default=None, help="number of images to sample")
     sample_parser.add_argument("--frac", type=float, default=None, help="fraction of images to sample")
     sample_parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
 
-    convert_parser = subparsers.add_parser(
-        "convert",
-        help="convert between annotation formats (COCO ↔ YOLO)",
+    report_parser = subparsers.add_parser("report", help="run evaluation and save a PDF report")
+    report_parser.add_argument("--gt", required=True, help="path to ground truth annotations JSON")
+    report_parser.add_argument("--dt", required=True, help="path to detection results JSON")
+    report_parser.add_argument("-o", "--output", required=True, metavar="report.pdf", help="output PDF path")
+    report_parser.add_argument(
+        "--iou-type",
+        dest="iou_type",
+        default="bbox",
+        choices=["bbox", "segm", "keypoints"],
+        help="evaluation type (default: bbox)",
     )
+    report_parser.add_argument("--lvis", action="store_true", help="use LVIS-style evaluation (max 300 dets, freq-group AP)")
+    report_parser.add_argument("--title", default="COCO Evaluation Report", help="report title (default: 'COCO Evaluation Report')")
+
+    convert_parser = subparsers.add_parser("convert", help="convert between annotation formats (COCO ↔ YOLO)")
     convert_parser.add_argument(
-        "--from",
-        dest="from_fmt",
-        required=True,
-        choices=["coco", "yolo"],
-        help="source format",
+        "--from", dest="from_fmt", required=True, choices=["coco", "yolo"], help="source format"
     )
-    convert_parser.add_argument(
-        "--to",
-        dest="to_fmt",
-        required=True,
-        choices=["coco", "yolo"],
-        help="target format",
-    )
-    convert_parser.add_argument(
-        "--input",
-        required=True,
-        help="input file (COCO JSON) or directory (YOLO labels)",
-    )
-    convert_parser.add_argument(
-        "--output",
-        required=True,
-        help="output file (COCO JSON) or directory (YOLO labels)",
-    )
+    convert_parser.add_argument("--to", dest="to_fmt", required=True, choices=["coco", "yolo"], help="target format")
+    convert_parser.add_argument("--input", required=True, help="input file (COCO JSON) or directory (YOLO labels)")
+    convert_parser.add_argument("--output", required=True, help="output file (COCO JSON) or directory (YOLO labels)")
     convert_parser.add_argument(
         "--images-dir",
         dest="images_dir",
@@ -469,6 +444,7 @@ def main():
 
     try:
         import argcomplete
+
         argcomplete.autocomplete(parser)
     except ImportError:
         pass
@@ -491,6 +467,8 @@ def main():
         cmd_split(args)
     elif args.command == "sample":
         cmd_sample(args)
+    elif args.command == "report":
+        cmd_report(args)
     elif args.command == "convert":
         cmd_convert(args)
 

@@ -50,6 +50,37 @@ coco eval --gt instances_val2017.json --dt bbox_results.json --tide
 coco eval --gt instances_val2017.json --dt bbox_results.json --tide --tide-pos-thr 0.75
 ```
 
+### `coco report`
+
+Run evaluation and save a publication-quality PDF report. Requires `pip install hotcoco[plot]`.
+
+```bash
+coco report --gt <gt.json> --dt <dt.json> -o <report.pdf> [options]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--gt <path>` | Ground truth annotations JSON | *required* |
+| `--dt <path>` | Detection results JSON | *required* |
+| `-o / --output <path>` | Output PDF path | *required* |
+| `--iou-type` | `bbox`, `segm`, or `keypoints` | `bbox` |
+| `--lvis` | LVIS-style evaluation (max 300 dets, frequency-group AP) | off |
+| `--title` | Report title shown in the header | `COCO Evaluation Report` |
+
+```bash
+# Bounding box report
+coco report --gt instances_val2017.json --dt bbox_results.json -o report.pdf
+
+# Segmentation
+coco report --gt instances_val2017.json --dt segm_results.json --iou-type segm -o report.pdf
+
+# Keypoints
+coco report --gt person_keypoints_val2017.json --dt kpt_results.json --iou-type keypoints -o report.pdf
+
+# LVIS-style with a custom title
+coco report --gt lvis_val.json --dt lvis_results.json --lvis --title "LVIS Evaluation" -o lvis_report.pdf
+```
+
 ### `coco stats`
 
 Print a health-check summary of a dataset: image and annotation counts, per-category

@@ -11,6 +11,43 @@ All plot functions return `(Figure, Axes)` for further customization,
 accept an optional `ax` to draw on existing axes, and accept `save_path`
 to write directly to disk.
 
+## PDF evaluation report
+
+`report()` runs a full evaluation and saves a self-contained, single-page PDF —
+useful for archiving results or sharing with collaborators.
+
+```python
+from hotcoco.plot import report
+
+gt = hotcoco.COCO("instances_val2017.json")
+dt = gt.load_res("bbox_results.json")
+ev = hotcoco.COCOeval(gt, dt, "bbox")
+ev.run()
+
+report(ev, save_path="report.pdf", gt_path="instances_val2017.json", dt_path="bbox_results.json")
+```
+
+The report includes a run context block (dataset paths, eval params, image/annotation counts),
+a full metrics table, precision-recall curves at IoU 0.50, 0.75, and the mean, F1 peak,
+and a per-category AP bar chart sorted from best to worst.
+
+Works with all three evaluation modes — hotcoco automatically selects the right metric rows
+for each:
+
+| Mode | Rows |
+|------|------|
+| `bbox` / `segm` | AP, AP50, AP75, APs, APm, APl · AR1, AR10, AR100, ARs, ARm, ARl |
+| `keypoints` | AP, AP50, AP75, APm, APl · AR, AR50, AR75, ARm, ARl |
+| LVIS | AP, AP50, AP75, APs, APm, APl, APr, APc, APf · AR@300, ARs@300, ARm@300, ARl@300 |
+
+Or from the CLI (requires `pip install hotcoco[plot]`):
+
+```bash
+coco report --gt instances_val2017.json --dt bbox_results.json -o report.pdf
+```
+
+---
+
 ## Quick start
 
 ```python
