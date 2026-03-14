@@ -1,7 +1,12 @@
 # plot
 
 ```python
-from hotcoco.plot import report, pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors
+from hotcoco.plot import (
+    report,
+    pr_curve, pr_curve_iou_sweep, pr_curve_by_category, pr_curve_top_n,
+    confusion_matrix, top_confusions, per_category_ap, tide_errors,
+    style, SERIES_COLORS, CHROME, SEQUENTIAL,
+)
 ```
 
 Requires `pip install hotcoco[plot]` (matplotlib >= 3.5).
@@ -19,6 +24,72 @@ All functions return `(Figure, Axes)`.
 
 ---
 
+## `pr_curve_iou_sweep`
+
+```python
+pr_curve_iou_sweep(
+    coco_eval, *,
+    iou_thrs=None, area_rng="all", max_det=None,
+    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+)
+```
+
+Plot one precision-recall curve per IoU threshold, with precision averaged across all categories. The primary line (lowest IoU) gets an under-fill and F1 peak annotation.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `coco_eval` | `COCOeval` | Must have `run()` called first. |
+| `iou_thrs` | <code>list[float] &#124; None</code> | IoU thresholds to include. Default: all thresholds in params. |
+| `area_rng` | `str` | Area range: `"all"`, `"small"`, `"medium"`, `"large"`. Default `"all"`. |
+| `max_det` | <code>int &#124; None</code> | Max detections. Default: last entry in `params.max_dets`. |
+
+---
+
+## `pr_curve_by_category`
+
+```python
+pr_curve_by_category(
+    coco_eval, cat_id, *,
+    iou_thr=0.5, area_rng="all", max_det=None,
+    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+)
+```
+
+Plot the precision-recall curve for a single category at a fixed IoU threshold, with an F1 peak annotation.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `coco_eval` | `COCOeval` | Must have `run()` called first. |
+| `cat_id` | `int` | Category ID to plot. |
+| `iou_thr` | `float` | IoU threshold. Default `0.5`. |
+| `area_rng` | `str` | Area range. Default `"all"`. |
+| `max_det` | <code>int &#124; None</code> | Max detections. Default: last entry in `params.max_dets`. |
+
+---
+
+## `pr_curve_top_n`
+
+```python
+pr_curve_top_n(
+    coco_eval, *,
+    cat_ids=None, top_n=10, iou_thr=0.5, area_rng="all", max_det=None,
+    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+)
+```
+
+Plot precision-recall curves for multiple categories on one axes. When `cat_ids` is omitted, selects the top `top_n` categories by AP automatically.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `coco_eval` | `COCOeval` | Must have `run()` called first. |
+| `cat_ids` | <code>list[int] &#124; None</code> | Categories to plot. Default: top `top_n` by AP. |
+| `top_n` | `int` | Number of top categories when `cat_ids` is omitted. Default `10`. |
+| `iou_thr` | `float` | IoU threshold. Default `0.5`. |
+| `area_rng` | `str` | Area range. Default `"all"`. |
+| `max_det` | <code>int &#124; None</code> | Max detections. Default: last entry in `params.max_dets`. |
+
+---
+
 ## `pr_curve`
 
 ```python
@@ -30,22 +101,22 @@ pr_curve(
 )
 ```
 
-Plot precision-recall curves. Three modes:
+Convenience dispatcher — inspects the arguments and calls the appropriate named function. Prefer calling the named functions directly for clarity.
 
-1. **IoU sweep** (default) — one line per IoU threshold, mean precision across categories.
-2. **Single category** — set `cat_id` to plot one category.
-3. **Multi-category** — set `cat_ids` or `iou_thr` to compare categories at a fixed IoU.
+- No `cat_id` or `cat_ids` → `pr_curve_iou_sweep`
+- `cat_id` set → `pr_curve_by_category`
+- `cat_ids` or `iou_thr` set → `pr_curve_top_n`
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `coco_eval` | `COCOeval` | Must have `run()` called first. |
-| `iou_thrs` | <code>list[float] &#124; None</code> | IoU thresholds to plot (mode 1). |
-| `cat_id` | <code>int &#124; None</code> | Single category to plot (mode 2). |
-| `cat_ids` | <code>list[int] &#124; None</code> | Categories to compare (mode 3). |
-| `iou_thr` | <code>float &#124; None</code> | Fixed IoU for modes 2/3. Default 0.50. |
-| `top_n` | `int` | Top N categories by AP for mode 3. Default 10. |
+| `iou_thrs` | <code>list[float] &#124; None</code> | IoU thresholds to plot (IoU sweep mode). |
+| `cat_id` | <code>int &#124; None</code> | Single category to plot. |
+| `cat_ids` | <code>list[int] &#124; None</code> | Categories to compare. |
+| `iou_thr` | <code>float &#124; None</code> | Fixed IoU for single/multi-category modes. Default 0.50. |
+| `top_n` | `int` | Top N categories by AP. Default 10. |
 | `area_rng` | `str` | Area range: `"all"`, `"small"`, `"medium"`, `"large"`. |
-| `max_det` | <code>int &#124; None</code> | Max detections index. Default: last in params. |
+| `max_det` | <code>int &#124; None</code> | Max detections. Default: last in params. |
 
 ---
 
@@ -210,4 +281,4 @@ from hotcoco.plot import SERIES_COLORS, CHROME, SEQUENTIAL
 
 - `SERIES_COLORS` — 8 data series colors (warm slate, terracotta, teal, gold, plum, sage, ocean, copper)
 - `CHROME` — non-data element colors (text, label, tick, grid, spine, background)
-- `SEQUENTIAL` — 4-stop colormap for heatmaps (off-white → gold → terracotta → deep brown)
+- `SEQUENTIAL` — 4-stop colormap for heatmaps (off-white → steel-blue → slate → deep slate)

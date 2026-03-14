@@ -124,7 +124,10 @@ evaluator.summarize()
 
 ### Prediction format
 
-The `predictions` dict maps `image_id → output_dict`. The keys expected in the output dict depend on the iou_type:
+The `predictions` dict maps `image_id → output_dict`. The keys expected in the output dict depend on the iou_type.
+
+!!! tip "torchvision detection models"
+    Standard torchvision models (Faster R-CNN, RetinaNet, FCOS, etc.) already return dicts with `boxes`, `labels`, and `scores` in the expected format. The `update()` call in the example above works without modification — torchvision models output XYXY boxes, and `CocoEvaluator` converts them to XYWH automatically.
 
 === "bbox"
 

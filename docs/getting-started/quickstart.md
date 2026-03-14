@@ -24,6 +24,8 @@ A complete COCO evaluation in under a minute.
 
 ## 2. Load ground truth
 
+The ground truth is a COCO-format JSON file containing your dataset's annotations (bounding boxes, segmentation masks, or keypoints). If you're evaluating on public COCO val2017, see the [installation page](installation.md#benchmark-data) for the download command. For your own dataset, see [Working with Results](../guide/results.md#loading-results) for the expected format.
+
 === "Python"
 
     ```python
@@ -75,6 +77,14 @@ Your results file should be a JSON array of detection dicts:
   ...
 ]
 ```
+
+!!! warning "Bbox format: `[x, y, width, height]` — not `[x1, y1, x2, y2]`"
+    COCO bounding boxes are `[x, y, width, height]` in pixel coordinates. Many model frameworks output `[x1, y1, x2, y2]` (top-left and bottom-right corners). Passing the wrong format produces plausible-looking but incorrect metrics with no error or warning. Convert with:
+
+    ```python
+    # x1y1x2y2 → xywh
+    bbox = [x1, y1, x2 - x1, y2 - y1]
+    ```
 
 !!! tip
     `load_res` automatically computes missing `area` fields from bounding boxes or segmentation masks.

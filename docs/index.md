@@ -33,8 +33,8 @@ A drop-in replacement for pycocotools that doesn't become the bottleneck — in 
 </div>
 
 <div class="feature-card" markdown>
-<strong>Just pip install</strong>
-<p>Prebuilt wheels for Linux, macOS, and Windows. No Cython, no compiler, nothing to build.</p>
+<strong>More than a metric</strong>
+<p>TIDE error breakdown, confusion matrix, per-category AP, and publication-quality plots built in. Find out <em>why</em> your model falls short, not just by how much.</p>
 </div>
 
 <div class="feature-card" markdown>

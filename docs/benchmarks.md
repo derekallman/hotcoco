@@ -4,7 +4,7 @@
 
 | Feature | pycocotools | faster-coco-eval | hotcoco |
 |---------|-------------|------------------|---------|
-| **Installation** | Requires C compiler | Prebuilt wheels available | Prebuilt wheels — `pip install` just works |
+| **Installation** | Prebuilt wheels available | Prebuilt wheels available | Prebuilt wheels — `pip install` just works |
 | **Metric parity** | Reference | Exact | ≤1e-4 bbox, ≤2e-4 segm, exact keypoints |
 | **LVIS evaluation** | No | Yes — via `lvis_style=True` flag | Yes — 13 metrics, `LVISeval` class, `init_as_lvis()` |
 | **TIDE error analysis** | No | No | Yes — 6 error types, ΔAP per type |
@@ -13,13 +13,13 @@
 | **Per-class AP** | Manual only | Yes — via `extended_metrics` | Built-in via `get_results(per_class=True)` |
 | **Dataset operations** | No | No | Yes — filter, merge, split, sample, stats |
 | **Format conversion** | No | No | Yes — COCO ↔ YOLO |
-| **PyTorch integration** | Via torchvision | No | Yes — `CocoDetection`, `CocoEvaluator` |
+| **PyTorch integration** | Via torchvision | Yes — TorchVision compatible | Yes — `CocoDetection`, `CocoEvaluator` |
 | **Rust API** | No | No | Yes — native crate on crates.io |
 | **CLI** | No | No | Yes — `coco` (Python) + `coco-eval` (Rust) |
 | **Results export** | No | No | Yes — JSON with params + metrics + per-class |
 | **Memory at scale** | 24 GB committed on O365 | 30 GB committed on O365 | 8 GB committed on O365 |
-| **Python versions** | 3.7+ | 3.7+ | 3.9+ |
-| **License** | BSD | BSD | MIT |
+| **Python versions** | 3.9+ | 3.7+ | 3.9+ |
+| **License** | BSD | Apache 2.0 | MIT |
 
 ## Speed benchmarks
 

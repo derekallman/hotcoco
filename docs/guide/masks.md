@@ -52,6 +52,16 @@ An RLE dict looks like:
     rle = mask.encode(m_c)  # same result
     ```
 
+!!! warning "RLE `counts` is bytes, not a string"
+    `mask.encode()` returns `counts` as a `bytes` object. When passing RLE dicts to `load_res()` or storing them in a COCO JSON file, `counts` must be a UTF-8 string. Convert with:
+
+    ```python
+    if isinstance(rle["counts"], bytes):
+        rle["counts"] = rle["counts"].decode("utf-8")
+    ```
+
+    Some third-party mask libraries (e.g. older versions of pycocotools) also return `bytes`. Apply the same fix before passing those dicts to hotcoco.
+
 === "Rust"
 
     ```rust

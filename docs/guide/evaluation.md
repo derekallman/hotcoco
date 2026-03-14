@@ -57,7 +57,7 @@ IoU is computed as the intersection-over-union of the two bounding boxes.
 
 Set `iou_type` to `"segm"` (Python) or `IouType::Segm` (Rust).
 
-Detection format — each result needs `image_id`, `category_id`, `segmentation` as an RLE dict, and `score`:
+Detection format — each result needs `image_id`, `category_id`, `segmentation` as a compressed RLE dict, and `score`:
 
 ```json
 [
@@ -70,6 +70,20 @@ Detection format — each result needs `image_id`, `category_id`, `segmentation`
   ...
 ]
 ```
+
+**What is RLE?** Run-Length Encoding is a compact format for binary masks. Instead of storing every pixel, it stores the lengths of alternating runs of 0s and 1s. The `size` field is `[height, width]` and `counts` is a UTF-8 string. To convert a binary mask (numpy array) from your model:
+
+```python
+import numpy as np
+from hotcoco import mask as mask_utils
+
+binary_mask = ...  # your H×W uint8 array
+rle = mask_utils.encode(np.asfortranarray(binary_mask))
+if isinstance(rle["counts"], bytes):
+    rle["counts"] = rle["counts"].decode("utf-8")
+```
+
+See the [Mask Operations guide](masks.md) for more details.
 
 IoU is computed on the binary masks after RLE decoding.
 
@@ -123,9 +137,23 @@ Similarity is measured using Object Keypoint Similarity ([OKS](https://cocodatas
 | 10 | AR | 0.50:0.95 | medium | 100 |
 | 11 | AR | 0.50:0.95 | large | 100 |
 
-- **AP** (Average Precision) is the area under the precision-recall curve, averaged across IoU thresholds.
-- **AR** (Average Recall) is the maximum recall at a fixed number of detections per image, averaged across IoU thresholds.
-- **Area ranges**: small (area < 32² px²), medium (32² ≤ area < 96² px²), large (area ≥ 96² px²).
+### Key concepts
+
+**IoU (Intersection over Union)** measures how well a predicted box (or mask) overlaps with the ground truth. IoU = 1.0 is a perfect match; IoU = 0.0 means no overlap. A detection "counts" only when its IoU with a GT exceeds the threshold. IoU=0.50 is lenient (half the area must overlap); IoU=0.95 is very strict (near-perfect alignment required).
+
+**AP (Average Precision)** measures how precisely your model ranks its detections. It is the area under the precision-recall curve: a model that confidently finds all objects scores AP=1.0; a model that misses many or produces lots of false positives scores lower. The headline **AP** metric averages over 10 IoU thresholds from 0.50 to 0.95 in steps of 0.05 — it rewards both finding objects (recall) and being confident only when correct (precision).
+
+**AR (Average Recall)** measures what fraction of ground-truth objects your model finds, given a cap on detections per image (1, 10, or 100). AR@1 tells you how good your model's single best detection is; AR@100 tells you how much it can find when allowed 100 guesses.
+
+**Area ranges** break results down by object size in the image:
+
+| Range | Pixel area | Intuition |
+|-------|-----------|-----------|
+| small | < 1,024 px² | Smaller than ~32×32 pixels |
+| medium | 1,024–9,216 px² | Roughly 32×32 to 96×96 pixels |
+| large | > 9,216 px² | Larger than ~96×96 pixels |
+
+Many models perform differently across sizes — area-range metrics help you identify where improvement is needed.
 
 ## Customizing parameters
 

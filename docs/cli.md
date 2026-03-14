@@ -26,12 +26,15 @@ coco eval --gt <gt.json> --dt <dt.json> [options]
 | `--gt <path>` | Ground truth annotations JSON | *required* |
 | `--dt <path>` | Detection results JSON | *required* |
 | `--iou-type` | `bbox`, `segm`, or `keypoints` | `bbox` |
+| `--lvis` | LVIS-style evaluation (max 300 dets, frequency-group AP) | off |
 | `--img-ids 1,2,3` | Evaluate only these image IDs | all |
 | `--cat-ids 1,2,3` | Evaluate only these category IDs | all |
 | `--no-cats` | Pool all categories (class-agnostic evaluation) | off |
 | `--tide` | Print TIDE error decomposition after standard metrics | off |
 | `--tide-pos-thr` | IoU threshold for TP/FP classification in TIDE | `0.5` |
 | `--tide-bg-thr` | Minimum IoU with any GT for Loc/Both/Bkg distinction | `0.1` |
+| `--report <path>` | Save a PDF evaluation report to this path (requires `hotcoco[plot]`) | off |
+| `--title` | Report title shown in the header | `COCO Evaluation Report` |
 
 ```bash
 # Bounding box evaluation
@@ -43,42 +46,20 @@ coco eval --gt instances_val2017.json --dt segm_results.json --iou-type segm
 # Keypoints
 coco eval --gt person_keypoints_val2017.json --dt kpt_results.json --iou-type keypoints
 
+# LVIS-style evaluation
+coco eval --gt lvis_val.json --dt lvis_results.json --lvis
+
 # With TIDE error decomposition
 coco eval --gt instances_val2017.json --dt bbox_results.json --tide
 
 # TIDE at a stricter localization threshold
 coco eval --gt instances_val2017.json --dt bbox_results.json --tide --tide-pos-thr 0.75
-```
 
-### `coco report`
+# Save a PDF evaluation report
+coco eval --gt instances_val2017.json --dt bbox_results.json --report report.pdf
 
-Run evaluation and save a publication-quality PDF report. Requires `pip install hotcoco[plot]`.
-
-```bash
-coco report --gt <gt.json> --dt <dt.json> -o <report.pdf> [options]
-```
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--gt <path>` | Ground truth annotations JSON | *required* |
-| `--dt <path>` | Detection results JSON | *required* |
-| `-o / --output <path>` | Output PDF path | *required* |
-| `--iou-type` | `bbox`, `segm`, or `keypoints` | `bbox` |
-| `--lvis` | LVIS-style evaluation (max 300 dets, frequency-group AP) | off |
-| `--title` | Report title shown in the header | `COCO Evaluation Report` |
-
-```bash
-# Bounding box report
-coco report --gt instances_val2017.json --dt bbox_results.json -o report.pdf
-
-# Segmentation
-coco report --gt instances_val2017.json --dt segm_results.json --iou-type segm -o report.pdf
-
-# Keypoints
-coco report --gt person_keypoints_val2017.json --dt kpt_results.json --iou-type keypoints -o report.pdf
-
-# LVIS-style with a custom title
-coco report --gt lvis_val.json --dt lvis_results.json --lvis --title "LVIS Evaluation" -o lvis_report.pdf
+# PDF report with custom title and LVIS-style evaluation
+coco eval --gt lvis_val.json --dt lvis_results.json --lvis --report lvis_report.pdf --title "LVIS Evaluation"
 ```
 
 ### `coco stats`

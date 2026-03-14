@@ -161,6 +161,22 @@ Precision has shape `[T x R x K x A x M]`. Recall has shape `[T x K x A x M]`. A
 
 ## Extracting per-category AP
 
+The simplest way is `get_results(per_class=True)`, which returns a flat dict with one entry per category:
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.run()
+
+per_class = ev.get_results(per_class=True)
+# {"AP": 0.382, ..., "AP/person": 0.72, "AP/car": 0.41, ...}
+
+for key, val in per_class.items():
+    if key.startswith("AP/"):
+        print(f"{key[3:]}: {val:.3f}")
+```
+
+For direct access to the raw precision arrays (e.g. to compute AP at a non-standard IoU or area range):
+
 === "Python"
 
     ```python
@@ -169,17 +185,20 @@ Precision has shape `[T x R x K x A x M]`. Recall has shape `[T x K x A x M]`. A
     ev.accumulate()
 
     acc = ev.eval
-    precision = acc["precision"]
+    precision = acc["precision"]  # shape [T x R x K x A x M]
 
     # Get category IDs and names
     cat_ids = ev.params.cat_ids
     cats = coco_gt.load_cats(cat_ids)
 
     # AP per category (IoU=0.50:0.95, area=all, maxDets=100)
+    # A=0 (all areas), M=2 (maxDets=100)
+    import numpy as np
     for i, cat in enumerate(cats):
-        # Average precision across all IoU thresholds and recall thresholds
-        # for category i, area=all (index 0), maxDets=100 (index 2)
-        print(f"{cat['name']}: AP = {ev.stats[0]:.3f}")
+        prec = precision[:, :, i, 0, 2]   # shape [T x R]
+        prec = prec[prec >= 0]             # exclude -1 (no data)
+        ap = float(np.mean(prec)) if prec.size else -1.0
+        print(f"{cat['name']}: AP = {ap:.3f}")
     ```
 
 === "Rust"

@@ -41,7 +41,7 @@ people_all_imgs = coco.filter(cat_ids=[person_id], drop_empty_images=False)
 Filter by annotation area to focus on a size range:
 
 ```python
-# Medium-to-large objects only (32² – 96² px²)
+# Medium objects only (32² – 96² px²)
 medium = coco.filter(area_rng=[1024.0, 9216.0])
 ```
 
