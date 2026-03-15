@@ -23,6 +23,17 @@ use crate::coco::COCO;
 use crate::params::{IouType, Params};
 use types::FreqGroups;
 
+/// Evaluation mode: determines matching semantics, metric sets, and output formatting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalMode {
+    /// Standard COCO evaluation (12 bbox/segm metrics or 10 keypoint metrics).
+    Coco,
+    /// LVIS federated evaluation (13 metrics including frequency-group AP).
+    Lvis,
+    /// Open Images detection evaluation (hierarchy-aware, group-of matching).
+    OpenImages,
+}
+
 /// COCO evaluation engine.
 ///
 /// Computes AP and AR metrics for bbox, segmentation, and keypoint predictions.
@@ -52,10 +63,10 @@ pub struct COCOeval {
     ious: HashMap<(u64, u64), Vec<Vec<f64>>>,
     pub eval: Option<AccumulatedEval>,
     pub stats: Option<Vec<f64>>,
-    /// LVIS federated evaluation mode.
-    pub is_lvis: bool,
+    /// Evaluation mode (COCO, LVIS, or OpenImages).
+    pub eval_mode: EvalMode,
     /// LVIS: k_indices bucketed by category frequency.
-    /// Populated during `evaluate()` when `is_lvis=true`.
+    /// Populated during `evaluate()` when `eval_mode == Lvis`.
     freq_groups: FreqGroups,
 }
 
@@ -70,7 +81,7 @@ impl COCOeval {
             ious: HashMap::new(),
             eval: None,
             stats: None,
-            is_lvis: false,
+            eval_mode: EvalMode::Coco,
             freq_groups: FreqGroups::default(),
         }
     }
@@ -100,7 +111,7 @@ impl COCOeval {
             ious: HashMap::new(),
             eval: None,
             stats: None,
-            is_lvis: true,
+            eval_mode: EvalMode::Lvis,
             freq_groups: FreqGroups::default(),
         }
     }

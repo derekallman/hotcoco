@@ -881,7 +881,7 @@ struct PyCOCOeval {
 #[pymethods]
 impl PyCOCOeval {
     #[new]
-    // TODO: rename Rust field `is_lvis` → `lvis_style` to match faster-coco-eval API compat
+    // Rust field is now `eval_mode: EvalMode` — lvis_style routes to EvalMode::Lvis internally
     #[pyo3(signature = (coco_gt, coco_dt, iou_type, lvis_style=false))]
     fn new(coco_gt: &PyCOCO, coco_dt: &PyCOCO, iou_type: &str, lvis_style: bool) -> PyResult<Self> {
         let iou = parse_iou_type(iou_type)?;

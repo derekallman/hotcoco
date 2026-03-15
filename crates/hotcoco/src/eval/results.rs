@@ -6,6 +6,8 @@ use serde::Serialize;
 
 use crate::params::{IouType, Params};
 
+use super::EvalMode;
+
 /// Serializable summary of evaluation parameters.
 ///
 /// A lightweight projection of [`Params`] containing only the fields
@@ -17,7 +19,8 @@ pub struct EvalParams {
     /// Area ranges as a map from label to `[min, max]`.
     pub area_ranges: HashMap<String, [f64; 2]>,
     pub max_dets: Vec<usize>,
-    pub is_lvis: bool,
+    /// Evaluation mode: "coco", "lvis", or "openimages".
+    pub eval_mode: String,
 }
 
 /// Serializable evaluation results.
@@ -55,20 +58,26 @@ impl EvalResults {
 }
 
 impl EvalParams {
-    /// Create from a [`Params`] struct and LVIS flag.
-    pub(super) fn from_params(params: &Params, is_lvis: bool) -> Self {
+    /// Create from a [`Params`] struct and evaluation mode.
+    pub(super) fn from_params(params: &Params, eval_mode: EvalMode) -> Self {
         let area_ranges: HashMap<String, [f64; 2]> = params
             .area_ranges
             .iter()
             .map(|ar| (ar.label.clone(), ar.range))
             .collect();
 
+        let mode_str = match eval_mode {
+            EvalMode::Coco => "coco",
+            EvalMode::Lvis => "lvis",
+            EvalMode::OpenImages => "openimages",
+        };
+
         EvalParams {
             iou_type: params.iou_type,
             iou_thresholds: params.iou_thrs.clone(),
             area_ranges,
             max_dets: params.max_dets.clone(),
-            is_lvis,
+            eval_mode: mode_str.to_string(),
         }
     }
 }
