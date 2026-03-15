@@ -16,7 +16,7 @@ pub(super) enum FreqGroup {
 /// LVIS category-index buckets grouped by frequency.
 ///
 /// Each field holds the `k_idx` (position in `params.cat_ids`) of all categories
-/// in that frequency bucket. Populated during `evaluate()` when `is_lvis=true`.
+/// in that frequency bucket. Populated during `evaluate()` when `eval_mode == Lvis`.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FreqGroups {
     pub rare: Vec<usize>,

@@ -2326,7 +2326,7 @@ fn test_results_returns_metrics() {
     assert!(results.per_class.is_none());
     assert_eq!(results.params.iou_thresholds.len(), 10);
     assert_eq!(results.params.max_dets, vec![1, 10, 100]);
-    assert!(!results.params.is_lvis);
+    assert_eq!(results.params.eval_mode, "coco");
 
     // With per-class
     let results = ev.results(true).expect("results() should succeed");

@@ -44,7 +44,7 @@ impl COCOeval {
             return Err("'_overall' is a reserved slice name".to_string());
         }
 
-        let metrics = build_metric_defs(&self.params, self.is_lvis);
+        let metrics = build_metric_defs(&self.params, self.eval_mode);
         let metric_keys: Vec<&str> = metrics.iter().map(|m| m.name).collect();
 
         // Compute overall (no filter)
@@ -52,7 +52,7 @@ impl COCOeval {
         let overall_stats = summarize_impl(
             &overall_acc,
             &self.params,
-            self.is_lvis,
+            self.eval_mode,
             &self.freq_groups,
             &metrics,
         );
@@ -80,7 +80,7 @@ impl COCOeval {
             let stats = summarize_impl(
                 &acc,
                 &self.params,
-                self.is_lvis,
+                self.eval_mode,
                 &self.freq_groups,
                 &metrics,
             );

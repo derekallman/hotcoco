@@ -4,7 +4,7 @@ use crate::params::{IouType, Params};
 
 use super::results::{EvalParams, EvalResults};
 use super::types::{AccumulatedEval, FreqGroup, FreqGroups};
-use super::COCOeval;
+use super::{COCOeval, EvalMode};
 
 /// Definition of a single summary metric (one row in the COCO output table).
 pub(super) struct MetricDef {
@@ -362,9 +362,9 @@ fn resolve_max_dets(params: &Params) -> (usize, usize, usize) {
 }
 
 /// Build the MetricDef vec for the current evaluation mode.
-pub(super) fn build_metric_defs(params: &Params, is_lvis: bool) -> Vec<MetricDef> {
+pub(super) fn build_metric_defs(params: &Params, eval_mode: EvalMode) -> Vec<MetricDef> {
     let (max_d, max_d_s, max_d_m) = resolve_max_dets(params);
-    if is_lvis {
+    if eval_mode == EvalMode::Lvis {
         metrics_lvis(max_d)
     } else if params.iou_type == IouType::Keypoints {
         metrics_kp(max_d)
@@ -380,7 +380,7 @@ pub(super) fn build_metric_defs(params: &Params, is_lvis: bool) -> Vec<MetricDef
 pub(super) fn summarize_impl(
     eval: &AccumulatedEval,
     params: &Params,
-    is_lvis: bool,
+    eval_mode: EvalMode,
     freq_groups: &FreqGroups,
     metrics: &[MetricDef],
 ) -> Vec<f64> {
@@ -432,7 +432,7 @@ pub(super) fn summarize_impl(
         }
     };
 
-    let per_cat_ap = if is_lvis {
+    let per_cat_ap = if eval_mode == EvalMode::Lvis {
         Some(per_cat_ap_static(eval, params))
     } else {
         None
@@ -492,7 +492,7 @@ impl COCOeval {
                     .to_string(),
             );
         }
-        let expected_max_dets = if self.is_lvis {
+        let expected_max_dets = if self.eval_mode == EvalMode::Lvis {
             vec![300usize]
         } else {
             defaults.max_dets.clone()
@@ -526,11 +526,11 @@ impl COCOeval {
         }
 
         // Delegate the actual computation to the free function.
-        let metrics = build_metric_defs(&self.params, self.is_lvis);
+        let metrics = build_metric_defs(&self.params, self.eval_mode);
         let stats = summarize_impl(
             eval,
             &self.params,
-            self.is_lvis,
+            self.eval_mode,
             &self.freq_groups,
             &metrics,
         );
@@ -538,7 +538,7 @@ impl COCOeval {
         for (m, &val) in metrics.iter().zip(stats.iter()) {
             let val_str = Self::format_metric(val);
 
-            if self.is_lvis {
+            if self.eval_mode == EvalMode::Lvis {
                 println!(" {:>10} = {}", m.name, val_str);
             } else {
                 let metric_name = if m.ap {
@@ -562,7 +562,7 @@ impl COCOeval {
             }
         }
 
-        if !self.is_lvis {
+        if self.eval_mode == EvalMode::Coco {
             println!("Eval type: {}", self.params.iou_type);
         }
         self.stats = Some(stats);
@@ -585,7 +585,7 @@ impl COCOeval {
     /// Metric key names for the current evaluation mode, derived from the same
     /// `MetricDef` vec that drives computation in `summarize()`.
     pub(super) fn metric_keys(&self) -> Vec<&'static str> {
-        build_metric_defs(&self.params, self.is_lvis)
+        build_metric_defs(&self.params, self.eval_mode)
             .into_iter()
             .map(|m| m.name)
             .collect()
@@ -832,7 +832,7 @@ impl COCOeval {
 
         Ok(EvalResults {
             hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
-            params: EvalParams::from_params(&self.params, self.is_lvis),
+            params: EvalParams::from_params(&self.params, self.eval_mode),
             metrics,
             per_class: per_class_map,
         })

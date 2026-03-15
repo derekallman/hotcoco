@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use crate::params::IouType;
 
 use super::types::{EvalImg, EvalImgContext};
-use super::COCOeval;
+use super::{COCOeval, EvalMode};
 
 impl COCOeval {
     /// Populate `params.img_ids` and `params.cat_ids` from the GT dataset if not already set.
@@ -57,7 +57,7 @@ impl COCOeval {
             }
             for pair in self.coco_dt.nonempty_img_cat_pairs() {
                 if allowed_imgs.contains(&pair.0) && allowed_cats.contains(&pair.1) {
-                    if self.is_lvis {
+                    if self.eval_mode == EvalMode::Lvis {
                         // Keep DT pair only if GT exists OR cat is explicitly neg for this image.
                         if gt_pairs.contains(&pair)
                             || neg_cats.get(&pair.0).is_some_and(|s| s.contains(&pair.1))
@@ -101,7 +101,7 @@ impl COCOeval {
         // Deferred from construction so the scan only happens when evaluate() is called.
         // neg_cats:       img_id → categories confirmed absent (unmatched DTs count as FP).
         // not_exhaustive: img_id → categories not fully checked (unmatched DTs are ignored).
-        let (neg_cats, not_exhaustive) = if self.is_lvis {
+        let (neg_cats, not_exhaustive) = if self.eval_mode == EvalMode::Lvis {
             let mut neg: HashMap<u64, HashSet<u64>> = HashMap::new();
             let mut not_ex: HashMap<u64, HashSet<u64>> = HashMap::new();
             for img in &self.coco_gt.dataset.images {
@@ -121,7 +121,7 @@ impl COCOeval {
         };
 
         // LVIS: build freq_groups now that cat_ids are established.
-        if self.is_lvis {
+        if self.eval_mode == EvalMode::Lvis {
             let cat_id_to_k_idx: HashMap<u64, usize> =
                 cat_ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
             let mut freq_groups = super::types::FreqGroups::default();
@@ -183,7 +183,7 @@ impl COCOeval {
         let mut eval_tuples: Vec<(u64, [f64; 2], u64, bool)> =
             Vec::with_capacity(sparse_pairs.len() * self.params.area_ranges.len());
         for &(img_id, cat_id) in &sparse_pairs {
-            let not_exhaustive_cat = self.is_lvis
+            let not_exhaustive_cat = self.eval_mode == EvalMode::Lvis
                 && not_exhaustive
                     .get(&img_id)
                     .is_some_and(|s| s.contains(&cat_id));
