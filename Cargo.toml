@@ -3,7 +3,7 @@ members = ["crates/hotcoco", "crates/hotcoco-cli", "crates/hotcoco-pyo3"]
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.74"
 authors = ["Derek Allman <derek.allman@yahoo.com>"]

@@ -58,7 +58,7 @@ Or add it manually to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hotcoco = "0.1"
+hotcoco = "0.3"
 ```
 
 Full API documentation is on [docs.rs](https://docs.rs/hotcoco).

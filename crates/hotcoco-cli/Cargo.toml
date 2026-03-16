@@ -17,6 +17,6 @@ name = "coco-eval"
 path = "src/main.rs"
 
 [dependencies]
-hotcoco = { version = "0.2.0", path = "../hotcoco" }
+hotcoco = { version = "0.3.0", path = "../hotcoco" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

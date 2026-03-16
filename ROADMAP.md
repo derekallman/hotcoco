@@ -118,6 +118,24 @@ Keypoint dataset for crowded scenes. Uses a modified OKS matching algorithm with
 
 ~~Open Images-style evaluation with category hierarchies, where a detection of a parent category is not penalized against a child. Small, specialised audience.~~ `COCOeval(oid_style=True, hierarchy=h)` with `Hierarchy.from_file()` / `from_categories()` / `from_parent_map()`; group-of matching semantics, GT expansion, optional DT expansion via `params.expand_dt`.
 
+### Dataset Healthcheck
+
+**Shipped.**
+
+~~4-layer validation (structural, quality, distribution, GT/DT compatibility) for COCO annotation files. `coco.healthcheck()` and `coco.healthcheck(dt)` in Python; `healthcheck()` / `healthcheck_compatibility()` in Rust; `coco healthcheck` CLI subcommand. `--healthcheck` flag on `coco eval` runs validation before evaluation.~~
+
+### Sliced Evaluation
+
+**Shipped.**
+
+~~`COCOeval.slice_by(slices)` re-accumulates metrics for named image-ID subsets (e.g. indoor/outdoor, day/night) without recomputing IoU. `--slices <json>` flag on `coco eval` CLI.~~
+
+### Shell Completions
+
+**Shipped.**
+
+~~Tab completion for both CLIs: `coco-eval --completions <bash|zsh|fish|elvish|powershell>` (Rust, powered by `clap_complete`); `pip install "hotcoco[completions]"` enables `coco` tab completion via `argcomplete`.~~
+
 ### Video Sequence Analysis
 
 Lightweight per-sequence metric breakdowns for video object detection, surfacing high-level trends like which clips perform worst. Track AP (used by TAO, BURST, YouTube-VIS) is a natural extension of the existing COCO AP pipeline and the most likely entry point here.
