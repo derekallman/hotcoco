@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Open Images evaluation mode (`oid_style=True` / `COCOeval::new_oid()`): single AP@IoU=0.5, `is_group_of` ignore semantics (no FN penalty), group-of second-pass multi-match, iscrowd re-matching disabled
+- `Hierarchy` type — category hierarchy for GT/DT expansion with three construction methods: `from_parent_map`, `from_categories` (supercategory fields), `from_oid_json` / `from_file` / `from_dict` (OID JSON format)
+- `Annotation.is_group_of: Option<bool>` field (`#[serde(default)]`) — Open Images group-of flag
+- `Params.expand_dt: bool` flag — opt-in DT expansion up the hierarchy (default `false`; GT is always expanded)
+- `Hierarchy` Python class with `from_file`, `from_dict`, `from_parent_map`, `ancestors`, `children`, `parent` methods
+- `docs/guide/evaluation.md` — "Open Images evaluation" section covering hierarchy, group-of, detection expansion, and the single AP metric
+- `docs/api/hierarchy.md` — API reference for the `Hierarchy` class
+- `docs/api/cocoeval.md` — updated constructor docs with `oid_style` and `hierarchy` parameters; Rust `new_oid()` constructor
+- `docs/api/params.md` — `expand_dt` parameter documented
 - `docs/api/plot.md` — documented `pr_curve_iou_sweep`, `pr_curve_by_category`, and `pr_curve_top_n`; these three functions were in `__all__` and importable but had no API reference entries; `pr_curve` section updated to describe it as a convenience dispatcher and to prefer calling the named functions directly
 - `docs/guide/masks.md` — warning admonition: `mask.encode()` returns `counts` as `bytes`; must decode to UTF-8 string before passing to `load_res()` or storing in a COCO JSON file
 - `docs/getting-started/quickstart.md` — bbox format warning: COCO uses `[x, y, width, height]`, not `[x1, y1, x2, y2]`; silent failure if wrong format is passed; includes conversion snippet

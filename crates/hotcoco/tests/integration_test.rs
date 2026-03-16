@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use hotcoco::convert::{coco_to_yolo, yolo_to_coco};
 use hotcoco::params::IouType;
 use hotcoco::types::{Annotation, Category, Dataset, Image};
-use hotcoco::{healthcheck, COCOeval, COCO};
+use hotcoco::{healthcheck, COCOeval, Hierarchy, COCO};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -147,6 +147,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
             Annotation {
                 id: 2,
@@ -159,6 +160,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
         ],
         categories: vec![Category {
@@ -193,6 +195,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 bbox: Some([10.0, 10.0, 20.0, 20.0]),
                 area: Some(400.0),
                 score: Some(0.9),
+                is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
                 keypoints: None,
@@ -205,6 +208,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 bbox: Some([10.0, 10.0, 25.0, 20.0]),
                 area: Some(500.0),
                 score: Some(0.8),
+                is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
                 keypoints: None,
@@ -217,6 +221,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 bbox: Some([50.0, 50.0, 100.0, 100.0]),
                 area: Some(10000.0),
                 score: Some(0.7),
+                is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
                 keypoints: None,
@@ -360,6 +365,7 @@ fn test_crowd_rematching() {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            is_group_of: None,
         }],
         categories: vec![Category {
             id: 1,
@@ -384,6 +390,7 @@ fn test_crowd_rematching() {
                 bbox: Some([10.0, 10.0, 50.0, 50.0]),
                 area: Some(2500.0),
                 score: Some(0.9),
+                is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
                 keypoints: None,
@@ -396,6 +403,7 @@ fn test_crowd_rematching() {
                 bbox: Some([12.0, 12.0, 48.0, 48.0]),
                 area: Some(2304.0),
                 score: Some(0.8),
+                is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
                 keypoints: None,
@@ -408,6 +416,7 @@ fn test_crowd_rematching() {
                 bbox: Some([15.0, 15.0, 45.0, 45.0]),
                 area: Some(2025.0),
                 score: Some(0.7),
+                is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
                 keypoints: None,
@@ -850,6 +859,7 @@ fn lvis_gt_ann(id: u64, image_id: u64, category_id: u64, area: f64) -> Annotatio
         keypoints: None,
         num_keypoints: None,
         score: None,
+        is_group_of: None,
     }
 }
 
@@ -865,6 +875,7 @@ fn lvis_dt_ann(id: u64, image_id: u64, category_id: u64, area: f64, score: f64) 
         keypoints: None,
         num_keypoints: None,
         score: Some(score),
+        is_group_of: None,
     }
 }
 
@@ -1048,6 +1059,7 @@ fn cm_gt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4]) -> Annotation {
         keypoints: None,
         num_keypoints: None,
         score: None,
+        is_group_of: None,
     }
 }
 
@@ -1063,6 +1075,7 @@ fn cm_dt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4], score: f64) -> A
         keypoints: None,
         num_keypoints: None,
         score: Some(score),
+        is_group_of: None,
     }
 }
 
@@ -1722,6 +1735,7 @@ fn make_test_dataset_basic() -> Dataset {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
             Annotation {
                 id: 2,
@@ -1734,6 +1748,7 @@ fn make_test_dataset_basic() -> Dataset {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
             Annotation {
                 id: 3,
@@ -1746,6 +1761,7 @@ fn make_test_dataset_basic() -> Dataset {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
         ],
         categories: vec![
@@ -1839,6 +1855,7 @@ fn test_coco_to_yolo_category_remapping() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
             Annotation {
                 id: 2,
@@ -1851,6 +1868,7 @@ fn test_coco_to_yolo_category_remapping() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
         ],
         // Unsorted in dataset; coco_to_yolo must sort by ID
@@ -1937,6 +1955,7 @@ fn test_coco_to_yolo_crowd_skipped() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
             Annotation {
                 id: 2,
@@ -1949,6 +1968,7 @@ fn test_coco_to_yolo_crowd_skipped() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
         ],
         categories: vec![Category {
@@ -2000,6 +2020,7 @@ fn test_coco_to_yolo_missing_bbox() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
             Annotation {
                 id: 2,
@@ -2012,6 +2033,7 @@ fn test_coco_to_yolo_missing_bbox() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             },
         ],
         categories: vec![Category {
@@ -2665,4 +2687,912 @@ fn test_slice_by_requires_evaluate() {
 
     let result = ev.slice_by(vec![("slice".to_string(), vec![1])].into_iter().collect());
     assert!(result.is_err(), "should error when evaluate() not called");
+}
+
+// ========== Open Images / Hierarchy tests ==========
+
+#[test]
+fn test_is_group_of_deserialization() {
+    // With is_group_of present
+    let json = r#"{
+        "id": 1, "image_id": 1, "category_id": 1,
+        "bbox": [0,0,10,10], "area": 100, "iscrowd": 0,
+        "is_group_of": true
+    }"#;
+    let ann: Annotation = serde_json::from_str(json).unwrap();
+    assert_eq!(ann.is_group_of, Some(true));
+
+    // Without is_group_of (should default to None)
+    let json2 = r#"{
+        "id": 2, "image_id": 1, "category_id": 1,
+        "bbox": [0,0,10,10], "area": 100, "iscrowd": 0
+    }"#;
+    let ann2: Annotation = serde_json::from_str(json2).unwrap();
+    assert_eq!(ann2.is_group_of, None);
+
+    // With is_group_of = false
+    let json3 = r#"{
+        "id": 3, "image_id": 1, "category_id": 1,
+        "bbox": [0,0,10,10], "area": 100, "iscrowd": 0,
+        "is_group_of": false
+    }"#;
+    let ann3: Annotation = serde_json::from_str(json3).unwrap();
+    assert_eq!(ann3.is_group_of, Some(false));
+}
+
+#[test]
+fn test_hierarchy_from_parent_map() {
+    // Dog(1) -> Animal(2) -> Entity(3)
+    // Cat(4) -> Animal(2)
+    let mut pm: HashMap<u64, u64> = HashMap::new();
+    pm.insert(1, 2); // Dog -> Animal
+    pm.insert(4, 2); // Cat -> Animal
+    pm.insert(2, 3); // Animal -> Entity
+
+    let h = Hierarchy::from_parent_map(pm);
+
+    // Dog ancestors: [Dog, Animal, Entity]
+    let dog_ancestors = h.ancestors(1);
+    assert_eq!(dog_ancestors.len(), 3);
+    assert_eq!(dog_ancestors[0], 1);
+    assert_eq!(dog_ancestors[1], 2);
+    assert_eq!(dog_ancestors[2], 3);
+
+    // Cat ancestors: [Cat, Animal, Entity]
+    let cat_ancestors = h.ancestors(4);
+    assert_eq!(cat_ancestors.len(), 3);
+    assert_eq!(cat_ancestors[0], 4);
+    assert_eq!(cat_ancestors[1], 2);
+    assert_eq!(cat_ancestors[2], 3);
+
+    // Animal ancestors: [Animal, Entity]
+    let animal_ancestors = h.ancestors(2);
+    assert_eq!(animal_ancestors.len(), 2);
+
+    // Entity ancestors: [Entity]
+    let entity_ancestors = h.ancestors(3);
+    assert_eq!(entity_ancestors.len(), 1);
+    assert_eq!(entity_ancestors[0], 3);
+
+    // Children checks
+    let animal_children = h.children(2);
+    assert_eq!(animal_children.len(), 2);
+    assert!(animal_children.contains(&1)); // Dog
+    assert!(animal_children.contains(&4)); // Cat
+
+    // Parent checks
+    assert_eq!(h.parent(1), Some(2));
+    assert_eq!(h.parent(3), None); // root
+}
+
+#[test]
+fn test_hierarchy_from_categories_supercategory() {
+    let cats = vec![
+        Category {
+            id: 1,
+            name: "dog".into(),
+            supercategory: Some("animal".into()),
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+        Category {
+            id: 2,
+            name: "animal".into(),
+            supercategory: None,
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+        Category {
+            id: 3,
+            name: "cat".into(),
+            supercategory: Some("animal".into()),
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+    ];
+
+    let h = Hierarchy::from_categories(&cats);
+
+    // Dog -> Animal
+    assert_eq!(h.parent(1), Some(2));
+    // Cat -> Animal
+    assert_eq!(h.parent(3), Some(2));
+    // Animal is root
+    assert_eq!(h.parent(2), None);
+
+    // Dog ancestors: [Dog, Animal]
+    let dog_anc = h.ancestors(1);
+    assert_eq!(dog_anc.len(), 2);
+    assert_eq!(dog_anc[0], 1);
+    assert_eq!(dog_anc[1], 2);
+}
+
+#[test]
+fn test_hierarchy_virtual_nodes() {
+    // "vehicle" supercategory doesn't match any category name -> virtual node
+    let cats = vec![
+        Category {
+            id: 1,
+            name: "car".into(),
+            supercategory: Some("vehicle".into()),
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+        Category {
+            id: 2,
+            name: "truck".into(),
+            supercategory: Some("vehicle".into()),
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+    ];
+
+    let h = Hierarchy::from_categories(&cats);
+
+    // Both car and truck should have the same parent (a virtual node)
+    let car_parent = h.parent(1).unwrap();
+    let truck_parent = h.parent(2).unwrap();
+    assert_eq!(car_parent, truck_parent);
+    // Virtual node ID should be very large (u64::MAX - 1)
+    assert!(car_parent >= u64::MAX - 10);
+
+    // Car ancestors: [car, vehicle_virtual]
+    assert_eq!(h.ancestors(1).len(), 2);
+}
+
+#[test]
+fn test_hierarchy_from_oid_json() {
+    let label_to_id: HashMap<String, u64> = vec![
+        ("/m/entity".to_string(), 100),
+        ("/m/animal".to_string(), 200),
+        ("/m/dog".to_string(), 300),
+        ("/m/cat".to_string(), 400),
+    ]
+    .into_iter()
+    .collect();
+
+    let json = r#"{
+        "LabelName": "/m/entity",
+        "Subcategory": [
+            {
+                "LabelName": "/m/animal",
+                "Subcategory": [
+                    { "LabelName": "/m/dog" },
+                    { "LabelName": "/m/cat" }
+                ]
+            }
+        ]
+    }"#;
+
+    let h = Hierarchy::from_oid_json(json, &label_to_id).unwrap();
+
+    // Dog -> Animal -> Entity
+    assert_eq!(h.parent(300), Some(200));
+    assert_eq!(h.parent(200), Some(100));
+    assert_eq!(h.parent(100), None);
+
+    let dog_anc = h.ancestors(300);
+    assert_eq!(dog_anc.len(), 3);
+    assert_eq!(dog_anc[0], 300);
+    assert_eq!(dog_anc[1], 200);
+    assert_eq!(dog_anc[2], 100);
+}
+
+#[test]
+fn test_hierarchy_from_oid_json_unknown_labels_skipped() {
+    // Only /m/dog is known; /m/entity and /m/animal get virtual nodes
+    let label_to_id: HashMap<String, u64> = vec![("/m/dog".to_string(), 1)].into_iter().collect();
+
+    let json = r#"{
+        "LabelName": "/m/entity",
+        "Subcategory": [
+            {
+                "LabelName": "/m/animal",
+                "Subcategory": [
+                    { "LabelName": "/m/dog" }
+                ]
+            }
+        ]
+    }"#;
+
+    let h = Hierarchy::from_oid_json(json, &label_to_id).unwrap();
+
+    // Dog (id=1) should have a parent (virtual animal node)
+    let dog_parent = h.parent(1).unwrap();
+    assert!(dog_parent >= u64::MAX - 10, "parent should be virtual node");
+
+    // Dog ancestors: [dog, virtual_animal, virtual_entity]
+    assert_eq!(h.ancestors(1).len(), 3);
+}
+
+#[test]
+fn test_gt_expansion_basic() {
+    // Dog(1) -> Animal(2): a Dog GT should expand to Dog + Animal
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img.jpg".into(),
+            height: 100,
+            width: 100,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1, // Dog
+            bbox: Some([10.0, 10.0, 20.0, 20.0]),
+            area: Some(400.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: None,
+            is_group_of: None,
+        }],
+        categories: vec![
+            Category {
+                id: 1,
+                name: "dog".into(),
+                supercategory: None,
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+            Category {
+                id: 2,
+                name: "animal".into(),
+                supercategory: None,
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+        ],
+        licenses: vec![],
+    };
+
+    let coco = COCO::from_dataset(gt_dataset);
+
+    let mut pm: HashMap<u64, u64> = HashMap::new();
+    pm.insert(1, 2); // Dog -> Animal
+    let hierarchy = Hierarchy::from_parent_map(pm);
+
+    let expanded = hotcoco::eval::expand::expand_gt(&coco, &hierarchy);
+
+    // Should have 2 annotations: original Dog + expanded Animal
+    assert_eq!(
+        expanded.dataset.annotations.len(),
+        2,
+        "Dog GT should expand to Dog + Animal"
+    );
+
+    let cat_ids: HashSet<u64> = expanded
+        .dataset
+        .annotations
+        .iter()
+        .map(|a| a.category_id)
+        .collect();
+    assert!(cat_ids.contains(&1), "should contain Dog");
+    assert!(cat_ids.contains(&2), "should contain Animal");
+
+    // Both annotations should share the same bbox
+    for ann in &expanded.dataset.annotations {
+        assert_eq!(ann.bbox, Some([10.0, 10.0, 20.0, 20.0]));
+        assert_eq!(ann.image_id, 1);
+    }
+}
+
+#[test]
+fn test_gt_expansion_idempotent() {
+    // If the annotation already has ancestors present, expanding again shouldn't duplicate
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img.jpg".into(),
+            height: 100,
+            width: 100,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1, // Dog
+                bbox: Some([10.0, 10.0, 20.0, 20.0]),
+                area: Some(400.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None,
+            },
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 2, // Animal (already present with same bbox)
+                bbox: Some([10.0, 10.0, 20.0, 20.0]),
+                area: Some(400.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None,
+            },
+        ],
+        categories: vec![
+            Category {
+                id: 1,
+                name: "dog".into(),
+                supercategory: None,
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+            Category {
+                id: 2,
+                name: "animal".into(),
+                supercategory: None,
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+        ],
+        licenses: vec![],
+    };
+
+    let coco = COCO::from_dataset(gt_dataset);
+
+    let mut pm: HashMap<u64, u64> = HashMap::new();
+    pm.insert(1, 2); // Dog -> Animal
+    let hierarchy = Hierarchy::from_parent_map(pm);
+
+    let expanded = hotcoco::eval::expand::expand_gt(&coco, &hierarchy);
+
+    // Should still have exactly 2 annotations — no duplicates
+    assert_eq!(
+        expanded.dataset.annotations.len(),
+        2,
+        "pre-expanded input should stay at 2 annotations"
+    );
+}
+
+#[test]
+fn test_oid_group_of_multi_match() {
+    // One non-group GT + one group-of GT, three DTs overlapping the group-of GT.
+    // All DTs should be TPs (one matches non-group, others match group-of).
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img1.jpg".into(),
+            height: 640,
+            width: 640,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([300.0, 300.0, 100.0, 100.0]),
+                area: Some(10000.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None, // NOT group-of — provides recall denominator
+            },
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([0.0, 0.0, 200.0, 200.0]),
+                area: Some(40000.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: Some(true), // Group-of GT
+            },
+        ],
+        categories: vec![Category {
+            id: 1,
+            name: "person".into(),
+            supercategory: None,
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        }],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: gt_dataset.images.clone(),
+        annotations: vec![
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([300.0, 300.0, 100.0, 100.0]),
+                area: Some(10000.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.9),
+                is_group_of: None,
+            },
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([10.0, 10.0, 80.0, 80.0]),
+                area: Some(6400.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.8),
+                is_group_of: None,
+            },
+            Annotation {
+                id: 3,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([50.0, 50.0, 80.0, 80.0]),
+                area: Some(6400.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.7),
+                is_group_of: None,
+            },
+        ],
+        categories: gt_dataset.categories.clone(),
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+    let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+
+    let stats = ev.stats.unwrap();
+    // DT1 matches non-group GT. DT2+DT3 match group-of GT (multi-match).
+    // All 3 DTs are TPs. Recall denominator = 1 (only non-group GT). AP should be 1.0.
+    assert!(
+        stats[0] > 0.99,
+        "AP should be ~1.0 with group-of multi-match, got {:.4}",
+        stats[0]
+    );
+}
+
+#[test]
+fn test_oid_group_of_no_fn_penalty() {
+    // Group-of GT with NO detections — should NOT count as FN
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img1.jpg".into(),
+            height: 640,
+            width: 640,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([0.0, 0.0, 100.0, 100.0]),
+                area: Some(10000.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None, // NOT group-of
+            },
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([400.0, 400.0, 100.0, 100.0]),
+                area: Some(10000.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: Some(true), // Group-of, no detection nearby
+            },
+        ],
+        categories: vec![Category {
+            id: 1,
+            name: "person".into(),
+            supercategory: None,
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        }],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: gt_dataset.images.clone(),
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([0.0, 0.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: Some(0.9),
+            is_group_of: None,
+        }],
+        categories: gt_dataset.categories.clone(),
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+    let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+
+    let stats = ev.stats.unwrap();
+    // Detection matches non-group GT perfectly. Group-of GT unmatched but NOT FN.
+    // AP should be 1.0.
+    assert!(
+        stats[0] > 0.99,
+        "AP should be ~1.0 (unmatched group-of is not FN), got {:.4}",
+        stats[0]
+    );
+}
+
+#[test]
+fn test_oid_hierarchy_evaluation() {
+    // Hierarchy: Poodle(1) -> Dog(2) -> Animal(3)
+    // GT: one Poodle annotation. DT: one Dog prediction at same bbox.
+    // After expansion, Dog GT exists → Dog detection should get AP=1.0 at Dog level.
+    let mut parent_map = HashMap::new();
+    parent_map.insert(1, 2);
+    parent_map.insert(2, 3);
+    let hierarchy = Hierarchy::from_parent_map(parent_map);
+
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img1.jpg".into(),
+            height: 640,
+            width: 640,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1, // Poodle
+            bbox: Some([10.0, 10.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: None,
+            is_group_of: None,
+        }],
+        categories: vec![
+            Category {
+                id: 1,
+                name: "poodle".into(),
+                supercategory: Some("dog".into()),
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+            Category {
+                id: 2,
+                name: "dog".into(),
+                supercategory: Some("animal".into()),
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+            Category {
+                id: 3,
+                name: "animal".into(),
+                supercategory: None,
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+        ],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: gt_dataset.images.clone(),
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 2, // Dog prediction
+            bbox: Some([10.0, 10.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: Some(0.9),
+            is_group_of: None,
+        }],
+        categories: gt_dataset.categories.clone(),
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+    let mut ev = COCOeval::new_oid(coco_gt, coco_dt, Some(hierarchy));
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+
+    let results = ev.results(true).unwrap();
+    let per_class = results.per_class.as_ref().unwrap();
+
+    // Dog AP should be 1.0 (detection matches expanded Dog GT)
+    let dog_ap = per_class
+        .iter()
+        .find(|(k, _)| k.contains("dog"))
+        .map(|(_, &v)| v)
+        .expect("dog should be in per-class results");
+    assert!(
+        (dog_ap - 1.0).abs() < 1e-6,
+        "Dog AP should be 1.0, got {dog_ap:.6}"
+    );
+}
+
+#[test]
+fn test_oid_dt_expansion() {
+    // Hierarchy: Dog(1) -> Animal(2)
+    // GT: Animal. DT: Dog.
+    // Without DT expansion: Dog detection doesn't match Animal GT → low AP.
+    // With DT expansion: Dog detection expanded to Animal → matches → better AP.
+    let mut parent_map = HashMap::new();
+    parent_map.insert(1, 2);
+    let hierarchy = Hierarchy::from_parent_map(parent_map);
+
+    let img = Image {
+        id: 1,
+        file_name: "img1.jpg".into(),
+        height: 640,
+        width: 640,
+        license: None,
+        coco_url: None,
+        flickr_url: None,
+        date_captured: None,
+        neg_category_ids: vec![],
+        not_exhaustive_category_ids: vec![],
+    };
+    let cats = vec![
+        Category {
+            id: 1,
+            name: "dog".into(),
+            supercategory: Some("animal".into()),
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+        Category {
+            id: 2,
+            name: "animal".into(),
+            supercategory: None,
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        },
+    ];
+
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![img.clone()],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 2, // Animal GT
+            bbox: Some([10.0, 10.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: None,
+            is_group_of: None,
+        }],
+        categories: cats.clone(),
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: vec![img],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1, // Dog prediction
+            bbox: Some([10.0, 10.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: Some(0.9),
+            is_group_of: None,
+        }],
+        categories: cats,
+        licenses: vec![],
+    };
+
+    // Without DT expansion
+    let coco_gt = COCO::from_dataset(gt_dataset.clone());
+    let coco_dt = COCO::from_dataset(dt_dataset.clone());
+    let mut ev1 = COCOeval::new_oid(coco_gt, coco_dt, Some(hierarchy.clone()));
+    ev1.evaluate();
+    ev1.accumulate();
+    ev1.summarize();
+    let stats_no_expand = ev1.stats.clone().unwrap();
+
+    // With DT expansion
+    let coco_gt2 = COCO::from_dataset(gt_dataset);
+    let coco_dt2 = COCO::from_dataset(dt_dataset);
+    let mut ev2 = COCOeval::new_oid(coco_gt2, coco_dt2, Some(hierarchy));
+    ev2.params.expand_dt = true;
+    ev2.evaluate();
+    ev2.accumulate();
+    ev2.summarize();
+    let stats_expand = ev2.stats.clone().unwrap();
+
+    // With DT expansion, AP should be higher
+    assert!(
+        stats_expand[0] > stats_no_expand[0],
+        "DT expansion should improve AP: expand={:.4} vs no_expand={:.4}",
+        stats_expand[0],
+        stats_no_expand[0]
+    );
+}
+
+#[test]
+fn test_oid_auto_derive_hierarchy() {
+    // No explicit hierarchy — derive from supercategory fields.
+    // Dog(1) has supercategory "animal" which matches Animal(2).
+    // GT: Dog. DT: Animal prediction. After expansion, Animal GT exists → match.
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img1.jpg".into(),
+            height: 640,
+            width: 640,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([10.0, 10.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: None,
+            is_group_of: None,
+        }],
+        categories: vec![
+            Category {
+                id: 1,
+                name: "dog".into(),
+                supercategory: Some("animal".into()),
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+            Category {
+                id: 2,
+                name: "animal".into(),
+                supercategory: None,
+                skeleton: None,
+                keypoints: None,
+                frequency: None,
+            },
+        ],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: gt_dataset.images.clone(),
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 2, // Animal prediction
+            bbox: Some([10.0, 10.0, 100.0, 100.0]),
+            area: Some(10000.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: Some(0.9),
+            is_group_of: None,
+        }],
+        categories: gt_dataset.categories.clone(),
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+
+    // No hierarchy arg → auto-derive from supercategory
+    let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+
+    let stats = ev.stats.unwrap();
+    // Dog GT expanded to Animal, Animal detection matches → AP > 0
+    assert!(
+        stats[0] > 0.0,
+        "Auto-derived hierarchy should enable hierarchical matching, got AP={:.4}",
+        stats[0]
+    );
 }

@@ -7,6 +7,7 @@ pub(crate) mod types;
 pub(super) mod accumulate;
 mod confusion;
 mod evaluate;
+pub mod expand;
 mod iou;
 mod results;
 pub mod slice;
@@ -20,6 +21,7 @@ pub use types::{AccumulatedEval, ConfusionMatrix, EvalImg, EvalShape, TideErrors
 use std::collections::HashMap;
 
 use crate::coco::COCO;
+use crate::hierarchy::Hierarchy;
 use crate::params::{IouType, Params};
 use types::FreqGroups;
 
@@ -68,6 +70,8 @@ pub struct COCOeval {
     /// LVIS: k_indices bucketed by category frequency.
     /// Populated during `evaluate()` when `eval_mode == Lvis`.
     freq_groups: FreqGroups,
+    /// Open Images: category hierarchy for GT/DT expansion.
+    pub hierarchy: Option<Hierarchy>,
 }
 
 impl COCOeval {
@@ -83,6 +87,7 @@ impl COCOeval {
             stats: None,
             eval_mode: EvalMode::Coco,
             freq_groups: FreqGroups::default(),
+            hierarchy: None,
         }
     }
 
@@ -113,6 +118,36 @@ impl COCOeval {
             stats: None,
             eval_mode: EvalMode::Lvis,
             freq_groups: FreqGroups::default(),
+            hierarchy: None,
+        }
+    }
+
+    /// Create a new COCOeval configured for Open Images detection evaluation.
+    ///
+    /// OID uses a single IoU threshold (0.5), one area range ("all"), and
+    /// `max_dets=100`. If a [`Hierarchy`] is provided, GT annotations are expanded
+    /// up the hierarchy during `evaluate()`. Set `params.expand_dt = true` to
+    /// also expand detections.
+    pub fn new_oid(coco_gt: COCO, coco_dt: COCO, hierarchy: Option<Hierarchy>) -> Self {
+        let mut params = Params::new(IouType::Bbox);
+        params.iou_thrs = vec![0.5];
+        params.area_ranges = vec![crate::AreaRange {
+            label: "all".to_string(),
+            range: [0.0, 1e10],
+        }];
+        params.max_dets = vec![100];
+
+        COCOeval {
+            coco_gt,
+            coco_dt,
+            params,
+            eval_imgs: Vec::new(),
+            ious: HashMap::new(),
+            eval: None,
+            stats: None,
+            eval_mode: EvalMode::OpenImages,
+            freq_groups: FreqGroups::default(),
+            hierarchy,
         }
     }
 }

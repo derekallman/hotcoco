@@ -26,6 +26,9 @@ pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<PyObject> 
     if let Some(score) = ann.score {
         dict.set_item("score", score)?;
     }
+    if let Some(is_group_of) = ann.is_group_of {
+        dict.set_item("is_group_of", is_group_of)?;
+    }
     Ok(dict.into_any().unbind())
 }
 
@@ -94,6 +97,10 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         .map(|v| v.extract())
         .transpose()?;
     let score: Option<f64> = dict.get_item("score")?.map(|v| v.extract()).transpose()?;
+    let is_group_of: Option<bool> = dict
+        .get_item("is_group_of")?
+        .map(|v| v.extract())
+        .transpose()?;
 
     Ok(Annotation {
         id,
@@ -106,6 +113,7 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         keypoints,
         num_keypoints,
         score,
+        is_group_of,
     })
 }
 

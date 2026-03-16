@@ -60,7 +60,13 @@ impl COCOeval {
                     mask::iou(&dt_r, &gt_r, &iscrowd)
                 } else {
                     // Bbox fallback when any RLE is missing
-                    Self::compute_bbox_iou_static(coco_gt, coco_dt, dt_ann_ids, gt_ann_ids)
+                    Self::compute_bbox_iou_static(
+                        coco_gt,
+                        coco_dt,
+                        dt_ann_ids,
+                        gt_ann_ids,
+                        super::EvalMode::Coco,
+                    )
                 }
             }
         }

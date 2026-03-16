@@ -28,6 +28,7 @@ nav = [
     { "Params" = "api/params.md" },
     { "mask" = "api/mask.md" },
     { "plot" = "api/plot.md" },
+    { "Hierarchy" = "api/hierarchy.md" },
     { "PyTorch Integrations" = "api/integrations.md" },
     { "CLI" = "cli.md" },
   ] },

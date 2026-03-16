@@ -76,6 +76,9 @@ pub struct Params {
     pub use_cats: bool,
     /// Per-keypoint OKS sigmas (default: 17 COCO keypoint sigmas).
     pub kpt_oks_sigmas: Vec<f64>,
+    /// Whether to expand detections up the category hierarchy (OID mode).
+    /// Default: false (only GT is expanded).
+    pub expand_dt: bool,
 }
 
 impl Params {
@@ -150,6 +153,7 @@ impl Params {
             area_ranges,
             use_cats: true,
             kpt_oks_sigmas,
+            expand_dt: false,
         }
     }
 }

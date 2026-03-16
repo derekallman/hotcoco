@@ -56,7 +56,7 @@ ev.run()
 
 ## What's included
 
-- **COCO & LVIS evaluation** — bbox, segmentation, and keypoints; all standard metrics plus LVIS federated eval (APr/APc/APf). See the [evaluation guide](https://derekallman.github.io/hotcoco/guide/evaluation/).
+- **COCO, LVIS & Open Images evaluation** — bbox, segmentation, and keypoints; all standard metrics plus LVIS federated eval (APr/APc/APf) and Open Images hierarchy-aware eval (group-of matching, GT expansion). See the [evaluation guide](https://derekallman.github.io/hotcoco/guide/evaluation/).
 - **TIDE error analysis** — breaks down every FP and FN into six error types so you know *why* your model falls short, not just by how much. See [TIDE errors](https://derekallman.github.io/hotcoco/guide/tide/).
 - **Confusion matrix** — cross-category matching with per-class breakdowns. See [confusion matrix](https://derekallman.github.io/hotcoco/guide/confusion-matrix/).
 - **F-scores** — F-beta averaging over precision/recall curves, analogous to mAP. See [F-scores](https://derekallman.github.io/hotcoco/guide/f-scores/).

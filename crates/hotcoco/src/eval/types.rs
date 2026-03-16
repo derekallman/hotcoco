@@ -203,4 +203,5 @@ pub(super) struct EvalImgContext<'a> {
     pub(super) coco_dt: &'a COCO,
     pub(super) params: &'a Params,
     pub(super) ious: &'a std::collections::HashMap<(u64, u64), Vec<Vec<f64>>>,
+    pub(super) eval_mode: super::EvalMode,
 }

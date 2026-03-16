@@ -192,3 +192,22 @@ Default values (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles
 
 !!! note "camelCase alias"
     Also available as `kptOksSigmas` in Python.
+
+---
+
+### `expand_dt`
+
+Whether to expand detection annotations up the category hierarchy in Open Images mode. When `True`, a "Dog" detection is also propagated as an "Animal" detection (if Animal is an ancestor of Dog).
+
+Only has an effect when `oid_style=True` and a `Hierarchy` is attached to the evaluator. Default is `False` — only GT annotations are expanded.
+
+| | Python | Rust |
+|---|---|---|
+| **Type** | `bool` | `bool` |
+| **Default** | `False` | `false` |
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox", oid_style=True, hierarchy=h)
+ev.params.expand_dt = True
+ev.run()
+```

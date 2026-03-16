@@ -89,6 +89,18 @@ impl COCOeval {
 
     /// Run per-image evaluation.
     pub fn evaluate(&mut self) {
+        // OID: expand GT (and optionally DT) using hierarchy
+        if self.eval_mode == EvalMode::OpenImages {
+            let hierarchy = self.hierarchy.clone().unwrap_or_else(|| {
+                crate::hierarchy::Hierarchy::from_categories(&self.coco_gt.dataset.categories)
+            });
+            self.coco_gt = super::expand::expand_gt(&self.coco_gt, &hierarchy);
+            if self.params.expand_dt {
+                self.coco_dt = super::expand::expand_dt(&self.coco_dt, &hierarchy);
+            }
+            self.hierarchy = Some(hierarchy);
+        }
+
         self.resolve_params();
 
         let cat_ids = if self.params.use_cats {
@@ -152,6 +164,7 @@ impl COCOeval {
                     &self.params,
                     img_id,
                     cat_id,
+                    self.eval_mode,
                 );
                 if iou_matrix.is_empty() {
                     None
@@ -177,6 +190,7 @@ impl COCOeval {
             coco_dt: &self.coco_dt,
             params: &self.params,
             ious: &self.ious,
+            eval_mode: self.eval_mode,
         };
 
         // Tuple: (cat_id, area_rng, img_id, not_exhaustive_cat)
@@ -236,25 +250,41 @@ impl COCOeval {
         let (gt_iou_indices, gt_anns): (Vec<usize>, Vec<&crate::types::Annotation>) =
             gt_with_iou_idx.iter().map(|&(idx, ann)| (idx, ann)).unzip();
         let is_kp = ctx.params.iou_type == IouType::Keypoints;
+        let is_oid = ctx.eval_mode == EvalMode::OpenImages;
         let gt_ignore: Vec<bool> = gt_anns
             .iter()
             .map(|ann| {
                 let a = ann.area.unwrap_or(0.0);
-                let mut ignore = ann.iscrowd || a < area_rng[0] || a > area_rng[1];
-                // For keypoints, also ignore GT annotations with num_keypoints == 0
-                if is_kp {
-                    ignore = ignore || ann.num_keypoints.unwrap_or(0) == 0;
+                let area_ignore = a < area_rng[0] || a > area_rng[1];
+                if is_oid {
+                    // OID: is_group_of GTs are ignored (no FN penalty), iscrowd is irrelevant
+                    let is_group = ann.is_group_of.unwrap_or(false);
+                    is_group || area_ignore
+                } else {
+                    let mut ignore = ann.iscrowd || area_ignore;
+                    // For keypoints, also ignore GT annotations with num_keypoints == 0
+                    if is_kp {
+                        ignore = ignore || ann.num_keypoints.unwrap_or(0) == 0;
+                    }
+                    ignore
                 }
-                ignore
             })
             .collect();
-
         // Sort GT: non-ignored first, then ignored
         let mut gt_order: Vec<usize> = (0..gt_anns.len()).collect();
         gt_order.sort_by_key(|&i| gt_ignore[i] as u8);
         let gt_ignore_sorted: Vec<bool> = gt_order.iter().map(|&i| gt_ignore[i]).collect();
         let gt_iscrowd_sorted: Vec<bool> = gt_order.iter().map(|&i| gt_anns[i].iscrowd).collect();
         let num_gt_not_ignored = gt_ignore_sorted.iter().filter(|&&x| !x).count();
+        // OID: track which GTs are group-of (in ignore-sorted order) for the second pass
+        let gt_is_group_of_sorted: Vec<bool> = if is_oid {
+            gt_order
+                .iter()
+                .map(|&i| gt_anns[i].is_group_of.unwrap_or(false))
+                .collect()
+        } else {
+            vec![]
+        };
 
         // Load DT annotations with their original IoU matrix row indices,
         // sort by score descending, then limit to max_det.
@@ -330,7 +360,9 @@ impl COCOeval {
 
                     // Phase 1: non-ignored GTs — linear scan for highest-IoU available match.
                     for gi in 0..num_gt_not_ignored {
-                        if gt_matched[t_idx][gi] && !gt_iscrowd_sorted[gi] {
+                        // In OID mode, iscrowd is irrelevant — only standard 1:1 matching.
+                        // In COCO/LVIS, crowd GTs can be re-matched.
+                        if gt_matched[t_idx][gi] && (is_oid || !gt_iscrowd_sorted[gi]) {
                             continue;
                         }
                         let iou_val = iou_flat[base + gi];
@@ -341,11 +373,14 @@ impl COCOeval {
                     }
 
                     // Phase 2: ignored GTs — only if no non-ignored match found.
-                    // This matches pycocotools' `if m>-1 and gtIg[m]==0: break`
-                    // which stops at the first ignored GT when a non-ignored match exists.
+                    // In OID mode, skip group-of GTs here (handled in separate pass).
                     if best_gi.is_none() {
                         for gi in num_gt_not_ignored..g {
-                            if gt_matched[t_idx][gi] && !gt_iscrowd_sorted[gi] {
+                            // Skip group-of GTs in OID mode — they get their own pass
+                            if is_oid && gt_is_group_of_sorted[gi] {
+                                continue;
+                            }
+                            if gt_matched[t_idx][gi] && (is_oid || !gt_iscrowd_sorted[gi]) {
                                 continue;
                             }
                             let iou_val = iou_flat[base + gi];
@@ -366,6 +401,35 @@ impl COCOeval {
                         dt_ignore_flags[t_idx][di] = gt_ignore_sorted[gi];
                     }
                     // Unmatched: dt_ignore_flags[t_idx][di] already set from dt_area_ignore
+                }
+            }
+
+            // OID group-of second pass: unmatched DTs try group-of GTs.
+            // Multiple DTs can match the same group-of GT (no gt_matched check).
+            // Matched DTs are genuine TPs (dt_ignore = false).
+            if is_oid {
+                for (t_idx, &iou_thr) in ctx.params.iou_thrs.iter().enumerate() {
+                    for di in 0..d {
+                        if dt_matched[t_idx][di] {
+                            continue; // Already matched in standard pass
+                        }
+                        let base = di * g;
+                        // Try group-of GTs (in the ignored partition)
+                        for gi in num_gt_not_ignored..g {
+                            if !gt_is_group_of_sorted[gi] {
+                                continue;
+                            }
+                            let iou_val = iou_flat[base + gi];
+                            if iou_val >= iou_thr {
+                                dt_matches[t_idx][di] = gt_anns[gt_order[gi]].id;
+                                dt_matched[t_idx][di] = true;
+                                // Do NOT set gt_matched — allow multi-match
+                                // Genuine TP — do NOT set dt_ignore
+                                dt_ignore_flags[t_idx][di] = false;
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }

@@ -114,7 +114,9 @@ Keypoint dataset for crowded scenes. Uses a modified OKS matching algorithm with
 
 ### Hierarchical Evaluation
 
-Open Images-style evaluation with category hierarchies, where a detection of a parent category is not penalized against a child. Small, specialised audience.
+**Shipped.**
+
+~~Open Images-style evaluation with category hierarchies, where a detection of a parent category is not penalized against a child. Small, specialised audience.~~ `COCOeval(oid_style=True, hierarchy=h)` with `Hierarchy.from_file()` / `from_categories()` / `from_parent_map()`; group-of matching semantics, GT expansion, optional DT expansion via `params.expand_dt`.
 
 ### Video Sequence Analysis
 

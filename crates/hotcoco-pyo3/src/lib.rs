@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use numpy::{PyArray1, PyArray2, PyArrayMethods};
@@ -204,6 +205,7 @@ impl PyCOCO {
                     iscrowd: false,
                     keypoints: None,
                     num_keypoints: None,
+                    is_group_of: None,
                 })
                 .collect::<Vec<_>>();
             return self
@@ -761,6 +763,14 @@ impl PyParams {
         self.inner.use_cats = val;
     }
     #[getter]
+    fn expand_dt(&self) -> bool {
+        self.inner.expand_dt
+    }
+    #[setter]
+    fn set_expand_dt(&mut self, val: bool) {
+        self.inner.expand_dt = val;
+    }
+    #[getter]
     fn kpt_oks_sigmas(&self) -> Vec<f64> {
         self.inner.kpt_oks_sigmas.clone()
     }
@@ -852,13 +862,109 @@ fn parse_iou_type(s: &str) -> PyResult<hotcoco_core::IouType> {
 }
 
 // ---------------------------------------------------------------------------
+// Hierarchy
+// ---------------------------------------------------------------------------
+
+#[doc = "Category hierarchy for Open Images evaluation.
+
+Supports three construction methods:
+
+- ``Hierarchy.from_parent_map({child_id: parent_id, ...})`` — explicit parent→child mapping.
+- ``Hierarchy.from_file(\"hierarchy.json\", label_to_id={...})`` — parse OID hierarchy JSON.
+- ``Hierarchy.from_dict(tree_dict, label_to_id={...})`` — from a Python dict (OID format).
+
+Example::
+
+    from hotcoco import COCO, COCOeval, Hierarchy
+
+    h = Hierarchy.from_file(\"bbox_labels_600_hierarchy.json\")
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\", oid_style=True, hierarchy=h)
+    ev.run()
+"]
+#[pyclass(name = "Hierarchy")]
+#[derive(Clone)]
+struct PyHierarchy {
+    inner: hotcoco_core::Hierarchy,
+}
+
+#[pymethods]
+impl PyHierarchy {
+    /// Build from a parent map: ``{child_id: parent_id, ...}``
+    #[staticmethod]
+    fn from_parent_map(parent_map: HashMap<u64, u64>) -> Self {
+        Self {
+            inner: hotcoco_core::Hierarchy::from_parent_map(parent_map),
+        }
+    }
+
+    /// Parse an Open Images hierarchy JSON file.
+    ///
+    /// Parameters
+    /// ----------
+    /// path : str
+    ///     Path to the OID hierarchy JSON file (``LabelName``/``Subcategory`` format).
+    /// label_to_id : dict, optional
+    ///     Maps OID label strings (e.g. ``"/m/dog"``) to category IDs.
+    ///     If ``None``, all labels get virtual node IDs.
+    #[staticmethod]
+    #[pyo3(signature = (path, label_to_id=None))]
+    fn from_file(path: &str, label_to_id: Option<HashMap<String, u64>>) -> PyResult<Self> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let map = label_to_id.unwrap_or_default();
+        let inner = hotcoco_core::Hierarchy::from_oid_json(&json, &map)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Build from a Python dict representing the OID hierarchy tree.
+    ///
+    /// Parameters
+    /// ----------
+    /// tree_dict : dict
+    ///     Dict with ``"LabelName"`` and ``"Subcategory"`` keys (the OID format).
+    /// label_to_id : dict, optional
+    ///     Maps OID label strings to category IDs.
+    #[staticmethod]
+    #[pyo3(signature = (tree_dict, label_to_id=None))]
+    fn from_dict(
+        py: Python<'_>,
+        tree_dict: &Bound<'_, PyDict>,
+        label_to_id: Option<HashMap<String, u64>>,
+    ) -> PyResult<Self> {
+        let json_mod = py.import("json")?;
+        let json_str: String = json_mod.call_method1("dumps", (tree_dict,))?.extract()?;
+        let map = label_to_id.unwrap_or_default();
+        let inner = hotcoco_core::Hierarchy::from_oid_json(&json_str, &map)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Get ancestors of a category (inclusive of self).
+    fn ancestors(&self, cat_id: u64) -> Vec<u64> {
+        self.inner.ancestors(cat_id).to_vec()
+    }
+
+    /// Get direct children of a category.
+    fn children(&self, cat_id: u64) -> Vec<u64> {
+        self.inner.children(cat_id).to_vec()
+    }
+
+    /// Get the parent of a category, or ``None`` if root.
+    fn parent(&self, cat_id: u64) -> Option<u64> {
+        self.inner.parent(cat_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // COCOeval
 // ---------------------------------------------------------------------------
 
 #[doc = "COCO evaluation engine.
 
 Computes AP and AR metrics for bbox, segmentation, and keypoint predictions.
-Also supports LVIS federated evaluation via ``lvis_style=True``.
+Also supports LVIS federated evaluation via ``lvis_style=True`` and
+Open Images evaluation via ``oid_style=True``.
 
 Standard COCO workflow::
 
@@ -872,6 +978,12 @@ LVIS workflow::
     ev = COCOeval(coco_gt, coco_dt, \"segm\", lvis_style=True)
     ev.run()                    # evaluate + accumulate + summarize in one call
     results = ev.get_results()  # dict with 13 metrics: AP, APr, APc, APf, AR@300, ...
+
+Open Images workflow::
+
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\", oid_style=True, hierarchy=h)
+    ev.run()
+    results = ev.results(per_class=True)  # dict with AP + per-class AP
 "]
 #[pyclass(name = "COCOeval")]
 struct PyCOCOeval {
@@ -881,13 +993,33 @@ struct PyCOCOeval {
 #[pymethods]
 impl PyCOCOeval {
     #[new]
-    // Rust field is now `eval_mode: EvalMode` — lvis_style routes to EvalMode::Lvis internally
-    #[pyo3(signature = (coco_gt, coco_dt, iou_type, lvis_style=false))]
-    fn new(coco_gt: &PyCOCO, coco_dt: &PyCOCO, iou_type: &str, lvis_style: bool) -> PyResult<Self> {
+    #[pyo3(signature = (coco_gt, coco_dt, iou_type, lvis_style=false, oid_style=false, hierarchy=None))]
+    fn new(
+        coco_gt: &PyCOCO,
+        coco_dt: &PyCOCO,
+        iou_type: &str,
+        lvis_style: bool,
+        oid_style: bool,
+        hierarchy: Option<&PyHierarchy>,
+    ) -> PyResult<Self> {
+        if oid_style && lvis_style {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Cannot use both oid_style and lvis_style",
+            ));
+        }
+
         let iou = parse_iou_type(iou_type)?;
         let gt = hotcoco_core::COCO::from_dataset(coco_gt.inner.dataset.clone());
         let dt = hotcoco_core::COCO::from_dataset(coco_dt.inner.dataset.clone());
-        let inner = if lvis_style {
+
+        let inner = if oid_style {
+            if iou != hotcoco_core::IouType::Bbox {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "OID evaluation only supports bbox IoU type",
+                ));
+            }
+            hotcoco_core::COCOeval::new_oid(gt, dt, hierarchy.map(|h| h.inner.clone()))
+        } else if lvis_style {
             hotcoco_core::COCOeval::new_lvis(gt, dt, iou)
         } else {
             hotcoco_core::COCOeval::new(gt, dt, iou)
@@ -925,6 +1057,19 @@ Equivalent to calling the three methods in sequence. Primarily used with
 LVIS pipelines (Detectron2, MMDetection) that expect a single ``run()`` call."]
     fn run(&mut self) {
         self.inner.run();
+    }
+
+    #[getter]
+    #[doc = "Category names added by hierarchy expansion (not in the original taxonomy).
+
+Returns an empty list when not in OID mode or before ``evaluate()`` is called.
+Use this to distinguish expanded ancestor categories from the model's native classes."]
+    fn virtual_cat_names(&self) -> Vec<String> {
+        self.inner
+            .hierarchy
+            .as_ref()
+            .map(|h| h.virtual_names.values().cloned().collect())
+            .unwrap_or_default()
     }
 
     #[doc = "Return summary metrics as a dict.
@@ -1469,6 +1614,7 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCOCO>()?;
     m.add_class::<PyCOCOeval>()?;
     m.add_class::<PyParams>()?;
+    m.add_class::<PyHierarchy>()?;
     m.add_function(wrap_pyfunction!(init_as_pycocotools, m)?)?;
     m.add_function(wrap_pyfunction!(init_as_lvis, m)?)?;
 

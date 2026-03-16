@@ -39,19 +39,37 @@ Run COCO evaluation to compute AP/AR metrics.
 === "Python"
 
     ```python
-    COCOeval(coco_gt: COCO, coco_dt: COCO, iou_type: str)
+    COCOeval(
+        coco_gt: COCO,
+        coco_dt: COCO,
+        iou_type: str,
+        *,
+        lvis_style: bool = False,
+        oid_style: bool = False,
+        hierarchy: Hierarchy | None = None,
+    )
     ```
 
-    | Parameter | Type | Description |
-    |-----------|------|-------------|
-    | `coco_gt` | `COCO` | Ground truth COCO object |
-    | `coco_dt` | `COCO` | Detections COCO object (from `load_res`) |
-    | `iou_type` | `str` | `"bbox"`, `"segm"`, or `"keypoints"` |
+    | Parameter | Type | Default | Description |
+    |-----------|------|---------|-------------|
+    | `coco_gt` | `COCO` | — | Ground truth COCO object |
+    | `coco_dt` | `COCO` | — | Detections COCO object (from `load_res`) |
+    | `iou_type` | `str` | — | `"bbox"`, `"segm"`, or `"keypoints"` |
+    | `lvis_style` | `bool` | `False` | Enable LVIS federated evaluation mode |
+    | `oid_style` | `bool` | `False` | Enable Open Images evaluation mode (IoU=0.5, group-of matching) |
+    | `hierarchy` | <code>Hierarchy &#124; None</code> | `None` | Category hierarchy for GT expansion in OID mode |
 
 === "Rust"
 
     ```rust
+    // Standard COCO
     COCOeval::new(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self
+
+    // LVIS federated
+    COCOeval::new_lvis(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self
+
+    // Open Images
+    COCOeval::new_oid(coco_gt: COCO, coco_dt: COCO, hierarchy: Option<Hierarchy>) -> Self
     ```
 
     | Parameter | Type | Description |
@@ -59,6 +77,7 @@ Run COCO evaluation to compute AP/AR metrics.
     | `coco_gt` | `COCO` | Ground truth COCO object |
     | `coco_dt` | `COCO` | Detections COCO object (from `load_res`) |
     | `iou_type` | `IouType` | `IouType::Bbox`, `IouType::Segm`, or `IouType::Keypoints` |
+    | `hierarchy` | `Option<Hierarchy>` | Category hierarchy for GT expansion; `None` to skip expansion |
 
 ---
 

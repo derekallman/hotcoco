@@ -833,6 +833,7 @@ mod tests {
                     keypoints: None,
                     num_keypoints: None,
                     score: None,
+                    is_group_of: None,
                 },
                 Annotation {
                     id: 2,
@@ -845,6 +846,7 @@ mod tests {
                     keypoints: None,
                     num_keypoints: None,
                     score: None,
+                    is_group_of: None,
                 },
                 Annotation {
                     id: 3,
@@ -857,6 +859,7 @@ mod tests {
                     keypoints: None,
                     num_keypoints: None,
                     score: None,
+                    is_group_of: None,
                 },
             ],
             categories: vec![

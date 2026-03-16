@@ -295,6 +295,7 @@ pub fn yolo_to_coco(
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                is_group_of: None,
             });
             ann_id += 1;
         }

@@ -361,15 +361,31 @@ fn resolve_max_dets(params: &Params) -> (usize, usize, usize) {
     (default, small, med)
 }
 
+/// Open Images metrics: single AP at IoU=0.5.
+fn metrics_oid(max_d: usize) -> Vec<MetricDef> {
+    vec![MetricDef {
+        name: "AP",
+        ap: true,
+        iou_thr: Some(0.5),
+        area_lbl: "all",
+        max_det: max_d,
+        freq_group: None,
+    }]
+}
+
 /// Build the MetricDef vec for the current evaluation mode.
 pub(super) fn build_metric_defs(params: &Params, eval_mode: EvalMode) -> Vec<MetricDef> {
     let (max_d, max_d_s, max_d_m) = resolve_max_dets(params);
-    if eval_mode == EvalMode::Lvis {
-        metrics_lvis(max_d)
-    } else if params.iou_type == IouType::Keypoints {
-        metrics_kp(max_d)
-    } else {
-        metrics_bbox_segm(max_d, max_d_s, max_d_m)
+    match eval_mode {
+        EvalMode::Lvis => metrics_lvis(max_d),
+        EvalMode::OpenImages => metrics_oid(max_d),
+        EvalMode::Coco => {
+            if params.iou_type == IouType::Keypoints {
+                metrics_kp(max_d)
+            } else {
+                metrics_bbox_segm(max_d, max_d_s, max_d_m)
+            }
+        }
     }
 }
 
@@ -432,7 +448,7 @@ pub(super) fn summarize_impl(
         }
     };
 
-    let per_cat_ap = if eval_mode == EvalMode::Lvis {
+    let per_cat_ap = if eval_mode == EvalMode::Lvis || eval_mode == EvalMode::OpenImages {
         Some(per_cat_ap_static(eval, params))
     } else {
         None
@@ -482,47 +498,50 @@ impl COCOeval {
         };
 
         // Warn if parameters differ from what the hardcoded summary display expects.
-        let defaults = Params::new(self.params.iou_type);
-        let mut warnings = Vec::new();
+        // OID has its own defaults — skip these COCO-specific warnings.
+        if self.eval_mode == EvalMode::Coco || self.eval_mode == EvalMode::Lvis {
+            let defaults = Params::new(self.params.iou_type);
+            let mut warnings = Vec::new();
 
-        let default_iou: Vec<f64> = (0..10).map(|i| 0.5 + 0.05 * i as f64).collect();
-        if self.params.iou_thrs != default_iou {
-            warnings.push(
-                "iou_thrs differ from default (0.50:0.05:0.95). AP50/AP75 lines may show -1.000."
-                    .to_string(),
-            );
-        }
-        let expected_max_dets = if self.eval_mode == EvalMode::Lvis {
-            vec![300usize]
-        } else {
-            defaults.max_dets.clone()
-        };
-        if self.params.max_dets != expected_max_dets {
-            warnings.push(format!(
-                "max_dets differ from expected ({:?}). AR lines may use unexpected max_dets values.",
-                expected_max_dets
-            ));
-        }
-        if !self
-            .params
-            .area_ranges
-            .iter()
-            .map(|ar| ar.label.as_str())
-            .eq(defaults.area_ranges.iter().map(|ar| ar.label.as_str()))
-        {
-            let default_labels: Vec<&str> = defaults
+            let default_iou: Vec<f64> = (0..10).map(|i| 0.5 + 0.05 * i as f64).collect();
+            if self.params.iou_thrs != default_iou {
+                warnings.push(
+                    "iou_thrs differ from default (0.50:0.05:0.95). AP50/AP75 lines may show -1.000."
+                        .to_string(),
+                );
+            }
+            let expected_max_dets = if self.eval_mode == EvalMode::Lvis {
+                vec![300usize]
+            } else {
+                defaults.max_dets.clone()
+            };
+            if self.params.max_dets != expected_max_dets {
+                warnings.push(format!(
+                    "max_dets differ from expected ({:?}). AR lines may use unexpected max_dets values.",
+                    expected_max_dets
+                ));
+            }
+            if !self
+                .params
                 .area_ranges
                 .iter()
                 .map(|ar| ar.label.as_str())
-                .collect();
-            warnings.push(format!(
-                "area range labels differ from default ({:?}). Per-size metrics may not find their area range.",
-                default_labels
-            ));
-        }
+                .eq(defaults.area_ranges.iter().map(|ar| ar.label.as_str()))
+            {
+                let default_labels: Vec<&str> = defaults
+                    .area_ranges
+                    .iter()
+                    .map(|ar| ar.label.as_str())
+                    .collect();
+                warnings.push(format!(
+                    "area range labels differ from default ({:?}). Per-size metrics may not find their area range.",
+                    default_labels
+                ));
+            }
 
-        for w in &warnings {
-            eprintln!("Warning: {}", w);
+            for w in &warnings {
+                eprintln!("Warning: {}", w);
+            }
         }
 
         // Delegate the actual computation to the free function.
@@ -538,7 +557,7 @@ impl COCOeval {
         for (m, &val) in metrics.iter().zip(stats.iter()) {
             let val_str = Self::format_metric(val);
 
-            if self.eval_mode == EvalMode::Lvis {
+            if self.eval_mode == EvalMode::Lvis || self.eval_mode == EvalMode::OpenImages {
                 println!(" {:>10} = {}", m.name, val_str);
             } else {
                 let metric_name = if m.ap {

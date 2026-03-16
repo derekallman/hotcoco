@@ -3,7 +3,7 @@ use crate::mask;
 use crate::params::{IouType, Params};
 use crate::types::Rle;
 
-use super::COCOeval;
+use super::{COCOeval, EvalMode};
 
 impl COCOeval {
     /// Compute the IoU/OKS matrix for a given image and category.
@@ -13,6 +13,7 @@ impl COCOeval {
         params: &Params,
         img_id: u64,
         cat_id: u64,
+        eval_mode: EvalMode,
     ) -> Vec<Vec<f64>> {
         let gt_anns = Self::get_anns_static(coco_gt, params, img_id, cat_id);
         let dt_anns = Self::get_anns_static(coco_dt, params, img_id, cat_id);
@@ -22,8 +23,12 @@ impl COCOeval {
         }
 
         match params.iou_type {
-            IouType::Segm => Self::compute_segm_iou_static(coco_gt, coco_dt, dt_anns, gt_anns),
-            IouType::Bbox => Self::compute_bbox_iou_static(coco_gt, coco_dt, dt_anns, gt_anns),
+            IouType::Segm => {
+                Self::compute_segm_iou_static(coco_gt, coco_dt, dt_anns, gt_anns, eval_mode)
+            }
+            IouType::Bbox => {
+                Self::compute_bbox_iou_static(coco_gt, coco_dt, dt_anns, gt_anns, eval_mode)
+            }
             IouType::Keypoints => {
                 Self::compute_oks_static(coco_gt, coco_dt, params, dt_anns, gt_anns)
             }
@@ -50,6 +55,7 @@ impl COCOeval {
         coco_dt: &COCO,
         dt_ids: &[u64],
         gt_ids: &[u64],
+        eval_mode: EvalMode,
     ) -> Vec<Vec<f64>> {
         let dt_rles: Vec<Rle> = dt_ids
             .iter()
@@ -62,7 +68,13 @@ impl COCOeval {
             .iter()
             .filter_map(|&id| {
                 let ann = coco_gt.get_ann(id)?;
-                Some((coco_gt.ann_to_rle(ann)?, ann.iscrowd))
+                // OID: iscrowd is irrelevant — always use standard IoU
+                let crowd = if eval_mode == EvalMode::OpenImages {
+                    false
+                } else {
+                    ann.iscrowd
+                };
+                Some((coco_gt.ann_to_rle(ann)?, crowd))
             })
             .unzip();
 
@@ -75,6 +87,7 @@ impl COCOeval {
         coco_dt: &COCO,
         dt_ids: &[u64],
         gt_ids: &[u64],
+        eval_mode: EvalMode,
     ) -> Vec<Vec<f64>> {
         let dt_bbs: Vec<[f64; 4]> = dt_ids
             .iter()
@@ -84,7 +97,13 @@ impl COCOeval {
             .iter()
             .filter_map(|&id| {
                 let ann = coco_gt.get_ann(id)?;
-                Some((ann.bbox?, ann.iscrowd))
+                // OID: iscrowd is irrelevant — always use standard IoU
+                let crowd = if eval_mode == EvalMode::OpenImages {
+                    false
+                } else {
+                    ann.iscrowd
+                };
+                Some((ann.bbox?, crowd))
             })
             .unzip();
 

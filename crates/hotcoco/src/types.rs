@@ -78,6 +78,10 @@ pub struct Annotation {
     /// Detection score (present only in result annotations).
     #[serde(default)]
     pub score: Option<f64>,
+    /// Open Images group-of flag. When true, the annotation represents a group of objects
+    /// rather than a single instance. Distinct from `iscrowd` — different matching semantics.
+    #[serde(default)]
+    pub is_group_of: Option<bool>,
 }
 
 /// Deserialize `iscrowd` from either a boolean or an integer (0/1).

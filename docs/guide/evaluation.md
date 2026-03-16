@@ -278,6 +278,100 @@ The frequency split (rare / common / frequent) is determined by the `frequency` 
 
 `get_results()` returns all 13 metrics as a dict for programmatic access.
 
+## Open Images evaluation
+
+[Open Images](https://storage.googleapis.com/openimages/web/index.html) uses a different evaluation protocol from COCO: a single AP@IoU=0.5, a category hierarchy for annotation expansion, and `is_group_of` annotations in place of `iscrowd`. hotcoco supports all three.
+
+### Quick start
+
+```python
+from hotcoco import COCO, COCOeval
+
+coco_gt = COCO("oid_annotations.json")
+coco_dt = coco_gt.load_res("detections.json")
+
+ev = COCOeval(coco_gt, coco_dt, "bbox", oid_style=True)
+ev.run()
+
+result = ev.get_results()
+# {"AP": 0.573}
+```
+
+`oid_style=True` sets:
+
+- IoU threshold = 0.5 (single threshold, no sweep)
+- Area range = "all" only
+- Max detections = 100
+
+### Category hierarchy
+
+Open Images categories form a hierarchy — a "Dog" detection also counts as an "Animal" detection if Animal is an ancestor of Dog. Pass a `Hierarchy` to expand GT annotations automatically at evaluation time.
+
+```python
+from hotcoco import COCO, COCOeval, Hierarchy
+
+# From the OID hierarchy JSON (bbox_labels_600_hierarchy.json)
+label_to_id = {cat["name"]: cat["id"] for cat in coco_gt.dataset["categories"]}
+h = Hierarchy.from_file("bbox_labels_600_hierarchy.json", label_to_id=label_to_id)
+
+ev = COCOeval(coco_gt, coco_dt, "bbox", oid_style=True, hierarchy=h)
+ev.run()
+```
+
+Without a hierarchy, `oid_style=True` still uses OID matching semantics (group-of handling, single IoU threshold) — the hierarchy only affects annotation expansion.
+
+If you don't have a hierarchy JSON, you can derive a hierarchy from `supercategory` fields in your annotation file:
+
+```python
+from hotcoco import Hierarchy
+
+# Derives parent→child relationships from Category.supercategory
+h = Hierarchy.from_categories(coco_gt.dataset["categories"])
+```
+
+Or build one manually from a parent map:
+
+```python
+h = Hierarchy.from_parent_map({
+    3: 1,   # cat 3's parent is cat 1
+    4: 1,   # cat 4's parent is cat 1
+    5: 2,   # cat 5's parent is cat 2
+})
+```
+
+### Detection expansion
+
+By default only GT annotations are expanded up the hierarchy. To also expand detections (so a "Dog" detection also counts as an "Animal" detection):
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox", oid_style=True, hierarchy=h)
+ev.params.expand_dt = True
+ev.run()
+```
+
+### Group-of annotations
+
+OID uses `is_group_of: true` on annotations that represent a cluster of objects rather than a single instance. These are handled differently from `iscrowd`:
+
+- **Ignored for false negatives** — a group-of GT that goes undetected does not count as a miss.
+- **Multiple detections can match** — if two detections both overlap a group-of GT at IoU ≥ 0.5, both are genuine TPs (no duplicate penalty).
+
+Your annotations need `"is_group_of": true` in the JSON for this to take effect. Standard annotations without this field default to `false`.
+
+### The OID metric
+
+`summarize()` reports a single metric:
+
+| Metric | IoU | Area | MaxDets |
+|--------|-----|------|---------|
+| **AP** | 0.50 | all | 100 |
+
+`get_results()` returns `{"AP": <float>}`.
+
+See [Hierarchy](../api/hierarchy.md) in the API reference for full construction and query methods.
+
+---
+
 ## Confusion matrix
 
 The standard AP pipeline only ever matches detections against ground truth of the **same** category. That means it can't tell you *which* categories your model confuses. `confusion_matrix()` fixes this with a separate cross-category matching pass.
