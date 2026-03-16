@@ -6,16 +6,14 @@ from pathlib import Path
 from typing import Any
 
 from .core import (
-    _annotate_bars,
     _annotate_f1_peak,
-    _cat_name_lookup,
     _configure_axes,
     _import_mpl,
-    _nearest_iou_idx,
+    _mask_invalid_prec,
     _new_figure,
-    _resolve_pr_params,
     _save_and_return,
 )
+from .data import PlotData
 from .theme import _build_rc
 
 
@@ -59,23 +57,25 @@ def pr_curve_iou_sweep(
     import numpy as np
 
     mpl, _, _ = _import_mpl()
-    precision, all_iou_thrs, _, a_idx, m_idx, recall_pts = _resolve_pr_params(coco_eval, area_rng, max_det)
+    data = PlotData.from_coco_eval(coco_eval)
+    a_idx = data.area_idx(area_rng)
+    m_idx = data.max_det_idx(max_det)
 
     t_indices = (
-        list(range(len(all_iou_thrs))) if iou_thrs is None else [i for i, t in enumerate(all_iou_thrs) if t in iou_thrs]
+        list(range(len(data.iou_thresholds)))
+        if iou_thrs is None
+        else [i for i, t in enumerate(data.iou_thresholds) if t in iou_thrs]
     )
 
     with mpl.rc_context(_build_rc(theme, paper_mode)):
-        fig, ax = _new_figure((6, 6), ax)
+        fig, ax = _new_figure((6, 6), ax, layout="compressed")
 
         for line_idx, t_idx in enumerate(t_indices):
-            p = precision[t_idx, :, :, a_idx, m_idx].copy()
-            p[p < 0] = np.nan
-            prec = np.nanmean(p, axis=1)
+            prec = np.nanmean(_mask_invalid_prec(data.precision[t_idx, :, :, a_idx, m_idx]), axis=1)
             lw = 2 if line_idx == 0 else 1
-            (line,) = ax.plot(recall_pts, prec, linewidth=lw, label=f"IoU={all_iou_thrs[t_idx]:.2f}")
+            (line,) = ax.plot(data.recall_pts, prec, linewidth=lw, label=f"IoU={data.iou_thresholds[t_idx]:.2f}")
             if line_idx == 0:
-                _annotate_f1_peak(ax, recall_pts, prec, line)
+                _annotate_f1_peak(ax, data.recall_pts, prec, line)
 
         ax.set(xlim=(0, 1), ylim=(0, 1), aspect="equal", xlabel="Recall", ylabel="Precision")
         ax.legend(fontsize=9, loc="lower left")
@@ -123,21 +123,22 @@ def pr_curve_by_category(
     import numpy as np
 
     mpl, _, _ = _import_mpl()
-    precision, all_iou_thrs, all_cat_ids, a_idx, m_idx, recall_pts = _resolve_pr_params(coco_eval, area_rng, max_det)
+    data = PlotData.from_coco_eval(coco_eval)
+    a_idx = data.area_idx(area_rng)
+    m_idx = data.max_det_idx(max_det)
 
-    if cat_id not in all_cat_ids:
+    if cat_id not in data.cat_ids:
         raise ValueError(f"cat_id {cat_id} not in params.cat_ids")
 
-    k_idx = all_cat_ids.index(cat_id)
-    t_idx = _nearest_iou_idx(all_iou_thrs, iou_thr)
-    prec = precision[t_idx, :, k_idx, a_idx, m_idx].copy()
-    prec = np.where(prec < 0, np.nan, prec)
-    cat_name = _cat_name_lookup(coco_eval).get(cat_id, str(cat_id))
+    k_idx = data.cat_ids.index(cat_id)
+    t_idx = data.nearest_iou_idx(iou_thr)
+    prec = _mask_invalid_prec(data.precision[t_idx, :, k_idx, a_idx, m_idx])
+    cat_name = data.cat_names.get(cat_id, str(cat_id))
 
     with mpl.rc_context(_build_rc(theme, paper_mode)):
-        fig, ax = _new_figure((6, 6), ax)
-        (line,) = ax.plot(recall_pts, prec, linewidth=2)
-        _annotate_f1_peak(ax, recall_pts, prec, line)
+        fig, ax = _new_figure((6, 6), ax, layout="compressed")
+        (line,) = ax.plot(data.recall_pts, prec, linewidth=2)
+        _annotate_f1_peak(ax, data.recall_pts, prec, line)
 
         ax.set(xlim=(0, 1), ylim=(0, 1), aspect="equal", xlabel="Recall", ylabel="Precision")
         _configure_axes(ax, "Precision-Recall", subtitle=cat_name, value_axis="y")
@@ -187,35 +188,35 @@ def pr_curve_top_n(
     import numpy as np
 
     mpl, _, _ = _import_mpl()
-    precision, all_iou_thrs, all_cat_ids, a_idx, m_idx, recall_pts = _resolve_pr_params(coco_eval, area_rng, max_det)
-    t_idx = _nearest_iou_idx(all_iou_thrs, iou_thr)
-    name_map = _cat_name_lookup(coco_eval)
+    data = PlotData.from_coco_eval(coco_eval)
+    a_idx = data.area_idx(area_rng)
+    m_idx = data.max_det_idx(max_det)
+    t_idx = data.nearest_iou_idx(iou_thr)
 
     if cat_ids is None:
         cat_aps = []
-        for k_i, cid in enumerate(all_cat_ids):
-            p = precision[t_idx, :, k_i, a_idx, m_idx]
+        for k_i, cid in enumerate(data.cat_ids):
+            p = data.precision[t_idx, :, k_i, a_idx, m_idx]
             valid = p[p >= 0]
             cat_aps.append((cid, float(np.mean(valid)) if len(valid) else 0.0))
         cat_aps.sort(key=lambda x: x[1], reverse=True)
         cat_ids = [cid for cid, _ in cat_aps[:top_n]]
 
-    cat_id_to_k = {cid: k for k, cid in enumerate(all_cat_ids)}
+    cat_id_to_k = {cid: k for k, cid in enumerate(data.cat_ids)}
 
     with mpl.rc_context(_build_rc(theme, paper_mode)):
-        fig, ax = _new_figure((6, 6), ax)
+        fig, ax = _new_figure((6, 6), ax, layout="compressed")
 
         for cid in cat_ids:
             k_idx = cat_id_to_k.get(cid)
             if k_idx is None:
                 continue
-            prec = precision[t_idx, :, k_idx, a_idx, m_idx]
-            prec = np.where(prec < 0, np.nan, prec)
-            ax.plot(recall_pts, prec, linewidth=1.5, label=name_map.get(cid, str(cid)))
+            prec = _mask_invalid_prec(data.precision[t_idx, :, k_idx, a_idx, m_idx])
+            ax.plot(data.recall_pts, prec, linewidth=1.5, label=data.cat_names.get(cid, str(cid)))
 
         ax.set(xlim=(0, 1), ylim=(0, 1), aspect="equal", xlabel="Recall", ylabel="Precision")
         ax.legend(fontsize=8, loc="lower left")
-        _configure_axes(ax, "Precision-Recall by Category", subtitle=f"IoU={all_iou_thrs[t_idx]:.2f}", value_axis="y")
+        _configure_axes(ax, "Precision-Recall by Category", subtitle=f"IoU={data.iou_thresholds[t_idx]:.2f}", value_axis="y")
     return _save_and_return(fig, ax, save_path)
 
 
@@ -371,9 +372,10 @@ def confusion_matrix(
             top_n = 25
 
         if top_n is not None and top_n < K:
-            row_total = data[:K, :K].sum(axis=1)
-            col_total = data[:K, :K].sum(axis=0)[:K]
-            diag = np.diag(data[:K, :K])
+            cat_block = data[:K, :K]
+            row_total = cat_block.sum(axis=1)
+            col_total = cat_block.sum(axis=0)[:K]
+            diag = np.diag(cat_block)
             confusion_mass = (row_total - diag) + (col_total - diag)
             top_indices = np.argsort(confusion_mass)[::-1][:top_n]
             keep = sorted(top_indices.tolist()) + [len(labels) - 1]
@@ -382,11 +384,13 @@ def confusion_matrix(
 
     n = len(labels)
     size = min(max(6, 0.35 * n), 20)
+    vmax = 1.0 if normalize else None
     rc = _build_rc(theme, paper_mode)
     with mpl.rc_context(rc):
-        fig, ax = _new_figure((size, size), ax)
+        # layout=None: make_axes_locatable is incompatible with constrained/compressed layout
+        fig, ax = _new_figure((size, size), ax, layout=None)
 
-        im = ax.imshow(data, aspect="equal", vmin=0)  # cmap from active rcParams; vmin=0 anchors zeros to white
+        im = ax.imshow(data, aspect="equal", vmin=0, vmax=vmax, interpolation="none")
 
         thresh = data.max() / 2.0
         suppress = 0.01 if normalize else 1
@@ -407,7 +411,10 @@ def confusion_matrix(
         ax.set_ylabel("Ground truth")
         ax.set_frame_on(False)
         _configure_axes(ax, "Confusion Matrix", value_axis=None)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.08)
+        fig.colorbar(im, cax=cax)
 
     return _save_and_return(fig, ax, save_path)
 
@@ -480,7 +487,7 @@ def top_confusions(
 
         fig, ax = _new_figure((8, max(4, 0.35 * num_bars)), ax)
         bars = ax.barh(range(num_bars), counts, height=0.7)
-        _annotate_bars(ax, bars, counts, fmt="d", fontsize=8)
+        ax.bar_label(bars, labels=[str(c) for c in counts], fontsize=8, padding=3)
 
         ax.set_yticks(range(num_bars))
         ax.set_yticklabels(bar_labels)
@@ -547,10 +554,8 @@ def per_category_ap(
         colors = [sep_color if n == "..." else bar_color for n in names]
         bars = ax.barh(range(num_bars), values, height=0.7, color=colors)
 
-        label_bars = [(b, v) for b, v, n in zip(bars, values, names) if n != "..."]
-        if label_bars:
-            bs, vs = zip(*label_bars)
-            _annotate_bars(ax, bs, vs, fmt=".2f", fontsize=7.5)
+        bar_labels = [f"{v:.2f}" if n != "..." else "" for n, v in zip(names, values)]
+        ax.bar_label(bars, labels=bar_labels, fontsize=7.5, padding=3)
 
         real_values = [v for n, v in zip(names, values) if n != "..."]
         mean_ap = sum(real_values) / len(real_values) if real_values else 0
@@ -604,7 +609,7 @@ def tide_errors(
     with mpl.rc_context(_build_rc(theme, paper_mode)):
         fig, ax = _new_figure((8, 4), ax)
         bars = ax.barh(range(len(error_types)), values, height=0.6)
-        _annotate_bars(ax, bars, values, fmt=".3f", fontsize=9)
+        ax.bar_label(bars, labels=[f"{v:.3f}" for v in values], fontsize=9, padding=3)
 
         ax.set_yticks(range(len(error_types)))
         ax.set_yticklabels(error_types)
