@@ -2,43 +2,130 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
-from .core import _import_mpl, _nearest_iou_idx, _resolve_font_family
+from .core import _import_mpl, _mask_invalid_prec, _resolve_font_family
+from .data import PlotData
 from .theme import CHROME, SERIES_COLORS
 
 # ---------------------------------------------------------------------------
-# Metric display strings
+# Metric display helpers
 # ---------------------------------------------------------------------------
 
-_METRIC_MATH = {
-    "AP": r"$\mathrm{AP}$",
-    "AP50": r"$\mathrm{AP}_{50}$",
-    "AP75": r"$\mathrm{AP}_{75}$",
-    "APs": r"$\mathrm{AP}_{\mathrm{S}}$",
-    "APm": r"$\mathrm{AP}_{\mathrm{M}}$",
-    "APl": r"$\mathrm{AP}_{\mathrm{L}}$",
-    "AR1": r"$\mathrm{AR}_{1}$",
-    "AR10": r"$\mathrm{AR}_{10}$",
-    "AR100": r"$\mathrm{AR}_{100}$",
-    "ARs": r"$\mathrm{AR}_{\mathrm{S}}$",
-    "ARm": r"$\mathrm{AR}_{\mathrm{M}}$",
-    "ARl": r"$\mathrm{AR}_{\mathrm{L}}$",
-    # Keypoints AR metrics
-    "AR": r"$\mathrm{AR}$",
-    "AR50": r"$\mathrm{AR}_{50}$",
-    "AR75": r"$\mathrm{AR}_{75}$",
-    # LVIS frequency AP metrics
-    "APr": r"$\mathrm{AP}_{\mathrm{r}}$",
-    "APc": r"$\mathrm{AP}_{\mathrm{c}}$",
-    "APf": r"$\mathrm{AP}_{\mathrm{f}}$",
-    # LVIS AR@300 metrics
-    "AR@300": r"$\mathrm{AR}_{300}$",
-    "ARs@300": r"$\mathrm{AR}^{\mathrm{S}}_{300}$",
-    "ARm@300": r"$\mathrm{AR}^{\mathrm{M}}_{300}$",
-    "ARl@300": r"$\mathrm{AR}^{\mathrm{L}}_{300}$",
-    "F1": "F1",
-}
+def _metric_math(key: str) -> str:
+    """Return a LaTeX display string for a metric key.
+
+    Parses the key rather than looking it up in a static dict, so new
+    metrics added in Rust automatically render correctly.
+
+    Examples: ``"AP50"`` → ``$\\mathrm{AP}_{50}$``,
+    ``"ARs@300"`` → ``$\\mathrm{AR}^{\\mathrm{S}}_{300}$``.
+    """
+    if key == "F1":
+        return "F1"
+    # @N pattern: AR@300, ARs@300, ARm@300, ARl@300
+    m = re.match(r"^(AP|AR)([sml])?@(\d+)$", key, re.IGNORECASE)
+    if m:
+        base = m.group(1).upper()
+        size = m.group(2)
+        n = m.group(3)
+        sup = rf"\mathrm{{{size.upper()}}}" if size else ""
+        return rf"$\mathrm{{{base}}}{'^{' + sup + '}' if sup else ''}_{{{n}}}$"
+    # Standard: AP, AP50, AP75, APs, APm, APl, APr, APc, APf, AR, AR1, …
+    m = re.match(r"^(AP|AR)(\d+|[a-z])?$", key, re.IGNORECASE)
+    if m:
+        base = m.group(1).upper()
+        suffix = m.group(2)
+        if not suffix:
+            return rf"$\mathrm{{{base}}}$"
+        if suffix.isdigit():
+            return rf"$\mathrm{{{base}}}_{{{suffix}}}$"
+        if suffix.lower() in ("s", "m", "l"):
+            return rf"$\mathrm{{{base}}}_{{\mathrm{{{suffix.upper()}}}}}$"
+        # r, c, f (LVIS frequency groups) — keep lowercase
+        return rf"$\mathrm{{{base}}}_{{\mathrm{{{suffix.lower()}}}}}$"
+    return key
+
+
+# Canonical metric ordering for table rows (superset of all modes).
+# Only keys present in data.metrics are included.
+_AP_ORDER = ["AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf"]
+_AR_COCO_ORDER = ["AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
+_AR_KPT_ORDER = ["AR", "AR50", "AR75", "ARm", "ARl"]
+_AR_LVIS_ORDER = ["AR@300", "ARs@300", "ARm@300", "ARl@300"]
+
+_SIZE_LABEL = {"s": "small", "m": "medium", "l": "large"}
+_FREQ_DESC = {"r": "rare", "c": "common", "f": "frequent"}
+
+
+def _area_desc(size_key: str, area_ranges: dict) -> str:
+    """Human-readable area range description derived from area_ranges bounds."""
+    label = _SIZE_LABEL.get(size_key.lower(), size_key)
+    if label not in area_ranges:
+        return label
+    lo, hi = area_ranges[label]
+    lo_px = round(lo ** 0.5) if lo > 0 else 0
+    hi_px = round(hi ** 0.5) if hi < 1e9 else None
+    if lo == 0 and hi_px:
+        return f"area < {hi_px}\u00b2"
+    if lo_px and hi_px:
+        return f"{lo_px}\u00b2 \u2013 {hi_px}\u00b2"
+    return f"area > {lo_px}\u00b2"
+
+
+def _metric_desc(key: str, data: PlotData) -> str:
+    """Generate a human-readable description for a metric key."""
+    iou_thrs = data.iou_thresholds
+    iou_all = f"IoU {iou_thrs[0]:.2f}:{iou_thrs[-1]:.2f}" if len(iou_thrs) > 1 else f"IoU {iou_thrs[0]:.2f}"
+
+    # @N pattern
+    m = re.match(r"^AR([sml])?@(\d+)$", key, re.IGNORECASE)
+    if m:
+        size, n = m.group(1), int(m.group(2))
+        return _area_desc(size, data.area_ranges) if size else f"max {n} dets"
+
+    m = re.match(r"^(AP|AR)(\d+|[a-z])?$", key, re.IGNORECASE)
+    if not m:
+        return key
+    _, suffix = m.group(1), m.group(2)
+    if not suffix:
+        return iou_all
+    if suffix.isdigit():
+        n = int(suffix)
+        iou_val = n / 100.0
+        if iou_val in iou_thrs:
+            return f"IoU {iou_val:.2f}"
+        if n in data.max_dets:
+            return f"max {n} det{'s' if n > 1 else ''}"
+        return f"IoU {iou_val:.2f}"
+    if suffix.lower() in _SIZE_LABEL:
+        return _area_desc(suffix, data.area_ranges)
+    return _FREQ_DESC.get(suffix.lower(), suffix)
+
+
+def _build_metric_rows(data: PlotData) -> tuple[list, list, str]:
+    """Derive (AP_ROWS, AR_ROWS, ar_kpi_key) from PlotData.
+
+    Rows are (display_key, description, metric_key) tuples. Only metrics
+    present in data.metrics are included, in canonical display order.
+    """
+    present = set(data.metrics)
+
+    if data.eval_mode == "openimages":
+        ap_rows = [("AP", "IoU 0.50", "AP")]
+        return ap_rows, [], "AP"
+
+    if data.eval_mode == "lvis":
+        ar_order, ar_kpi_key = _AR_LVIS_ORDER, "AR@300"
+    elif data.iou_type == "keypoints":
+        ar_order, ar_kpi_key = _AR_KPT_ORDER, "AR"
+    else:
+        ar_order, ar_kpi_key = _AR_COCO_ORDER, "AR100"
+
+    ap_rows = [(_k, _metric_desc(_k, data), _k) for _k in _AP_ORDER if _k in present]
+    ar_rows = [(_k, _metric_desc(_k, data), _k) for _k in ar_order if _k in present]
+    return ap_rows, ar_rows, ar_kpi_key
 
 # ---------------------------------------------------------------------------
 # Layout constants (inches, letter page)
@@ -55,6 +142,7 @@ _CAP_H = 0.16
 _ROW_H = 0.17
 _CAT_HDR_H = 0.16
 _CAT_ROW_H = 0.115
+_MIN_BLOCK_H = 1.8  # minimum metrics block height — keeps the PR curve legible
 
 # ---------------------------------------------------------------------------
 # Report color palette
@@ -93,7 +181,7 @@ def _kpi_tile(ax, value: str, label: str, vc) -> None:
     ax.text(
         0.5,
         0.28,
-        _METRIC_MATH.get(label, label),
+        _metric_math(label),
         fontsize=8,
         color=_RC["muted"],
         ha="center",
@@ -122,7 +210,7 @@ def _draw_table_caption(ax, label: str) -> None:
     ax.set_axis_off()
     ax.text(
         0.0,
-        0.80,
+        1.0,
         label.upper(),
         fontsize=6,
         fontweight="bold",
@@ -131,14 +219,14 @@ def _draw_table_caption(ax, label: str) -> None:
         ha="left",
         transform=ax.transAxes,
     )
-    ax.axhline(0.08, xmin=0, xmax=0.98, color=_RC["border_dk"], linewidth=0.4)
+    ax.axhline(0.3, xmin=0, xmax=0.98, color=_RC["border_dk"], linewidth=0.4)
 
 
 def _draw_metrics_table(ax, rows, metrics) -> None:
     ax.set_axis_off()
     ax.set_facecolor("none")
     cell_text = [
-        [_METRIC_MATH.get(name_key, name_key), desc, f"{metrics.get(mkey, 0.0):.3f}"] for name_key, desc, mkey in rows
+        [_metric_math(name_key), desc, f"{metrics.get(mkey, 0.0):.3f}"] for name_key, desc, mkey in rows
     ]
     tbl = ax.table(cellText=cell_text, colWidths=[0.19, 0.59, 0.22], bbox=[0, 0, 1, 1], cellLoc="left", edges="open")
     tbl.auto_set_font_size(False)
@@ -155,14 +243,14 @@ def _draw_metrics_table(ax, rows, metrics) -> None:
         else:
             t.set_fontsize(7)
             t.set_color(_RC["text"])
-            t.set_ha("right")
+            t.set_ha("left")
         if r < n - 1:
             cell.visible_edges = "B"
             cell.set_edgecolor(_RC["border"])
             cell.set_linewidth(0.35)
 
 
-def _draw_report_pr_curve(ax, recall_pts, pr50, pr75, pr_mean, metrics) -> None:
+def _draw_report_pr_curve(ax, recall_pts, pr50, pr75, pr_mean, metrics, *, is_oid=False) -> None:
     import numpy as np
     from matplotlib.lines import Line2D as _L2D
 
@@ -184,8 +272,9 @@ def _draw_report_pr_curve(ax, recall_pts, pr50, pr75, pr_mean, metrics) -> None:
 
     ax.fill_between(recall_pts, np.nan_to_num(pr50), alpha=0.10, color=_RC["pr_50"], zorder=1)
     ax.plot(recall_pts, pr50, color=_RC["pr_50"], lw=1.5, zorder=3)
-    ax.plot(recall_pts, pr75, color=_RC["pr_75"], lw=1.2, zorder=3)
-    ax.plot(recall_pts, pr_mean, color=_RC["pr_mean"], lw=0.9, linestyle="--", zorder=3)
+    if not is_oid:
+        ax.plot(recall_pts, pr75, color=_RC["pr_75"], lw=1.2, zorder=3)
+        ax.plot(recall_pts, pr_mean, color=_RC["pr_mean"], lw=0.9, linestyle="--", zorder=3)
 
     valid = ~np.isnan(pr50)
     r_v, p_v = recall_pts[valid], pr50[valid]
@@ -202,24 +291,32 @@ def _draw_report_pr_curve(ax, recall_pts, pr50, pr75, pr_mean, metrics) -> None:
             markeredgewidth=1.2,
             zorder=5,
         )
+        near_right = r_v[best] > 0.95
         ax.annotate(
             f"F1 {f1[best]:.3f}",
             (r_v[best], p_v[best]),
-            xytext=(5, 5),
+            xytext=(-5, 5) if near_right else (5, 5),
             textcoords="offset points",
             fontsize=5.5,
             color=_RC["pr_50"],
+            ha="right" if near_right else "left",
         )
 
     ax.set_xlabel("Recall", fontsize=6, color=_RC["muted"], labelpad=1)
     ax.set_ylabel("Precision", fontsize=6, color=_RC["muted"], labelpad=3)
 
+    if is_oid:
+        handles = [
+            _L2D([0], [0], color=_RC["pr_50"], lw=1.5, label=f"{metrics.get('AP', 0):.3f}  AP50"),
+        ]
+    else:
+        handles = [
+            _L2D([0], [0], color=_RC["pr_50"], lw=1.5, label=f"{metrics.get('AP50', 0):.3f}  AP50"),
+            _L2D([0], [0], color=_RC["pr_75"], lw=1.2, label=f"{metrics.get('AP75', 0):.3f}  AP75"),
+            _L2D([0], [0], color=_RC["pr_mean"], lw=0.9, ls="--", label=f"{metrics.get('AP', 0):.3f}  AP"),
+        ]
     leg = ax.legend(
-        handles=[
-            _L2D([0], [0], color=_RC["pr_50"], lw=1.5, label=f"AP50\t{metrics.get('AP50', 0):.3f}"),
-            _L2D([0], [0], color=_RC["pr_75"], lw=1.2, label=f"AP75\t{metrics.get('AP75', 0):.3f}"),
-            _L2D([0], [0], color=_RC["pr_mean"], lw=0.9, ls="--", label=f"AP\t\t{metrics.get('AP', 0):.3f}"),
-        ],
+        handles=handles,
         loc="lower left",
         fontsize=6,
         frameon=True,
@@ -298,24 +395,34 @@ def _draw_context_box(
 
 
 def _draw_metrics_block(
-    fig, gs_cell, AP_ROWS, AR_ROWS, metrics, recall_pts, pr50, pr75, pr_mean, f1_peak, ar_kpi_key="AR100"
+    fig, gs_cell, AP_ROWS, AR_ROWS, metrics, recall_pts, pr50, pr75, pr_mean, f1_peak, ar_kpi_key="AR100", *, is_oid=False, block_h=0.0
 ) -> None:
     gs_met = gs_cell.subgridspec(1, 3, width_ratios=[9, 9, 4], wspace=0.1)
 
-    left_ratios = [_CAP_H, len(AP_ROWS) * _ROW_H, _CAP_H, len(AR_ROWS) * _ROW_H]
+    if AR_ROWS:
+        content_ratios = [_CAP_H, len(AP_ROWS) * _ROW_H, _CAP_H, len(AR_ROWS) * _ROW_H]
+    else:
+        content_ratios = [_CAP_H, len(AP_ROWS) * _ROW_H]
+    sum_content = sum(content_ratios)
+    # Spacer absorbs any extra height from the block_h minimum, keeping each row its natural size.
+    leftover = max(0.0, block_h - sum_content)
+    left_ratios = content_ratios + ([leftover] if leftover > 0 else [])
     gs_left = gs_met[0].subgridspec(len(left_ratios), 1, height_ratios=left_ratios, hspace=0)
     ax_ap_cap = fig.add_subplot(gs_left[0])
     ax_ap_tbl = fig.add_subplot(gs_left[1])
-    ax_ar_cap = fig.add_subplot(gs_left[2])
-    ax_ar_tbl = fig.add_subplot(gs_left[3])
-    for ax in (ax_ap_cap, ax_ap_tbl, ax_ar_cap, ax_ar_tbl):
+    for ax in (ax_ap_cap, ax_ap_tbl):
         ax.set_facecolor("none")
     _draw_table_caption(ax_ap_cap, "Average Precision")
     _draw_metrics_table(ax_ap_tbl, AP_ROWS, metrics)
-    _draw_table_caption(ax_ar_cap, "Average Recall")
-    _draw_metrics_table(ax_ar_tbl, AR_ROWS, metrics)
+    if AR_ROWS:
+        ax_ar_cap = fig.add_subplot(gs_left[2])
+        ax_ar_tbl = fig.add_subplot(gs_left[3])
+        for ax in (ax_ar_cap, ax_ar_tbl):
+            ax.set_facecolor("none")
+        _draw_table_caption(ax_ar_cap, "Average Recall")
+        _draw_metrics_table(ax_ar_tbl, AR_ROWS, metrics)
 
-    gs_pr = gs_met[1].subgridspec(2, 1, height_ratios=[_CAP_H, sum(left_ratios) - _CAP_H], hspace=0.05)
+    gs_pr = gs_met[1].subgridspec(2, 1, height_ratios=[_CAP_H, block_h - _CAP_H], hspace=0.05)
     ax_pr_cap = fig.add_subplot(gs_pr[0])
     ax_pr_cur = fig.add_subplot(gs_pr[1])
     ax_pr_cap.set_facecolor("none")
@@ -323,21 +430,26 @@ def _draw_metrics_block(
     pos = ax_pr_cur.get_position()
     ax_pr_cur.set_position([pos.x0 + 0.025, pos.y0 + 0.012, pos.width - 0.025, pos.height - 0.012])
     _draw_table_caption(ax_pr_cap, "Precision\u2013Recall")
-    _draw_report_pr_curve(ax_pr_cur, recall_pts, pr50, pr75, pr_mean, metrics)
+    _draw_report_pr_curve(ax_pr_cur, recall_pts, pr50, pr75, pr_mean, metrics, is_oid=is_oid)
 
-    gs_kpi = gs_met[2].subgridspec(4, 1, hspace=0.15)
-    for i, (val, lbl, vc) in enumerate(
-        [
+    if is_oid:
+        kpi_data = [
+            (f"{metrics.get('AP', 0):.3f}", "AP", _RC["pr_50"]),
+            (f"{f1_peak:.3f}", "F1", _RC["text"]),
+        ]
+    else:
+        kpi_data = [
             (f"{metrics.get('AP', 0):.3f}", "AP", _RC["pr_mean"]),
             (f"{metrics.get('AP50', 0):.3f}", "AP50", _RC["pr_50"]),
             (f"{metrics.get(ar_kpi_key, 0):.3f}", ar_kpi_key, _RC["pr_75"]),
             (f"{f1_peak:.3f}", "F1", _RC["text"]),
         ]
-    ):
+    gs_kpi = gs_met[2].subgridspec(len(kpi_data), 1, hspace=0.15)
+    for i, (val, lbl, vc) in enumerate(kpi_data):
         _kpi_tile(fig.add_subplot(gs_kpi[i]), val, lbl, vc)
 
 
-def _draw_category_section(fig, gs_cell, cat_items, n_cols, rows_per_col, has_counts, ann_counts, img_counts) -> None:
+def _draw_category_section(fig, gs_cell, cat_items, n_cols, rows_per_col, has_counts, ann_counts, img_counts, virtual_cats=None) -> None:
     from matplotlib.patches import Rectangle
 
     gs_cat = gs_cell.subgridspec(
@@ -347,9 +459,10 @@ def _draw_category_section(fig, gs_cell, cat_items, n_cols, rows_per_col, has_co
     raw_ratios = [2, 8, 4] + ([3, 3] if has_counts else [])
     col_fracs = [r / sum(raw_ratios) for r in raw_ratios]
     n_data_cols = len(col_fracs)
-    # TODO: AP scores should be left-aligned in the per-category table
-    data_aligns = ["center", "left", "right"] + (["right", "right"] if has_counts else [])
+    data_aligns = ["center", "left", "left"] + (["right", "right"] if has_counts else [])
     hdr_labels = ["#", "Category", "AP"] + (["ann", "img"] if has_counts else [])
+
+    virtual_cats = virtual_cats or set()
 
     for ci in range(n_cols):
         ax_hdr = fig.add_subplot(gs_cat[0, ci])
@@ -371,14 +484,10 @@ def _draw_category_section(fig, gs_cell, cat_items, n_cols, rows_per_col, has_co
             cumx += col_fracs[hci]
         ax_hdr.axhline(0.04, xmin=0, xmax=0.99, color=_RC["border_dk"], linewidth=0.45)
 
-        ax_bar = fig.add_subplot(gs_cat[1, ci], label=f"catbg_{ci}")
-        ax_bar.set_xlim(0, 1)
-        ax_bar.set_ylim(0, 1)
-        ax_bar.set_axis_off()
-
-        ax_tbl = fig.add_subplot(gs_cat[1, ci], label=f"cattbl_{ci}")
+        ax_tbl = fig.add_subplot(gs_cat[1, ci])
+        ax_tbl.set_xlim(0, 1)
+        ax_tbl.set_ylim(0, 1)
         ax_tbl.set_axis_off()
-        ax_tbl.patch.set_alpha(0.0)
 
         start = ci * rows_per_col
         col_items = cat_items[start : start + rows_per_col]
@@ -387,28 +496,36 @@ def _draw_category_section(fig, gs_cell, cat_items, n_cols, rows_per_col, has_co
 
         for ri, (cname, apv) in enumerate(col_items):
             yb = 1.0 - (ri + 1) * row_h_ax
-            ax_bar.add_patch(
+            ax_tbl.add_patch(
                 Rectangle(
                     (0.0, yb),
                     max(0.0, min(1.0, apv)),
                     row_h_ax,
-                    transform=ax_bar.transAxes,
+                    transform=ax_tbl.transAxes,
                     facecolor=_RC["cat_bar"],
                     alpha=0.12,
                     clip_on=True,
+                    zorder=0,
                 )
             )
             if ri < actual_rows - 1:
-                ax_bar.axhline(yb, xmin=0.04, xmax=0.96, color=_RC["border"], linewidth=0.25)
+                ax_tbl.axhline(yb, xmin=0.04, xmax=0.96, color=_RC["border"], linewidth=0.25)
 
+        is_virtual_row = []
         cell_text = []
         for ri in range(rows_per_col):
             if ri < actual_rows:
                 cname, apv = col_items[ri]
-                row = [str(start + ri + 1), cname if len(cname) <= 18 else cname[:17] + "\u2026", f"{apv:.3f}"]
+                is_virt = cname in virtual_cats
+                is_virtual_row.append(is_virt)
+                label = cname if len(cname) <= 17 else cname[:16] + "\u2026"
+                if is_virt:
+                    label += "*"
+                row = [str(start + ri + 1), label, f"{apv:.3f}"]
                 if has_counts:
                     row += [f"{ann_counts.get(cname, 0):,}", f"{img_counts.get(cname, 0):,}"]
             else:
+                is_virtual_row.append(False)
                 row = [""] * n_data_cols
             cell_text.append(row)
 
@@ -426,8 +543,23 @@ def _draw_category_section(fig, gs_cell, cat_items, n_cols, rows_per_col, has_co
             t.set_ha(data_aligns[c] if c < n_data_cols else "left")
             if r >= actual_rows:
                 cell.set_visible(False)
+            elif is_virtual_row[r]:
+                t.set_color(_RC["muted"])
             else:
                 t.set_color([_RC["very_muted"], _RC["label"], _RC["text"], _RC["muted"], _RC["muted"]][c])
+
+    if virtual_cats and any(cname in virtual_cats for cname, _ in cat_items):
+        # Footnote in the bottom-left of the last column's axes.
+        ax_tbl.text(
+            0.0,
+            -0.01,
+            "* expanded via category hierarchy",
+            fontsize=5,
+            color=_RC["muted"],
+            va="top",
+            ha="left",
+            transform=ax_tbl.transAxes,
+        )
 
 
 def _draw_footer(fig, page_h: float) -> None:
@@ -477,7 +609,7 @@ def report(
     save_path: str | Path,
     gt_path: str | None = None,
     dt_path: str | None = None,
-    title: str = "COCO Evaluation Report",
+    title: str | None = None,
 ) -> None:
     """Generate a PDF evaluation report.
 
@@ -491,8 +623,8 @@ def report(
         Ground-truth JSON path to display in the run context block.
     dt_path : str, optional
         Detections JSON path to display in the run context block.
-    title : str
-        Report title shown in the header.
+    title : str, optional
+        Report title shown in the header. Auto-detected from eval mode if not given.
     """
     import math
 
@@ -502,28 +634,19 @@ def report(
     mpl, plt, _ = _import_mpl()
     family = _resolve_font_family()
 
-    results_dict = coco_eval.results(per_class=True)
-    metrics = results_dict["metrics"]
-    per_class = results_dict.get("per_class") or {}
-    params = coco_eval.params
+    data = PlotData.from_coco_eval(coco_eval, per_class=True)
+    metrics = data.metrics
+    per_class = data.per_class or {}
 
-    iou_thrs = list(params.iou_thrs)
-    area_labels = list(params.area_rng_lbl)
-    max_dets = list(params.max_dets)
-    a_idx = area_labels.index("all") if "all" in area_labels else 0
-    m_idx = len(max_dets) - 1
-
-    precision = np.asarray(coco_eval.eval["precision"])  # (T, R, K, A, M)
-    recall_pts = np.linspace(0.0, 1.0, precision.shape[1])
+    a_idx = data.area_idx("all")
+    m_idx = data.max_det_idx(None)
 
     def _mprec(t):
-        p = precision[t, :, :, a_idx, m_idx].copy()
-        p[p < 0] = np.nan
-        return np.nanmean(p, axis=1)
+        return np.nanmean(_mask_invalid_prec(data.precision[t, :, :, a_idx, m_idx]), axis=1)
 
-    t50 = _nearest_iou_idx(iou_thrs, 0.50)
-    t75 = _nearest_iou_idx(iou_thrs, 0.75)
-    all_prec = np.array([_mprec(t) for t in range(len(iou_thrs))])
+    t50 = data.nearest_iou_idx(0.50)
+    t75 = data.nearest_iou_idx(0.75)
+    all_prec = np.array([_mprec(t) for t in range(len(data.iou_thresholds))])
     pr_mean = np.nanmean(all_prec, axis=0)
     pr50 = all_prec[t50]
     pr75 = all_prec[t75]
@@ -538,16 +661,17 @@ def report(
     except Exception:
         n_dets = 0
 
-    n_cats = len(params.cat_ids)
-    iou_type = getattr(params, "iou_type", "bbox")
-    iou_str = f"{iou_thrs[0]:.2f}\u2013{iou_thrs[-1]:.2f}"
+    n_cats = len(data.cat_ids)
+    iou_thrs = data.iou_thresholds
+    max_dets = data.max_dets
+    iou_str = f"{iou_thrs[0]:.2f}" if len(iou_thrs) == 1 else f"{iou_thrs[0]:.2f}\u2013{iou_thrs[-1]:.2f}"
 
     cat_items = sorted(per_class.items(), key=lambda x: x[1], reverse=True)
     ann_counts: dict[str, int] = {}
     img_counts: dict[str, int] = {}
+    virtual_cats: set[str] = set(getattr(coco_eval, "virtual_cat_names", []))
     try:
-        cat_id_map = {c["id"]: c["name"] for c in coco_eval.coco_gt.load_cats(list(params.cat_ids))}
-        for cid, cname in cat_id_map.items():
+        for cid, cname in data.cat_names.items():
             ann_counts[cname] = len(coco_eval.coco_gt.get_ann_ids(cat_ids=[cid]))
             img_counts[cname] = len(coco_eval.coco_gt.get_img_ids(cat_ids=[cid]))
     except Exception:
@@ -557,107 +681,64 @@ def report(
 
     valid = ~np.isnan(pr50)
     if valid.any():
-        r_v, p_v = recall_pts[valid], pr50[valid]
+        r_v, p_v = data.recall_pts[valid], pr50[valid]
         f1_peak = float(np.max(2 * p_v * r_v / np.maximum(p_v + r_v, 1e-8)))
     else:
         f1_peak = 0.0
 
-    is_lvis = "APr" in metrics
-    is_kpts = iou_type == "keypoints"
+    is_lvis = data.eval_mode == "lvis"
+    is_kpts = data.iou_type == "keypoints"
+    is_oid = data.eval_mode == "openimages"
 
-    if is_kpts:
-        AP_ROWS = [
-            ("AP", "IoU 0.50:0.95", "AP"),
-            ("AP50", "IoU 0.50", "AP50"),
-            ("AP75", "IoU 0.75", "AP75"),
-            ("APm", "32\u00b2 \u2013 96\u00b2", "APm"),
-            ("APl", "area > 96\u00b2", "APl"),
-        ]
-        AR_ROWS = [
-            ("AR", "IoU 0.50:0.95", "AR"),
-            ("AR50", "IoU 0.50", "AR50"),
-            ("AR75", "IoU 0.75", "AR75"),
-            ("ARm", "32\u00b2 \u2013 96\u00b2", "ARm"),
-            ("ARl", "area > 96\u00b2", "ARl"),
-        ]
-        ar_kpi_key = "AR"
-    elif is_lvis:
-        AP_ROWS = [
-            ("AP", "IoU 0.50:0.95", "AP"),
-            ("AP50", "IoU 0.50", "AP50"),
-            ("AP75", "IoU 0.75", "AP75"),
-            ("APs", "area < 32\u00b2", "APs"),
-            ("APm", "32\u00b2 \u2013 96\u00b2", "APm"),
-            ("APl", "area > 96\u00b2", "APl"),
-            ("APr", "rare", "APr"),
-            ("APc", "common", "APc"),
-            ("APf", "frequent", "APf"),
-        ]
-        AR_ROWS = [
-            ("AR@300", "max 300 dets", "AR@300"),
-            ("ARs@300", "area < 32\u00b2", "ARs@300"),
-            ("ARm@300", "32\u00b2 \u2013 96\u00b2", "ARm@300"),
-            ("ARl@300", "area > 96\u00b2", "ARl@300"),
-        ]
-        ar_kpi_key = "AR@300"
-    else:
-        AP_ROWS = [
-            ("AP", "IoU 0.50:0.95", "AP"),
-            ("AP50", "IoU 0.50", "AP50"),
-            ("AP75", "IoU 0.75", "AP75"),
-            ("APs", "area < 32\u00b2", "APs"),
-            ("APm", "32\u00b2 \u2013 96\u00b2", "APm"),
-            ("APl", "area > 96\u00b2", "APl"),
-        ]
-        AR_ROWS = [
-            ("AR1", "max 1 det", "AR1"),
-            ("AR10", "max 10 dets", "AR10"),
-            ("AR100", "max 100 dets", "AR100"),
-            ("ARs", "area < 32\u00b2", "ARs"),
-            ("ARm", "32\u00b2 \u2013 96\u00b2", "ARm"),
-            ("ARl", "area > 96\u00b2", "ARl"),
-        ]
-        ar_kpi_key = "AR100"
+    if title is None:
+        if is_oid:
+            title = "Open Images Evaluation Report"
+        elif is_lvis:
+            title = "LVIS Evaluation Report"
+        elif is_kpts:
+            title = "Keypoints Evaluation Report"
+        else:
+            title = "COCO Evaluation Report"
+
+    AP_ROWS, AR_ROWS, ar_kpi_key = _build_metric_rows(data)
 
     # TODO: pagination not implemented — report() produces a single variable-height page.
     # For very large category counts (hundreds), consider splitting into multiple fixed-height
     # pages via a _draw_continuation_page() helper. Implement when requested.
     n_cols = 3
     rows_per_col = math.ceil(n_cats / n_cols) if n_cats > 0 else 1
-    block_h = 2 * _CAP_H + (len(AP_ROWS) + len(AR_ROWS)) * _ROW_H + _GAP * 1.5
-    cat_h = _CAT_HDR_H + rows_per_col * _CAT_ROW_H
-    page_h = (
-        _HEADER_H
-        + _GAP * 0.5
-        + _CTX_H
-        + _GAP * 0.8
-        + _SECTION_H
-        + block_h
-        + _GAP * 0.6
-        + _SECTION_H
-        + cat_h
-        + 2 * _MARGIN_V
+    n_captions = 2 if AR_ROWS else 1
+    block_h = max(
+        n_captions * _CAP_H + (len(AP_ROWS) + len(AR_ROWS)) * _ROW_H + _GAP * 1.5,
+        _MIN_BLOCK_H,
     )
+    cat_h = _CAT_HDR_H + rows_per_col * _CAT_ROW_H
 
-    fig = plt.figure(figsize=(_PAGE_W, page_h), constrained_layout=False)
+    # Single source of truth: row heights drive both page_h and height_ratios.
+    # Row index names match the unpacked constants below.
+    _row_heights = [
+        _HEADER_H,    # _R_HEADER
+        _GAP * 0.5,   # _R_GAP1
+        _CTX_H,       # _R_CTX
+        _GAP * 0.8,   # _R_GAP2
+        _SECTION_H,   # _R_SEC1
+        block_h,      # _R_METRICS
+        _GAP * 0.6,   # _R_GAP3
+        _SECTION_H,   # _R_SEC2
+        cat_h,        # _R_CATS
+    ]
+    _R_HEADER, _R_GAP1, _R_CTX, _R_GAP2, _R_SEC1, _R_METRICS, _R_GAP3, _R_SEC2, _R_CATS = range(9)
+    page_h = sum(_row_heights) + 2 * _MARGIN_V
+
+    fig = plt.figure(figsize=(_PAGE_W, page_h))
     fig.patch.set_facecolor("#FFFFFF")
 
     try:
         with mpl.rc_context({"font.family": family}):
             gs = fig.add_gridspec(
-                9,
+                len(_row_heights),
                 1,
-                height_ratios=[
-                    _HEADER_H,
-                    _GAP * 0.5,
-                    _CTX_H,
-                    _GAP * 0.8,
-                    _SECTION_H,
-                    block_h,
-                    _GAP * 0.6,
-                    _SECTION_H,
-                    cat_h,
-                ],
+                height_ratios=_row_heights,
                 hspace=0,
                 left=_MARGIN_H / _PAGE_W,
                 right=1 - _MARGIN_H / _PAGE_W,
@@ -665,16 +746,21 @@ def report(
                 bottom=_MARGIN_V / page_h,
             )
 
-            _draw_header(fig.add_subplot(gs[0]), title)
+            _draw_header(fig.add_subplot(gs[_R_HEADER]), title)
             _draw_context_box(
-                fig, gs[2], gt_path, dt_path, iou_type, iou_str, max_dets, n_images, n_anns, n_cats, n_dets
+                fig, gs[_R_CTX], gt_path, dt_path, data.iou_type, iou_str, max_dets, n_images, n_anns, n_cats, n_dets
             )
-            _draw_section_heading(fig.add_subplot(gs[4]), "SUMMARY METRICS")
+            _draw_section_heading(fig.add_subplot(gs[_R_SEC1]), "SUMMARY METRICS")
             _draw_metrics_block(
-                fig, gs[5], AP_ROWS, AR_ROWS, metrics, recall_pts, pr50, pr75, pr_mean, f1_peak, ar_kpi_key=ar_kpi_key
+                fig, gs[_R_METRICS], AP_ROWS, AR_ROWS, metrics,
+                data.recall_pts, pr50, pr75, pr_mean, f1_peak,
+                ar_kpi_key=ar_kpi_key, is_oid=is_oid, block_h=block_h
             )
-            _draw_section_heading(fig.add_subplot(gs[7]), "PER-CATEGORY AP  \u00b7  SORTED DESCENDING")
-            _draw_category_section(fig, gs[8], cat_items, n_cols, rows_per_col, has_counts, ann_counts, img_counts)
+            _draw_section_heading(fig.add_subplot(gs[_R_SEC2]), "PER-CATEGORY AP  \u00b7  SORTED DESCENDING")
+            _draw_category_section(
+                fig, gs[_R_CATS], cat_items, n_cols, rows_per_col,
+                has_counts, ann_counts, img_counts, virtual_cats=virtual_cats,
+            )
             _draw_footer(fig, page_h)
 
         with PdfPages(str(save_path)) as pdf:
