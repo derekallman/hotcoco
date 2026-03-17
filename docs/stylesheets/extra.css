@@ -312,6 +312,11 @@
   border-bottom-color: var(--md-accent-fg-color);
 }
 
+/* Always show tab bar — Material hides it on root-level pages by default */
+.md-tabs {
+  display: flex;
+}
+
 /* Top-level tab bar (navigation.tabs) */
 .md-tabs__link--active,
 .md-tabs__link:hover {
