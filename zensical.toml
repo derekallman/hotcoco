@@ -40,10 +40,12 @@ nav = [
 extra_css = ["stylesheets/extra.css"]
 
 [project.theme]
+icon.logo = "lucide/coffee"
 features = [
   "content.code.copy",
   "content.tabs.link",
   "navigation.instant",
+  "navigation.tabs",
   "navigation.sections",
   "navigation.expand",
   "navigation.footer",
@@ -52,17 +54,21 @@ features = [
 
 [[project.theme.palette]]
 scheme = "slate"
-primary = "brown"
-accent = "deep-orange"
+primary = "custom"
+accent = "custom"
 toggle.icon = "lucide/sun"
 toggle.name = "Switch to light mode"
 
 [[project.theme.palette]]
 scheme = "default"
-primary = "brown"
-accent = "deep-orange"
+primary = "custom"
+accent = "custom"
 toggle.icon = "lucide/moon"
 toggle.name = "Switch to dark mode"
+
+[project.theme.font]
+text = "Nunito"
+code = "IBM Plex Mono"
 
 [project.markdown_extensions.attr_list]
 
