@@ -15,8 +15,10 @@ Usage:
 """
 
 import argparse
+import json as json_mod
 import os
 import sys
+import textwrap
 
 
 def cmd_stats(args):
@@ -33,6 +35,10 @@ def cmd_stats(args):
         sys.exit(1)
 
     s = coco.stats()
+
+    if args.json:
+        return s
+
     filename = os.path.basename(args.annotation_file)
 
     ann_count = s["annotation_count"]
@@ -115,6 +121,14 @@ def cmd_filter(args):
 
     n_imgs_after = len(result.dataset["images"])
     n_anns_after = len(result.dataset["annotations"])
+
+    if args.json:
+        return {
+            "before": {"images": n_imgs_before, "annotations": n_anns_before},
+            "after": {"images": n_imgs_after, "annotations": n_anns_after},
+            "output": args.output,
+        }
+
     print(f"filter: {os.path.basename(args.annotation_file)} → {os.path.basename(args.output)}")
     print(f"  before: {n_imgs_before:,} images, {n_anns_before:,} annotations")
     print(f"  after:  {n_imgs_after:,} images, {n_anns_after:,} annotations")
@@ -140,6 +154,13 @@ def cmd_merge(args):
     merged.save(args.output)
     n_imgs_out = len(merged.dataset["images"])
     n_anns_out = len(merged.dataset["annotations"])
+
+    if args.json:
+        return {
+            "inputs": [{"file": f, "images": len(c.dataset["images"]), "annotations": len(c.dataset["annotations"])} for f, c in zip(args.files, cocos)],
+            "output": {"file": args.output, "images": n_imgs_out, "annotations": n_anns_out},
+        }
+
     print(f"merge: {len(args.files)} files → {os.path.basename(args.output)}")
     print(f"  input total: {n_imgs_total:,} images, {n_anns_total:,} annotations")
     print(f"  output:      {n_imgs_out:,} images, {n_anns_out:,} annotations")
@@ -159,13 +180,19 @@ def cmd_split(args):
         train, val = result
         splits = [("train", train), ("val", val)]
 
+    split_results = {}
     print(f"split: {os.path.basename(args.annotation_file)} ({n_imgs:,} images)")
     for name, split in splits:
         out_path = f"{args.output}_{name}.json"
         split.save(out_path)
         n = len(split.dataset["images"])
         n_anns = len(split.dataset["annotations"])
-        print(f"  {name}: {n:,} images, {n_anns:,} annotations → {os.path.basename(out_path)}")
+        split_results[name] = {"images": n, "annotations": n_anns, "output": out_path}
+        if not args.json:
+            print(f"  {name}: {n:,} images, {n_anns:,} annotations → {os.path.basename(out_path)}")
+
+    if args.json:
+        return split_results
 
 
 def cmd_eval(args):
@@ -178,23 +205,29 @@ def cmd_eval(args):
     try:
         gt = COCO(args.gt)
     except Exception as e:
+        if args.json:
+            raise
         print(f"error loading ground truth: {e}", file=sys.stderr)
         sys.exit(1)
 
     try:
         dt = gt.load_res(args.dt)
     except Exception as e:
+        if args.json:
+            raise
         print(f"error loading detections: {e}", file=sys.stderr)
         sys.exit(1)
 
+    hc_result = None
     if args.healthcheck:
-        hc = gt.healthcheck(dt)
-        for f in hc["errors"]:
-            print(f" \033[91mERROR [{f['code']}]\033[0m {f['message']}", file=sys.stderr)
-        for f in hc["warnings"]:
-            print(f" \033[93mWARN  [{f['code']}]\033[0m {f['message']}", file=sys.stderr)
-        if hc["errors"] or hc["warnings"]:
-            print(file=sys.stderr)
+        hc_result = gt.healthcheck(dt)
+        if not args.json:
+            for f in hc_result["errors"]:
+                print(f" \033[91mERROR [{f['code']}]\033[0m {f['message']}", file=sys.stderr)
+            for f in hc_result["warnings"]:
+                print(f" \033[93mWARN  [{f['code']}]\033[0m {f['message']}", file=sys.stderr)
+            if hc_result["errors"] or hc_result["warnings"]:
+                print(file=sys.stderr)
 
     ev = COCOeval(gt, dt, args.iou_type, lvis_style=args.lvis)
 
@@ -206,64 +239,77 @@ def cmd_eval(args):
         ev.params.useCats = False
 
     ev.evaluate()
-
     ev.accumulate()
-    ev.summarize()
 
+    if args.json:
+        # summarize() writes directly to the stdout fd from Rust; suppress at OS level
+        stdout_fd = sys.stdout.fileno()
+        saved_fd = os.dup(stdout_fd)
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), stdout_fd)
+            try:
+                ev.summarize()
+            finally:
+                os.dup2(saved_fd, stdout_fd)
+                os.close(saved_fd)
+    else:
+        ev.summarize()
+
+    slices_result = None
     if args.slices:
-        import json as json_mod
-
         with open(args.slices) as f:
             slices = json_mod.load(f)
 
-        results = ev.slice_by(slices)
+        slices_result = ev.slice_by(slices)
 
-        # Pick metric names based on eval mode
-        if args.lvis:
-            key_metrics = ["AP", "AP50", "AP75", "APr", "APc", "APf"]
-        elif args.iou_type == "keypoints":
-            key_metrics = ["AP", "AP50", "AP75", "APm", "APl"]
-        else:
-            key_metrics = ["AP", "AP50", "AP75", "APs", "APm", "APl"]
+        if not args.json:
+            # Pick metric names based on eval mode
+            if args.lvis:
+                key_metrics = ["AP", "AP50", "AP75", "APr", "APc", "APf"]
+            elif args.iou_type == "keypoints":
+                key_metrics = ["AP", "AP50", "AP75", "APm", "APl"]
+            else:
+                key_metrics = ["AP", "AP50", "AP75", "APs", "APm", "APl"]
 
-        # Column width matches "0.578 (+0.020)" = 14 chars
-        col_w = 14
-        header = f"  {'Slice':<20} {'N':>6}"
-        for km in key_metrics:
-            header += f"  {km:>{col_w}}"
-        print()
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-
-        for name in sorted(results.keys()):
-            if name == "_overall":
-                continue
-            sr = results[name]
-            row = f"  {name:<20} {sr['num_images']:>6}"
+            # Column width matches "0.578 (+0.020)" = 14 chars
+            col_w = 14
+            header = f"  {'Slice':<20} {'N':>6}"
             for km in key_metrics:
-                val = sr.get(km, -1.0)
-                delta = sr.get("delta", {}).get(km, 0.0)
+                header += f"  {km:>{col_w}}"
+            print()
+            print(header)
+            print("  " + "-" * (len(header) - 2))
+
+            for name in sorted(slices_result.keys()):
+                if name == "_overall":
+                    continue
+                sr = slices_result[name]
+                row = f"  {name:<20} {sr['num_images']:>6}"
+                for km in key_metrics:
+                    val = sr.get(km, -1.0)
+                    delta = sr.get("delta", {}).get(km, 0.0)
+                    if val < 0:
+                        row += f"  {'n/a':>{col_w}}"
+                    else:
+                        sign = "+" if delta >= 0 else ""
+                        row += f"  {val:.3f} ({sign}{delta:.3f})"
+                print(row)
+
+            ov = slices_result["_overall"]
+            row = f"  {'_overall':<20} {ov['num_images']:>6}"
+            for km in key_metrics:
+                val = ov.get(km, -1.0)
                 if val < 0:
                     row += f"  {'n/a':>{col_w}}"
                 else:
-                    sign = "+" if delta >= 0 else ""
-                    row += f"  {val:.3f} ({sign}{delta:.3f})"
+                    row += f"  {val:.3f}{'':>9}"
             print(row)
 
-        ov = results["_overall"]
-        row = f"  {'_overall':<20} {ov['num_images']:>6}"
-        for km in key_metrics:
-            val = ov.get(km, -1.0)
-            if val < 0:
-                row += f"  {'n/a':>{col_w}}"
-            else:
-                # Align value under the integer part of slice rows
-                row += f"  {val:.3f}{'':>9}"
-        print(row)
-
+    tide_result = None
     if args.tide:
-        te = ev.tide_errors(pos_thr=args.tide_pos_thr, bg_thr=args.tide_bg_thr)
-        _print_tide(te)
+        tide_result = ev.tide_errors(pos_thr=args.tide_pos_thr, bg_thr=args.tide_bg_thr)
+        if not args.json:
+            _print_tide(tide_result)
 
     if args.report:
         try:
@@ -277,7 +323,18 @@ def cmd_eval(args):
         except Exception as e:
             print(f"error generating report: {e}", file=sys.stderr)
             sys.exit(1)
-        print(f"report saved to {args.report}")
+        if not args.json:
+            print(f"report saved to {args.report}")
+
+    if args.json:
+        result = ev.results(per_class=False)
+        if tide_result is not None:
+            result["tide"] = tide_result
+        if slices_result is not None:
+            result["slices"] = slices_result
+        if hc_result is not None:
+            result["healthcheck"] = {"errors": hc_result["errors"], "warnings": hc_result["warnings"]}
+        return result
 
 
 def _print_tide(te):
@@ -310,6 +367,10 @@ def cmd_convert(args):
         except Exception as e:
             print(f"error: {e}", file=sys.stderr)
             sys.exit(1)
+
+        if args.json:
+            return {"direction": "coco_to_yolo", "input": args.input, "output": args.output, **stats}
+
         print("convert: COCO → YOLO")
         print(f"  input:       {os.path.basename(args.input)}")
         print(f"  output dir:  {args.output}")
@@ -338,6 +399,10 @@ def cmd_convert(args):
             sys.exit(1)
         n_imgs = len(coco.dataset["images"])
         n_anns = len(coco.dataset["annotations"])
+
+        if args.json:
+            return {"direction": "yolo_to_coco", "input": args.input, "output": args.output, "images": n_imgs, "annotations": n_anns}
+
         print("convert: YOLO → COCO")
         print(f"  input dir:   {args.input}")
         print(f"  output:      {os.path.basename(args.output)}")
@@ -361,6 +426,9 @@ def cmd_healthcheck(args):
             sys.exit(1)
 
     report = coco.healthcheck(dt_coco)
+
+    if args.json:
+        return report
 
     for finding in report["errors"]:
         print(f"\033[91mERROR [{finding['code']}]\033[0m {finding['message']}")
@@ -414,18 +482,62 @@ def cmd_sample(args):
 
     n_imgs_after = len(result.dataset["images"])
     n_anns_after = len(result.dataset["annotations"])
+
+    if args.json:
+        return {
+            "before": {"images": n_imgs_before, "annotations": n_anns_before},
+            "after": {"images": n_imgs_after, "annotations": n_anns_after},
+            "output": args.output,
+        }
+
     print(f"sample: {os.path.basename(args.annotation_file)} → {os.path.basename(args.output)}")
     print(f"  before: {n_imgs_before:,} images, {n_anns_before:,} annotations")
     print(f"  after:  {n_imgs_after:,} images, {n_anns_after:,} annotations")
 
 
 def main():
-    parser = argparse.ArgumentParser(prog="coco", description="hotcoco command-line tools for COCO datasets")
+    parser = argparse.ArgumentParser(
+        prog="coco",
+        description="hotcoco — fast COCO dataset tools",
+        epilog=textwrap.dedent("""\
+            examples:
+              coco eval --gt ann.json --dt det.json              evaluate detections (bbox)
+              coco eval --gt ann.json --dt det.json --tide       evaluation + error analysis
+              coco eval --gt ann.json --dt det.json --json       JSON output for CI/CD
+              coco stats ann.json                                dataset overview
+              coco healthcheck ann.json                          validate annotations
+              coco filter ann.json -o out.json --cat-ids 1,2,3  keep only specific categories
+              coco convert --from coco --to yolo --input ann.json --output labels/
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
-    eval_parser = subparsers.add_parser("eval", help="evaluate detections against ground truth")
-    eval_parser.add_argument("--gt", required=True, help="path to ground truth annotations JSON")
-    eval_parser.add_argument("--dt", required=True, help="path to detection results JSON")
+    # Shared parent parser that adds --json to every subcommand
+    _json_parent = argparse.ArgumentParser(add_help=False)
+    _json_parent.add_argument(
+        "--json",
+        action="store_true",
+        help="output results as JSON to stdout (for CI/CD pipelines)",
+    )
+
+    eval_parser = subparsers.add_parser(
+        "eval",
+        parents=[_json_parent],
+        help="evaluate detections against ground truth (bbox, segm, keypoints)",
+        description="Run COCO evaluation and print AP/AR metrics. Supports bbox, segmentation, and keypoint evaluation with optional TIDE error analysis, sliced evaluation, and PDF reports.",
+        epilog=textwrap.dedent("""\
+            examples:
+              coco eval --gt ann.json --dt det.json
+              coco eval --gt ann.json --dt det.json --iou-type segm
+              coco eval --gt ann.json --dt det.json --tide --json
+              coco eval --gt ann.json --dt det.json --report report.pdf
+              coco eval --gt ann.json --dt det.json --lvis
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    eval_parser.add_argument("--gt", required=True, help="ground truth annotations (COCO JSON)")
+    eval_parser.add_argument("--dt", required=True, help="detection results (COCO JSON or list of dicts)")
     eval_parser.add_argument(
         "--iou-type",
         dest="iou_type",
@@ -470,23 +582,37 @@ def main():
         "--title", default="COCO Evaluation Report", help="report title (default: 'COCO Evaluation Report')"
     )
     eval_parser.add_argument(
-        "--slices", metavar="slices.json", default=None,
-        help="path to JSON file with named image ID groups for sliced evaluation",
+        "--slices",
+        metavar="slices.json",
+        default=None,
+        help='JSON file mapping slice names to image ID lists, e.g. {"daytime": [1,2,3]}',
     )
     eval_parser.add_argument(
         "--healthcheck", action="store_true",
         help="run dataset healthcheck before evaluation (warnings printed to stderr)",
     )
 
-    healthcheck_parser = subparsers.add_parser("healthcheck", help="validate a COCO dataset")
+    healthcheck_parser = subparsers.add_parser(
+        "healthcheck",
+        parents=[_json_parent],
+        help="validate a COCO dataset for common errors",
+        description="Check a COCO annotation file for common errors and warnings, including duplicate IDs, missing references, invalid bounding boxes, and annotation/image mismatches.",
+        epilog=textwrap.dedent("""\
+            examples:
+              coco healthcheck ann.json
+              coco healthcheck ann.json --dt det.json
+              coco healthcheck ann.json --json
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     healthcheck_parser.add_argument("annotation_file", help="path to COCO annotation JSON")
     healthcheck_parser.add_argument("--dt", help="path to detection results JSON (enables GT/DT checks)")
 
-    stats_parser = subparsers.add_parser("stats", help="print dataset health-check statistics")
+    stats_parser = subparsers.add_parser("stats", parents=[_json_parent], help="show dataset statistics (counts, dimensions, areas)")
     stats_parser.add_argument("annotation_file", help="path to COCO annotation JSON file")
     stats_parser.add_argument("--all-cats", action="store_true", help="show all categories instead of top 20")
 
-    filter_parser = subparsers.add_parser("filter", help="filter a dataset by category, image, or area")
+    filter_parser = subparsers.add_parser("filter", parents=[_json_parent], help="filter a dataset by category, image, or area")
     filter_parser.add_argument("annotation_file", help="input COCO JSON file")
     filter_parser.add_argument("-o", "--output", required=True, help="output JSON file")
     filter_parser.add_argument("--cat-ids", metavar="1,2,3", help="comma-separated category IDs to keep")
@@ -496,11 +622,11 @@ def main():
         "--keep-empty-images", action="store_true", help="keep images with no matching annotations"
     )
 
-    merge_parser = subparsers.add_parser("merge", help="merge multiple datasets into one")
+    merge_parser = subparsers.add_parser("merge", parents=[_json_parent], help="merge multiple datasets into one")
     merge_parser.add_argument("files", nargs="+", help="input COCO JSON files")
     merge_parser.add_argument("-o", "--output", required=True, help="output JSON file")
 
-    split_parser = subparsers.add_parser("split", help="split a dataset into train/val[/test] subsets")
+    split_parser = subparsers.add_parser("split", parents=[_json_parent], help="split a dataset into train/val[/test] subsets")
     split_parser.add_argument("annotation_file", help="input COCO JSON file")
     split_parser.add_argument(
         "-o",
@@ -517,14 +643,14 @@ def main():
     )
     split_parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
 
-    sample_parser = subparsers.add_parser("sample", help="sample a random subset of images")
+    sample_parser = subparsers.add_parser("sample", parents=[_json_parent], help="sample a random subset of images")
     sample_parser.add_argument("annotation_file", help="input COCO JSON file")
     sample_parser.add_argument("-o", "--output", required=True, help="output JSON file")
     sample_parser.add_argument("--n", type=int, default=None, help="number of images to sample")
     sample_parser.add_argument("--frac", type=float, default=None, help="fraction of images to sample")
     sample_parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
 
-    convert_parser = subparsers.add_parser("convert", help="convert between annotation formats (COCO ↔ YOLO)")
+    convert_parser = subparsers.add_parser("convert", parents=[_json_parent], help="convert between annotation formats (COCO ↔ YOLO)")
     convert_parser.add_argument(
         "--from", dest="from_fmt", required=True, choices=["coco", "yolo"], help="source format"
     )
@@ -551,22 +677,30 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    if args.command == "eval":
-        cmd_eval(args)
-    elif args.command == "healthcheck":
-        cmd_healthcheck(args)
-    elif args.command == "stats":
-        cmd_stats(args)
-    elif args.command == "filter":
-        cmd_filter(args)
-    elif args.command == "merge":
-        cmd_merge(args)
-    elif args.command == "split":
-        cmd_split(args)
-    elif args.command == "sample":
-        cmd_sample(args)
-    elif args.command == "convert":
-        cmd_convert(args)
+    dispatch = {
+        "eval": cmd_eval,
+        "healthcheck": cmd_healthcheck,
+        "stats": cmd_stats,
+        "filter": cmd_filter,
+        "merge": cmd_merge,
+        "split": cmd_split,
+        "sample": cmd_sample,
+        "convert": cmd_convert,
+    }
+
+    try:
+        result = dispatch[args.command](args)
+        if args.json and result is not None:
+            print(json_mod.dumps(result, indent=2))
+    except SystemExit:
+        raise
+    except Exception as e:
+        if args.json:
+            print(json_mod.dumps({"error": str(e)}))
+            sys.exit(1)
+        else:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

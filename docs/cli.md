@@ -13,6 +13,35 @@ hotcoco ships two CLI tools:
 pip install hotcoco
 ```
 
+### JSON output mode
+
+Every subcommand accepts a `--json` flag that writes a single JSON object to stdout
+instead of human-readable text. stderr (progress, warnings, errors) is untouched.
+
+```bash
+coco eval --gt ann.json --dt det.json --json
+coco stats ann.json --json
+coco healthcheck ann.json --json
+```
+
+This is designed for CI/CD pipelines, dashboards, and shell scripts that need to
+gate on metric values without parsing human output:
+
+```bash
+# Gate a CI step on AP ≥ 0.50
+AP=$(coco eval --gt ann.json --dt det.json --json | jq '.metrics.AP')
+python -c "import sys; sys.exit(0 if $AP >= 0.50 else 1)"
+```
+
+When `--json` is set and an error occurs, the exit code is still 1 and the error
+is also JSON:
+
+```json
+{"error": "No such file or directory (os error 2)"}
+```
+
+---
+
 ### `coco eval`
 
 Evaluate detections against ground truth annotations. Prints the standard COCO metrics table.
@@ -37,6 +66,7 @@ coco eval --gt <gt.json> --dt <dt.json> [options]
 | `--title` | Report title shown in the header | `COCO Evaluation Report` |
 | `--slices <path>` | JSON file with named image ID groups for sliced evaluation | off |
 | `--healthcheck` | Run dataset healthcheck before evaluation (warnings to stderr) | off |
+| `--json` | Write results as JSON to stdout instead of human-readable text | off |
 
 ```bash
 # Bounding box evaluation
@@ -68,7 +98,29 @@ coco eval --gt instances_val2017.json --dt bbox_results.json --slices slices.jso
 
 # Pre-flight healthcheck before evaluation
 coco eval --gt instances_val2017.json --dt bbox_results.json --healthcheck
+
+# JSON output for CI/CD pipelines
+coco eval --gt instances_val2017.json --dt bbox_results.json --json
+
+# JSON with TIDE and slices combined
+coco eval --gt instances_val2017.json --dt bbox_results.json --tide --slices slices.json --json
 ```
+
+**JSON output shape:**
+
+```json
+{
+  "hotcoco_version": "0.3.0",
+  "params": { "iou_type": "Bbox", "iou_thresholds": [...], "area_ranges": {...}, ... },
+  "metrics": { "AP": 0.578, "AP50": 0.861, "AP75": 0.600, "APs": 0.327, ... },
+  "tide": { "delta_ap": {...}, "counts": {...}, "ap_base": 0.578, ... },
+  "slices": { "daytime": { "AP": 0.61, ... }, "_overall": { ... } },
+  "healthcheck": { "errors": [], "warnings": [] }
+}
+```
+
+`tide`, `slices`, and `healthcheck` keys are only present when the corresponding
+flag is passed.
 
 ### `coco healthcheck`
 
@@ -81,6 +133,7 @@ coco healthcheck <annotation_file> [--dt <detections.json>]
 | Flag | Description |
 |------|-------------|
 | `--dt <path>` | Detection results JSON — enables GT/DT compatibility checks |
+| `--json` | Write results as JSON to stdout |
 
 ```bash
 # Dataset only
@@ -88,6 +141,9 @@ coco healthcheck instances_val2017.json
 
 # With detections (also checks GT/DT compatibility)
 coco healthcheck instances_val2017.json --dt bbox_results.json
+
+# JSON output (full errors/warnings list + summary)
+coco healthcheck instances_val2017.json --json
 ```
 
 ### `coco stats`
@@ -98,6 +154,7 @@ breakdown, image dimensions, and annotation area distribution.
 ```bash
 coco stats instances_val2017.json
 coco stats instances_val2017.json --all-cats  # show all categories, not just top 20
+coco stats instances_val2017.json --json       # machine-readable output
 ```
 
 ### `coco filter`
@@ -115,6 +172,7 @@ coco filter <file> -o <output> [options]
 | `--area-rng MIN,MAX` | Keep annotations within this area range (inclusive) |
 | `--keep-empty-images` | Preserve images with no matching annotations |
 | `-o / --output` | Output JSON path *(required)* |
+| `--json` | Write before/after counts as JSON to stdout |
 
 ```bash
 # Keep only "person" (category 1)
@@ -122,6 +180,9 @@ coco filter instances_val2017.json --cat-ids 1 -o person.json
 
 # Medium-sized objects only
 coco filter instances_val2017.json --area-rng 1024,9216 -o medium.json
+
+# JSON output: {"before": {"images": 5000, ...}, "after": {...}, "output": "..."}
+coco filter instances_val2017.json --cat-ids 1 -o person.json --json
 ```
 
 ### `coco split`
@@ -139,6 +200,7 @@ coco split <file> -o <prefix> [options]
 | `--test-frac` | Fraction for a test set (omit for two-way split) | — |
 | `--seed` | Random seed for reproducibility | `42` |
 | `-o / --output` | Output prefix | *(required)* |
+| `--json` | Write per-split counts as JSON to stdout | off |
 
 Writes `<prefix>_train.json`, `<prefix>_val.json`, and optionally `<prefix>_test.json`.
 
@@ -161,6 +223,9 @@ coco merge <file1> <file2> [<file3> ...] -o <output>
 
 ```bash
 coco merge batch1.json batch2.json batch3.json -o combined.json
+
+# JSON output: input list with per-file counts + output counts
+coco merge batch1.json batch2.json -o combined.json --json
 ```
 
 ### `coco sample`
@@ -177,6 +242,7 @@ coco sample <file> -o <output> [options]
 | `--frac F` | Fraction of images to sample |
 | `--seed` | Random seed (default `42`) |
 | `-o / --output` | Output JSON path *(required)* |
+| `--json` | Write before/after counts as JSON to stdout | |
 
 ```bash
 # Sample 500 images
@@ -209,6 +275,7 @@ coco convert --from yolo --to coco --input <labels_dir/> --output <annotations.j
 | `--input` | Input path — JSON file (COCO) or label directory (YOLO) |
 | `--output` | Output path — label directory (YOLO) or JSON file (COCO) |
 | `--images-dir` | *(YOLO → COCO only)* Directory of source images; used by Pillow to populate `width`/`height` on each image record. Requires `pip install Pillow`. |
+| `--json` | Write conversion stats as JSON to stdout | |
 
 ```bash
 # Export val2017 to YOLO labels
