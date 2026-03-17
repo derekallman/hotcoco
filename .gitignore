@@ -131,6 +131,7 @@ site/
 
 # Scripts dir — generated artifacts only
 scripts/__pycache__/
+scripts/fixtures/adversarial/
 scripts/fixtures/parity_failures/
 scripts/fixtures/.hypothesis/
 
