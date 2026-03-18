@@ -83,6 +83,11 @@ Custom skills for this project (invoke with `/skill-name`):
 - `/adversarial-parity` — attacker/fixer loop to find parity bugs
 - `/voice` — audit tone and style in a single doc file
 
+## Tool Preferences
+
+- **Always use context7 for library/crate documentation lookups.** Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs`. Never use WebFetch to browse documentation sites (docs.rs, python.org, PyPI, GitHub READMEs, etc.). WebFetch is for user-provided URLs only.
+- **Always use `uv run python` — never bare `python` or `python3`.** This project uses uv-managed Python; the OS Python is not the project environment.
+
 ## Workflow Preferences
 
 - Before making large-scale changes (docs revamps, major refactors), present a concrete preview or small example for approval first. Do not rewrite everything at once. For small additions (a single new page, a new section), just write it directly.

@@ -136,6 +136,19 @@ Keypoint dataset for crowded scenes. Uses a modified OKS matching algorithm with
 
 ~~Tab completion for both CLIs: `coco-eval --completions <bash|zsh|fish|elvish|powershell>` (Rust, powered by `clap_complete`); `pip install "hotcoco[completions]"` enables `coco` tab completion via `argcomplete`.~~
 
+### Viewer Migration: FastAPI + HTMX
+
+The current Gradio-based viewer (`coco.browse()` / `coco explore`) hits a hard ceiling: `gr.AnnotatedImage` has no click or hover events — hover-to-see-score on detections, interactive zoom, and click-to-select annotations are architecturally impossible in Gradio.
+
+The target replacement is a FastAPI + HTMX stack:
+- Gallery browsing and filtering via HTMX (server-rendered, no build toolchain)
+- Annotation detail panel as SVG-over-image with vanilla JS hover/zoom/click (~300–500 LOC, no npm)
+- Same `coco.browse()` / `coco explore` API surface — drop-in replacement
+- ~5MB dependency weight vs ~50MB for Gradio
+- Jupyter embed via IFrame (same mechanism as Gradio)
+
+Trigger for migration: users request interactive annotation inspection, or Gradio's memory/stability issues become user-visible. Full analysis in project memory (`viewer-framework-analysis.md`).
+
 ### Video Sequence Analysis
 
 Lightweight per-sequence metric breakdowns for video object detection, surfacing high-level trends like which clips perform worst. Track AP (used by TAO, BURST, YouTube-VIS) is a natural extension of the existing COCO AP pipeline and the most likely entry point here.
