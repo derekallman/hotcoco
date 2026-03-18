@@ -141,12 +141,17 @@ pub(super) fn accumulate_impl(
         .map(|&(k_idx, a_idx, m_idx)| {
             let max_det = params.max_dets[m_idx];
 
-            let mut all_dt_scores: Vec<f64> = Vec::new();
-            let mut all_dt_matched: Vec<Vec<bool>> = vec![Vec::new(); t];
-            let mut all_dt_ignore: Vec<Vec<bool>> = vec![Vec::new(); t];
+            let evals = &grouped[k_idx * a + a_idx];
+            let total_dts: usize = evals.iter().map(|e| e.dt_scores.len().min(max_det)).sum();
+
+            let mut all_dt_scores: Vec<f64> = Vec::with_capacity(total_dts);
+            let mut all_dt_matched: Vec<Vec<bool>> =
+                (0..t).map(|_| Vec::with_capacity(total_dts)).collect();
+            let mut all_dt_ignore: Vec<Vec<bool>> =
+                (0..t).map(|_| Vec::with_capacity(total_dts)).collect();
             let mut num_gt = 0usize;
 
-            for eval_img in &grouped[k_idx * a + a_idx] {
+            for eval_img in evals {
                 let nd = eval_img.dt_scores.len().min(max_det);
 
                 all_dt_scores.extend_from_slice(&eval_img.dt_scores[..nd]);

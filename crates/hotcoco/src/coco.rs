@@ -116,40 +116,40 @@ impl COCO {
         area_rng: Option<[f64; 2]>,
         is_crowd: Option<bool>,
     ) -> Vec<u64> {
-        let anns: Box<dyn Iterator<Item = &Annotation>> = if !img_ids.is_empty() {
-            let ann_ids: Vec<u64> = img_ids
-                .iter()
-                .flat_map(|id| self.img_to_anns.get(id).cloned().unwrap_or_default())
-                .collect();
-            Box::new(
-                ann_ids
-                    .into_iter()
-                    .filter_map(|id| self.anns.get(&id).map(|&i| &self.dataset.annotations[i])),
-            )
-        } else {
-            Box::new(self.dataset.annotations.iter())
-        };
-
-        let mut result: Vec<u64> = anns
-            .filter(|ann| {
-                if !cat_ids.is_empty() && !cat_ids.contains(&ann.category_id) {
+        let filter = |ann: &&Annotation| -> bool {
+            if !cat_ids.is_empty() && !cat_ids.contains(&ann.category_id) {
+                return false;
+            }
+            if let Some(rng) = area_rng {
+                let a = ann.area.unwrap_or(0.0);
+                if a < rng[0] || a > rng[1] {
                     return false;
                 }
-                if let Some(rng) = area_rng {
-                    let a = ann.area.unwrap_or(0.0);
-                    if a < rng[0] || a > rng[1] {
-                        return false;
-                    }
+            }
+            if let Some(crowd) = is_crowd {
+                if ann.iscrowd != crowd {
+                    return false;
                 }
-                if let Some(crowd) = is_crowd {
-                    if ann.iscrowd != crowd {
-                        return false;
-                    }
-                }
-                true
-            })
-            .map(|ann| ann.id)
-            .collect();
+            }
+            true
+        };
+
+        let mut result: Vec<u64> = if !img_ids.is_empty() {
+            img_ids
+                .iter()
+                .flat_map(|id| self.img_to_anns.get(id).cloned().unwrap_or_default())
+                .filter_map(|id| self.anns.get(&id).map(|&i| &self.dataset.annotations[i]))
+                .filter(filter)
+                .map(|ann| ann.id)
+                .collect()
+        } else {
+            self.dataset
+                .annotations
+                .iter()
+                .filter(filter)
+                .map(|ann| ann.id)
+                .collect()
+        };
         result.sort_unstable();
         result
     }

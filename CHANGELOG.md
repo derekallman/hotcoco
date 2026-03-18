@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `coco.browse(dt=...)` — detection overlay for the dataset browser: pass a COCO results object or a path string to compare model predictions against ground truth in the same `AnnotatedImage` panel; GT labels prefixed `"GT: <name>"`, DT labels `"DT: <name>"` with lightened colors; confidence scores drawn as text on the image; sidebar gains **Sources** toggle (show/hide GT and DT independently) and **Min confidence** slider (0–1, step 0.05)
+- `coco explore --dt <results.json>` CLI flag — enables detection overlay from the command line
 - `coco.browse(image_dir, batch_size=12)` — Gradio-powered dataset browser; sidebar category filter, annotation type toggles (bbox/segm/keypoints), clean thumbnail grid with "Load more" and "Shuffle ⇄"; click any thumbnail to open a full-resolution `gr.AnnotatedImage` detail panel with native browser-quality mask/bbox rendering and an auto-generated per-category legend; launches inline in Jupyter, falls back to local server
 - `docs/guide/browse.md` — new Dataset Browser guide; `docs/api/coco.md` updated with `image_dir` property and `browse()` reference; `docs/cli.md` updated with `coco explore` subcommand; `README.md` updated with browse bullet
 - `coco explore` CLI subcommand — standalone Gradio server with `--gt`, `--images`, `--batch-size`, `--port`, `--share` flags; requires `pip install hotcoco[browse]`
@@ -25,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Internal: removed `Box<dyn Iterator>` in `COCO::get_ann_ids` — extracted filter closure, eliminated heap allocation and dynamic dispatch
+- Internal: removed unnecessary `Vec::clone()` in `tide_errors()` (borrowed slices) and `confusion_matrix()` (`Cow<[u64]>` avoids allocation when params are already set)
+- Internal: added `IouMatrix` type alias for `Vec<Vec<f64>>` in eval module, removed `#[allow(clippy::type_complexity)]`
+- Internal: pre-allocated `Vec`s in `accumulate()` with capacity hints based on total detection count, eliminating repeated reallocations
+- Internal: added `#[inline]` to hot mask functions (`area`, `to_bbox`, `intersection_area`)
 - `coco --help` and subcommand help: new description and epilog examples on top-level parser and `eval`/`healthcheck` subparsers; `--gt`/`--dt`/`--slices` help text improved; `stats` one-liner updated
 - `scripts/test_parity.py` renamed to `scripts/fuzz_parity.py` — clarifies that this is the slow hypothesis-based fuzzer (`just fuzz`), distinct from `scripts/test_parity.py` (the fast CI regression suite, `just test`)
 - `scripts/fixtures/adversarial/` added to `.gitignore` and removed from tracking — hypothesis-generated fixtures are ephemeral outputs, not source files; the directory is recreated locally by running `just fuzz`

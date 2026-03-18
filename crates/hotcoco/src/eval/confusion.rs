@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rayon::prelude::*;
 
 use crate::coco::COCO;
@@ -101,8 +103,8 @@ impl COCOeval {
         min_score: Option<f64>,
     ) -> ConfusionMatrix {
         // Resolve cat_ids / img_ids: respect user-set params filters but do not mutate.
-        let cat_ids: Vec<u64> = if !self.params.cat_ids.is_empty() {
-            self.params.cat_ids.clone()
+        let cat_ids: Cow<[u64]> = if !self.params.cat_ids.is_empty() {
+            Cow::Borrowed(&self.params.cat_ids)
         } else {
             let mut ids: Vec<u64> = self
                 .coco_gt
@@ -112,15 +114,15 @@ impl COCOeval {
                 .map(|c| c.id)
                 .collect();
             ids.sort_unstable();
-            ids
+            Cow::Owned(ids)
         };
 
-        let img_ids: Vec<u64> = if !self.params.img_ids.is_empty() {
-            self.params.img_ids.clone()
+        let img_ids: Cow<[u64]> = if !self.params.img_ids.is_empty() {
+            Cow::Borrowed(&self.params.img_ids)
         } else {
             let mut ids: Vec<u64> = self.coco_gt.dataset.images.iter().map(|i| i.id).collect();
             ids.sort_unstable();
-            ids
+            Cow::Owned(ids)
         };
 
         let num_cats = cat_ids.len();
@@ -263,7 +265,7 @@ impl COCOeval {
         ConfusionMatrix {
             matrix,
             num_cats,
-            cat_ids,
+            cat_ids: cat_ids.into_owned(),
             cat_names,
             iou_thr,
         }

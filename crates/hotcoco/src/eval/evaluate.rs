@@ -154,8 +154,7 @@ impl COCOeval {
 
         // Compute IoUs only for pairs where both GT and DT are non-empty.
         // Pairs with only GT or only DT produce empty IoU matrices — skip storing them.
-        #[allow(clippy::type_complexity)]
-        let iou_results: Vec<((u64, u64), Vec<Vec<f64>>)> = sparse_pairs
+        let iou_results: Vec<((u64, u64), super::types::IouMatrix)> = sparse_pairs
             .par_iter()
             .filter_map(|&(img_id, cat_id)| {
                 let iou_matrix = Self::compute_iou_static(

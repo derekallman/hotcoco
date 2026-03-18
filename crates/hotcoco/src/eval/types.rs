@@ -5,6 +5,9 @@ use serde::Serialize;
 use crate::coco::COCO;
 use crate::params::Params;
 
+/// D×G IoU matrix (row-major: dt.len() rows, gt.len() columns).
+pub(super) type IouMatrix = Vec<Vec<f64>>;
+
 /// LVIS category frequency bucket, as stored in `Category.frequency`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FreqGroup {
@@ -202,6 +205,6 @@ pub(super) struct EvalImgContext<'a> {
     pub(super) coco_gt: &'a COCO,
     pub(super) coco_dt: &'a COCO,
     pub(super) params: &'a Params,
-    pub(super) ious: &'a std::collections::HashMap<(u64, u64), Vec<Vec<f64>>>,
+    pub(super) ious: &'a HashMap<(u64, u64), IouMatrix>,
     pub(super) eval_mode: super::EvalMode,
 }

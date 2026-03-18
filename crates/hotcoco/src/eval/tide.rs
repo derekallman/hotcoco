@@ -72,7 +72,7 @@ impl COCOeval {
             return Err("tide_errors() requires evaluate() to be called first".to_string());
         }
 
-        let cat_ids = self.params.cat_ids.clone();
+        let cat_ids = &self.params.cat_ids;
         let iou_type = self.params.iou_type;
         let target_area_rng = self
             .params
@@ -102,7 +102,7 @@ impl COCOeval {
         // --- Cross-category IoU pass ---
         // For each image, compute max IoU between each DT annotation
         // and any GT annotation of a *different* category.
-        let img_ids = self.params.img_ids.clone();
+        let img_ids = &self.params.img_ids;
 
         // Returns: img_id → (dt_ann_id → (max_cross_iou, argmax_cross_gt_ann_id))
         // argmax_cross_gt_ann_id is u64::MAX when there are no cross-class GTs.
@@ -390,7 +390,7 @@ impl COCOeval {
 
         let rec_thrs = &self.params.rec_thrs;
 
-        for &cat_id in &cat_ids {
+        for &cat_id in cat_ids {
             let data = match cat_data.get(&cat_id) {
                 Some(d) if d.num_gt > 0 => d,
                 _ => continue,

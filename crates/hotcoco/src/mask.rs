@@ -57,6 +57,7 @@ pub fn decode(rle: &Rle) -> Vec<u8> {
 /// Compute the area (number of foreground pixels) of an RLE mask.
 ///
 /// Only sums the odd-indexed runs (which represent 1s).
+#[inline]
 pub fn area(rle: &Rle) -> u64 {
     rle.counts
         .iter()
@@ -67,6 +68,7 @@ pub fn area(rle: &Rle) -> u64 {
 }
 
 /// Compute the bounding box `[x, y, w, h]` of an RLE mask.
+#[inline]
 pub fn to_bbox(rle: &Rle) -> [f64; 4] {
     let h = rle.h as usize;
     if h == 0 || rle.w == 0 || rle.counts.is_empty() {
@@ -230,6 +232,7 @@ fn merge_two(a: &Rle, b: &Rle, intersect: bool) -> Rle {
 ///
 /// Walks both RLE streams simultaneously (same logic as `merge_two` with intersect=true)
 /// but only accumulates the count where both masks are foreground.
+#[inline]
 fn intersection_area(a: &Rle, b: &Rle) -> u64 {
     let n = (a.h as u64) * (a.w as u64);
     let mut ca = 0u64;

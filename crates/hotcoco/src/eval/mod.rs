@@ -62,7 +62,7 @@ pub struct COCOeval {
     pub coco_dt: COCO,
     pub params: Params,
     pub eval_imgs: Vec<Option<EvalImg>>,
-    ious: HashMap<(u64, u64), Vec<Vec<f64>>>,
+    ious: HashMap<(u64, u64), types::IouMatrix>,
     pub eval: Option<AccumulatedEval>,
     pub stats: Option<Vec<f64>>,
     /// Evaluation mode (COCO, LVIS, or OpenImages).
