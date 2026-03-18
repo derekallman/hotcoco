@@ -52,6 +52,16 @@ def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
     return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
+def _lighten_color(rgb: tuple[int, int, int], factor: float = 0.4) -> tuple[int, int, int]:
+    """Blend RGB toward white by *factor* (0 = original, 1 = white)."""
+    r, g, b = rgb
+    return (
+        int(r + (255 - r) * factor),
+        int(g + (255 - g) * factor),
+        int(b + (255 - b) * factor),
+    )
+
+
 def _is_jupyter() -> bool:
     """Return True when running inside a Jupyter kernel."""
     try:
@@ -448,6 +458,136 @@ def render_annotated_image(
     return (img, sections)
 
 
+def render_annotated_image_with_dt(
+    gt_coco,
+    dt_coco,
+    img_id: int,
+    image_dir: str,
+    ann_types: list[str],
+    cat_colors: dict[int, tuple[int, int, int]],
+    show_gt: bool = True,
+    show_dt: bool = True,
+    score_thr: float = 0.0,
+):
+    """Return (PIL.Image, annotations) for gr.AnnotatedImage with GT+DT overlay.
+
+    GT labels are prefixed ``"GT: <name>"``, DT labels ``"DT: <name>"``.
+    Detection scores are drawn as text on the image near each DT bbox.
+
+    Returns:
+        tuple: (PIL.Image, list[tuple[mask_or_bbox, label]]) ready for gr.AnnotatedImage.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    img_info = gt_coco.load_imgs([img_id])[0]
+    img = _load_image(image_dir, img_info["file_name"], img_info)
+    draw = ImageDraw.Draw(img)
+
+    sections: list[tuple] = []
+
+    # --- Ground truth ---
+    if show_gt:
+        ann_ids = gt_coco.get_ann_ids(img_ids=[img_id])
+        anns = gt_coco.load_anns(ann_ids)
+        cat_ids = list({ann["category_id"] for ann in anns})
+        cats = {c["id"]: c for c in gt_coco.load_cats(cat_ids)}
+
+        for ann in anns:
+            cat = cats[ann["category_id"]]
+            label = f"GT: {cat['name']}"
+            color = cat_colors.get(ann["category_id"], (255, 0, 0))
+            has_segm = bool(ann.get("segmentation"))
+            has_bbox = bool(ann.get("bbox")) and len(ann.get("bbox", [])) == 4
+            kpts = ann.get("keypoints", [])
+            has_kpts = bool(kpts) and any(v > 0 for v in kpts[2::3])
+
+            if "segm" in ann_types and has_segm:
+                try:
+                    mask = gt_coco.ann_to_mask(ann)
+                    sections.append((mask.astype(bool), label))
+                except Exception:
+                    pass
+            elif "bbox" in ann_types and has_bbox:
+                x, y, w, h = ann["bbox"]
+                sections.append(((int(x), int(y), int(x + w), int(y + h)), label))
+
+            if "keypoints" in ann_types and has_kpts:
+                for i in range(0, len(kpts), 3):
+                    kx, ky, v = kpts[i], kpts[i + 1], kpts[i + 2]
+                    if v > 0:
+                        r = 4
+                        draw.ellipse([kx - r, ky - r, kx + r, ky + r], fill=color)
+                for link in cat.get("skeleton", []):
+                    i1, i2 = link[0] - 1, link[1] - 1
+                    if i1 * 3 + 2 < len(kpts) and i2 * 3 + 2 < len(kpts):
+                        x1, y1, v1 = kpts[i1 * 3], kpts[i1 * 3 + 1], kpts[i1 * 3 + 2]
+                        x2, y2, v2 = kpts[i2 * 3], kpts[i2 * 3 + 1], kpts[i2 * 3 + 2]
+                        if v1 > 0 and v2 > 0:
+                            draw.line([x1, y1, x2, y2], fill=color, width=2)
+
+    # --- Detections ---
+    if show_dt and dt_coco is not None:
+        dt_ann_ids = dt_coco.get_ann_ids(img_ids=[img_id])
+        dt_anns = dt_coco.load_anns(dt_ann_ids)
+        dt_cat_ids = list({ann["category_id"] for ann in dt_anns})
+        dt_cats = {c["id"]: c for c in dt_coco.load_cats(dt_cat_ids)} if dt_cat_ids else {}
+
+        try:
+            font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 12)
+        except Exception:
+            font = ImageFont.load_default()
+
+        for ann in dt_anns:
+            score = ann.get("score", 1.0)
+            if score < score_thr:
+                continue
+
+            cat = dt_cats.get(ann["category_id"])
+            if cat is None:
+                continue
+            label = f"DT: {cat['name']}"
+            color = _lighten_color(cat_colors.get(ann["category_id"], (255, 0, 0)))
+
+            has_segm = bool(ann.get("segmentation"))
+            has_bbox = bool(ann.get("bbox")) and len(ann.get("bbox", [])) == 4
+
+            bbox_coords = None
+            if "segm" in ann_types and has_segm:
+                try:
+                    mask = dt_coco.ann_to_mask(ann)
+                    sections.append((mask.astype(bool), label))
+                    if has_bbox:
+                        x, y, w, h = ann["bbox"]
+                        bbox_coords = (int(x), int(y), int(x + w), int(y + h))
+                except Exception:
+                    if has_bbox:
+                        x, y, w, h = ann["bbox"]
+                        bbox_coords = (int(x), int(y), int(x + w), int(y + h))
+                        sections.append((bbox_coords, label))
+            elif "bbox" in ann_types and has_bbox:
+                x, y, w, h = ann["bbox"]
+                bbox_coords = (int(x), int(y), int(x + w), int(y + h))
+                sections.append((bbox_coords, label))
+
+            # Draw score text near top-left of bbox
+            if bbox_coords is not None:
+                score_text = f"{score:.2f}"
+                tx, ty = bbox_coords[0] + 2, bbox_coords[1] + 2
+                try:
+                    bbox_text = draw.textbbox((tx, ty), score_text, font=font)
+                    pad = 2
+                    draw.rectangle(
+                        [bbox_text[0] - pad, bbox_text[1] - pad, bbox_text[2] + pad, bbox_text[3] + pad],
+                        fill=(255, 255, 255),
+                    )
+                except AttributeError:
+                    # older Pillow without textbbox
+                    draw.rectangle([tx - 2, ty - 2, tx + 30, ty + 14], fill=(255, 255, 255))
+                draw.text((tx, ty), score_text, fill=(0, 0, 0), font=font)
+
+    return (img, sections)
+
+
 def render_thumbnail(
     coco,
     img_id: int,
@@ -464,13 +604,16 @@ def render_thumbnail(
 # Gradio app
 # ---------------------------------------------------------------------------
 
-def build_app(coco, image_dir: str | None = None, batch_size: int = 12):
+def build_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco=None):
     """Build and return a Gradio Blocks app for browsing a COCO dataset.
 
     Args:
         coco: A COCO instance (hotcoco.COCO).
         image_dir: Root directory for image files. Falls back to coco.image_dir.
         batch_size: Number of images to load per batch (default 12).
+        dt_coco: Optional detection results COCO object (from ``coco.load_res()``).
+            When provided, adds a detection overlay with source toggles and a
+            confidence threshold slider.
 
     Returns:
         gr.Blocks: The Gradio app (not yet launched).
@@ -490,14 +633,23 @@ def build_app(coco, image_dir: str | None = None, batch_size: int = 12):
             "  coco.browse(image_dir='/path/to/images')"
         )
 
+    has_dt = dt_coco is not None
+
     # Build category data
     all_cats = coco.load_cats(coco.get_cat_ids())
     cat_name_to_id = {c["name"]: c["id"] for c in all_cats}
     cat_choices = [c["name"] for c in all_cats]
     cat_colors = _assign_cat_colors([c["id"] for c in all_cats])
 
-    # color_map for gr.AnnotatedImage — maps category name → hex color
-    color_map = {c["name"]: _rgb_to_hex(cat_colors[c["id"]]) for c in all_cats if c["id"] in cat_colors}
+    # color_map for gr.AnnotatedImage — maps label string → hex color
+    if has_dt:
+        color_map = {}
+        for c in all_cats:
+            if c["id"] in cat_colors:
+                color_map[f"GT: {c['name']}"] = _rgb_to_hex(cat_colors[c["id"]])
+                color_map[f"DT: {c['name']}"] = _rgb_to_hex(_lighten_color(cat_colors[c["id"]]))
+    else:
+        color_map = {c["name"]: _rgb_to_hex(cat_colors[c["id"]]) for c in all_cats if c["id"] in cat_colors}
 
     all_img_ids = list(coco.get_img_ids())
     total_images = len(all_img_ids)
@@ -523,6 +675,18 @@ def build_app(coco, image_dir: str | None = None, batch_size: int = 12):
         thumbnails = _render_batch(first_batch)
         count = _count_md(len(first_batch), len(img_ids))
         return img_ids, first_batch, thumbnails, thumbnails, count, None, None
+
+    def _render_detail(img_id, ann_type_list, sources, score_thr):
+        if img_id is None:
+            return None
+        if has_dt:
+            show_gt = "Ground truth" in sources
+            show_dt = "Detections" in sources
+            return render_annotated_image_with_dt(
+                coco, dt_coco, img_id, resolved_dir, ann_type_list, cat_colors,
+                show_gt=show_gt, show_dt=show_dt, score_thr=score_thr,
+            )
+        return render_annotated_image(coco, img_id, resolved_dir, ann_type_list, cat_colors)
 
     # --- Gradio app ----------------------------------------------------------
 
@@ -557,6 +721,20 @@ def build_app(coco, image_dir: str | None = None, batch_size: int = 12):
                     label="Show",
                     elem_id="ann-types",
                 )
+                source_toggle = gr.CheckboxGroup(
+                    choices=["Ground truth", "Detections"],
+                    value=["Ground truth", "Detections"],
+                    label="Sources",
+                    visible=has_dt,
+                )
+                score_slider = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.0,
+                    step=0.05,
+                    label="Min confidence",
+                    visible=has_dt,
+                )
                 shuffle_btn = gr.Button("Shuffle ⇄", elem_id="shuffle-btn", variant="primary")
                 count_md = gr.Markdown(
                     _count_md(0, total_images),
@@ -589,14 +767,12 @@ def build_app(coco, image_dir: str | None = None, batch_size: int = 12):
         def on_filter_change(selected_cats, _):
             return _filter_and_batch(selected_cats)
 
-        def on_ann_type_change(selected_id, ann_type_list):
-            if selected_id is None:
-                return None
-            return render_annotated_image(coco, selected_id, resolved_dir, ann_type_list, cat_colors)
+        def on_ann_type_change(selected_id, ann_type_list, sources, score_thr):
+            return _render_detail(selected_id, ann_type_list, sources, score_thr)
 
-        def on_select(displayed_ids, ann_type_list, evt):
+        def on_select(displayed_ids, ann_type_list, sources, score_thr, evt):
             img_id = displayed_ids[evt.index]
-            return img_id, render_annotated_image(coco, img_id, resolved_dir, ann_type_list, cat_colors)
+            return img_id, _render_detail(img_id, ann_type_list, sources, score_thr)
         on_select.__annotations__["evt"] = gr.SelectData  # can't use inline annotation: from __future__ import annotations stringifies it
 
         def on_load_more(all_ids, displayed_ids, rendered_thumbnails):
@@ -609,19 +785,24 @@ def build_app(coco, image_dir: str | None = None, batch_size: int = 12):
         def on_shuffle(selected_cats, _):
             return _filter_and_batch(selected_cats, shuffle=True)
 
+        def on_source_or_score_change(selected_id, ann_type_list, sources, score_thr):
+            return _render_detail(selected_id, ann_type_list, sources, score_thr)
+
         # --- Wire events -----------------------------------------------------
 
         filter_outputs = [all_ids_state, displayed_ids_state, rendered_thumbnails_state, gallery, count_md, selected_id_state, detail]
 
         cat_filter.change(on_filter_change, inputs=[cat_filter, ann_types], outputs=filter_outputs)
-        ann_types.change(on_ann_type_change, inputs=[selected_id_state, ann_types], outputs=[detail])
-        gallery.select(on_select, inputs=[displayed_ids_state, ann_types], outputs=[selected_id_state, detail])
+        ann_types.change(on_ann_type_change, inputs=[selected_id_state, ann_types, source_toggle, score_slider], outputs=[detail])
+        gallery.select(on_select, inputs=[displayed_ids_state, ann_types, source_toggle, score_slider], outputs=[selected_id_state, detail])
         load_more_btn.click(
             on_load_more,
             inputs=[all_ids_state, displayed_ids_state, rendered_thumbnails_state],
             outputs=[displayed_ids_state, rendered_thumbnails_state, gallery],
         )
         shuffle_btn.click(on_shuffle, inputs=[cat_filter, ann_types], outputs=filter_outputs)
+        source_toggle.change(on_source_or_score_change, inputs=[selected_id_state, ann_types, source_toggle, score_slider], outputs=[detail])
+        score_slider.change(on_source_or_score_change, inputs=[selected_id_state, ann_types, source_toggle, score_slider], outputs=[detail])
 
         # Initialize gallery on load
         app.load(on_filter_change, inputs=[cat_filter, ann_types], outputs=filter_outputs)

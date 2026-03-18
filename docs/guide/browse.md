@@ -84,6 +84,52 @@ coco explore \
 
 ---
 
+## Viewing detections
+
+Pass detection results to `browse()` and hotcoco overlays your model's predictions
+alongside ground truth in the same panel:
+
+```python
+from hotcoco import COCO
+
+coco = COCO("instances_val2017.json", image_dir="/data/coco/val2017/")
+
+# Pass a path — auto-loaded via load_res()
+coco.browse(dt="bbox_results.json")
+
+# Or pass a COCO object you already have
+results = coco.load_res("bbox_results.json")
+coco.browse(dt=results)
+```
+
+From the command line:
+
+```bash
+coco explore \
+    --gt instances_val2017.json \
+    --images /data/coco/val2017/ \
+    --dt bbox_results.json
+```
+
+**What you get with `dt` loaded:**
+
+| Feature | Description |
+|---------|-------------|
+| `GT: <name>` labels | Ground truth in the original category color |
+| `DT: <name>` labels | Detections in a lighter variant of the same color |
+| Score text | Confidence score drawn near each detection bbox |
+| Sources toggle | Show/hide ground truth and detections independently |
+| Min confidence slider | Filter detections below a score threshold (0–1) |
+
+GT and DT are rendered in the same `AnnotatedImage` panel — no split view needed.
+When no DT is loaded the browser behaves exactly as it did before.
+
+!!! tip
+    Detections often lack segmentation masks. When `segm` is selected but a detection
+    has no mask, the browser falls back to its bounding box automatically.
+
+---
+
 ## `image_dir`
 
 The browser needs to know where your images live. Pass it at construction:
@@ -143,6 +189,7 @@ of raising an error.
 coco explore \
     --gt <annotations.json> \
     --images <images_dir/> \
+    [--dt <results.json>] \
     [--batch-size 12] \
     [--port 7860] \
     [--share]

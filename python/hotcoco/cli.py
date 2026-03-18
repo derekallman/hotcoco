@@ -477,9 +477,17 @@ def cmd_explore(args):
     coco = _load_coco(args.gt)
     coco.image_dir = args.images
 
+    dt_coco = None
+    if args.dt:
+        try:
+            dt_coco = coco.load_res(args.dt)
+        except Exception as e:
+            print(f"error loading detections: {e}", file=sys.stderr)
+            sys.exit(1)
+
     from hotcoco import browse as _browse
 
-    app = _browse.build_app(coco, batch_size=args.batch_size)
+    app = _browse.build_app(coco, batch_size=args.batch_size, dt_coco=dt_coco)
     app.launch(server_port=args.port, share=args.share)
 
 
@@ -687,6 +695,7 @@ def main():
     explore_parser = subparsers.add_parser("explore", help="browse a COCO dataset interactively (requires gradio)")
     explore_parser.add_argument("--gt", required=True, metavar="PATH", help="path to COCO annotation JSON")
     explore_parser.add_argument("--images", required=True, metavar="DIR", help="directory containing images")
+    explore_parser.add_argument("--dt", metavar="PATH", default=None, help="detection results JSON (enables detection overlay)")
     explore_parser.add_argument("--batch-size", dest="batch_size", type=int, default=12, metavar="N", help="images per batch (default 12)")
     explore_parser.add_argument("--port", type=int, default=7860, help="local server port (default 7860)")
     explore_parser.add_argument("--share", action="store_true", help="create a public Gradio share link")

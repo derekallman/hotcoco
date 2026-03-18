@@ -10,13 +10,16 @@ class COCO(_RustCOCO):
         # This __init__ exists only to accept the same kwargs without complaint.
         pass
 
-    def browse(self, image_dir: str | None = None, batch_size: int = 12):
+    def browse(self, image_dir: str | None = None, dt=None, batch_size: int = 12):
         """Launch an interactive Gradio dataset browser.
 
         Parameters
         ----------
         image_dir : str, optional
             Root directory for image files. Overrides ``self.image_dir``.
+        dt : COCO or str, optional
+            Detection results to overlay. Pass a COCO object (from
+            ``self.load_res()``) or a path string (auto-loaded).
         batch_size : int
             Number of images loaded per batch (default 12).
 
@@ -34,7 +37,11 @@ class COCO(_RustCOCO):
         """
         from . import browse as _browse
 
-        app = _browse.build_app(self, image_dir=image_dir, batch_size=batch_size)
+        dt_coco = None
+        if dt is not None:
+            dt_coco = self.load_res(dt) if isinstance(dt, str) else dt
+
+        app = _browse.build_app(self, image_dir=image_dir, batch_size=batch_size, dt_coco=dt_coco)
         _browse.launch_app(app)
         return app
 

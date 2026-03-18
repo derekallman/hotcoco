@@ -514,6 +514,7 @@ Launch an interactive Gradio dataset browser. Requires `pip install hotcoco[brow
 ```python
 browse(
     image_dir: str | None = None,
+    dt: COCO | str | None = None,
     batch_size: int = 12,
 ) -> gr.Blocks
 ```
@@ -521,6 +522,7 @@ browse(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `image_dir` | <code>str &#124; None</code> | `None` | Image directory. Overrides `self.image_dir` if given. |
+| `dt` | <code>COCO &#124; str &#124; None</code> | `None` | Detection results to overlay. Pass a `COCO` object (from `load_res()`) or a path string (auto-loaded). |
 | `batch_size` | `int` | `12` | Number of images loaded per batch. |
 
 Launches inline in Jupyter; opens a local server otherwise. Returns the
@@ -529,6 +531,9 @@ Launches inline in Jupyter; opens a local server otherwise. Returns the
 ```python
 coco = COCO("instances_val2017.json", image_dir="/data/coco/images")
 coco.browse()
+
+# With detection overlay
+coco.browse(dt="bbox_results.json")
 
 # Custom port
 from hotcoco import browse as _browse
