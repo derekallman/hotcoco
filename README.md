@@ -66,7 +66,8 @@ ev.run()
 - **Format conversion** — COCO ↔ YOLO in either direction, from Python or the CLI. See [format conversion](https://derekallman.github.io/hotcoco/guide/conversion/).
 - **PyTorch integrations** — `CocoDetection` and `CocoEvaluator` drop-in replacements for torchvision's detection classes; no torchvision or pycocotools dependency required. See [PyTorch integration](https://derekallman.github.io/hotcoco/integrations/).
 - **Experiment tracker integration** — `get_results(prefix="val/bbox", per_class=True)` returns a flat dict ready for W&B, MLflow, or any logger. See [logging metrics](https://derekallman.github.io/hotcoco/guide/logging/).
-- **Python CLI** (`coco`) — included with `pip install hotcoco`; `eval`, `healthcheck`, `stats`, `filter`, `merge`, `split`, `sample`, and `convert` subcommands. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
+- **Dataset browser** — `coco.browse()` / `coco explore` opens a Gradio dashboard with category filter, annotation type toggles (bbox/segm/keypoints), and full-resolution preview on click. `pip install hotcoco[browse]`. See [Dataset Browser](https://derekallman.github.io/hotcoco/guide/browse/).
+- **Python CLI** (`coco`) — included with `pip install hotcoco`; `eval`, `healthcheck`, `stats`, `filter`, `merge`, `split`, `sample`, `convert`, and `explore` subcommands. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
 - **Rust CLI** (`coco-eval`) — lightweight eval-only binary; `cargo install hotcoco-cli`. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
 - **Rust library** — use hotcoco directly in your Rust projects via `cargo add hotcoco`. See [Rust API](https://docs.rs/hotcoco).
 

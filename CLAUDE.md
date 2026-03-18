@@ -23,8 +23,8 @@ crates/hotcoco/      # Pure Rust library — types, mask ops, COCO API, evaluati
 crates/hotcoco-cli/  # CLI binary
 crates/hotcoco-pyo3/ # PyO3 Python bindings (cdylib, built with maturin)
 python/              # Python package source (hotcoco/__init__.py, cli.py, etc.)
-scripts/             # Dev scripts: parity.py, bench.py, test_parity.py, etc.
-scripts/fixtures/    # Adversarial test fixtures (adversarial/) and generated output
+scripts/             # Dev scripts: parity.py, bench.py, test_parity.py, fuzz_parity.py, etc.
+scripts/fixtures/    # Hypothesis database and generated output (adversarial/ gitignored)
 data/                # Large COCO data files (gitignored — see installation docs)
 Justfile             # Task runner: just build / test / parity / bench / lint / fmt
 ```
@@ -39,7 +39,7 @@ Justfile             # Task runner: just build / test / parity / bench / lint / 
 
 ## Metric Parity
 
-All 12 COCO evaluation metrics (AP, AP50, AP75, APs, APm, APl, AR1, AR10, AR100, ARs, ARm, ARl) must match pycocotools. Keypoints has 10 metrics (no small area range).
+All COCO evaluation metrics must match pycocotools: 12 for bbox/segm, 10 for keypoints (no small area range), 13 for LVIS (adds APr/APc/APf/AR@300).
 
 - **Always ensure exact parity when modifying evaluation logic.** Run `cargo test` after Rust changes.
 - Verified on val2017: keypoints exact, bbox within 0.0001, segm within 0.0002.
@@ -49,7 +49,7 @@ All 12 COCO evaluation metrics (AP, AP50, AP75, APs, APm, APl, AR1, AR10, AR100,
 
 ```bash
 just parity          # build + parity vs pycocotools (bbox ≤1e-4, segm ≤2e-4, kpts exact)
-just test            # build + cargo test + pytest hypothesis suite
+just test            # build + cargo test + fast pytest regression suite
 just bench           # (optional) speed comparison
 ```
 
@@ -62,10 +62,16 @@ Tolerances: bbox ≤1e-4, segm ≤2e-4, kpts exact.
 - Format benchmark tables consistently: columns are `[Eval Type | pycocotools | faster-coco-eval | hotcoco]`, times in seconds with 2 decimal places, speedups in parentheses vs pycocotools.
 - Always verify all 12 metrics still match before reporting timing results.
 
+## Shipped Features
+LVIS evaluation, TIDE error analysis, confusion matrix, COCO↔YOLO conversion, and PDF report are all shipped. Implementation details and parity notes are in MEMORY.md topic files.
+
 ## Testing
 
 - Run `cargo test` after any Rust code changes and verify all tests pass before committing.
 - For Python binding changes: `just build` as a smoke test, then `just parity` to verify metrics.
+- `just test` runs `cargo test` + fast Python regression tests (`scripts/test_parity.py`) — safe for CI, completes in under 30s.
+- `just fuzz` runs the hypothesis-based fuzzer (`scripts/fuzz_parity.py`) — use to hunt for parity bugs, not in CI. Takes several minutes.
+- Model: use the fuzzer to *find* bugs, then prove fixes with Rust integration tests in `crates/hotcoco/tests/`.
 
 ## Skills
 
@@ -86,7 +92,8 @@ Custom skills for this project (invoke with `/skill-name`):
 ```bash
 # Common workflows (use just from the repo root)
 just build       # Build Python extension (maturin develop --release)
-just test        # Build + cargo test + pytest
+just test        # Build + cargo test + fast pytest regression suite
+just fuzz        # Build + hypothesis parity fuzzer (slow — bug hunting only)
 just parity      # Build + parity check vs pycocotools
 just bench       # Build + benchmark
 just lint        # cargo clippy (warnings as errors)
@@ -99,11 +106,16 @@ cargo test                     # Run all tests
 cargo test -p hotcoco          # Run library tests only
 cargo check -p hotcoco-pyo3    # Check pyo3 crate (can't link without Python)
 
-# One-time Python setup
-uv sync --all-extras           # Creates .venv at workspace root with all deps
+# One-time Python setup (run this before anything else)
+just setup                     # = uv sync --all-extras (installs maturin + all dev deps)
+just build                     # Build the Rust extension into .venv
 ```
 
-Note: `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expected — cdylib needs Python). Use `just build` or `cargo check -p hotcoco-pyo3` instead.
+**Important:** `uv sync` alone (without `--all-extras`) only installs base deps and will not install `maturin`, causing `just build` to fail. Always use `just setup` for first-time setup.
+
+`uv run python` works from anywhere in the repo (no need to cd first).
+
+The `coco` CLI is installed into `.venv/bin/coco` by `just build`. Run it as `uv run coco <subcommand>` (or activate the venv with `source .venv/bin/activate` for bare `coco`).
 
 ## Documentation
 

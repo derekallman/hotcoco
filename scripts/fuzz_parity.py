@@ -1,12 +1,16 @@
-"""Property-based parity testing: hotcoco vs pycocotools.
+"""Hypothesis-based parity fuzzer: hotcoco vs pycocotools.
 
-Generates thousands of diverse COCO datasets using hypothesis, evaluates through
-both pycocotools and hotcoco, and compares all metrics to within 1e-10 tolerance.
-When discrepancies are found, hypothesis auto-minimizes to the smallest failing case.
+A bug-hunting tool, not a CI gate. Generates thousands of diverse COCO datasets
+using hypothesis, evaluates through both pycocotools and hotcoco, and compares all
+metrics to within 1e-10 tolerance. When discrepancies are found, hypothesis
+auto-minimizes to the smallest failing case.
+
+Workflow: use this fuzzer to *find* bugs, then prove fixes with Rust integration
+tests. Do not add this to CI — it takes several minutes to run.
 
 Usage:
-    uv run pytest scripts/test_parity.py -v -x --tb=short
-    just test
+    uv run pytest scripts/fuzz_parity.py -v -x --tb=short
+    just fuzz
 """
 
 import contextlib
@@ -458,206 +462,6 @@ def test_kpt_parity(data):
     gt_dataset, dt_results = data.draw(coco_eval_data("keypoints"))
     py_stats, rs_stats = run_both(gt_dataset, dt_results, "keypoints")
     assert_metrics_match(py_stats, rs_stats, "keypoints", gt_dataset, dt_results)
-
-
-# ---------------------------------------------------------------------------
-# Dedicated edge-case tests
-# ---------------------------------------------------------------------------
-
-
-def _make_minimal_gt(iou_type, images=None, categories=None, annotations=None):
-    """Build a minimal GT dataset dict."""
-    if images is None:
-        images = [{"id": 1, "width": 640, "height": 480, "file_name": "test.jpg"}]
-    if categories is None:
-        if iou_type == "keypoints":
-            categories = [
-                {
-                    "id": 1,
-                    "name": "person",
-                    "supercategory": "person",
-                    "keypoints": COCO_KEYPOINT_NAMES,
-                    "skeleton": COCO_SKELETON,
-                }
-            ]
-        else:
-            categories = [{"id": 1, "name": "cat", "supercategory": "none"}]
-    if annotations is None:
-        annotations = []
-    return {"images": images, "annotations": annotations, "categories": categories}
-
-
-def _make_bbox_ann(ann_id, img_id=1, cat_id=1, bbox=None, iscrowd=0, **extra):
-    """Shortcut to create a bbox GT annotation."""
-    if bbox is None:
-        bbox = [10.0, 10.0, 100.0, 100.0]
-    ann = {
-        "id": ann_id,
-        "image_id": img_id,
-        "category_id": cat_id,
-        "bbox": bbox,
-        "area": bbox[2] * bbox[3],
-        "iscrowd": iscrowd,
-    }
-    ann.update(extra)
-    return ann
-
-
-def _make_bbox_det(img_id=1, cat_id=1, bbox=None, score=0.9):
-    """Shortcut to create a bbox detection."""
-    if bbox is None:
-        bbox = [10.0, 10.0, 100.0, 100.0]
-    return {"image_id": img_id, "category_id": cat_id, "bbox": bbox, "score": score}
-
-
-def test_empty_gt():
-    """No GT annotations, some detections → all metrics -1.0."""
-    for iou_type in ["bbox", "segm"]:
-        gt = _make_minimal_gt(iou_type)
-        dts = [_make_bbox_det(score=0.5)]
-        py_stats, rs_stats = run_both(gt, dts, iou_type)
-        assert_metrics_match(py_stats, rs_stats, iou_type)
-        # All AP metrics should be -1 when no GT exists
-        assert all(s == -1.0 for s in py_stats[:6]), f"Expected -1.0 AP metrics, got {py_stats[:6]}"
-
-
-def test_all_crowd():
-    """Every GT is iscrowd=1."""
-    anns = [
-        _make_bbox_ann(1, bbox=[10, 10, 100, 100], iscrowd=1),
-        _make_bbox_ann(2, bbox=[200, 200, 50, 50], iscrowd=1),
-    ]
-    gt = _make_minimal_gt("bbox", annotations=anns)
-    dts = [_make_bbox_det(bbox=[10, 10, 100, 100], score=0.9), _make_bbox_det(bbox=[200, 200, 50, 50], score=0.5)]
-    py_stats, rs_stats = run_both(gt, dts, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox")
-
-
-def test_identical_boxes():
-    """All GTs and DTs have the exact same bbox."""
-    bbox = [50.0, 50.0, 200.0, 150.0]
-    anns = [_make_bbox_ann(i + 1, bbox=bbox) for i in range(3)]
-    gt = _make_minimal_gt("bbox", annotations=anns)
-    dts = [_make_bbox_det(bbox=bbox, score=round(0.3 + i * 0.3, 1)) for i in range(3)]
-    py_stats, rs_stats = run_both(gt, dts, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox")
-
-
-def test_area_at_boundaries():
-    """Annotations with area exactly at 1024 and 9216 (small/medium/large boundaries)."""
-    # area = 1024 → sqrt(1024) ≈ 32
-    anns = [
-        _make_bbox_ann(1, bbox=[10.0, 10.0, 32.0, 32.0]),  # area = 1024
-        _make_bbox_ann(2, bbox=[100.0, 100.0, 96.0, 96.0]),  # area = 9216
-    ]
-    gt = _make_minimal_gt("bbox", annotations=anns)
-    dts = [
-        _make_bbox_det(bbox=[10.0, 10.0, 32.0, 32.0], score=0.8),
-        _make_bbox_det(bbox=[100.0, 100.0, 96.0, 96.0], score=0.7),
-    ]
-    py_stats, rs_stats = run_both(gt, dts, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox")
-
-
-def test_single_image_single_cat():
-    """Minimal dataset: one image, one category, one GT, one DT."""
-    anns = [_make_bbox_ann(1, bbox=[100.0, 100.0, 50.0, 50.0])]
-    gt = _make_minimal_gt("bbox", annotations=anns)
-    dts = [_make_bbox_det(bbox=[100.0, 100.0, 50.0, 50.0], score=1.0)]
-    py_stats, rs_stats = run_both(gt, dts, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox")
-
-
-def test_zero_area_boxes():
-    """Boxes with zero width or height."""
-    anns = [
-        _make_bbox_ann(1, bbox=[10.0, 10.0, 0.0, 50.0]),  # zero width
-        _make_bbox_ann(2, bbox=[50.0, 50.0, 50.0, 0.0]),  # zero height
-        _make_bbox_ann(3, bbox=[100.0, 100.0, 80.0, 80.0]),  # normal
-    ]
-    gt = _make_minimal_gt("bbox", annotations=anns)
-    dts = [
-        _make_bbox_det(bbox=[10.0, 10.0, 0.0, 50.0], score=0.9),
-        _make_bbox_det(bbox=[50.0, 50.0, 50.0, 0.0], score=0.8),
-        _make_bbox_det(bbox=[100.0, 100.0, 80.0, 80.0], score=0.7),
-    ]
-    py_stats, rs_stats = run_both(gt, dts, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox")
-
-
-def test_many_detections_few_gt():
-    """Many detections for a single GT — tests maxDet handling."""
-    anns = [_make_bbox_ann(1, bbox=[100.0, 100.0, 50.0, 50.0])]
-    gt = _make_minimal_gt("bbox", annotations=anns)
-    dts = [_make_bbox_det(bbox=[100.0 + i * 2, 100.0, 50.0, 50.0], score=round(1.0 - i * 0.005, 4)) for i in range(200)]
-    py_stats, rs_stats = run_both(gt, dts, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox")
-
-
-def test_kpt_no_visible():
-    """Keypoint GT with num_keypoints=0 should be ignored."""
-    kpts_zero = [0, 0, 0] * 17
-    kpts_some = []
-    for i in range(17):
-        kpts_some.extend([float(100 + i * 10), float(100 + i * 5), 2])
-
-    anns = [
-        {
-            "id": 1,
-            "image_id": 1,
-            "category_id": 1,
-            "bbox": [50.0, 50.0, 200.0, 200.0],
-            "area": 40000.0,
-            "iscrowd": 0,
-            "keypoints": kpts_zero,
-            "num_keypoints": 0,
-        },
-        {
-            "id": 2,
-            "image_id": 1,
-            "category_id": 1,
-            "bbox": [50.0, 50.0, 200.0, 200.0],
-            "area": 40000.0,
-            "iscrowd": 0,
-            "keypoints": kpts_some,
-            "num_keypoints": 17,
-        },
-    ]
-    gt = _make_minimal_gt("keypoints", annotations=anns)
-    dts = [{"image_id": 1, "category_id": 1, "bbox": [50.0, 50.0, 200.0, 200.0], "score": 0.9, "keypoints": kpts_some}]
-    py_stats, rs_stats = run_both(gt, dts, "keypoints")
-    assert_metrics_match(py_stats, rs_stats, "keypoints")
-
-
-def test_segm_polygon_rasterization():
-    """Segmentation with polygon GTs and bbox DTs — tests the full segm pipeline."""
-    anns = [
-        {
-            "id": 1,
-            "image_id": 1,
-            "category_id": 1,
-            "bbox": [10.0, 10.0, 100.0, 100.0],
-            "area": 10000.0,
-            "iscrowd": 0,
-            "segmentation": [[10, 10, 110, 10, 110, 110, 10, 110]],
-        },
-        {
-            "id": 2,
-            "image_id": 1,
-            "category_id": 1,
-            "bbox": [200.0, 200.0, 50.0, 50.0],
-            "area": 2500.0,
-            "iscrowd": 0,
-            "segmentation": [[200, 200, 250, 200, 250, 250, 200, 250]],
-        },
-    ]
-    gt = _make_minimal_gt("segm", annotations=anns)
-    dts = [
-        _make_bbox_det(bbox=[10.0, 10.0, 100.0, 100.0], score=0.95),
-        _make_bbox_det(bbox=[200.0, 200.0, 50.0, 50.0], score=0.8),
-    ]
-    py_stats, rs_stats = run_both(gt, dts, "segm")
-    assert_metrics_match(py_stats, rs_stats, "segm")
 
 
 # ---------------------------------------------------------------------------

@@ -26,12 +26,13 @@ Load and query COCO-format datasets.
 === "Python"
 
     ```python
-    COCO(annotation_file: str | dict | None = None)
+    COCO(annotation_file: str | dict | None = None, *, image_dir: str | None = None)
     ```
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
     | `annotation_file` | <code>str &#124; dict &#124; None</code> | `None` | Path to a COCO JSON file, an in-memory dataset dict, or `None` for an empty instance. |
+    | `image_dir` | <code>str &#124; None</code> | `None` | Root directory for image files. Used by `browse()` and `coco explore`. Can also be set afterwards via `coco.image_dir = "..."`. |
 
 === "Rust"
 
@@ -48,6 +49,23 @@ Load and query COCO-format datasets.
 ---
 
 ## Properties
+
+### `image_dir`
+
+Root directory for image files, used by `browse()` and `coco explore`.
+Set at construction time or assign directly. Propagated automatically
+through `filter`, `split`, `sample`, and `load_res`.
+
+```python
+# At construction
+coco = COCO("instances_val2017.json", image_dir="/data/coco/images")
+
+# After construction
+coco.image_dir = "/data/coco/images"
+print(coco.image_dir)  # "/data/coco/images"
+```
+
+---
 
 ### `dataset`
 
@@ -486,6 +504,42 @@ annotation area distribution, and per-category breakdowns.
         println!("{}: {} anns", cat.name, cat.ann_count);
     }
     ```
+
+---
+
+### `browse`
+
+Launch an interactive Gradio dataset browser. Requires `pip install hotcoco[browse]`.
+
+```python
+browse(
+    image_dir: str | None = None,
+    batch_size: int = 12,
+) -> gr.Blocks
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `image_dir` | <code>str &#124; None</code> | `None` | Image directory. Overrides `self.image_dir` if given. |
+| `batch_size` | `int` | `12` | Number of images loaded per batch. |
+
+Launches inline in Jupyter; opens a local server otherwise. Returns the
+`gr.Blocks` object so you can call `.launch()` yourself for custom options.
+
+```python
+coco = COCO("instances_val2017.json", image_dir="/data/coco/images")
+coco.browse()
+
+# Custom port
+from hotcoco import browse as _browse
+app = _browse.build_app(coco)
+app.launch(server_port=7861)
+```
+
+Raises `ValueError` if `image_dir` is `None` and `self.image_dir` is also `None`.
+Raises `ImportError` if `gradio` is not installed.
+
+See the [Dataset Browser guide](../guide/browse.md) for a full walkthrough.
 
 ---
 

@@ -252,6 +252,38 @@ coco sample instances_val2017.json --n 500 --seed 0 -o sample.json
 coco sample instances_val2017.json --frac 0.1 -o sample.json
 ```
 
+### `coco explore`
+
+Launch a local Gradio dashboard to browse a dataset interactively. Requires
+`pip install hotcoco[browse]`.
+
+```bash
+coco explore --gt <annotations.json> --images <images_dir/> [options]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--gt <path>` | Ground truth annotation JSON | *required* |
+| `--images <dir>` | Directory containing image files | *required* |
+| `--batch-size N` | Images loaded per batch | `12` |
+| `--port N` | Local server port | `7860` |
+| `--share` | Create a public Gradio link (useful for Colab or remote servers) | off |
+
+```bash
+coco explore --gt instances_val2017.json --images /data/coco/val2017/
+
+# Custom port
+coco explore --gt instances_val2017.json --images /data/images/ --port 7861
+
+# Public share link (e.g. for Colab)
+coco explore --gt instances_val2017.json --images /data/images/ --share
+```
+
+Opens a sidebar with category filter and annotation type toggles (bbox / segm / keypoints).
+Click any thumbnail to open a full-resolution preview. See the [Dataset Browser guide](guide/browse.md).
+
+---
+
 ### `coco convert`
 
 Convert between annotation formats. Currently supports COCO JSON ↔ YOLO labels.

@@ -9,9 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `coco.browse(image_dir, batch_size=12)` — Gradio-powered dataset browser; sidebar category filter, annotation type toggles (bbox/segm/keypoints), clean thumbnail grid with "Load more" and "Shuffle ⇄"; click any thumbnail to open a full-resolution `gr.AnnotatedImage` detail panel with native browser-quality mask/bbox rendering and an auto-generated per-category legend; launches inline in Jupyter, falls back to local server
+- `docs/guide/browse.md` — new Dataset Browser guide; `docs/api/coco.md` updated with `image_dir` property and `browse()` reference; `docs/cli.md` updated with `coco explore` subcommand; `README.md` updated with browse bullet
+- `coco explore` CLI subcommand — standalone Gradio server with `--gt`, `--images`, `--batch-size`, `--port`, `--share` flags; requires `pip install hotcoco[browse]`
+- `COCO(annotation_file, image_dir=...)` — new `image_dir` constructor arg and settable attribute; propagated through `filter`, `split`, `sample`, and `load_res`
+- `pip install hotcoco[browse]` optional extra — pulls in `gradio>=4.0` and `Pillow>=8.0`
+
 - `--json` flag on every `coco` subcommand (`eval`, `stats`, `healthcheck`, `filter`, `merge`, `split`, `sample`, `convert`) — writes a single JSON object to stdout; intended for CI/CD pipelines, dashboards, and shell scripts; stderr and exit codes are unchanged; errors also emit JSON when the flag is active
 - `coco eval --json` suppresses the Rust-side metrics table (via fd-level stdout redirect) and returns `{metrics, params, tide?, slices?, healthcheck?}` — optional keys only present when their flags are passed
 - `docs/cli.md` — new "JSON output mode" section with CI gating example and JSON error format; `--json` row added to every subcommand flags table; JSON output shape documented for `eval`
+
+### Fixed
+
+- `ann_to_mask` returned striped/diagonal artifacts for non-rectangular polygon segmentations due to swapped `h`/`w` arguments in the column-major → row-major transpose; masks now match pycocotools exactly
 
 ### Changed
 

@@ -180,19 +180,21 @@ use COCO-format annotations. Two practical plays:
 
 ### Data Viewer / Explorer
 
-Lightweight dataset browsing without pulling in FiftyOne or other heavy tools. Two layers:
+**Shipped.**
 
-- **Python API** — `coco.browse(category="person", limit=20)` opens a simple grid view of
+~~Lightweight dataset browsing without pulling in FiftyOne or other heavy tools. Two layers:~~
+
+~~- **Python API** — `coco.browse(category="person", limit=20)` opens a simple grid view of
   images with overlaid annotations. Enough to sanity-check a dataset, spot labeling errors,
   and verify detections at a glance. Renders inline in Jupyter notebooks via IPython display;
-  falls back to a temp HTML file outside notebooks.
+  falls back to a temp HTML file outside notebooks.~~
 
-- **Streamlit app** — `coco explore` CLI command launches a local Streamlit dashboard with
+~~- **Streamlit app** — `coco explore` CLI command launches a local Streamlit dashboard with
   filtering by category, image ID, area range, and confidence score. Covers the 90% use case
   of "let me look at my data" without any setup. Includes a one-click "Open in FiftyOne"
   button for users who outgrow the built-in viewer — generates the FiftyOne dataset import
-  snippet and copies it to the clipboard.
+  snippet and copies it to the clipboard.~~
 
-Intentionally minimal — not trying to compete with FiftyOne's full feature set. The goal is
+~~Intentionally minimal — not trying to compete with FiftyOne's full feature set. The goal is
 zero-dependency quick looks (Python API) and a lightweight local dashboard (Streamlit) that
-bridge the gap between "stare at JSON" and "install a full data platform."
+bridge the gap between "stare at JSON" and "install a full data platform."~~

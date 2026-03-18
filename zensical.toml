@@ -20,6 +20,7 @@ nav = [
     { "Mask Operations" = "guide/masks.md" },
     { "PyTorch Integration" = "guide/pytorch.md" },
     { "Plotting" = "guide/plotting.md" },
+    { "Dataset Browser" = "guide/browse.md" },
     { "Framework Integrations" = "guide/frameworks.md" },
   ] },
   { "API Reference" = [
