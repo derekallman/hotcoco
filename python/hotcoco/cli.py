@@ -463,6 +463,26 @@ def cmd_healthcheck(args):
         print("\n\033[92mAll checks passed.\033[0m")
 
 
+def cmd_explore(args):
+    try:
+        import gradio  # noqa: F401
+    except ImportError:
+        print("error: gradio is required. Install with: pip install hotcoco[browse]", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.isdir(args.images):
+        print(f"error: images directory not found: {args.images}", file=sys.stderr)
+        sys.exit(1)
+
+    coco = _load_coco(args.gt)
+    coco.image_dir = args.images
+
+    from hotcoco import browse as _browse
+
+    app = _browse.build_app(coco, batch_size=args.batch_size)
+    app.launch(server_port=args.port, share=args.share)
+
+
 def cmd_sample(args):
     coco = _load_coco(args.annotation_file)
     n_imgs_before = len(coco.dataset["images"])
@@ -664,6 +684,13 @@ def main():
         help="directory of images (YOLO → COCO only; used to read image dimensions via Pillow)",
     )
 
+    explore_parser = subparsers.add_parser("explore", help="browse a COCO dataset interactively (requires gradio)")
+    explore_parser.add_argument("--gt", required=True, metavar="PATH", help="path to COCO annotation JSON")
+    explore_parser.add_argument("--images", required=True, metavar="DIR", help="directory containing images")
+    explore_parser.add_argument("--batch-size", dest="batch_size", type=int, default=12, metavar="N", help="images per batch (default 12)")
+    explore_parser.add_argument("--port", type=int, default=7860, help="local server port (default 7860)")
+    explore_parser.add_argument("--share", action="store_true", help="create a public Gradio share link")
+
     try:
         import argcomplete
 
@@ -686,16 +713,17 @@ def main():
         "split": cmd_split,
         "sample": cmd_sample,
         "convert": cmd_convert,
+        "explore": cmd_explore,
     }
 
     try:
         result = dispatch[args.command](args)
-        if args.json and result is not None:
+        if getattr(args, "json", False) and result is not None:
             print(json_mod.dumps(result, indent=2))
     except SystemExit:
         raise
     except Exception as e:
-        if args.json:
+        if getattr(args, "json", False):
             print(json_mod.dumps({"error": str(e)}))
             sys.exit(1)
         else:

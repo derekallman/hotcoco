@@ -1,11 +1,20 @@
+# One-time environment setup (run this first, before anything else)
+setup:
+    uv sync --all-extras
+
 # Build the Python extension (required before running any Python scripts)
+# Run `just setup` first if maturin is missing.
 build:
     uv run maturin develop --release
 
-# Run all tests: Rust unit tests + Python property-based parity tests
+# Run all tests: Rust unit tests + Python parity regression tests
 test: build
     cargo test
     uv run pytest scripts/test_parity.py -v -x --tb=short
+
+# Run hypothesis-based parity fuzzer (slow — for bug hunting, not CI)
+fuzz: build
+    uv run pytest scripts/fuzz_parity.py -v -x --tb=short
 
 # Verify metric parity vs pycocotools on COCO val2017
 parity: build

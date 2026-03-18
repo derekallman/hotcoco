@@ -1,4 +1,42 @@
+from .hotcoco import COCO as _RustCOCO
 from .hotcoco import *  # noqa: F401, F403
+
+
+class COCO(_RustCOCO):
+    """COCO dataset — extends the Rust core with Python-only methods."""
+
+    def __init__(self, annotation_file=None, *, image_dir=None):  # noqa: ARG002
+        # Rust __new__ handles construction and stores image_dir.
+        # This __init__ exists only to accept the same kwargs without complaint.
+        pass
+
+    def browse(self, image_dir: str | None = None, batch_size: int = 12):
+        """Launch an interactive Gradio dataset browser.
+
+        Parameters
+        ----------
+        image_dir : str, optional
+            Root directory for image files. Overrides ``self.image_dir``.
+        batch_size : int
+            Number of images loaded per batch (default 12).
+
+        Returns
+        -------
+        gr.Blocks
+            The Gradio app object (already launched).
+
+        Raises
+        ------
+        ValueError
+            If ``image_dir`` is ``None`` and ``self.image_dir`` is also ``None``.
+        ImportError
+            If ``gradio`` is not installed (``pip install hotcoco[browse]``).
+        """
+        from . import browse as _browse
+
+        app = _browse.build_app(self, image_dir=image_dir, batch_size=batch_size)
+        _browse.launch_app(app)
+        return app
 
 
 class LVISeval:
@@ -23,7 +61,7 @@ class LVISeval:
 
 
 # lvis-api uses LVIS as the dataset class name, not COCO.
-LVIS = COCO  # noqa: F405
+LVIS = COCO
 
 
 class LVISResults:

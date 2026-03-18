@@ -21,15 +21,26 @@ use convert::{
 // COCO
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "COCO")]
+/// COCO dataset — load, index, and query COCO-format annotations.
+///
+/// `image_dir` is an optional path to the directory containing images for
+/// this dataset. It is used by `browse()` and `coco explore` to locate
+/// image files. Propagated automatically through `filter`, `split`,
+/// `sample`, and `load_res`.
+#[pyclass(name = "COCO", subclass)]
 struct PyCOCO {
     inner: hotcoco_core::COCO,
+    /// Root directory for image files. Used by `browse()` and `coco explore`.
+    /// Set at construction time or assign directly: ``coco.image_dir = "/data/images"``.
+    #[pyo3(get, set)]
+    image_dir: Option<String>,
 }
 
 impl Clone for PyCOCO {
     fn clone(&self) -> Self {
         PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(self.inner.dataset.clone()),
+            image_dir: self.image_dir.clone(),
         }
     }
 }
@@ -37,37 +48,34 @@ impl Clone for PyCOCO {
 #[pymethods]
 impl PyCOCO {
     #[new]
-    #[pyo3(signature = (annotation_file=None))]
-    fn new(annotation_file: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
-        match annotation_file {
+    #[pyo3(signature = (annotation_file=None, image_dir=None))]
+    fn new(
+        annotation_file: Option<&Bound<'_, PyAny>>,
+        image_dir: Option<String>,
+    ) -> PyResult<Self> {
+        let inner = match annotation_file {
             Some(obj) => {
-                // Try as str (file path)
                 if let Ok(path) = obj.extract::<String>() {
-                    let inner = hotcoco_core::COCO::new(Path::new(&path))
-                        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{}", e)))?;
-                    return Ok(PyCOCO { inner });
-                }
-                // Try as dict (in-memory dataset)
-                if let Ok(dict) = obj.downcast::<PyDict>() {
+                    hotcoco_core::COCO::new(Path::new(&path))
+                        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{e}")))?
+                } else if let Ok(dict) = obj.downcast::<PyDict>() {
                     let dataset = py_to_dataset(dict)?;
-                    let inner = hotcoco_core::COCO::from_dataset(dataset);
-                    return Ok(PyCOCO { inner });
+                    hotcoco_core::COCO::from_dataset(dataset)
+                } else {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "COCO() argument must be a file path (str) or dataset dict",
+                    ));
                 }
-                Err(pyo3::exceptions::PyTypeError::new_err(
-                    "COCO() argument must be a file path (str) or dataset dict",
-                ))
             }
-            None => {
-                let inner = hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset {
-                    info: None,
-                    images: vec![],
-                    annotations: vec![],
-                    categories: vec![],
-                    licenses: vec![],
-                });
-                Ok(PyCOCO { inner })
-            }
-        }
+            None => hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset {
+                info: None,
+                images: vec![],
+                annotations: vec![],
+                categories: vec![],
+                licenses: vec![],
+            }),
+        };
+        Ok(PyCOCO { inner, image_dir })
     }
 
     #[pyo3(signature = (img_ids=vec![], cat_ids=vec![], area_rng=None, iscrowd=None))]
@@ -154,7 +162,10 @@ impl PyCOCO {
             return self
                 .inner
                 .load_res(Path::new(&path))
-                .map(|inner| PyCOCO { inner })
+                .map(|inner| PyCOCO {
+                    inner,
+                    image_dir: self.image_dir.clone(),
+                })
                 .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{e}")));
         }
 
@@ -174,7 +185,10 @@ impl PyCOCO {
             return self
                 .inner
                 .load_res_anns(anns)
-                .map(|inner| PyCOCO { inner })
+                .map(|inner| PyCOCO {
+                    inner,
+                    image_dir: self.image_dir.clone(),
+                })
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")));
         }
 
@@ -211,7 +225,10 @@ impl PyCOCO {
             return self
                 .inner
                 .load_res_anns(anns)
-                .map(|inner| PyCOCO { inner })
+                .map(|inner| PyCOCO {
+                    inner,
+                    image_dir: self.image_dir.clone(),
+                })
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")));
         }
 
@@ -245,7 +262,7 @@ impl PyCOCO {
         let col_major = hotcoco_core::mask::decode(&rle);
         let h = rle.h as usize;
         let w = rle.w as usize;
-        let row_major = transpose_mask(&col_major, h, w);
+        let row_major = transpose_mask(&col_major, w, h);
         let flat = numpy::PyArray1::from_vec(py, row_major);
         let arr = flat.reshape([h, w])?;
         Ok(arr.unbind())
@@ -294,6 +311,7 @@ impl PyCOCO {
         );
         PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(result),
+            image_dir: self.image_dir.clone(),
         }
     }
 
@@ -310,6 +328,7 @@ impl PyCOCO {
             hotcoco_core::COCO::merge(&ds_refs).map_err(pyo3::exceptions::PyValueError::new_err)?;
         Ok(PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(result),
+            image_dir: None, // inputs may come from different directories
         })
     }
 
@@ -330,12 +349,14 @@ impl PyCOCO {
             py,
             PyCOCO {
                 inner: hotcoco_core::COCO::from_dataset(train_ds),
+                image_dir: self.image_dir.clone(),
             },
         )?;
         let val_py = Py::new(
             py,
             PyCOCO {
                 inner: hotcoco_core::COCO::from_dataset(val_ds),
+                image_dir: self.image_dir.clone(),
             },
         )?;
         if let Some(test_ds) = test_ds {
@@ -343,6 +364,7 @@ impl PyCOCO {
                 py,
                 PyCOCO {
                     inner: hotcoco_core::COCO::from_dataset(test_ds),
+                    image_dir: self.image_dir.clone(),
                 },
             )?;
             Ok(PyTuple::new(py, [train_py, val_py, test_py])?
@@ -362,6 +384,7 @@ impl PyCOCO {
         let result = self.inner.sample(n, frac, seed);
         PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(result),
+            image_dir: self.image_dir.clone(),
         }
     }
 
@@ -573,6 +596,7 @@ impl PyCOCO {
         hotcoco_core::convert::yolo_to_coco(Path::new(yolo_dir), &image_dims)
             .map(|ds| PyCOCO {
                 inner: hotcoco_core::COCO::from_dataset(ds),
+                image_dir: None,
             })
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
@@ -1224,6 +1248,7 @@ Examples
     fn coco_gt(&self) -> PyCOCO {
         PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(self.inner.coco_gt.dataset.clone()),
+            image_dir: None,
         }
     }
 
@@ -1236,6 +1261,7 @@ Examples
     fn coco_dt(&self) -> PyCOCO {
         PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(self.inner.coco_dt.dataset.clone()),
+            image_dir: None,
         }
     }
 
