@@ -10,8 +10,8 @@ class COCO(_RustCOCO):
         # This __init__ exists only to accept the same kwargs without complaint.
         pass
 
-    def browse(self, image_dir: str | None = None, dt=None, batch_size: int = 12):
-        """Launch an interactive Gradio dataset browser.
+    def browse(self, image_dir: str | None = None, dt=None, batch_size: int = 12, port: int = 7860):
+        """Launch an interactive dataset browser.
 
         Parameters
         ----------
@@ -22,28 +22,30 @@ class COCO(_RustCOCO):
             ``self.load_res()``) or a path string (auto-loaded).
         batch_size : int
             Number of images loaded per batch (default 12).
-
-        Returns
-        -------
-        gr.Blocks
-            The Gradio app object (already launched).
+        port : int
+            Local server port (default 7860).
 
         Raises
         ------
         ValueError
             If ``image_dir`` is ``None`` and ``self.image_dir`` is also ``None``.
         ImportError
-            If ``gradio`` is not installed (``pip install hotcoco[browse]``).
+            If browse dependencies are not installed (``pip install hotcoco[browse]``).
         """
         from . import browse as _browse
+        from .server import create_app, run_server, start_server_background
 
-        dt_coco = None
-        if dt is not None:
-            dt_coco = self.load_res(dt) if isinstance(dt, str) else dt
+        _browse._require_browse_deps()
 
-        app = _browse.build_app(self, image_dir=image_dir, batch_size=batch_size, dt_coco=dt_coco)
-        _browse.launch_app(app)
-        return app
+        dt_coco = self.load_res(dt) if isinstance(dt, str) else dt
+        app = create_app(self, image_dir=image_dir, batch_size=batch_size, dt_coco=dt_coco)
+
+        if _browse._is_jupyter():
+            actual_port = start_server_background(app, port=port)
+            from IPython.display import IFrame, display
+            display(IFrame(f"http://127.0.0.1:{actual_port}", width="100%", height=700))
+        else:
+            run_server(app, port=port, open_browser=True)
 
 
 class LVISeval:

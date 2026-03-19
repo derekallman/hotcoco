@@ -23,8 +23,8 @@ coco = COCO("instances_val2017.json", image_dir="/data/coco/val2017/")
 coco.browse()
 ```
 
-That's it. A Gradio app opens in your browser (or inline in Jupyter) showing a
-scrollable grid of annotated images.
+That's it. A local server starts and a browser tab opens showing a scrollable grid
+of annotated thumbnails with a lightbox for full-resolution detail.
 
 From the command line:
 
@@ -40,23 +40,28 @@ coco explore \
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  coco.browse()                                                   │
-│  Dataset browser · powered by hotcoco                           │
-├──────────────┬───────────────────────────┬──────────────────────┤
-│  FILTERS     │  Image grid               │  Detail              │
-│              │                           │                      │
-│  Category    │  [img] [img] [img] [img]  │  (click any image)   │
-│  [dropdown]  │  [img] [img] [img] [img]  │                      │
-│              │  [img] [img] [img] [img]  │  Full-res image      │
-│  Show:       │                           │  with native mask,   │
-│  ☑ bbox      │                           │  bbox, and label     │
-│  ☑ segm      │                           │  overlays + legend   │
-│  ☑ keypoints │                           │                      │
-│              │                           │                      │
-│  [Shuffle ⇄] │                           │                      │
-│  12 of 500   │  [Load more]              │                      │
-├──────────────┴───────────────────────────┴──────────────────────┤
-│                    hotcoco dataset browser                       │
+│  hotcoco · dataset browser                                       │
+├──────────────┬───────────────────────────────────────────────────┤
+│  FILTERS     │  Thumbnail grid                                   │
+│              │                                                   │
+│  Category    │  [img] [img] [img] [img]                          │
+│  [dropdown]  │  [img] [img] [img] [img]                          │
+│              │  [img] [img] [img] [img]                          │
+│  Min Score   │                ↓ infinite scroll                   │
+│  [slider]    │                                                   │
+│              │                                                   │
+│  [Shuffle ⇄] │                                                   │
+│  24 of 5000  │                                                   │
+├──────────────┴───────────────────────────────────────────────────┤
+│                                                                   │
+│  Lightbox (click any thumbnail):                                 │
+│  ┌─────────────────────────────┬──────────────┐                  │
+│  │  Full-res image + canvas    │  Annotations  │                 │
+│  │  overlay (bbox, segm, kpts) │  list sidebar │                 │
+│  │                             │              │                  │
+│  │  [☑ Boxes] [☑ Segm] [☑ KP] │  ● person GT │                 │
+│  │  [☑ GT] [☑ DT]             │  ● car   0.92│                  │
+│  └─────────────────────────────┴──────────────┘                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -64,30 +69,31 @@ coco explore \
 
 | Control | What it does |
 |---------|-------------|
-| Category dropdown | Filter to images containing the selected categories |
-| bbox / segm / keypoints | Toggle which annotation layers are rendered |
-| Shuffle ⇄ | Randomise the display order |
+| Category dropdown | Filter to images containing the selected categories (multi-select) |
+| Min Score slider | Filter detections below a confidence threshold (when DT loaded) |
+| Shuffle | Randomise the display order |
 | N of M images | Live image count for the current filter |
 
-**Image grid:**
+**Thumbnail grid:**
 
-- Clean thumbnail grid for fast navigation
-- Click any thumbnail to load the full-resolution image in the detail panel
-- **Load more** appends the next batch without losing what's already loaded
+- Annotated thumbnails with bounding boxes rendered server-side
+- Infinite scroll — new batches load automatically as you scroll down
+- Click any thumbnail to open the lightbox
 
-**Annotation detail panel:**
+**Lightbox:**
 
-- Renders at full resolution using Gradio's native `AnnotatedImage` component
-- Segmentation masks and bounding boxes are rendered by the browser — no PIL scaling artifacts
-- A color-coded legend lists every category present in the image
-- Toggling annotation type checkboxes updates the open detail view instantly
+- Full-resolution image with a canvas overlay for annotations
+- Hover any annotation to highlight it — the sidebar and canvas stay in sync
+- Toggle layers (Boxes / Segments / Keypoints) and sources (GT / DT) instantly
+- Scroll to zoom, drag to pan, double-click to reset
+- Arrow keys navigate between images; Escape closes the lightbox
 
 ---
 
 ## Viewing detections
 
 Pass detection results to `browse()` and hotcoco overlays your model's predictions
-alongside ground truth in the same panel:
+alongside ground truth:
 
 ```python
 from hotcoco import COCO
@@ -115,14 +121,14 @@ coco explore \
 
 | Feature | Description |
 |---------|-------------|
-| `GT: <name>` labels | Ground truth in the original category color |
-| `DT: <name>` labels | Detections in a lighter variant of the same color |
-| Score text | Confidence score drawn near each detection bbox |
+| GT labels | Ground truth annotations with solid bounding boxes |
+| DT labels | Detection predictions with dashed bounding boxes |
+| Score display | Confidence score shown on each detection label |
 | Sources toggle | Show/hide ground truth and detections independently |
 | Min confidence slider | Filter detections below a score threshold (0–1) |
 
-GT and DT are rendered in the same `AnnotatedImage` panel — no split view needed.
-When no DT is loaded the browser behaves exactly as it did before.
+GT and DT use the same per-category color palette so you can compare spatially.
+When no DT is loaded the browser behaves exactly as before (no slider, no source toggles).
 
 !!! tip
     Detections often lack segmentation masks. When `segm` is selected but a detection
@@ -165,21 +171,32 @@ people.browse()  # image_dir carried over from coco
 
 ## Annotation rendering
 
-| Annotation type | Detail panel |
-|----------------|-------------|
-| Segmentation mask | Native browser overlay — no PIL scaling artifacts |
-| Bounding box | Native browser overlay (shown when no mask, or mask disabled) |
-| Keypoints | Dots + skeleton lines drawn on the image |
+| Annotation type | How it's rendered |
+|----------------|-------------------|
+| Bounding box | Canvas overlay — solid stroke for GT, dashed for DT |
+| Segmentation | Canvas polygon fill + stroke |
+| Keypoints | Dots + skeleton lines on canvas |
 
-Masks and bounding boxes are rendered by Gradio's `AnnotatedImage` component directly
-in the browser, so they stay crisp at any zoom level. A per-category color legend
-appears below the image automatically.
-
-Colors are assigned per category deterministically — the same category always gets the
-same color across all images in the session.
+All annotations are rendered client-side on an HTML Canvas overlay, so they stay
+crisp at any zoom level. Colors are assigned per category deterministically — the
+same category always gets the same color across all images.
 
 If an image file is missing from `image_dir`, a gray placeholder is shown instead
 of raising an error.
+
+---
+
+## Responsive layout
+
+The browser adapts to different viewport sizes, making it suitable for Jupyter
+IFrames, side-by-side notebook layouts, and standalone browser windows:
+
+- **Wide (800px+):** Sidebar on the left, gallery grid on the right
+- **Medium (480–800px):** Toolbar mode — controls collapse to a compact horizontal bar
+- **Narrow (<480px):** Minimal toolbar, smaller thumbnails, full-screen lightbox
+
+The lightbox switches between side-by-side (image + info panel) and stacked
+(image above, annotations below) layout depending on available width.
 
 ---
 
@@ -191,27 +208,23 @@ coco explore \
     --images <images_dir/> \
     [--dt <results.json>] \
     [--batch-size 12] \
-    [--port 7860] \
-    [--share]
+    [--port 7860]
 ```
-
-`--share` creates a public Gradio link — useful on Colab or remote servers where
-`localhost` isn't accessible.
 
 ---
 
-## Advanced: `build_app`
+## Advanced: `create_app`
 
-For full control over launching, call `build_app` directly and call `.launch()` yourself:
+For full control over launching, use `create_app` directly:
 
 ```python
-from hotcoco import COCO, browse
+from hotcoco import COCO
+from hotcoco.server import create_app, run_server
 
 coco = COCO("annotations.json", image_dir="/data/images/")
-app = browse.build_app(coco, batch_size=24)
-app.launch(server_port=7861, share=True)
+app = create_app(coco, batch_size=24)
+run_server(app, port=7861, open_browser=True)
 ```
 
-`build_app` returns a `gr.Blocks` object that has not been launched yet. This lets
-you embed it inside a larger Gradio app, configure authentication, or pass any
-`launch()` option.
+`create_app` returns a FastAPI app. You can mount it inside a larger application
+or run it with any ASGI server.

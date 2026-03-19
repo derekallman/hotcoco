@@ -9,14 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- `coco.browse(dt=...)` — detection overlay for the dataset browser: pass a COCO results object or a path string to compare model predictions against ground truth in the same `AnnotatedImage` panel; GT labels prefixed `"GT: <name>"`, DT labels `"DT: <name>"` with lightened colors; confidence scores drawn as text on the image; sidebar gains **Sources** toggle (show/hide GT and DT independently) and **Min confidence** slider (0–1, step 0.05)
+- `coco.browse()` dataset browser rewritten: replaced Gradio with FastAPI + HTMX + Jinja2 + vanilla JS Canvas; sidebar with multi-select category filter and shuffle; infinite-scroll thumbnail grid with server-side annotated thumbnails; lightbox with full-resolution canvas overlay for bbox/segmentation/keypoint annotations; hover-to-highlight syncs canvas and annotation sidebar; scroll-to-zoom and drag-to-pan; keyboard navigation (arrow keys, Escape); responsive layout adapts from 400px to 1400px+ viewports; works inline in Jupyter IFrames
+- `coco.browse(dt=...)` — detection overlay: GT solid bboxes, DT dashed bboxes, confidence scores on labels; Sources toggle (GT/DT) and Min Score slider for filtering detections
 - `coco explore --dt <results.json>` CLI flag — enables detection overlay from the command line
-- `coco.browse(image_dir, batch_size=12)` — Gradio-powered dataset browser; sidebar category filter, annotation type toggles (bbox/segm/keypoints), clean thumbnail grid with "Load more" and "Shuffle ⇄"; click any thumbnail to open a full-resolution `gr.AnnotatedImage` detail panel with native browser-quality mask/bbox rendering and an auto-generated per-category legend; launches inline in Jupyter, falls back to local server
-- `docs/guide/browse.md` — new Dataset Browser guide; `docs/api/coco.md` updated with `image_dir` property and `browse()` reference; `docs/cli.md` updated with `coco explore` subcommand; `README.md` updated with browse bullet
-- `coco explore` CLI subcommand — standalone Gradio server with `--gt`, `--images`, `--batch-size`, `--port`, `--share` flags; requires `pip install hotcoco[browse]`
+- `coco.browse(port=7860)` — new `port` parameter for custom server port
+- `python/hotcoco/server.py` — new FastAPI server module with `create_app()`, `run_server()`, and `start_server_background()` for Jupyter
+- `python/hotcoco/static/` — new static assets: `style.css` (responsive dark theme), `overlay.js` (Canvas annotation renderer), `htmx.min.js` (vendored HTMX 2.0.4)
+- `python/hotcoco/templates/` — new Jinja2 templates: `base.html`, `index.html`, `partials/gallery.html`, `partials/detail.html`
 - `COCO(annotation_file, image_dir=...)` — new `image_dir` constructor arg and settable attribute; propagated through `filter`, `split`, `sample`, and `load_res`
-- `pip install hotcoco[browse]` optional extra — pulls in `gradio>=4.0` and `Pillow>=8.0`
-
 - `--json` flag on every `coco` subcommand (`eval`, `stats`, `healthcheck`, `filter`, `merge`, `split`, `sample`, `convert`) — writes a single JSON object to stdout; intended for CI/CD pipelines, dashboards, and shell scripts; stderr and exit codes are unchanged; errors also emit JSON when the flag is active
 - `coco eval --json` suppresses the Rust-side metrics table (via fd-level stdout redirect) and returns `{metrics, params, tide?, slices?, healthcheck?}` — optional keys only present when their flags are passed
 - `docs/cli.md` — new "JSON output mode" section with CI gating example and JSON error format; `--json` row added to every subcommand flags table; JSON output shape documented for `eval`
@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `pip install hotcoco[browse]` optional extra — now pulls in `fastapi>=0.100`, `uvicorn>=0.20`, `jinja2>=3.1`, `Pillow>=8.0` (previously required `gradio>=4.0`)
+- `coco explore` CLI — removed `--share` flag (Gradio-specific); added `--dt` flag
+- `coco.browse()` return type changed from `gr.Blocks` to `None`; use `create_app()` from `hotcoco.server` for advanced control
+- `python/hotcoco/browse.py` — removed Gradio-specific code (`build_app`, `render_annotated_image`, `_require_gradio`, `_build_theme`, `_CSS`); added `prepare_annotation_data()` for client-side canvas rendering
+- `python/hotcoco/cli.py` — extracted `_load_res()` helper to deduplicate error handling
+- Documentation updated: `docs/guide/browse.md`, `docs/api/coco.md`, `docs/cli.md`, `README.md` — all Gradio references removed
 - Internal: removed `Box<dyn Iterator>` in `COCO::get_ann_ids` — extracted filter closure, eliminated heap allocation and dynamic dispatch
 - Internal: removed unnecessary `Vec::clone()` in `tide_errors()` (borrowed slices) and `confusion_matrix()` (`Cow<[u64]>` avoids allocation when params are already set)
 - Internal: added `IouMatrix` type alias for `Vec<Vec<f64>>` in eval module, removed `#[allow(clippy::type_complexity)]`

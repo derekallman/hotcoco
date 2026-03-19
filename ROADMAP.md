@@ -138,16 +138,14 @@ Keypoint dataset for crowded scenes. Uses a modified OKS matching algorithm with
 
 ### Viewer Migration: FastAPI + HTMX
 
-The current Gradio-based viewer (`coco.browse()` / `coco explore`) hits a hard ceiling: `gr.AnnotatedImage` has no click or hover events — hover-to-see-score on detections, interactive zoom, and click-to-select annotations are architecturally impossible in Gradio.
+**Shipped.**
 
-The target replacement is a FastAPI + HTMX stack:
-- Gallery browsing and filtering via HTMX (server-rendered, no build toolchain)
-- Annotation detail panel as SVG-over-image with vanilla JS hover/zoom/click (~300–500 LOC, no npm)
-- Same `coco.browse()` / `coco explore` API surface — drop-in replacement
-- ~5MB dependency weight vs ~50MB for Gradio
-- Jupyter embed via IFrame (same mechanism as Gradio)
-
-Trigger for migration: users request interactive annotation inspection, or Gradio's memory/stability issues become user-visible. Full analysis in project memory (`viewer-framework-analysis.md`).
+~~The current Gradio-based viewer hits a hard ceiling: no click/hover events, no interactive zoom, ~50MB dependency weight. Replaced with FastAPI + HTMX + Jinja2 + Canvas:~~
+~~- Gallery browsing and filtering via HTMX (server-rendered, no build toolchain)~~
+~~- Annotation detail panel as Canvas overlay with vanilla JS hover/zoom/click~~
+~~- Same `coco.browse()` / `coco explore` API surface — drop-in replacement~~
+~~- ~5MB dependency weight vs ~50MB for Gradio~~
+~~- Jupyter embed via IFrame; responsive from 400px to 1400px+~~
 
 ### Video Sequence Analysis
 

@@ -139,3 +139,7 @@ scripts/fixtures/.hypothesis/
 crates/hotcoco-pyo3/uv.lock
 external/
 .claude.local.md
+
+# Local working directories (specs, scratch notes)
+specs/
+scratch/

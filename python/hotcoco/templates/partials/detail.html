@@ -1,0 +1,73 @@
+<div class="lightbox-header">
+    <div class="lightbox-nav">
+        {% if nav.prev_id is not none %}
+        <button class="nav-btn" title="Previous image (←)"
+                hx-get="/detail/{{ nav.prev_id }}{% if nav_query %}?{{ nav_query }}{% endif %}"
+                hx-target="#lightbox-content"
+                hx-swap="innerHTML">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        {% else %}
+        <button class="nav-btn" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </button>
+        {% endif %}
+
+        {% if nav.next_id is not none %}
+        <button class="nav-btn" title="Next image (→)"
+                hx-get="/detail/{{ nav.next_id }}{% if nav_query %}?{{ nav_query }}{% endif %}"
+                hx-target="#lightbox-content"
+                hx-swap="innerHTML">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </button>
+        {% else %}
+        <button class="nav-btn" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </button>
+        {% endif %}
+    </div>
+    <span class="lightbox-title">{{ img_info.file_name }} &middot; {{ img_info.width }}&times;{{ img_info.height }}</span>
+    <div class="lightbox-shortcuts">
+        <kbd>←</kbd><kbd>→</kbd> navigate
+        <kbd>Esc</kbd> close
+    </div>
+    <button class="close-btn" onclick="closeLightbox()" title="Close (Esc)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+    </button>
+</div>
+
+<div class="lightbox-body">
+    <div class="image-panel">
+        <div class="image-container" id="image-container">
+            <img id="detail-img" src="/images/{{ img_info.file_name }}" alt="{{ img_info.file_name }}">
+            <canvas id="overlay-canvas"></canvas>
+        </div>
+        <div class="overlay-toggles">
+            <label><input type="checkbox" checked onchange="toggleLayer('bbox')"> Boxes</label>
+            <label><input type="checkbox" checked onchange="toggleLayer('segm')"> Segments</label>
+            <label><input type="checkbox" checked onchange="toggleLayer('kpts')"> Keypoints</label>
+            {% if has_dt %}
+            <span class="toggle-sep">&middot;</span>
+            <label><input type="checkbox" checked onchange="toggleSource('gt')"> GT</label>
+            <label><input type="checkbox" checked onchange="toggleSource('dt')"> DT</label>
+            {% endif %}
+        </div>
+    </div>
+    <div class="info-panel">
+        <div class="info-panel-header">
+            <h3>Annotations</h3>
+            <span class="ann-count" id="ann-count"></span>
+        </div>
+        <div id="annotation-list"></div>
+    </div>
+</div>
+
+<script type="application/json" id="annotation-data">{{ annotation_json | safe }}</script>
+
+<script>
+window._navData = {
+    prev_id: {{ nav.prev_id if nav.prev_id is not none else 'null' }},
+    next_id: {{ nav.next_id if nav.next_id is not none else 'null' }},
+    query: '{{ nav_query | safe }}'
+};
+</script>

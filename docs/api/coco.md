@@ -509,14 +509,15 @@ annotation area distribution, and per-category breakdowns.
 
 ### `browse`
 
-Launch an interactive Gradio dataset browser. Requires `pip install hotcoco[browse]`.
+Launch an interactive dataset browser. Requires `pip install hotcoco[browse]`.
 
 ```python
 browse(
     image_dir: str | None = None,
     dt: COCO | str | None = None,
     batch_size: int = 12,
-) -> gr.Blocks
+    port: int = 7860,
+) -> None
 ```
 
 | Parameter | Type | Default | Description |
@@ -524,9 +525,9 @@ browse(
 | `image_dir` | <code>str &#124; None</code> | `None` | Image directory. Overrides `self.image_dir` if given. |
 | `dt` | <code>COCO &#124; str &#124; None</code> | `None` | Detection results to overlay. Pass a `COCO` object (from `load_res()`) or a path string (auto-loaded). |
 | `batch_size` | `int` | `12` | Number of images loaded per batch. |
+| `port` | `int` | `7860` | Local server port. |
 
-Launches inline in Jupyter; opens a local server otherwise. Returns the
-`gr.Blocks` object so you can call `.launch()` yourself for custom options.
+Launches inline in Jupyter (via IFrame); opens a browser tab otherwise.
 
 ```python
 coco = COCO("instances_val2017.json", image_dir="/data/coco/images")
@@ -536,13 +537,11 @@ coco.browse()
 coco.browse(dt="bbox_results.json")
 
 # Custom port
-from hotcoco import browse as _browse
-app = _browse.build_app(coco)
-app.launch(server_port=7861)
+coco.browse(port=7861)
 ```
 
 Raises `ValueError` if `image_dir` is `None` and `self.image_dir` is also `None`.
-Raises `ImportError` if `gradio` is not installed.
+Raises `ImportError` if browse dependencies are not installed.
 
 See the [Dataset Browser guide](../guide/browse.md) for a full walkthrough.
 

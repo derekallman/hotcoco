@@ -1,0 +1,197 @@
+{% extends "base.html" %}
+
+{% block body %}
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h1>hotcoco</h1>
+            <p class="subtitle">dataset browser</p>
+        </div>
+
+        <form id="filters">
+            <div class="filter-section">
+                <label class="filter-label">Category</label>
+                <div class="cat-dropdown" id="cat-dropdown">
+                    <div class="cat-dropdown-toggle" onclick="toggleCatDropdown()">
+                        <span id="cat-summary">All categories</span>
+                        <span class="cat-dropdown-arrow">&#9662;</span>
+                    </div>
+                    <div class="cat-dropdown-panel" id="cat-panel">
+                        <input type="text" class="cat-search" id="cat-search"
+                               placeholder="Search categories..."
+                               oninput="filterCatList(this.value)">
+                        <div class="cat-list" id="cat-list">
+                            {% for cat in cat_choices %}
+                            <label class="cat-option" data-name="{{ cat | lower }}">
+                                <input type="checkbox" value="{{ cat }}" onchange="onCatChange()">
+                                <span>{{ cat }}</span>
+                            </label>
+                            {% endfor %}
+                        </div>
+                        <div class="cat-actions">
+                            <button type="button" class="btn-clear" onclick="clearCategories()">Clear all</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {% if has_dt %}
+            <div class="filter-section">
+                <label class="filter-label">Min Score</label>
+                <div class="score-slider">
+                    <input type="range" id="min-score" min="0" max="1" step="0.05" value="0"
+                           title="Min detection score"
+                           oninput="onScoreChange(this.value)">
+                    <span class="score-value" id="score-display">0.00</span>
+                </div>
+            </div>
+            {% endif %}
+        </form>
+
+        <button class="btn-shuffle" onclick="doShuffle()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+            <span>Shuffle</span>
+        </button>
+
+        <div class="image-count">
+            <span id="image-count">0 of {{ total_images | number_format }} images</span>
+        </div>
+    </aside>
+
+    <main>
+        <div id="gallery"
+             hx-get="/gallery?page=1"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+        </div>
+    </main>
+</div>
+
+<!-- Lightbox overlay -->
+<div id="lightbox" class="lightbox" onclick="if(event.target===this)closeLightbox()">
+    <div id="lightbox-content" class="lightbox-card"></div>
+</div>
+
+<script>
+// ── State ──
+var _shuffleSeed = null;
+
+// ── Category dropdown ──
+function toggleCatDropdown() {
+    var dd = document.getElementById('cat-dropdown');
+    dd.classList.toggle('open');
+    document.getElementById('cat-panel').classList.toggle('open');
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e) {
+    var dd = document.getElementById('cat-dropdown');
+    if (dd && !dd.contains(e.target)) {
+        dd.classList.remove('open');
+        document.getElementById('cat-panel').classList.remove('open');
+    }
+});
+
+function filterCatList(query) {
+    var q = query.toLowerCase();
+    var opts = document.querySelectorAll('#cat-list .cat-option');
+    opts.forEach(function(opt) {
+        opt.style.display = opt.dataset.name.indexOf(q) >= 0 ? '' : 'none';
+    });
+}
+
+function getSelectedCategories() {
+    var checks = document.querySelectorAll('#cat-list input[type=checkbox]:checked');
+    return Array.from(checks).map(function(c) { return c.value; });
+}
+
+function onCatChange() {
+    var sel = getSelectedCategories();
+    var summary = document.getElementById('cat-summary');
+    if (sel.length === 0) {
+        summary.textContent = 'All categories';
+    } else if (sel.length <= 2) {
+        summary.textContent = sel.join(', ');
+    } else {
+        summary.textContent = sel.length + ' categories';
+    }
+    reloadGallery();
+}
+
+function clearCategories() {
+    var checks = document.querySelectorAll('#cat-list input[type=checkbox]:checked');
+    checks.forEach(function(c) { c.checked = false; });
+    document.getElementById('cat-summary').textContent = 'All categories';
+    document.getElementById('cat-search').value = '';
+    filterCatList('');
+    reloadGallery();
+}
+
+// ── Min score slider ──
+var _scoreTimer = null;
+
+function getMinScore() {
+    var el = document.getElementById('min-score');
+    return el ? parseFloat(el.value) : 0;
+}
+
+function onScoreChange(val) {
+    var pct = (parseFloat(val) * 100).toFixed(1);
+    var el = document.getElementById('min-score');
+    if (el) el.style.background = 'linear-gradient(to right, var(--accent) ' + pct + '%, var(--border-default) ' + pct + '%)';
+    document.getElementById('score-display').textContent = parseFloat(val).toFixed(2);
+    clearTimeout(_scoreTimer);
+    _scoreTimer = setTimeout(reloadGallery, 250);
+}
+
+// ── Gallery reload ──
+function buildGalleryUrl(page) {
+    var url = '/gallery?page=' + (page || 1);
+    var cats = getSelectedCategories().join(',');
+    if (cats) url += '&categories=' + encodeURIComponent(cats);
+    if (_shuffleSeed !== null) url += '&shuffle_seed=' + _shuffleSeed;
+    var score = getMinScore();
+    if (score > 0) url += '&min_score=' + score;
+    return url;
+}
+
+function reloadGallery() {
+    htmx.ajax('GET', buildGalleryUrl(1), {target: '#gallery', swap: 'innerHTML'});
+}
+
+function doShuffle() {
+    _shuffleSeed = Math.floor(Math.random() * 1000000);
+    reloadGallery();
+}
+
+// ── Lightbox ──
+function openLightbox() {
+    document.getElementById('lightbox').classList.add('open');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('open');
+    document.body.style.overflow = '';
+}
+
+// Listen for ALL htmx swaps into lightbox-content
+document.body.addEventListener('htmx:afterSettle', function(e) {
+    if (e.detail.target && e.detail.target.id === 'lightbox-content') {
+        openLightbox();
+        requestAnimationFrame(function() {
+            if (window.initOverlay) initOverlay();
+        });
+    }
+});
+
+// Keyboard navigation
+document.addEventListener('keydown', function(e) {
+    var lb = document.getElementById('lightbox');
+    if (!lb || !lb.classList.contains('open')) return;
+    if (e.key === 'Escape') { closeLightbox(); e.preventDefault(); }
+    if (e.key === 'ArrowLeft') { navigateLightbox('prev'); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { navigateLightbox('next'); e.preventDefault(); }
+});
+</script>
+{% endblock %}

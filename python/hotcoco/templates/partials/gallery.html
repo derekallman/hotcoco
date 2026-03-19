@@ -1,0 +1,36 @@
+{% if page_ids | length == 0 %}
+<div class="gallery-empty">
+    <div class="gallery-empty-icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+        </svg>
+    </div>
+    <p class="gallery-empty-title">No images found</p>
+    <p class="gallery-empty-sub">Try adjusting your category filters</p>
+</div>
+{% else %}
+{% for img_id in page_ids %}
+<div class="thumb-card"
+     style="animation-delay: {{ loop.index0 * 30 }}ms"
+     hx-get="/detail/{{ img_id }}{% if filter_query %}?{{ filter_query }}{% endif %}"
+     hx-target="#lightbox-content"
+     hx-swap="innerHTML">
+    <div class="thumb-ratio">
+        <img src="/thumbnail/{{ img_id }}{% if min_score > 0 %}?min_score={{ min_score }}{% endif %}" loading="lazy" alt="Image {{ img_id }}">
+    </div>
+    <span class="thumb-id">{{ img_id }}</span>
+</div>
+{% endfor %}
+
+{% if has_next %}
+<div hx-get="/gallery?page={{ next_page }}{% if filter_query %}&{{ filter_query }}{% endif %}"
+     hx-trigger="revealed"
+     hx-swap="afterend"
+     class="scroll-sentinel">
+</div>
+{% endif %}
+{% endif %}
+
+<span id="image-count" hx-swap-oob="true">{{ showing | number_format }} of {{ total | number_format }} images</span>
