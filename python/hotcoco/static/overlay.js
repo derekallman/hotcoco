@@ -1,12 +1,23 @@
 /* hotcoco — Canvas annotation overlay for dataset browser lightbox */
 
+// Eval color scheme
+const EVAL_COLORS = {
+    tp: { r: 34, g: 197, b: 94 },   // green #22c55e
+    fp: { r: 239, g: 68, b: 68 },    // red #ef4444
+    fn: { r: 59, g: 130, b: 246 },   // blue #3b82f6
+};
+
 const state = {
     annotations: [],
     image: null,
     skeleton: [],
+    hasEval: false,
+    iouThr: null,
     layers: { bbox: true, segm: true, kpts: true },
     sources: { gt: true, dt: true },
+    colorMode: 'category',  // 'category' or 'eval'
     hoveredIdx: null,
+    matchHighlightIdx: null,  // index of matched annotation to highlight
     scale: 1,
     offsetX: 0,
     offsetY: 0,
@@ -15,7 +26,26 @@ const state = {
     dragStartY: 0,
     lastDragOffsetX: 0,
     lastDragOffsetY: 0,
+    // Image position within container (set by sizeCanvasAndDraw)
+    imgOffsetX: 0,
+    imgOffsetY: 0,
+    imgW: 0,
+    imgH: 0,
 };
+
+// Build a lookup from annotation id to index for match highlighting
+let _annIdToIdx = {};
+
+function _resolveMatchHighlight(idx) {
+    if (idx !== null && state.colorMode === 'eval') {
+        const ann = state.annotations[idx];
+        if (ann && ann.matched_id) {
+            const mi = _annIdToIdx[ann.matched_id];
+            if (mi !== undefined) return mi;
+        }
+    }
+    return null;
+}
 
 function initOverlay() {
     const dataEl = document.getElementById('annotation-data');
@@ -33,19 +63,43 @@ function initOverlay() {
     state.annotations = data.annotations || [];
     state.image = data.image;
     state.skeleton = data.skeleton || [];
+    state.hasEval = data.has_eval || false;
+    state.iouThr = data.iou_thr || null;
     state.hoveredIdx = null;
+    state.matchHighlightIdx = null;
     state.scale = 1;
     state.offsetX = 0;
     state.offsetY = 0;
 
-    // Reset layer/source toggles to match checkbox state
-    state.layers = { bbox: true, segm: true, kpts: true };
-    state.sources = { gt: true, dt: true };
+    // On first load, set default color mode; on subsequent images, preserve user choices
+    if (!state._initialized) {
+        state.layers = { bbox: true, segm: true, kpts: true };
+        state.sources = { gt: true, dt: true };
+        state.colorMode = state.hasEval ? 'eval' : 'category';
+        state._initialized = true;
+    }
+
+    // Build id -> index lookup
+    _annIdToIdx = {};
+    for (let i = 0; i < state.annotations.length; i++) {
+        _annIdToIdx[state.annotations[i].id] = i;
+    }
+
+    // Sync checkbox DOM to match persisted state
+    _syncCheckboxes();
+    _syncColorModeToggle();
 
     // The detail image loads from /images/ which may take time.
     // Always attach onload — if already complete, call directly too.
+    // Use double-rAF: the first rAF runs before paint (layout may not
+    // be final when the lightbox just opened from display:none), the
+    // second rAF runs after paint — layout is guaranteed settled.
     function onReady() {
-        sizeCanvasAndDraw(img, canvas);
+        requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+                sizeCanvasAndDraw(img, canvas);
+            });
+        });
     }
     img.onload = onReady;
     if (img.complete && img.naturalWidth > 0) {
@@ -69,7 +123,7 @@ function initOverlay() {
 
     // Attach mouse events
     canvas.onmousemove = function (e) { onCanvasMouseMove(e, canvas, img); };
-    canvas.onmouseleave = function () { state.hoveredIdx = null; drawOverlays(canvas, img); syncSidebarHighlight(); };
+    canvas.onmouseleave = function () { state.hoveredIdx = null; state.matchHighlightIdx = null; drawOverlays(canvas, img); syncSidebarHighlight(); };
     canvas.onwheel = function (e) { onCanvasWheel(e, canvas, img); };
     canvas.onmousedown = function (e) { onCanvasMouseDown(e); };
     canvas.onmouseup = function () { state.isDragging = false; canvas.style.cursor = state.scale > 1 ? 'grab' : ''; };
@@ -85,38 +139,67 @@ function initOverlay() {
     }, { passive: true });
 }
 
+function _getAnnColor(ann) {
+    if (state.colorMode === 'eval' && ann.eval_status) {
+        const ec = EVAL_COLORS[ann.eval_status];
+        if (ec) return [ec.r, ec.g, ec.b];
+    }
+    return ann.color;
+}
+
 function sizeCanvasAndDraw(img, canvas) {
-    // Match canvas size to the rendered image size
-    const rect = img.getBoundingClientRect();
+    // Reset transform before measuring so getBoundingClientRect gives true size
+    img.style.transform = '';
+
+    const imgRect = img.getBoundingClientRect();
     const container = document.getElementById('image-container');
     if (!container) return;
-
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    canvas.style.width = rect.width + 'px';
-    canvas.style.height = rect.height + 'px';
-
-    // Position canvas over the image
     const containerRect = container.getBoundingClientRect();
-    canvas.style.left = (rect.left - containerRect.left) + 'px';
-    canvas.style.top = (rect.top - containerRect.top) + 'px';
 
+    // Canvas fills the entire container so zoomed content isn't clipped
+    canvas.width = containerRect.width;
+    canvas.height = containerRect.height;
+    canvas.style.width = containerRect.width + 'px';
+    canvas.style.height = containerRect.height + 'px';
+    canvas.style.left = '0px';
+    canvas.style.top = '0px';
+
+    // Track where the image sits within the container
+    state.imgOffsetX = imgRect.left - containerRect.left;
+    state.imgOffsetY = imgRect.top - containerRect.top;
+    state.imgW = imgRect.width;
+    state.imgH = imgRect.height;
+
+    // drawOverlays will re-apply the image transform via syncImageTransform
     drawOverlays(canvas, img);
+}
+
+function syncImageTransform(img) {
+    if (state.scale === 1 && state.offsetX === 0 && state.offsetY === 0) {
+        img.style.transform = '';
+        img.style.transformOrigin = '';
+    } else {
+        // Transform origin at image's top-left; offset is relative to image position
+        img.style.transformOrigin = '0 0';
+        img.style.transform = `translate(${state.offsetX}px, ${state.offsetY}px) scale(${state.scale})`;
+    }
 }
 
 function drawOverlays(canvas, img) {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    syncImageTransform(img);
+
     if (!state.image || !img.naturalWidth) return;
 
-    // Scale from image coords to canvas coords
-    const scaleX = canvas.width / state.image.width;
-    const scaleY = canvas.height / state.image.height;
+    // Scale from image coords to rendered image size
+    const scaleX = state.imgW / state.image.width;
+    const scaleY = state.imgH / state.image.height;
 
     ctx.save();
-    // Apply zoom/pan
-    ctx.translate(state.offsetX, state.offsetY);
+    // Translate to image position within container, then apply zoom/pan
+    ctx.translate(state.imgOffsetX + state.offsetX, state.imgOffsetY + state.offsetY);
     ctx.scale(state.scale, state.scale);
 
     for (let i = 0; i < state.annotations.length; i++) {
@@ -126,18 +209,29 @@ function drawOverlays(canvas, img) {
         if (!state.sources[ann.source]) continue;
 
         const isHovered = state.hoveredIdx === i;
+        const isMatchHighlight = state.matchHighlightIdx === i;
         const hasHover = state.hoveredIdx !== null;
-        const baseAlpha = hasHover ? (isHovered ? 0.8 : 0.15) : 0.4;
+        const baseAlpha = hasHover ? (isHovered || isMatchHighlight ? 0.8 : 0.15) : 0.4;
 
-        const [r, g, b] = ann.color;
-        const strokeColor = `rgba(${r}, ${g}, ${b}, ${hasHover ? (isHovered ? 1 : 0.2) : 0.9})`;
+        const [r, g, b] = _getAnnColor(ann);
+        const activeHighlight = isHovered || isMatchHighlight;
+        const strokeColor = `rgba(${r}, ${g}, ${b}, ${hasHover ? (activeHighlight ? 1 : 0.2) : 0.9})`;
         const fillColor = `rgba(${r}, ${g}, ${b}, ${baseAlpha * 0.5})`;
+
+        // Determine dash pattern based on eval mode
+        let dashPattern = [];
+        if (state.colorMode === 'eval' && ann.eval_status === 'fn') {
+            dashPattern = [6 / state.scale, 3 / state.scale];
+        } else if (state.colorMode !== 'eval' && ann.source === 'dt') {
+            dashPattern = [6 / state.scale, 3 / state.scale];
+        }
 
         // Segmentation polygons
         if (state.layers.segm && ann.segmentation) {
             ctx.fillStyle = fillColor;
             ctx.strokeStyle = strokeColor;
-            ctx.lineWidth = isHovered ? 2.5 / state.scale : 1.5 / state.scale;
+            ctx.lineWidth = activeHighlight ? 2.5 / state.scale : 1.5 / state.scale;
+            ctx.setLineDash(dashPattern);
 
             for (const poly of ann.segmentation) {
                 if (poly.length < 6) continue;
@@ -150,22 +244,35 @@ function drawOverlays(canvas, img) {
                 ctx.fill();
                 ctx.stroke();
             }
+            ctx.setLineDash([]);
         }
 
         // Bounding box
         if (state.layers.bbox && ann.bbox) {
             const [bx, by, bw, bh] = ann.bbox;
             ctx.strokeStyle = strokeColor;
-            ctx.lineWidth = isHovered ? 2.5 / state.scale : 1.5 / state.scale;
-            ctx.setLineDash(ann.source === 'dt' ? [6 / state.scale, 3 / state.scale] : []);
+            ctx.lineWidth = activeHighlight ? 2.5 / state.scale : 1.5 / state.scale;
+            ctx.setLineDash(dashPattern);
             ctx.strokeRect(bx * scaleX, by * scaleY, bw * scaleX, bh * scaleY);
             ctx.setLineDash([]);
 
-            // Label + score
-            if (isHovered || !hasHover) {
-                const label = ann.source === 'dt' && ann.score !== null
-                    ? `${ann.category} ${ann.score.toFixed(2)}`
-                    : ann.category;
+            // Label + score + eval status
+            if (activeHighlight || !hasHover) {
+                let label;
+                if (state.colorMode === 'eval' && ann.eval_status) {
+                    const tag = ann.eval_status.toUpperCase();
+                    if (ann.source === 'dt' && ann.score !== null) {
+                        label = `${tag} ${ann.score.toFixed(2)}`;
+                    } else if (ann.eval_status === 'fn') {
+                        label = `FN: ${ann.category}`;
+                    } else {
+                        label = `${tag} ${ann.category}`;
+                    }
+                } else {
+                    label = ann.source === 'dt' && ann.score !== null
+                        ? `${ann.category} ${ann.score.toFixed(2)}`
+                        : ann.category;
+                }
                 const fontSize = Math.max(10, 12 / state.scale);
                 ctx.font = `600 ${fontSize}px "DM Sans", -apple-system, sans-serif`;
                 const tw = ctx.measureText(label).width;
@@ -179,10 +286,34 @@ function drawOverlays(canvas, img) {
             }
         }
 
+        // Match line: draw a connecting line between matched DT↔GT on hover
+        if (state.colorMode === 'eval' && activeHighlight && ann.matched_id && ann.bbox) {
+            const matchIdx = _annIdToIdx[ann.matched_id];
+            if (matchIdx !== undefined) {
+                const matchAnn = state.annotations[matchIdx];
+                if (matchAnn && matchAnn.bbox) {
+                    const [bx1, by1, bw1, bh1] = ann.bbox;
+                    const [bx2, by2, bw2, bh2] = matchAnn.bbox;
+                    const cx1 = (bx1 + bw1 / 2) * scaleX;
+                    const cy1 = (by1 + bh1 / 2) * scaleY;
+                    const cx2 = (bx2 + bw2 / 2) * scaleX;
+                    const cy2 = (by2 + bh2 / 2) * scaleY;
+                    ctx.beginPath();
+                    ctx.moveTo(cx1, cy1);
+                    ctx.lineTo(cx2, cy2);
+                    ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+                    ctx.lineWidth = 1.5 / state.scale;
+                    ctx.setLineDash([4 / state.scale, 3 / state.scale]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            }
+        }
+
         // Keypoints
         if (state.layers.kpts && ann.keypoints) {
             const kpts = ann.keypoints;
-            const kptAlpha = hasHover ? (isHovered ? 1 : 0.15) : 0.8;
+            const kptAlpha = hasHover ? (activeHighlight ? 1 : 0.15) : 0.8;
             const radius = Math.max(3, 4 / state.scale);
 
             // Skeleton lines
@@ -242,13 +373,13 @@ function onCanvasMouseMove(e, canvas, img) {
         return;
     }
 
-    // Hit test against annotation bboxes
+    // Hit test against annotation bboxes (account for image offset within container)
     const rect = canvas.getBoundingClientRect();
-    const mx = (e.clientX - rect.left - state.offsetX) / state.scale;
-    const my = (e.clientY - rect.top - state.offsetY) / state.scale;
+    const mx = (e.clientX - rect.left - state.imgOffsetX - state.offsetX) / state.scale;
+    const my = (e.clientY - rect.top - state.imgOffsetY - state.offsetY) / state.scale;
 
-    const scaleX = canvas.width / state.image.width;
-    const scaleY = canvas.height / state.image.height;
+    const scaleX = state.imgW / state.image.width;
+    const scaleY = state.imgH / state.image.height;
 
     let hit = null;
     // Iterate in reverse so topmost (last drawn) annotations get priority
@@ -266,6 +397,7 @@ function onCanvasMouseMove(e, canvas, img) {
 
     if (hit !== state.hoveredIdx) {
         state.hoveredIdx = hit;
+        state.matchHighlightIdx = _resolveMatchHighlight(hit);
         drawOverlays(canvas, img);
         syncSidebarHighlight();
     }
@@ -274,8 +406,9 @@ function onCanvasMouseMove(e, canvas, img) {
 function onCanvasWheel(e, canvas, img) {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
+    // Mouse position relative to image origin (not container origin)
+    const mx = e.clientX - rect.left - state.imgOffsetX;
+    const my = e.clientY - rect.top - state.imgOffsetY;
 
     const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
     const newScale = Math.min(10, Math.max(1, state.scale * zoomFactor));
@@ -285,7 +418,7 @@ function onCanvasWheel(e, canvas, img) {
         state.offsetX = 0;
         state.offsetY = 0;
     } else {
-        // Zoom toward cursor
+        // Zoom toward cursor (relative to image origin)
         state.offsetX = mx - (mx - state.offsetX) * (newScale / state.scale);
         state.offsetY = my - (my - state.offsetY) * (newScale / state.scale);
     }
@@ -331,6 +464,34 @@ function toggleSource(source) {
     buildAnnotationList();
 }
 
+function toggleColorMode() {
+    state.colorMode = state.colorMode === 'eval' ? 'category' : 'eval';
+    _syncColorModeToggle();
+    _redraw();
+    buildAnnotationList();
+}
+
+function _syncColorModeToggle() {
+    const btn = document.getElementById('color-mode-toggle');
+    if (!btn) return;
+    btn.classList.toggle('active', state.colorMode === 'eval');
+}
+
+function _syncCheckboxes() {
+    // Sync all toggle UI to persisted state. Called inline from detail.html
+    // (parser-blocking script) to prevent any flash before first paint.
+    const toggles = document.querySelectorAll('.overlay-toggles input[type="checkbox"]');
+    for (const cb of toggles) {
+        const handler = cb.getAttribute('onchange') || '';
+        const m = handler.match(/toggle(Layer|Source)\('(\w+)'\)/);
+        if (!m) continue;
+        const [, type, key] = m;
+        if (type === 'Layer') cb.checked = !!state.layers[key];
+        else cb.checked = !!state.sources[key];
+    }
+    _syncColorModeToggle();
+}
+
 let _annItems = [];
 let _annIdxToItem = {};
 
@@ -362,7 +523,8 @@ function buildAnnotationList() {
 
         const dot = document.createElement('span');
         dot.className = 'ann-color-dot';
-        const dotColor = `rgb(${ann.color[0]}, ${ann.color[1]}, ${ann.color[2]})`;
+        const [cr, cg, cb] = _getAnnColor(ann);
+        const dotColor = `rgb(${cr}, ${cg}, ${cb})`;
         dot.style.background = dotColor;
         dot.style.color = dotColor;
 
@@ -371,6 +533,15 @@ function buildAnnotationList() {
         label.textContent = ann.category;
 
         item.appendChild(dot);
+
+        // Eval badge (before label)
+        if (state.colorMode === 'eval' && ann.eval_status) {
+            const badge = document.createElement('span');
+            badge.className = 'eval-badge eval-' + ann.eval_status;
+            badge.textContent = ann.eval_status.toUpperCase();
+            item.appendChild(badge);
+        }
+
         item.appendChild(label);
 
         if (ann.score !== null) {
@@ -387,12 +558,15 @@ function buildAnnotationList() {
 
         // Hover sync: sidebar → canvas (refs cached outside loop)
         item.addEventListener('mouseenter', function () {
-            state.hoveredIdx = parseInt(this.dataset.idx);
+            const idx = parseInt(this.dataset.idx);
+            state.hoveredIdx = idx;
+            state.matchHighlightIdx = _resolveMatchHighlight(idx);
             if (canvas && img) drawOverlays(canvas, img);
             syncSidebarHighlight();
         });
         item.addEventListener('mouseleave', function () {
             state.hoveredIdx = null;
+            state.matchHighlightIdx = null;
             if (canvas && img) drawOverlays(canvas, img);
             syncSidebarHighlight();
         });
@@ -404,10 +578,14 @@ function buildAnnotationList() {
 }
 
 var _prevHighlightedItem = null;
+var _prevMatchItem = null;
 
 function syncSidebarHighlight() {
     if (_prevHighlightedItem) {
         _prevHighlightedItem.classList.remove('highlighted');
+    }
+    if (_prevMatchItem) {
+        _prevMatchItem.classList.remove('match-highlighted');
     }
     var item = state.hoveredIdx !== null ? _annIdxToItem[state.hoveredIdx] : null;
     if (item) {
@@ -415,6 +593,12 @@ function syncSidebarHighlight() {
         item.scrollIntoView({ block: 'nearest' });
     }
     _prevHighlightedItem = item || null;
+
+    var matchItem = state.matchHighlightIdx !== null ? _annIdxToItem[state.matchHighlightIdx] : null;
+    if (matchItem) {
+        matchItem.classList.add('match-highlighted');
+    }
+    _prevMatchItem = matchItem || null;
 }
 
 function navigateLightbox(direction) {
@@ -431,4 +615,6 @@ function navigateLightbox(direction) {
 window.initOverlay = initOverlay;
 window.toggleLayer = toggleLayer;
 window.toggleSource = toggleSource;
+window.toggleColorMode = toggleColorMode;
 window.navigateLightbox = navigateLightbox;
+window._syncCheckboxes = _syncCheckboxes;

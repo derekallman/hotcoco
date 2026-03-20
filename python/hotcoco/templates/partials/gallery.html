@@ -8,7 +8,7 @@
         </svg>
     </div>
     <p class="gallery-empty-title">No images found</p>
-    <p class="gallery-empty-sub">Try adjusting your category filters</p>
+    <p class="gallery-empty-sub">Try adjusting your category or eval filters</p>
 </div>
 {% else %}
 {% for img_id in page_ids %}
@@ -20,6 +20,14 @@
     <div class="thumb-ratio">
         <img src="/thumbnail/{{ img_id }}{% if min_score > 0 %}?min_score={{ min_score }}{% endif %}" loading="lazy" alt="Image {{ img_id }}">
     </div>
+    {% if img_summaries and img_id in img_summaries %}
+    <div class="thumb-badges">
+        {% set s = img_summaries[img_id] %}
+        {% if s.tp > 0 %}<span class="thumb-badge badge-tp" aria-label="{{ s.tp }} true positives">{{ s.tp }}</span>{% endif %}
+        {% if s.fp > 0 %}<span class="thumb-badge badge-fp" aria-label="{{ s.fp }} false positives">{{ s.fp }}</span>{% endif %}
+        {% if s.fn > 0 %}<span class="thumb-badge badge-fn" aria-label="{{ s.fn }} false negatives">{{ s.fn }}</span>{% endif %}
+    </div>
+    {% endif %}
     <span class="thumb-id">{{ img_id }}</span>
 </div>
 {% endfor %}
@@ -27,7 +35,7 @@
 {% if has_next %}
 <div hx-get="/gallery?page={{ next_page }}{% if filter_query %}&{{ filter_query }}{% endif %}"
      hx-trigger="revealed"
-     hx-swap="afterend"
+     hx-swap="outerHTML"
      class="scroll-sentinel">
 </div>
 {% endif %}

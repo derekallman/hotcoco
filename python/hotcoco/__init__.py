@@ -10,7 +10,17 @@ class COCO(_RustCOCO):
         # This __init__ exists only to accept the same kwargs without complaint.
         pass
 
-    def browse(self, image_dir: str | None = None, dt=None, batch_size: int = 12, port: int = 7860):
+    def browse(
+        self,
+        image_dir: str | None = None,
+        dt=None,
+        iou_type: str = "bbox",
+        iou_thr: float = 0.5,
+        eval=None,
+        slices: dict[str, list[int]] | str | None = None,
+        batch_size: int = 12,
+        port: int = 7860,
+    ):
         """Launch an interactive dataset browser.
 
         Parameters
@@ -20,6 +30,17 @@ class COCO(_RustCOCO):
         dt : COCO or str, optional
             Detection results to overlay. Pass a COCO object (from
             ``self.load_res()``) or a path string (auto-loaded).
+        iou_type : str
+            Evaluation type: ``"bbox"``, ``"segm"``, or ``"keypoints"``
+            (default ``"bbox"``). Only used when ``dt`` is provided.
+        iou_thr : float
+            IoU threshold for TP/FP classification (default 0.5).
+        eval : COCOeval, optional
+            Pre-computed COCOeval (must have ``evaluate()`` called).
+            When provided, ``iou_type`` is ignored.
+        slices : dict or str, optional
+            Image subsets for sliced browsing. Pass a dict mapping slice
+            names to image ID lists, or a path to a JSON file.
         batch_size : int
             Number of images loaded per batch (default 12).
         port : int
@@ -38,7 +59,25 @@ class COCO(_RustCOCO):
         _browse._require_browse_deps()
 
         dt_coco = self.load_res(dt) if isinstance(dt, str) else dt
-        app = create_app(self, image_dir=image_dir, batch_size=batch_size, dt_coco=dt_coco)
+
+        # Build coco_eval when detections are provided
+        coco_eval = None
+        if dt_coco is not None:
+            if eval is not None:
+                coco_eval = eval
+            else:
+                ev = COCOeval(self, dt_coco, iou_type)  # noqa: F405
+                ev.evaluate()
+                coco_eval = ev
+
+        # Load slices from JSON if path given
+        resolved_slices = slices
+        if isinstance(slices, str):
+            import json
+            with open(slices) as f:
+                resolved_slices = json.load(f)
+
+        app = create_app(self, image_dir=image_dir, batch_size=batch_size, dt_coco=dt_coco, coco_eval=coco_eval, slices=resolved_slices)
 
         if _browse._is_jupyter():
             actual_port = start_server_background(app, port=port)

@@ -483,9 +483,35 @@ def cmd_explore(args):
 
     dt_coco = _load_res(coco, args.dt) if args.dt else None
 
+    # Run evaluation unless --no-eval
+    coco_eval = None
+    if dt_coco is not None and not args.no_eval:
+        try:
+            from hotcoco import COCOeval
+            from hotcoco.eval_index import build_eval_index
+            ev = COCOeval(coco, dt_coco, args.iou_type)
+            print(f"Running {args.iou_type} evaluation...")
+            ev.evaluate()
+            coco_eval = ev
+            # Print summary at default IoU threshold
+            eval_index = build_eval_index(ev, iou_thr=args.iou_thr)
+            summary = {}
+            for s in eval_index["img_summary"].values():
+                for k in ("tp", "fp", "fn"):
+                    summary[k] = summary.get(k, 0) + s[k]
+            print(f"  IoU={args.iou_thr:.2f}  TP={summary.get('tp', 0):,}  FP={summary.get('fp', 0):,}  FN={summary.get('fn', 0):,}")
+        except Exception as e:
+            print(f"warning: eval failed ({e}), launching without eval coloring", file=sys.stderr)
+
+    # Load slices
+    slices = None
+    if args.slices:
+        with open(args.slices) as f:
+            slices = json_mod.load(f)
+
     from hotcoco.server import create_app, run_server
 
-    app = create_app(coco, batch_size=args.batch_size, dt_coco=dt_coco)
+    app = create_app(coco, batch_size=args.batch_size, dt_coco=dt_coco, coco_eval=coco_eval, slices=slices)
     run_server(app, port=args.port, open_browser=True)
 
 
@@ -694,6 +720,22 @@ def main():
     explore_parser.add_argument("--gt", required=True, metavar="PATH", help="path to COCO annotation JSON")
     explore_parser.add_argument("--images", required=True, metavar="DIR", help="directory containing images")
     explore_parser.add_argument("--dt", metavar="PATH", default=None, help="detection results JSON (enables detection overlay)")
+    explore_parser.add_argument(
+        "--iou-type", dest="iou_type", default="bbox", choices=["bbox", "segm", "keypoints"],
+        help="evaluation type for TP/FP/FN coloring (default: bbox)",
+    )
+    explore_parser.add_argument(
+        "--iou-thr", dest="iou_thr", type=float, default=0.5, metavar="THR",
+        help="IoU threshold for TP/FP classification (default: 0.5)",
+    )
+    explore_parser.add_argument(
+        "--no-eval", dest="no_eval", action="store_true",
+        help="disable automatic evaluation (show detections without TP/FP/FN coloring)",
+    )
+    explore_parser.add_argument(
+        "--slices", metavar="slices.json", default=None,
+        help='JSON file mapping slice names to image ID lists, e.g. {"daytime": [1,2,3]}',
+    )
     explore_parser.add_argument("--batch-size", dest="batch_size", type=int, default=12, metavar="N", help="images per batch (default 12)")
     explore_parser.add_argument("--port", type=int, default=7860, help="local server port (default 7860)")
 

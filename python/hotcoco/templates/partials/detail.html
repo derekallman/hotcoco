@@ -27,9 +27,26 @@
         {% endif %}
     </div>
     <span class="lightbox-title">{{ img_info.file_name }} &middot; {{ img_info.width }}&times;{{ img_info.height }}</span>
+    <div class="overlay-toggles">
+        <label><input type="checkbox" onchange="toggleLayer('bbox')"> Boxes</label>
+        <label><input type="checkbox" onchange="toggleLayer('segm')"> Segments</label>
+        <label><input type="checkbox" onchange="toggleLayer('kpts')"> Keypoints</label>
+        {% if has_dt %}
+        <span class="toggle-sep">&middot;</span>
+        <label><input type="checkbox" onchange="toggleSource('gt')"> GT</label>
+        <label><input type="checkbox" onchange="toggleSource('dt')"> DT</label>
+        {% endif %}
+        {% if has_eval %}
+        <span class="toggle-sep">&middot;</span>
+        <button id="color-mode-toggle" class="color-mode-toggle" onclick="toggleColorMode()" title="Toggle eval coloring">
+            <span class="color-mode-dot"></span>
+            <span class="color-mode-label">Eval</span>
+        </button>
+        {% endif %}
+    </div>
+    <script>if(window._syncCheckboxes)_syncCheckboxes();</script>
     <div class="lightbox-shortcuts">
-        <kbd>←</kbd><kbd>→</kbd> navigate
-        <kbd>Esc</kbd> close
+        <kbd>←</kbd><kbd>→</kbd> <kbd>Esc</kbd>
     </div>
     <button class="close-btn" onclick="closeLightbox()" title="Close (Esc)">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -41,16 +58,6 @@
         <div class="image-container" id="image-container">
             <img id="detail-img" src="/images/{{ img_info.file_name }}" alt="{{ img_info.file_name }}">
             <canvas id="overlay-canvas"></canvas>
-        </div>
-        <div class="overlay-toggles">
-            <label><input type="checkbox" checked onchange="toggleLayer('bbox')"> Boxes</label>
-            <label><input type="checkbox" checked onchange="toggleLayer('segm')"> Segments</label>
-            <label><input type="checkbox" checked onchange="toggleLayer('kpts')"> Keypoints</label>
-            {% if has_dt %}
-            <span class="toggle-sep">&middot;</span>
-            <label><input type="checkbox" checked onchange="toggleSource('gt')"> GT</label>
-            <label><input type="checkbox" checked onchange="toggleSource('dt')"> DT</label>
-            {% endif %}
         </div>
     </div>
     <div class="info-panel">

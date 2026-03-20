@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `coco.browse()` dataset browser rewritten: replaced Gradio with FastAPI + HTMX + Jinja2 + vanilla JS Canvas; sidebar with multi-select category filter and shuffle; infinite-scroll thumbnail grid with server-side annotated thumbnails; lightbox with full-resolution canvas overlay for bbox/segmentation/keypoint annotations; hover-to-highlight syncs canvas and annotation sidebar; scroll-to-zoom and drag-to-pan; keyboard navigation (arrow keys, Escape); responsive layout adapts from 400px to 1400px+ viewports; works inline in Jupyter IFrames
 - `coco.browse(dt=...)` — detection overlay: GT solid bboxes, DT dashed bboxes, confidence scores on labels; Sources toggle (GT/DT) and Min Score slider for filtering detections
 - `coco explore --dt <results.json>` CLI flag — enables detection overlay from the command line
+- Eval-aware browse: `coco.browse(dt=..., iou_type="bbox", iou_thr=0.5)` auto-runs evaluation and colors detections as TP (green), FP (red), FN (blue); "Category | Eval" toggle switches between standard and eval coloring; hover highlights matched DT↔GT pairs with connecting line; eval badges on annotation sidebar items
+- `coco.browse(eval=coco_eval)` — accept pre-computed `COCOeval` for advanced users who want custom evaluation settings
+- `coco.browse(slices={"daytime": [1,2,3], ...})` — sliced browsing with per-slice AP display; accepts dict or path to JSON file
+- `coco explore --iou-type`, `--iou-thr`, `--no-eval`, `--slices` CLI flags for eval-aware browsing
+- Gallery eval badges: TP/FP/FN count chips on thumbnail cards when eval data is available
+- Gallery eval sorting: "Worst first", "Most FP", "Most FN" sort options; eval filter: "Has FP", "Has FN", "Has errors", "Perfect only"
+- Interactive IoU threshold slider in sidebar — re-indexes cached eval data without re-evaluation
+- Category hierarchy tree view: supercategory groupings with expand/collapse, group-level check/uncheck, keyboard navigation; flat/tree toggle persisted in localStorage
+- `python/hotcoco/eval_index.py` — `build_eval_index(coco_eval, iou_thr)` extracts per-annotation TP/FP/FN status from `eval_imgs` at any IoU threshold
 - `coco.browse(port=7860)` — new `port` parameter for custom server port
 - `python/hotcoco/server.py` — new FastAPI server module with `create_app()`, `run_server()`, and `start_server_background()` for Jupyter
 - `python/hotcoco/static/` — new static assets: `style.css` (responsive dark theme), `overlay.js` (Canvas annotation renderer), `htmx.min.js` (vendored HTMX 2.0.4)
@@ -27,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Browse UI: overlay toggles (Boxes/Segments/Keypoints/GT/DT/Eval) moved from bottom of image panel into the lightbox header bar for better visibility and space efficiency
+- Browse UI: unified IoU threshold and Min Score sliders to use the same stacked layout (label + value on top, slider below) via shared `.range-slider` CSS class, eliminating ~70 lines of duplicate vendor-prefixed slider styling
+- Browse UI: fixed segmentation mask misalignment on first lightbox open — replaced single `requestAnimationFrame` with double-rAF to guarantee layout is settled after `display:none → flex` transition
+- Browse UI: fixed "ANNOTATIONS" header bounce during arrow-key navigation by adding `contain: size layout` on `.lightbox-card` and stable dimensions on `.info-panel-header`
+- Browse UI: removed `scale(0.98)` from lightbox slide-up animation — was distorting `getBoundingClientRect()` measurements during the animation
+- Browse UI: keyboard hints condensed from `← → navigate Esc close` to `← → Esc`
+- Browse UI: canvas now fills the entire container (not just the image rect), preventing zoom clipping at edges
+- Browse UI: gallery infinite scroll sentinel uses `hx-swap="outerHTML"` instead of `afterend` to prevent blank grid cells
+- `coco explore` CLI — added `--iou-type`, `--iou-thr`, `--no-eval`, `--slices` flags; prints TP/FP/FN summary on startup when eval is active
 - `pip install hotcoco[browse]` optional extra — now pulls in `fastapi>=0.100`, `uvicorn>=0.20`, `jinja2>=3.1`, `Pillow>=8.0` (previously required `gradio>=4.0`)
 - `coco explore` CLI — removed `--share` flag (Gradio-specific); added `--dt` flag
 - `coco.browse()` return type changed from `gr.Blocks` to `None`; use `create_app()` from `hotcoco.server` for advanced control

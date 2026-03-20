@@ -198,11 +198,12 @@ def _draw_dashed_line(draw, start, end, color, width=2, dash_len=6):
         drawing = not drawing
 
 
-def prepare_annotation_data(coco, img_id: int, cat_colors: dict, dt_coco=None, score_thr: float = 0.0, img_info: dict | None = None) -> dict:
+def prepare_annotation_data(coco, img_id: int, cat_colors: dict, dt_coco=None, score_thr: float = 0.0, img_info: dict | None = None, eval_index=None) -> dict:
     """Prepare annotations as a JSON-serializable dict for client-side canvas rendering.
 
     Returns dict with: image (id/width/height), annotations (list), skeleton (links), nav.
-    Annotations include: id, category, color, bbox, score, source, segmentation (polygon coords), keypoints.
+    Annotations include: id, category, color, bbox, score, source, segmentation (polygon coords),
+    keypoints, eval_status, matched_id.
     """
     if img_info is None:
         imgs = coco.load_imgs([img_id])
@@ -230,8 +231,20 @@ def prepare_annotation_data(coco, img_id: int, cat_colors: dict, dt_coco=None, s
             base_color = cat_colors.get(ann["category_id"], (255, 0, 0))
             color = list(_lighten_color(base_color)) if lighten else list(base_color)
 
+            ann_id = ann["id"]
+            eval_status = None
+            matched_id = None
+            if eval_index is not None:
+                if source == "dt":
+                    eval_status = eval_index["dt_status"].get(ann_id)
+                    matched_id = eval_index["dt_match"].get(ann_id)
+                elif source == "gt":
+                    gt_st = eval_index["gt_status"].get(ann_id)
+                    eval_status = "fn" if gt_st == "fn" else ("tp" if gt_st == "matched" else None)
+                    matched_id = eval_index["gt_match"].get(ann_id)
+
             entry = {
-                "id": ann["id"],
+                "id": ann_id,
                 "category": cat["name"],
                 "color": color,
                 "bbox": ann.get("bbox"),
@@ -239,6 +252,8 @@ def prepare_annotation_data(coco, img_id: int, cat_colors: dict, dt_coco=None, s
                 "source": source,
                 "segmentation": None,
                 "keypoints": None,
+                "eval_status": eval_status,
+                "matched_id": matched_id,
             }
 
             seg = ann.get("segmentation")
@@ -268,4 +283,6 @@ def prepare_annotation_data(coco, img_id: int, cat_colors: dict, dt_coco=None, s
         },
         "annotations": sorted(annotations, key=lambda a: (a["source"] != "gt", -(a["score"] or 0), a["category"])),
         "skeleton": skeleton,
+        "has_eval": eval_index is not None,
+        "iou_thr": eval_index["iou_thr"] if eval_index else None,
     }

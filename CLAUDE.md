@@ -4,10 +4,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Read CLAUDE.md carefully before starting any task. If you're about to write documentation, benchmarks, or make git commits, check the relevant section of CLAUDE.md for my conventions first.
 
-## Project Context
-
-This is a Rust project with Python bindings (PyO3). Primary language is Rust. When writing documentation, take a Python-first perspective targeting data scientists, similar to Polars documentation style. Do not make docs too Rust-centric.
-
 ## Project Overview
 
 hotcoco is a pure Rust port of [pycocotools](https://github.com/ppwwyyxx/cocoapi) with PyO3 Python bindings. It provides 11-26x speedups over pycocotools for bbox, segmentation, and keypoint evaluation.
@@ -53,17 +49,12 @@ just test            # build + cargo test + fast pytest regression suite
 just bench           # (optional) speed comparison
 ```
 
-Tolerances: bbox ≤1e-4, segm ≤2e-4, kpts exact.
-
 ## Benchmarking
 
 - **Use wall clock time**, not CPU time.
 - **Only scale detections** when creating synthetic benchmarks (never scale ground truth).
 - Format benchmark tables consistently: columns are `[Eval Type | pycocotools | faster-coco-eval | hotcoco]`, times in seconds with 2 decimal places, speedups in parentheses vs pycocotools.
 - Always verify all 12 metrics still match before reporting timing results.
-
-## Shipped Features
-LVIS evaluation, TIDE error analysis, confusion matrix, COCO↔YOLO conversion, and PDF report are all shipped. Implementation details and parity notes are in MEMORY.md topic files.
 
 ## Testing
 
@@ -82,15 +73,14 @@ Custom skills for this project (invoke with `/skill-name`):
 - `/ship` — feature-complete: sync docs/changelog, then commit
 - `/adversarial-parity` — attacker/fixer loop to find parity bugs
 - `/voice` — audit tone and style in a single doc file
+- `/plot` — guide design and implementation of matplotlib plots
+
+Generic skills (from plugins): `/commit`, `/simplify`, `/review-pr`, and others — see plugin list.
 
 ## Tool Preferences
 
 - **Always use context7 for library/crate documentation lookups.** Use `mcp__context7__resolve-library-id` then `mcp__context7__query-docs`. Never use WebFetch to browse documentation sites (docs.rs, python.org, PyPI, GitHub READMEs, etc.). WebFetch is for user-provided URLs only.
 - **Always use `uv run python` — never bare `python` or `python3`.** This project uses uv-managed Python; the OS Python is not the project environment.
-
-## Workflow Preferences
-
-- Before making large-scale changes (docs revamps, major refactors), present a concrete preview or small example for approval first. Do not rewrite everything at once. For small additions (a single new page, a new section), just write it directly.
 
 ## Build Commands
 
@@ -125,7 +115,7 @@ The `coco` CLI is installed into `.venv/bin/coco` by `just build`. Run it as `uv
 ## Documentation
 
 - This project targets Python users first, Rust users second. Documentation, README, and examples should lead with Python usage in a Python-first tone similar to Polars. Do not be Rust-centric.
-- For bulk documentation rewrites (multiple pages, full revamps), show me an outline with 2-3 example sections so I can confirm the tone, structure, and audience focus. Do not generate all pages until I approve. For small additions (one new guide page, one new API page), just write it directly.
+- Before making large-scale changes (docs revamps, major refactors), present a concrete preview or small example for approval first. Do not rewrite everything at once. For small additions (a single new page, a new section), just write it directly.
 
 Docs are built with Zensical (config: `zensical.toml`). Preview locally with `zensical serve`.
 

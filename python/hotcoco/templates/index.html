@@ -10,7 +10,15 @@
 
         <form id="filters">
             <div class="filter-section">
-                <label class="filter-label">Category</label>
+                <div class="filter-label-row">
+                    <label class="filter-label" style="margin-bottom:0">Category</label>
+                    {% if has_hierarchy %}
+                    <div class="cat-view-toggle" id="cat-view-toggle">
+                        <button type="button" class="view-btn active" data-view="list" onclick="setCatView('list')" title="Flat list">&#9776;</button>
+                        <button type="button" class="view-btn" data-view="tree" onclick="setCatView('tree')" title="Hierarchy tree">&#9707;</button>
+                    </div>
+                    {% endif %}
+                </div>
                 <div class="cat-dropdown" id="cat-dropdown">
                     <div class="cat-dropdown-toggle" onclick="toggleCatDropdown()">
                         <span id="cat-summary">All categories</span>
@@ -20,6 +28,7 @@
                         <input type="text" class="cat-search" id="cat-search"
                                placeholder="Search categories..."
                                oninput="filterCatList(this.value)">
+                        <!-- Flat list view -->
                         <div class="cat-list" id="cat-list">
                             {% for cat in cat_choices %}
                             <label class="cat-option" data-name="{{ cat | lower }}">
@@ -28,6 +37,33 @@
                             </label>
                             {% endfor %}
                         </div>
+                        <!-- Tree view -->
+                        {% if has_hierarchy %}
+                        <div class="cat-tree" id="cat-tree" style="display:none" role="tree">
+                            {% for group in cat_tree %}
+                            <div class="tree-group" data-group="{{ group.name | lower }}">
+                                <div class="tree-group-header" role="treeitem" aria-expanded="false"
+                                     onclick="toggleTreeGroup(this)" onkeydown="treeKeydown(event, this)"
+                                     tabindex="0">
+                                    <span class="tree-expand-icon">&#9656;</span>
+                                    <input type="checkbox" class="tree-group-check"
+                                           onclick="event.stopPropagation(); toggleGroupCheck(this)"
+                                           tabindex="-1">
+                                    <span class="tree-group-name">{{ group.name }}</span>
+                                    <span class="tree-group-count" data-total="{{ group.children | length }}">0/{{ group.children | length }}</span>
+                                </div>
+                                <div class="tree-children" role="group" style="display:none">
+                                    {% for child in group.children %}
+                                    <label class="cat-option tree-child" data-name="{{ child.name | lower }}">
+                                        <input type="checkbox" value="{{ child.name }}" onchange="onTreeChildChange(this)" tabindex="-1">
+                                        <span>{{ child.name }}</span>
+                                    </label>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
                         <div class="cat-actions">
                             <button type="button" class="btn-clear" onclick="clearCategories()">Clear all</button>
                         </div>
@@ -35,14 +71,58 @@
                 </div>
             </div>
 
+            {% if has_eval %}
+            <div class="filter-section">
+                <label class="filter-label">Eval</label>
+                <div class="eval-controls">
+                    <select id="eval-sort" class="eval-select" onchange="reloadGallery()" title="Sort images by eval results">
+                        <option value="default">Default order</option>
+                        <option value="worst">Worst first (FP+FN)</option>
+                        <option value="most_fp">Most false positives</option>
+                        <option value="most_fn">Most false negatives</option>
+                    </select>
+                    <select id="eval-filter" class="eval-select" onchange="reloadGallery()" title="Filter images by eval results">
+                        <option value="none">All images</option>
+                        <option value="has_fp">Has false positives</option>
+                        <option value="has_fn">Has false negatives</option>
+                        <option value="has_errors">Has any errors</option>
+                        <option value="perfect">Perfect only</option>
+                    </select>
+                    <div class="range-slider">
+                        <div class="range-slider-label">
+                            <span>IoU threshold</span>
+                            <span class="range-slider-value" id="iou-display">0.50</span>
+                        </div>
+                        <input type="range" id="iou-thr" min="0.50" max="0.95" step="0.05" value="0.50"
+                               title="IoU threshold for TP/FP classification"
+                               oninput="onIouChange(this.value)">
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+
+            {% if has_slices %}
+            <div class="filter-section">
+                <label class="filter-label">Slice</label>
+                <select id="slice-select" class="eval-select" onchange="reloadGallery()" title="Filter by image slice">
+                    <option value="">All images</option>
+                    {% for s in slice_info %}
+                    <option value="{{ s.name }}">{{ s.name }} ({{ s.count }}{% if s.ap is not none %} &middot; AP {{ "%.3f" | format(s.ap) }}{% if s.ap_delta is not none %} ({{ "%+.3f" | format(s.ap_delta) }}){% endif %}{% endif %})</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+
             {% if has_dt %}
             <div class="filter-section">
-                <label class="filter-label">Min Score</label>
-                <div class="score-slider">
+                <div class="range-slider">
+                    <div class="range-slider-label">
+                        <span>Min score</span>
+                        <span class="range-slider-value" id="score-display">0.00</span>
+                    </div>
                     <input type="range" id="min-score" min="0" max="1" step="0.05" value="0"
                            title="Min detection score"
                            oninput="onScoreChange(this.value)">
-                    <span class="score-value" id="score-display">0.00</span>
                 </div>
             </div>
             {% endif %}
@@ -75,6 +155,48 @@
 <script>
 // ── State ──
 var _shuffleSeed = null;
+var _catView = localStorage.getItem('hotcoco_cat_view') || 'list';
+
+// ── Category view toggle ──
+function setCatView(view) {
+    _catView = view;
+    localStorage.setItem('hotcoco_cat_view', view);
+    var listEl = document.getElementById('cat-list');
+    var treeEl = document.getElementById('cat-tree');
+    var toggleBtns = document.querySelectorAll('#cat-view-toggle .view-btn');
+    toggleBtns.forEach(function(btn) {
+        btn.classList.toggle('active', btn.dataset.view === view);
+    });
+    if (listEl) listEl.style.display = view === 'list' ? '' : 'none';
+    if (treeEl) treeEl.style.display = view === 'tree' ? '' : 'none';
+    syncCatViews();
+}
+
+function syncCatViews() {
+    // Sync selection state between flat list and tree
+    var selected = new Set();
+    if (_catView === 'list') {
+        document.querySelectorAll('#cat-list input[type=checkbox]:checked').forEach(function(c) {
+            selected.add(c.value);
+        });
+        // Update tree checkboxes
+        document.querySelectorAll('#cat-tree .tree-child input[type=checkbox]').forEach(function(c) {
+            c.checked = selected.has(c.value);
+        });
+    } else {
+        document.querySelectorAll('#cat-tree .tree-child input[type=checkbox]:checked').forEach(function(c) {
+            selected.add(c.value);
+        });
+        // Update flat list checkboxes
+        document.querySelectorAll('#cat-list input[type=checkbox]').forEach(function(c) {
+            c.checked = selected.has(c.value);
+        });
+    }
+    // Update group header checkboxes
+    document.querySelectorAll('.tree-group').forEach(function(g) {
+        updateGroupState(g);
+    });
+}
 
 // ── Category dropdown ──
 function toggleCatDropdown() {
@@ -94,18 +216,46 @@ document.addEventListener('click', function(e) {
 
 function filterCatList(query) {
     var q = query.toLowerCase();
-    var opts = document.querySelectorAll('#cat-list .cat-option');
-    opts.forEach(function(opt) {
-        opt.style.display = opt.dataset.name.indexOf(q) >= 0 ? '' : 'none';
-    });
+    if (_catView === 'list') {
+        var opts = document.querySelectorAll('#cat-list .cat-option');
+        opts.forEach(function(opt) {
+            opt.style.display = opt.dataset.name.indexOf(q) >= 0 ? '' : 'none';
+        });
+    } else {
+        // Tree view: filter children, auto-expand matching groups
+        document.querySelectorAll('.tree-group').forEach(function(g) {
+            var children = g.querySelectorAll('.tree-child');
+            var anyVisible = false;
+            children.forEach(function(c) {
+                var match = !q || c.dataset.name.indexOf(q) >= 0;
+                c.style.display = match ? '' : 'none';
+                if (match) anyVisible = true;
+            });
+            g.style.display = anyVisible ? '' : 'none';
+            // Auto-expand groups with matches when searching
+            if (q && anyVisible) {
+                expandTreeGroup(g.querySelector('.tree-group-header'), true);
+            }
+        });
+    }
 }
 
 function getSelectedCategories() {
+    if (_catView === 'tree' && document.getElementById('cat-tree')) {
+        var checks = document.querySelectorAll('#cat-tree .tree-child input[type=checkbox]:checked');
+        return Array.from(checks).map(function(c) { return c.value; });
+    }
     var checks = document.querySelectorAll('#cat-list input[type=checkbox]:checked');
     return Array.from(checks).map(function(c) { return c.value; });
 }
 
 function onCatChange() {
+    syncCatViews();
+    updateCatSummary();
+    reloadGallery();
+}
+
+function updateCatSummary() {
     var sel = getSelectedCategories();
     var summary = document.getElementById('cat-summary');
     if (sel.length === 0) {
@@ -115,16 +265,90 @@ function onCatChange() {
     } else {
         summary.textContent = sel.length + ' categories';
     }
-    reloadGallery();
 }
 
 function clearCategories() {
-    var checks = document.querySelectorAll('#cat-list input[type=checkbox]:checked');
-    checks.forEach(function(c) { c.checked = false; });
+    document.querySelectorAll('#cat-list input[type=checkbox]:checked').forEach(function(c) { c.checked = false; });
+    document.querySelectorAll('#cat-tree .tree-child input[type=checkbox]:checked').forEach(function(c) { c.checked = false; });
+    document.querySelectorAll('.tree-group').forEach(function(g) { updateGroupState(g); });
     document.getElementById('cat-summary').textContent = 'All categories';
     document.getElementById('cat-search').value = '';
     filterCatList('');
     reloadGallery();
+}
+
+// ── Tree view ──
+function toggleTreeGroup(header) {
+    var expanded = header.getAttribute('aria-expanded') === 'true';
+    expandTreeGroup(header, !expanded);
+}
+
+function expandTreeGroup(header, expand) {
+    header.setAttribute('aria-expanded', expand ? 'true' : 'false');
+    var children = header.parentElement.querySelector('.tree-children');
+    children.style.display = expand ? '' : 'none';
+    header.querySelector('.tree-expand-icon').textContent = expand ? '\u25BE' : '\u25B6';
+}
+
+function toggleGroupCheck(checkbox) {
+    var group = checkbox.closest('.tree-group');
+    var children = group.querySelectorAll('.tree-child input[type=checkbox]');
+    var checked = checkbox.checked;
+    children.forEach(function(c) { c.checked = checked; });
+    checkbox.indeterminate = false;
+    var countEl = group.querySelector('.tree-group-count');
+    if (countEl) {
+        countEl.textContent = (checked ? children.length : 0) + '/' + countEl.dataset.total;
+    }
+    syncCatViews();
+    updateCatSummary();
+    reloadGallery();
+}
+
+function onTreeChildChange(checkbox) {
+    var group = checkbox.closest('.tree-group');
+    updateGroupState(group);
+    syncCatViews();
+    updateCatSummary();
+    reloadGallery();
+}
+
+function updateGroupState(group) {
+    var children = group.querySelectorAll('.tree-child input[type=checkbox]');
+    var headerCheck = group.querySelector('.tree-group-check');
+    var checked = 0;
+    children.forEach(function(c) { if (c.checked) checked++; });
+    if (headerCheck && children.length > 0) {
+        headerCheck.checked = checked === children.length;
+        headerCheck.indeterminate = checked > 0 && checked < children.length;
+    }
+    var countEl = group.querySelector('.tree-group-count');
+    if (countEl) {
+        countEl.textContent = checked + '/' + countEl.dataset.total;
+    }
+}
+
+function treeKeydown(e, header) {
+    if (e.key === 'ArrowRight') {
+        expandTreeGroup(header, true);
+        e.preventDefault();
+    } else if (e.key === 'ArrowLeft') {
+        expandTreeGroup(header, false);
+        e.preventDefault();
+    } else if (e.key === ' ') {
+        var check = header.querySelector('.tree-group-check');
+        check.checked = !check.checked;
+        toggleGroupCheck(check);
+        e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+        var next = header.parentElement.nextElementSibling;
+        if (next) next.querySelector('.tree-group-header').focus();
+        e.preventDefault();
+    } else if (e.key === 'ArrowUp') {
+        var prev = header.parentElement.previousElementSibling;
+        if (prev) prev.querySelector('.tree-group-header').focus();
+        e.preventDefault();
+    }
 }
 
 // ── Min score slider ──
@@ -144,6 +368,40 @@ function onScoreChange(val) {
     _scoreTimer = setTimeout(reloadGallery, 250);
 }
 
+// ── Eval controls ──
+function getSort() {
+    var el = document.getElementById('eval-sort');
+    return el ? el.value : 'default';
+}
+
+function getEvalFilter() {
+    var el = document.getElementById('eval-filter');
+    return el ? el.value : 'none';
+}
+
+function getIouThr() {
+    var el = document.getElementById('iou-thr');
+    return el ? parseFloat(el.value) : 0.5;
+}
+
+var _iouTimer = null;
+function onIouChange(val) {
+    var v = parseFloat(val);
+    document.getElementById('iou-display').textContent = v.toFixed(2);
+    // Fill track proportionally: 0.50 = 0%, 0.95 = 100%
+    var pct = ((v - 0.5) / 0.45 * 100).toFixed(1);
+    var el = document.getElementById('iou-thr');
+    if (el) el.style.background = 'linear-gradient(to right, var(--accent) ' + pct + '%, var(--border-default) ' + pct + '%)';
+    clearTimeout(_iouTimer);
+    _iouTimer = setTimeout(reloadGallery, 300);
+}
+
+// ── Slice ──
+function getSlice() {
+    var el = document.getElementById('slice-select');
+    return el ? el.value : '';
+}
+
 // ── Gallery reload ──
 function buildGalleryUrl(page) {
     var url = '/gallery?page=' + (page || 1);
@@ -152,6 +410,14 @@ function buildGalleryUrl(page) {
     if (_shuffleSeed !== null) url += '&shuffle_seed=' + _shuffleSeed;
     var score = getMinScore();
     if (score > 0) url += '&min_score=' + score;
+    var sort = getSort();
+    if (sort !== 'default') url += '&sort=' + sort;
+    var evalFilter = getEvalFilter();
+    if (evalFilter !== 'none') url += '&eval_filter=' + evalFilter;
+    var iou = getIouThr();
+    if (iou !== 0.5) url += '&iou_thr=' + iou;
+    var slice = getSlice();
+    if (slice) url += '&slice=' + encodeURIComponent(slice);
     return url;
 }
 
@@ -193,5 +459,13 @@ document.addEventListener('keydown', function(e) {
     if (e.key === 'ArrowLeft') { navigateLightbox('prev'); e.preventDefault(); }
     if (e.key === 'ArrowRight') { navigateLightbox('next'); e.preventDefault(); }
 });
+
+// ── Init ──
+(function() {
+    // Restore cat view preference
+    if (document.getElementById('cat-tree') && _catView === 'tree') {
+        setCatView('tree');
+    }
+})();
 </script>
 {% endblock %}
