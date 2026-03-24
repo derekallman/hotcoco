@@ -199,6 +199,38 @@ Plot TIDE error breakdown as horizontal bars.
 
 ---
 
+## `reliability_diagram`
+
+```python
+reliability_diagram(
+    cal_or_eval, *,
+    n_bins=10, iou_threshold=0.5,
+    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+)
+```
+
+Plot a reliability diagram — predicted confidence vs actual accuracy per bin, with a perfect calibration diagonal and gap overlay.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `cal_or_eval` | <code>dict &#124; COCOeval</code> | Either the output of `ev.calibration()` (a dict) or a `COCOeval` instance. If a `COCOeval` is passed, `calibration()` is called automatically. |
+| `n_bins` | `int` | Number of bins (only used when `cal_or_eval` is a `COCOeval`). Default `10`. |
+| `iou_threshold` | `float` | IoU threshold (only used when `cal_or_eval` is a `COCOeval`). Default `0.5`. |
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+# From a calibration dict
+cal = ev.calibration(n_bins=15)
+fig, ax = reliability_diagram(cal)
+
+# Or directly from a COCOeval
+fig, ax = reliability_diagram(ev, n_bins=15)
+```
+
+---
+
 ## `report`
 
 ```python

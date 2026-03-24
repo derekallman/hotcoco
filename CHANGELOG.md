@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Confidence calibration analysis — `COCOeval.calibration(n_bins=10, iou_threshold=0.5)` computes Expected Calibration Error (ECE), Maximum Calibration Error (MCE), per-bin accuracy vs confidence breakdown, and per-category ECE; measures how well predicted confidence scores align with actual detection accuracy
+- `coco eval --calibration` CLI flag with `--cal-bins` and `--cal-iou-thr` options; formatted table output with per-bin breakdown and top-10 worst-calibrated categories; included in `--json` output
+- `hotcoco.plot.reliability_diagram()` — matplotlib reliability diagram showing predicted confidence vs actual accuracy per bin, with perfect calibration diagonal, gap overlay, and ECE/MCE annotation; accepts either a calibration dict or COCOeval instance
+- `CalibrationResult` and `CalibrationBin` Rust types exported from crate root
 - `coco.browse()` dataset browser rewritten: replaced Gradio with FastAPI + HTMX + Jinja2 + vanilla JS Canvas; sidebar with multi-select category filter and shuffle; infinite-scroll thumbnail grid with server-side annotated thumbnails; lightbox with full-resolution canvas overlay for bbox/segmentation/keypoint annotations; hover-to-highlight syncs canvas and annotation sidebar; scroll-to-zoom and drag-to-pan; keyboard navigation (arrow keys, Escape); responsive layout adapts from 400px to 1400px+ viewports; works inline in Jupyter IFrames
 - `coco.browse(dt=...)` — detection overlay: GT solid bboxes, DT dashed bboxes, confidence scores on labels; Sources toggle (GT/DT) and Min Score slider for filtering detections
 - `coco explore --dt <results.json>` CLI flag — enables detection overlay from the command line

@@ -3,7 +3,7 @@
 hotcoco command-line interface.
 
 Usage:
-    coco eval --gt <gt.json> --dt <dt.json> [--iou-type bbox|segm|keypoints] [--lvis] [--tide] [--report out.pdf] [--slices slices.json]
+    coco eval --gt <gt.json> --dt <dt.json> [--iou-type bbox|segm|keypoints] [--lvis] [--tide] [--calibration] [--report out.pdf] [--slices slices.json]
     coco healthcheck <annotation_file> [--dt <detections.json>]
     coco stats <annotation_file>
     coco filter <file> -o <output> [options]
@@ -314,6 +314,12 @@ def cmd_eval(args):
                     row += f"  {val:.3f}{'':>9}"
             print(row)
 
+    cal_result = None
+    if args.calibration:
+        cal_result = ev.calibration(n_bins=args.cal_bins, iou_threshold=args.cal_iou_thr)
+        if not args.json:
+            _print_calibration(cal_result)
+
     tide_result = None
     if args.tide:
         tide_result = ev.tide_errors(pos_thr=args.tide_pos_thr, bg_thr=args.tide_bg_thr)
@@ -337,6 +343,8 @@ def cmd_eval(args):
 
     if args.json:
         result = ev.results(per_class=False)
+        if cal_result is not None:
+            result["calibration"] = cal_result
         if tide_result is not None:
             result["tide"] = tide_result
         if slices_result is not None:
@@ -363,6 +371,34 @@ def _print_tide(te):
     print(f"  {'─' * 6}  {'─' * 7}  {'─' * 7}")
     print(f"  {'FP':<6}  {delta.get('FP', 0.0):>7.4f}")
     print(f"  {'FN':<6}  {delta.get('FN', 0.0):>7.4f}")
+
+
+def _print_calibration(cal):
+    print(
+        f"\nCalibration Analysis"
+        f"  (iou_thr={cal['iou_threshold']:.2f},"
+        f" bins={cal['n_bins']}, detections={cal['num_detections']:,})\n"
+    )
+    print(f"  ECE: {cal['ece']:.4f}")
+    print(f"  MCE: {cal['mce']:.4f}")
+    print()
+    print(f"  {'Bin':>11}  {'Conf':>6}  {'Acc':>6}  {'Count':>7}")
+    print(f"  {'─' * 11}  {'─' * 6}  {'─' * 6}  {'─' * 7}")
+    for b in cal["bins"]:
+        label = f"[{b['bin_lower']:.1f}, {b['bin_upper']:.1f})"
+        if b["count"] > 0:
+            print(f"  {label:>11}  {b['avg_confidence']:>6.3f}  {b['avg_accuracy']:>6.3f}  {b['count']:>7,}")
+        else:
+            print(f"  {label:>11}  {'─':>6}  {'─':>6}  {0:>7}")
+
+    per_cat = cal.get("per_category", {})
+    if per_cat:
+        sorted_cats = sorted(per_cat.items(), key=lambda x: x[1], reverse=True)
+        top = sorted_cats[:10]
+        print()
+        print("  Per-category ECE (top 10 worst-calibrated):")
+        for name, ece in top:
+            print(f"    {name:<20} {ece:.4f}")
 
 
 def cmd_convert(args):
@@ -620,6 +656,25 @@ def main():
         default=0.1,
         metavar="THR",
         help="minimum IoU with any GT for Loc/Both/Bkg distinction in TIDE (default: 0.1)",
+    )
+    eval_parser.add_argument(
+        "--calibration", action="store_true", help="compute confidence calibration (ECE/MCE) after standard metrics"
+    )
+    eval_parser.add_argument(
+        "--cal-bins",
+        dest="cal_bins",
+        type=int,
+        default=10,
+        metavar="N",
+        help="number of calibration bins (default: 10)",
+    )
+    eval_parser.add_argument(
+        "--cal-iou-thr",
+        dest="cal_iou_thr",
+        type=float,
+        default=0.5,
+        metavar="THR",
+        help="IoU threshold for calibration TP/FP (default: 0.5)",
     )
     eval_parser.add_argument(
         "--lvis", action="store_true", help="use LVIS-style evaluation (max 300 dets, freq-group AP)"

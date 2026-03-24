@@ -458,6 +458,54 @@ See [TIDE Error Analysis](../guide/evaluation.md#tide-error-analysis) in the eva
 
 ---
 
+### `calibration`
+
+```python
+calibration(
+    n_bins: int = 10,
+    iou_threshold: float = 0.5,
+) -> dict
+```
+
+Compute confidence calibration metrics — how well confidence scores predict actual detection accuracy.
+
+Requires `evaluate()` to have been called first. Bins all non-ignored detections by confidence score and compares the mean confidence in each bin to the fraction of true positives.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `n_bins` | `int` | `10` | Number of equal-width confidence bins in [0, 1]. |
+| `iou_threshold` | `float` | `0.5` | IoU threshold for TP/FP classification. Must match one of `params.iouThrs`. |
+
+**Returns** a dict with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"ece"` | `float` | Expected Calibration Error — weighted mean of per-bin \|accuracy - confidence\|. |
+| `"mce"` | `float` | Maximum Calibration Error — worst per-bin gap. |
+| `"bins"` | `list[dict]` | Per-bin breakdown. Each dict has `bin_lower`, `bin_upper`, `avg_confidence`, `avg_accuracy`, `count`. |
+| `"per_category"` | `dict[str, float]` | Per-category ECE, keyed by category name. |
+| `"iou_threshold"` | `float` | IoU threshold used. |
+| `"n_bins"` | `int` | Number of bins. |
+| `"num_detections"` | `int` | Total non-ignored detections analyzed. |
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+cal = ev.calibration(n_bins=10, iou_threshold=0.5)
+print(f"ECE: {cal['ece']:.4f}, MCE: {cal['mce']:.4f}")
+
+# Per-category breakdown
+for name, ece in sorted(cal["per_category"].items(), key=lambda x: -x[1])[:5]:
+    print(f"  {name}: ECE={ece:.4f}")
+```
+
+See [Confidence Calibration](../guide/evaluation.md#confidence-calibration) in the evaluation guide for a full walkthrough.
+
+---
+
 ### `f_scores`
 
 ```python

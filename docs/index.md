@@ -34,7 +34,7 @@ A drop-in replacement for pycocotools that doesn't become the bottleneck — in 
 
 <div class="feature-card" markdown>
 <strong>More than a metric</strong>
-<p>TIDE error breakdown, confusion matrix, per-category AP, and publication-quality plots built in. Find out <em>why</em> your model falls short, not just by how much.</p>
+<p>TIDE error breakdown, confusion matrix, per-category AP, confidence calibration, and publication-quality plots built in. Find out <em>why</em> your model falls short, not just by how much.</p>
 </div>
 
 <div class="feature-card" markdown>

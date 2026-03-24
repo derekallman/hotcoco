@@ -3596,3 +3596,224 @@ fn test_oid_auto_derive_hierarchy() {
         stats[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Calibration
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_calibration_basic() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+
+    let cal = ev.calibration(10, 0.5).expect("calibration should succeed");
+
+    assert_eq!(cal.n_bins, 10);
+    assert_eq!(cal.bins.len(), 10);
+    assert!((cal.iou_threshold - 0.5).abs() < 1e-9);
+    assert!(cal.num_detections > 0, "should have some detections");
+    assert!(cal.ece >= 0.0, "ECE must be non-negative");
+    assert!(cal.mce >= 0.0, "MCE must be non-negative");
+    assert!(cal.mce >= cal.ece, "MCE must be >= ECE");
+
+    // Per-category should have entries for both categories
+    assert!(!cal.per_category.is_empty());
+
+    // Bin counts should sum to num_detections
+    let total: usize = cal.bins.iter().map(|b| b.count).sum();
+    assert_eq!(total, cal.num_detections);
+}
+
+#[test]
+fn test_calibration_requires_evaluate() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    let result = ev.calibration(10, 0.5);
+    assert!(result.is_err(), "should fail before evaluate()");
+}
+
+#[test]
+fn test_calibration_invalid_iou_threshold() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+
+    let result = ev.calibration(10, 0.42);
+    assert!(
+        result.is_err(),
+        "should fail with non-standard IoU threshold"
+    );
+}
+
+#[test]
+fn test_calibration_known_values() {
+    // Construct a scenario with known calibration:
+    // 2 high-confidence TPs (0.9) and 2 low-confidence FPs (0.2)
+    // High bin: avg_conf=0.9, avg_acc=1.0, gap=0.1
+    // Low bin:  avg_conf=0.2, avg_acc=0.0, gap=0.2
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "a.jpg".into(),
+            height: 100,
+            width: 100,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([10.0, 10.0, 30.0, 30.0]),
+                area: Some(900.0),
+                segmentation: None,
+                iscrowd: false,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None,
+            },
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([60.0, 60.0, 30.0, 30.0]),
+                area: Some(900.0),
+                segmentation: None,
+                iscrowd: false,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None,
+            },
+        ],
+        categories: vec![Category {
+            id: 1,
+            name: "obj".into(),
+            supercategory: Some("".into()),
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        }],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: vec![],
+        annotations: vec![
+            // TP: matches GT 1
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([10.0, 10.0, 30.0, 30.0]),
+                area: Some(900.0),
+                segmentation: None,
+                iscrowd: false,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.9),
+                is_group_of: None,
+            },
+            // TP: matches GT 2
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([60.0, 60.0, 30.0, 30.0]),
+                area: Some(900.0),
+                segmentation: None,
+                iscrowd: false,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.9),
+                is_group_of: None,
+            },
+            // FP: no matching GT
+            Annotation {
+                id: 3,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([0.0, 0.0, 5.0, 5.0]),
+                area: Some(25.0),
+                segmentation: None,
+                iscrowd: false,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.2),
+                is_group_of: None,
+            },
+            // FP: no matching GT
+            Annotation {
+                id: 4,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([90.0, 90.0, 5.0, 5.0]),
+                area: Some(25.0),
+                segmentation: None,
+                iscrowd: false,
+                keypoints: None,
+                num_keypoints: None,
+                score: Some(0.2),
+                is_group_of: None,
+            },
+        ],
+        categories: vec![],
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+
+    let cal = ev.calibration(10, 0.5).expect("calibration should succeed");
+
+    // 4 non-ignored detections total
+    assert_eq!(cal.num_detections, 4);
+
+    // Bin [0.1, 0.2): 0 detections (score 0.2 goes to bin index 2)
+    // Bin [0.2, 0.3): 2 FPs → avg_conf=0.2, avg_acc=0.0
+    // Bin [0.9, 1.0): 2 TPs → avg_conf=0.9, avg_acc=1.0
+    let low_bin = &cal.bins[2]; // [0.2, 0.3)
+    assert_eq!(low_bin.count, 2);
+    assert!((low_bin.avg_accuracy - 0.0).abs() < 1e-9);
+
+    let high_bin = &cal.bins[9]; // [0.9, 1.0)
+    assert_eq!(high_bin.count, 2);
+    assert!((high_bin.avg_accuracy - 1.0).abs() < 1e-9);
+
+    // ECE = (2/4)*|0.0-0.2| + (2/4)*|1.0-0.9| = 0.5*0.2 + 0.5*0.1 = 0.15
+    assert!(
+        (cal.ece - 0.15).abs() < 1e-9,
+        "Expected ECE=0.15, got {:.6}",
+        cal.ece
+    );
+    // MCE = max(0.2, 0.1) = 0.2
+    assert!(
+        (cal.mce - 0.2).abs() < 1e-9,
+        "Expected MCE=0.2, got {:.6}",
+        cal.mce
+    );
+}

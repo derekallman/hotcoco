@@ -1,4 +1,4 @@
-"""Public plot functions: pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors."""
+"""Public plot functions: pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors, reliability_diagram."""
 
 from __future__ import annotations
 
@@ -616,5 +616,122 @@ def tide_errors(
         ax.invert_yaxis()
         ax.set_xlabel("\u0394AP")
         _configure_axes(ax, "TIDE Error Breakdown", subtitle=f"baseline AP={ap_base:.3f}", value_axis="x")
+
+    return _save_and_return(fig, ax, save_path)
+
+
+def reliability_diagram(
+    cal_or_eval,
+    *,
+    n_bins: int = 10,
+    iou_threshold: float = 0.5,
+    theme: str = "warm-slate",
+    paper_mode: bool = False,
+    ax=None,
+    save_path: str | Path | None = None,
+) -> tuple:
+    """Plot a reliability diagram showing predicted confidence vs actual accuracy.
+
+    Parameters
+    ----------
+    cal_or_eval : dict or COCOeval
+        Either the output of ``ev.calibration()`` (a dict) or a ``COCOeval``
+        instance (must have ``evaluate()`` called). If a ``COCOeval`` is
+        passed, ``calibration()`` is called automatically.
+    n_bins : int
+        Number of bins (only used when ``cal_or_eval`` is a COCOeval).
+    iou_threshold : float
+        IoU threshold (only used when ``cal_or_eval`` is a COCOeval).
+    theme : str
+        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+    paper_mode : bool
+        White figure and axes background for PDF/LaTeX inclusion.
+    ax : matplotlib.axes.Axes, optional
+    save_path : str or Path, optional
+
+    Returns
+    -------
+    (Figure, Axes)
+    """
+    import numpy as np
+
+    mpl, _, _ = _import_mpl()
+
+    if isinstance(cal_or_eval, dict):
+        cal = cal_or_eval
+    else:
+        cal = cal_or_eval.calibration(n_bins=n_bins, iou_threshold=iou_threshold)
+
+    bins = cal["bins"]
+    ece = cal["ece"]
+    mce = cal["mce"]
+
+    midpoints = np.array([(b["bin_lower"] + b["bin_upper"]) / 2 for b in bins])
+    accuracies = np.array([b["avg_accuracy"] for b in bins])
+    confidences = np.array([b["avg_confidence"] for b in bins])
+    counts = np.array([b["count"] for b in bins])
+    bin_width = bins[0]["bin_upper"] - bins[0]["bin_lower"] if bins else 0.1
+    nonempty = counts > 0
+
+    with mpl.rc_context(_build_rc(theme, paper_mode)):
+        fig, ax = _new_figure((6, 6), ax, layout="compressed")
+
+        # Gap shading: over/under-confident regions
+        ax.fill_between(
+            [0, 1], [0, 1], [0, 0], alpha=0.06, color="gray", label="_nolegend_",
+        )
+
+        # Perfect calibration diagonal
+        ax.plot([0, 1], [0, 1], "--", color="gray", linewidth=1, label="Perfect", zorder=1)
+
+        # Accuracy bars
+        ax.bar(
+            midpoints[nonempty],
+            accuracies[nonempty],
+            width=bin_width * 0.85,
+            alpha=0.7,
+            label="Accuracy",
+            zorder=2,
+        )
+
+        # Gap bars (overconfidence shown as lighter overlay)
+        gaps = confidences[nonempty] - accuracies[nonempty]
+        overconfident = gaps > 0
+        if overconfident.any():
+            gap_midpoints = midpoints[nonempty][overconfident]
+            gap_bases = accuracies[nonempty][overconfident]
+            gap_heights = gaps[overconfident]
+            ax.bar(
+                gap_midpoints,
+                gap_heights,
+                bottom=gap_bases,
+                width=bin_width * 0.85,
+                alpha=0.35,
+                color="firebrick",
+                label="Gap",
+                zorder=3,
+            )
+
+        ax.set(
+            xlim=(0, 1), ylim=(0, 1), aspect="equal",
+            xlabel="Confidence", ylabel="Accuracy",
+        )
+        ax.legend(fontsize=9, loc="upper left")
+
+        # ECE/MCE annotation
+        ax.text(
+            0.95, 0.05,
+            f"ECE = {ece:.4f}\nMCE = {mce:.4f}",
+            transform=ax.transAxes,
+            fontsize=9,
+            ha="right", va="bottom",
+            bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.8, "edgecolor": "gray"},
+        )
+
+        _configure_axes(
+            ax, "Reliability Diagram",
+            subtitle=f"IoU\u2265{cal['iou_threshold']:.2f}, {cal['num_detections']:,} detections",
+            value_axis="y",
+        )
 
     return _save_and_return(fig, ax, save_path)

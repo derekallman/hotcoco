@@ -527,6 +527,83 @@ coco eval --gt instances_val2017.json --dt bbox_results.json \
     --tide --tide-pos-thr 0.75 --tide-bg-thr 0.2
 ```
 
+## Confidence calibration
+
+A model that outputs confidence 0.9 should be correct about 90% of the time. `calibration()` measures how well your model's confidence scores align with actual detection accuracy by binning detections by confidence and comparing predicted confidence to the fraction of true positives in each bin.
+
+Requires `evaluate()` to have been called first.
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+cal = ev.calibration(n_bins=10, iou_threshold=0.5)
+
+print(f"ECE: {cal['ece']:.4f}")   # Expected Calibration Error
+print(f"MCE: {cal['mce']:.4f}")   # Maximum Calibration Error
+print(f"Detections analyzed: {cal['num_detections']:,}")
+```
+
+### Interpreting the results
+
+**ECE (Expected Calibration Error)** is the weighted average of |accuracy - confidence| across all bins. Lower is better — a perfectly calibrated model has ECE = 0. An ECE of 0.05 means confidence scores are off by 5% on average.
+
+**MCE (Maximum Calibration Error)** is the worst-case gap in any single bin. Useful for safety-critical applications where the worst bin matters more than the average.
+
+### Per-bin breakdown
+
+The `bins` list shows the calibration gap per confidence range:
+
+```python
+for b in cal["bins"]:
+    if b["count"] > 0:
+        gap = b["avg_accuracy"] - b["avg_confidence"]
+        label = "overconfident" if gap < 0 else "underconfident"
+        print(f"  [{b['bin_lower']:.1f}, {b['bin_upper']:.1f}): "
+              f"conf={b['avg_confidence']:.3f} acc={b['avg_accuracy']:.3f} "
+              f"({label}, n={b['count']})")
+```
+
+### Per-category calibration
+
+`per_category` maps each category name to its ECE. Some categories may be well-calibrated while others are wildly off:
+
+```python
+# Top 5 worst-calibrated categories
+worst = sorted(cal["per_category"].items(), key=lambda x: -x[1])[:5]
+for name, ece in worst:
+    print(f"  {name}: ECE={ece:.4f}")
+```
+
+### Reliability diagram
+
+Visualize calibration with `plot.reliability_diagram()`:
+
+```python
+from hotcoco import plot
+
+with plot.style():
+    fig, ax = plot.reliability_diagram(cal)
+    # Or pass the COCOeval directly:
+    fig, ax = plot.reliability_diagram(ev, n_bins=15, iou_threshold=0.5)
+```
+
+### From the CLI
+
+Pass `--calibration` to `coco eval`:
+
+```bash
+coco eval --gt annotations.json --dt detections.json --calibration
+
+# Custom bins and IoU threshold
+coco eval --gt annotations.json --dt detections.json \
+    --calibration --cal-bins 15 --cal-iou-thr 0.75
+```
+
+See [`calibration`](../api/cocoeval.md#calibration) in the API reference for full parameter details.
+
+---
+
 ## F-scores
 
 `f_scores()` computes F-beta scores from the precision/recall curves built by `accumulate()`. It finds the confidence threshold that maximises F-beta for each (IoU, category) combination, then averages — the same summarisation strategy as mAP.

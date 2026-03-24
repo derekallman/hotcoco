@@ -76,6 +76,48 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ~~Per-category confusion matrix generation to identify systematic misclassifications. Self-contained, high value for practitioners debugging model failures, and the natural starting point for the visualization story.~~
 
+### Confidence Calibration
+
+**Shipped.**
+
+~~Expected Calibration Error (ECE), Maximum Calibration Error (MCE), per-bin accuracy vs confidence breakdown, and per-category ECE. `COCOeval.calibration()` in Python, `calibration()` in Rust, reliability diagram plot, `coco eval --calibration` CLI flag.~~
+
+### Model Comparison & A/B Testing
+
+Compare two or more models on the same dataset — per-category AP deltas, per-image score comparison, and statistical significance via bootstrap confidence intervals.
+
+- `coco.compare(eval_a, eval_b)` — side-by-side metrics table with deltas and significance
+- Per-category AP delta sorted by largest change; worst regressions and best improvements
+- In browse: toggle Model A / Model B predictions on the same image
+- Bootstrap resampling for confidence intervals on AP ("Model B is better by 0.3 AP, 95% CI [0.1, 0.5]")
+
+### Per-Image Diagnostics & Failure Mining
+
+Find the hardest images, understand failure modes, sort by difficulty.
+
+- Per-image AP / F1 / loss proxy — sortable in gallery ("worst images first")
+- Failure clustering — group images by dominant TIDE error type
+- Quick filters: "Images with only FP", "Images with only FN"
+- Click-through from confusion matrix cell to browse filtered to those misclassifications
+
+### Label Error Detection
+
+Automatically surface likely annotation mistakes using model predictions as a proxy.
+
+- "Suspicious labels" — high-confidence predictions that disagree with GT labels
+- Missing annotation detector — FPs that might be GT errors
+- Integration with healthcheck: flag likely label errors alongside structural issues
+
+### Interactive Eval Dashboard
+
+Unified page showing all evaluation results with click-through to browse.
+
+- `/dashboard` route in browse server with embedded Plotly charts (via `fig.to_html()`)
+- Click confusion matrix cell → filtered gallery
+- Click PR curve point → browse images at that threshold
+- Click per-category AP bar → browse that category's predictions
+- Drill-down: aggregate → category → image → annotation
+
 ---
 
 ## Tier 2 — Medium Term
@@ -86,7 +128,24 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ~~COCO ↔ YOLO first (most requested). Everyone has a slightly broken converter script — a correct, well-tested one has real value.~~
 
-Pascal VOC and CVAT remain as a future Tier 3 item when there is demand.
+Pascal VOC and CVAT remain as future items when there is demand.
+
+### Oriented Bounding Boxes (OBB)
+
+Evaluate rotated/oriented detections for aerial imagery, document analysis, and scene text. The rotated IoU kernel is the only new Rust code (~150 lines); everything else (AP accumulation, TIDE, confusion matrix) works unchanged with the different IoU function.
+
+- Rotated IoU computation (polygon intersection of two rotated rectangles)
+- OBB parameterized as `(cx, cy, w, h, angle)` — DOTA format
+- DOTA format import/export
+- OBB visualization in browse
+
+### Panoptic Segmentation (PQ)
+
+Panoptic Quality metric (Kirillov et al.) for unified "stuff" + "things" evaluation. Simpler than AP — no confidence scores, no accumulation over IoU thresholds.
+
+- PQ = SQ (Segmentation Quality) × RQ (Recognition Quality)
+- Per-class PQ, PQ_things, PQ_stuff breakdown
+- Panoptic PNG format support (category_id × 256 + instance_id encoding)
 
 ### TIDE Error Analysis
 
@@ -146,6 +205,12 @@ Keypoint dataset for crowded scenes. Uses a modified OKS matching algorithm with
 ~~- Same `coco.browse()` / `coco explore` API surface — drop-in replacement~~
 ~~- ~5MB dependency weight vs ~50MB for Gradio~~
 ~~- Jupyter embed via IFrame; responsive from 400px to 1400px+~~
+
+### Multi-Object Tracking Metrics (HOTA/MOTA/IDF1)
+
+Full tracking evaluation — HOTA (Higher Order Tracking Accuracy), MOTA, IDF1. TrackEval (the de-facto standard) is pure Python, effectively unmaintained, and the Ultralytics community is actively requesting tracking metrics. A fast Rust implementation would be a strong differentiator. HOTA decomposes into DetA × AssA, evaluated across IoU thresholds; requires cross-frame global alignment. Track AP (TAO) is the most natural entry point since it reuses the AP accumulation pipeline.
+
+This is a significant scope expansion — commit fully or not at all. A partial MOT implementation has no value.
 
 ### Video Sequence Analysis
 

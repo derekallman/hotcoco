@@ -21,6 +21,7 @@ from .plots import (
     pr_curve_by_category,
     pr_curve_iou_sweep,
     pr_curve_top_n,
+    reliability_diagram,
     tide_errors,
     top_confusions,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "top_confusions",
     "per_category_ap",
     "tide_errors",
+    "reliability_diagram",
     "report",
     "SERIES_COLORS",
     "CHROME",

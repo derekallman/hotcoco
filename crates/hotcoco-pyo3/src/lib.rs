@@ -1432,6 +1432,82 @@ Example\n\
         Ok(dict.into_any().unbind())
     }
 
+    #[doc = "Compute confidence calibration metrics.\n\
+\n\
+Measures how well confidence scores predict actual detection accuracy.\n\
+Requires :meth:`evaluate` to have been called first.\n\
+\n\
+Returns a dict with keys:\n\
+\n\
+- ``ece``: float — Expected Calibration Error (weighted mean of per-bin gaps).\n\
+- ``mce``: float — Maximum Calibration Error (worst per-bin gap).\n\
+- ``bins``: list of dicts, each with ``bin_lower``, ``bin_upper``,\n\
+  ``avg_confidence``, ``avg_accuracy``, ``count``.\n\
+- ``per_category``: dict mapping category name → ECE for that category.\n\
+- ``iou_threshold``: float — IoU threshold used to define correctness.\n\
+- ``n_bins``: int — number of bins.\n\
+- ``num_detections``: int — total detections analyzed.\n\
+\n\
+Parameters\n\
+----------\n\
+n_bins : int, optional\n\
+    Number of equal-width confidence bins. Default ``10``.\n\
+iou_threshold : float, optional\n\
+    IoU threshold for TP/FP classification. Default ``0.5``.\n\
+    Must match one of the thresholds in ``params.iouThrs``.\n\
+\n\
+Example\n\
+-------\n\
+::\n\
+\n\
+    ev = COCOeval(coco_gt, coco_dt, \"bbox\")\n\
+    ev.evaluate()\n\
+    cal = ev.calibration(n_bins=10, iou_threshold=0.5)\n\
+    print(f\"ECE: {cal['ece']:.4f}\")\n\
+    print(f\"MCE: {cal['mce']:.4f}\")\n\
+"]
+    #[pyo3(signature = (n_bins=10, iou_threshold=0.5))]
+    fn calibration(&self, py: Python<'_>, n_bins: usize, iou_threshold: f64) -> PyResult<PyObject> {
+        let cal = self
+            .inner
+            .calibration(n_bins, iou_threshold)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+
+        let bins_list = PyList::empty(py);
+        for b in &cal.bins {
+            let d = PyDict::new(py);
+            d.set_item("bin_lower", b.bin_lower)?;
+            d.set_item("bin_upper", b.bin_upper)?;
+            d.set_item("avg_confidence", b.avg_confidence)?;
+            d.set_item("avg_accuracy", b.avg_accuracy)?;
+            d.set_item("count", b.count)?;
+            bins_list.append(d)?;
+        }
+
+        // Map category IDs to names for per_category
+        let per_cat = PyDict::new(py);
+        for (&cat_id, &ece) in &cal.per_category {
+            let name = self
+                .inner
+                .coco_gt
+                .get_cat(cat_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("cat_{cat_id}"));
+            per_cat.set_item(name, ece)?;
+        }
+
+        let dict = PyDict::new(py);
+        dict.set_item("ece", cal.ece)?;
+        dict.set_item("mce", cal.mce)?;
+        dict.set_item("bins", bins_list)?;
+        dict.set_item("per_category", per_cat)?;
+        dict.set_item("iou_threshold", cal.iou_threshold)?;
+        dict.set_item("n_bins", cal.n_bins)?;
+        dict.set_item("num_detections", cal.num_detections)?;
+
+        Ok(dict.into_any().unbind())
+    }
+
     /// Re-accumulate metrics for named image subsets without recomputing IoU.
     ///
     /// ``slices`` is either a dict of ``{name: [img_ids]}`` or a callable that
