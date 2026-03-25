@@ -123,13 +123,16 @@ When updating documentation (`docs/`) or `README.md`, always ensure both reflect
 
 ## Pre-Commit Checks
 
-A git pre-commit hook in `.github/hooks/pre-commit` runs these three checks automatically — they mirror CI exactly. All three must pass or the commit is rejected.
+A git pre-commit hook in `.github/hooks/pre-commit` runs four checks automatically. All must pass or the commit is rejected.
 
 ```bash
-cargo fmt --all -- --check                              # 1. Formatting
-cargo clippy --workspace --all-targets -- -D warnings   # 2. Lint (warnings are errors)
-cargo test                                              # 3. Tests
+cargo fmt --all -- --check                                              # 1. Formatting
+cargo clippy -p hotcoco -p hotcoco-cli --all-targets -- -D warnings     # 2. Lint (core + CLI)
+cargo check -p hotcoco-pyo3                                             # 3. PyO3 compiles
+cargo test -p hotcoco -p hotcoco-cli                                    # 4. Tests
 ```
+
+The hook excludes `hotcoco-pyo3` from clippy and tests (it's a cdylib with heavy PyO3 compile overhead and no Rust tests). `cargo check` ensures it still compiles. CI runs the full `--workspace` clippy and tests.
 
 To install the hook (one-time setup):
 
