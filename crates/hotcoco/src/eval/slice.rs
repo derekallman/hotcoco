@@ -35,13 +35,16 @@ impl COCOeval {
     /// is **not** repeated — only the lighter accumulate/summarize steps.
     ///
     /// The `"_overall"` key is reserved and must not appear in `slices`.
-    pub fn slice_by(&self, slices: HashMap<String, Vec<u64>>) -> Result<SlicedResults, String> {
+    pub fn slice_by(
+        &self,
+        slices: HashMap<String, Vec<u64>>,
+    ) -> crate::error::Result<SlicedResults> {
         if self.eval_imgs.is_empty() {
-            return Err("evaluate() must be called before slice_by()".to_string());
+            return Err("evaluate() must be called before slice_by()".into());
         }
 
         if slices.contains_key("_overall") {
-            return Err("'_overall' is a reserved slice name".to_string());
+            return Err("'_overall' is a reserved slice name".into());
         }
 
         let metrics = build_metric_defs(&self.params, self.eval_mode);

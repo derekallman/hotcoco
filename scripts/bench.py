@@ -15,30 +15,24 @@ Usage:
 """
 
 import argparse
-import contextlib
-import io
 import json
 import os
 import random
-import sys
 import tempfile
 import time
-from pathlib import Path
 
 import pycocotools.mask as mask_utils
 from faster_coco_eval import COCO as FcCOCO
 from faster_coco_eval import COCOeval_faster
+from helpers import DATA_DIR, suppress_stdout
 from hotcoco import COCO, COCOeval
 from pycocotools.coco import COCO as PyCOCO
 from pycocotools.cocoeval import COCOeval as PyCOCOeval
 
-WORKSPACE = Path(__file__).resolve().parents[1]
-DATA = WORKSPACE / "data"
-
 BENCHMARKS = [
-    {"name": "bbox", "gt": DATA / "annotations/instances_val2017.json", "iou_type": "bbox"},
-    {"name": "segm", "gt": DATA / "annotations/instances_val2017.json", "iou_type": "segm"},
-    {"name": "keypoints", "gt": DATA / "annotations/person_keypoints_val2017.json", "iou_type": "keypoints"},
+    {"name": "bbox", "gt": DATA_DIR / "annotations/instances_val2017.json", "iou_type": "bbox"},
+    {"name": "segm", "gt": DATA_DIR / "annotations/instances_val2017.json", "iou_type": "segm"},
+    {"name": "keypoints", "gt": DATA_DIR / "annotations/person_keypoints_val2017.json", "iou_type": "keypoints"},
 ]
 
 # ~1 detection per GT annotation in val2017 instances (~36,781 annotations).
@@ -94,23 +88,6 @@ def generate_detections(gt_path, iou_type, n_dets, seed=42):
         dets.append(det)
 
     return dets
-
-
-@contextlib.contextmanager
-def suppress_stdout():
-    """Suppress stdout at the file-descriptor level (catches Rust println! too)."""
-    devnull_fd = os.open(os.devnull, os.O_WRONLY)
-    old_fd = os.dup(1)
-    os.dup2(devnull_fd, 1)
-    old_sys = sys.stdout
-    sys.stdout = io.StringIO()
-    try:
-        yield
-    finally:
-        os.dup2(old_fd, 1)
-        os.close(old_fd)
-        os.close(devnull_fd)
-        sys.stdout = old_sys
 
 
 def bench_pycocotools(gt_file, dt_file, iou_type):

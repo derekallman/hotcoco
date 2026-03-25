@@ -67,9 +67,9 @@ impl COCOeval {
     /// | `Dupe` | Duplicate — correct class GT already claimed by higher-scoring TP |
     /// | `Bkg`  | Pure background (IoU < `bg_thr` with all GTs) |
     /// | `Miss` | Undetected GT (false negative) |
-    pub fn tide_errors(&self, pos_thr: f64, bg_thr: f64) -> Result<TideErrors, String> {
+    pub fn tide_errors(&self, pos_thr: f64, bg_thr: f64) -> crate::error::Result<TideErrors> {
         if self.eval_imgs.is_empty() {
-            return Err("tide_errors() requires evaluate() to be called first".to_string());
+            return Err("tide_errors() requires evaluate() to be called first".into());
         }
 
         let cat_ids = &self.params.cat_ids;

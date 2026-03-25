@@ -43,13 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Metric display ordering is now derived from Rust `MetricDef` arrays everywhere; removed all hardcoded Python-side metric name lists from `cli.py`, `report.py`, `plots.py`, and parity scripts; `COCOeval.metric_keys()` and `ComparisonResult.metric_keys` are the canonical sources; `report.py` splits AP/AR by key prefix instead of maintaining parallel lists
-
-### Fixed
-
-- `ann_to_mask` returned striped/diagonal artifacts for non-rectangular polygon segmentations due to swapped `h`/`w` arguments in the column-major → row-major transpose; masks now match pycocotools exactly
-
-### Changed
-
+- `python/hotcoco/__init__.py` — replaced `from .hotcoco import *` with explicit imports; added `__all__` listing all 13 public names
+- `scripts/helpers.py` — extracted `suppress_stdout()`, keypoint constants (`COCO_KEYPOINT_NAMES`, `COCO_SKELETON`, `COCO_KPT_OKS_SIGMAS`), and path constants (`WORKSPACE`, `DATA_DIR`) shared across `parity.py`, `bench.py`, `test_parity.py`, `fuzz_parity.py`
+- `crates/hotcoco/src/error.rs` — new unified `Error` enum with typed `#[from]` variants for `io::Error`, `serde_json::Error`, `ConvertError`, and a catch-all `Other(String)`; replaces `Box<dyn Error>`, bare `String`, and `io::Error` returns across 13 functions in `coco.rs`, `mask.rs`, and `eval/` submodules
+- `crates/hotcoco-pyo3/src/lib.rs` — added `to_pyerr()` helper that maps `hotcoco::Error` variants to appropriate Python exceptions (`PyIOError`, `PyValueError`, `PyRuntimeError`); replaces 14 inline `.map_err(...)` calls
+- `crates/hotcoco-pyo3/src/convert.rs` — added `opt!` and `req!` macros for extracting optional/required fields from Python dicts; replaces ~20 repetitions of the `dict.get_item("key")?.map(|v| v.extract()).transpose()?` pattern
+- `COCOeval` fields `eval_imgs`, `eval`, `stats` changed from `pub` to `pub(crate)` with public getter methods: `eval_imgs()`, `accumulated()`, `stats()`; Python API unchanged (still `@property` getters)
 - Browse UI: overlay toggles (Boxes/Segments/Keypoints/GT/DT/Eval) moved from bottom of image panel into the lightbox header bar for better visibility and space efficiency
 - Browse UI: unified IoU threshold and Min Score sliders to use the same stacked layout (label + value on top, slider below) via shared `.range-slider` CSS class, eliminating ~70 lines of duplicate vendor-prefixed slider styling
 - Browse UI: fixed segmentation mask misalignment on first lightbox open — replaced single `requestAnimationFrame` with double-rAF to guarantee layout is settled after `display:none → flex` transition

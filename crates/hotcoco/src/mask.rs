@@ -661,7 +661,7 @@ fn rle_encode_i64(s: &mut String, mut x: i64) {
 /// accumulation for indices > 2.
 ///
 /// Returns an error if the decoded counts sum exceeds `h * w`.
-pub fn rle_from_string(s: &str, h: u32, w: u32) -> Result<Rle, String> {
+pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
     let bytes = s.as_bytes();
     let mut counts = Vec::new();
     let mut i = 0;
@@ -692,7 +692,7 @@ pub fn rle_from_string(s: &str, h: u32, w: u32) -> Result<Rle, String> {
     let total: u64 = counts.iter().map(|&c| c as u64).sum();
     let hw = h as u64 * w as u64;
     if total > hw {
-        return Err(format!("invalid RLE: total counts {total} exceed h*w={hw}"));
+        return Err(format!("invalid RLE: total counts {total} exceed h*w={hw}").into());
     }
 
     Ok(Rle { h, w, counts })

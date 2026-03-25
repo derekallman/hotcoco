@@ -30,7 +30,7 @@ pub struct COCO {
 
 impl COCO {
     /// Load a COCO annotation JSON file and build indices.
-    pub fn new(annotation_file: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(annotation_file: &Path) -> crate::error::Result<Self> {
         let file = std::fs::File::open(annotation_file)?;
         let reader = std::io::BufReader::new(file);
         let dataset: Dataset = serde_json::from_reader(reader)?;
@@ -277,7 +277,7 @@ impl COCO {
     /// The result file can be a JSON array of annotation dicts, or a JSON object
     /// with an `annotations` field. The result COCO object shares the images
     /// and categories from self.
-    pub fn load_res(&self, res_file: &Path) -> Result<COCO, Box<dyn std::error::Error>> {
+    pub fn load_res(&self, res_file: &Path) -> crate::error::Result<COCO> {
         // Read once into memory so we can retry parsing without re-opening.
         let bytes = std::fs::read(res_file)?;
 
@@ -302,7 +302,7 @@ impl COCO {
     /// Prefer this over `load_res` when results are already in memory — it avoids
     /// a round-trip through the filesystem. The Python binding uses this internally
     /// when `load_res` is called with a list of dicts or a numpy array.
-    pub fn load_res_anns(&self, anns: Vec<Annotation>) -> Result<COCO, Box<dyn std::error::Error>> {
+    pub fn load_res_anns(&self, anns: Vec<Annotation>) -> crate::error::Result<COCO> {
         // Warn on the first annotation whose image_id or category_id isn't in the GT —
         // a common mistake that causes DTs to silently produce misleadingly low metrics.
         let gt_img_ids: HashSet<u64> = self.dataset.images.iter().map(|i| i.id).collect();
@@ -521,7 +521,7 @@ impl COCO {
     ///
     /// All datasets must share the same category taxonomy (same names + supercategories).
     /// Image and annotation IDs are remapped to ensure global uniqueness.
-    pub fn merge(datasets: &[&Dataset]) -> Result<Dataset, String> {
+    pub fn merge(datasets: &[&Dataset]) -> crate::error::Result<Dataset> {
         if datasets.is_empty() {
             return Ok(Dataset {
                 info: None,
@@ -549,7 +549,8 @@ impl COCO {
                     "Cannot merge: datasets have different numbers of categories ({} vs {})",
                     canonical_cats.len(),
                     ds.categories.len()
-                ));
+                )
+                .into());
             }
             let mut remap = HashMap::new();
             for cat in &ds.categories {
@@ -562,7 +563,8 @@ impl COCO {
                         return Err(format!(
                             "Cannot merge: category '{}' not found in first dataset",
                             cat.name
-                        ));
+                        )
+                        .into());
                     }
                 }
             }

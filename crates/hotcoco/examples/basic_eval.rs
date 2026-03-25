@@ -45,7 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ev.accumulate();
     ev.summarize();
 
-    if let Some(stats) = &ev.stats {
+    if let Some(stats) = ev.stats() {
         println!("\nKey metrics:");
         println!("  AP (IoU=0.50:0.95):  {:.3}", stats[0]);
         println!("  AP (IoU=0.50):       {:.3}", stats[1]);

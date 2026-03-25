@@ -83,7 +83,7 @@ After calling `evaluate()`, the `eval_imgs` field contains per-image, per-catego
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     ev.evaluate();
 
-    for e in ev.eval_imgs.iter().flatten() {
+    for e in ev.eval_imgs().iter().flatten() {
         println!("Image {}, Cat {}", e.image_id, e.category_id);
         println!("  DT matches: {:?}", e.dt_matches);
         println!("  GT matches: {:?}", e.gt_matches);
@@ -130,7 +130,7 @@ After calling `accumulate()`, the full precision/recall curves are available:
     ```rust
     ev.accumulate();
 
-    if let Some(acc) = &ev.eval {
+    if let Some(acc) = ev.accumulated() {
         // Index into the 5D precision array [T x R x K x A x M]
         let idx = acc.precision_idx(
             0,  // IoU threshold index
@@ -207,7 +207,7 @@ For direct access to the raw precision arrays (e.g. to compute AP at a non-stand
     ev.evaluate();
     ev.accumulate();
 
-    if let Some(acc) = &ev.eval {
+    if let Some(acc) = ev.accumulated() {
         for (k, &cat_id) in ev.params.cat_ids.iter().enumerate() {
             if let Some(cat) = ev.coco_gt.get_cat(cat_id) {
                 // Mean precision across IoU thresholds and recall points

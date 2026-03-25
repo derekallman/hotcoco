@@ -84,7 +84,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     coco_eval.summarize();
 
     // Print machine-readable stats line for parity testing
-    if let Some(ref stats) = coco_eval.stats {
+    if let Some(stats) = coco_eval.stats() {
         let stats_strs: Vec<String> = stats.iter().map(|v| format!("{:.15}", v)).collect();
         println!("stats: [{}]", stats_strs.join(", "));
     }

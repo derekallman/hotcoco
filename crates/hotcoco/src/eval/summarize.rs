@@ -819,7 +819,7 @@ impl COCOeval {
     ///
     /// * `per_class` — When `true`, includes per-category AP values in the result.
     ///   Categories where all precision values are −1 are excluded.
-    pub fn results(&self, per_class: bool) -> Result<EvalResults, String> {
+    pub fn results(&self, per_class: bool) -> crate::error::Result<EvalResults> {
         let stats = self.stats.as_ref().ok_or_else(|| {
             "summarize() must be called before results(). \
              Run evaluate(), accumulate(), and summarize() first."

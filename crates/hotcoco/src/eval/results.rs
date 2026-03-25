@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io;
 use std::path::Path;
 
 use serde::Serialize;
@@ -45,15 +44,16 @@ pub struct EvalResults {
 
 impl EvalResults {
     /// Serialize results to a pretty-printed JSON string.
-    pub fn to_json(&self) -> Result<String, io::Error> {
-        serde_json::to_string_pretty(self).map_err(io::Error::other)
+    pub fn to_json(&self) -> crate::error::Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
     }
 
     /// Write results as pretty-printed JSON to a file.
-    pub fn save(&self, path: &Path) -> Result<(), io::Error> {
+    pub fn save(&self, path: &Path) -> crate::error::Result<()> {
         let file = std::fs::File::create(path)?;
         let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, self).map_err(io::Error::other)
+        serde_json::to_writer_pretty(writer, self)?;
+        Ok(())
     }
 }
 

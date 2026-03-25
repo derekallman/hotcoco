@@ -1,5 +1,6 @@
 pub mod coco;
 pub mod convert;
+pub mod error;
 pub mod eval;
 pub mod healthcheck;
 pub mod hierarchy;
@@ -9,6 +10,7 @@ pub mod types;
 
 pub use coco::COCO;
 pub use convert::{ConvertError, YoloStats};
+pub use error::Error;
 pub use eval::{
     compare, AccumulatedEval, BootstrapCI, COCOeval, CalibrationBin, CalibrationResult,
     CategoryDelta, CompareOpts, ComparisonResult, ConfusionMatrix, EvalImg, EvalMode, EvalResults,

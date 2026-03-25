@@ -1,5 +1,13 @@
 from .hotcoco import COCO as _RustCOCO
-from .hotcoco import *  # noqa: F401, F403
+from .hotcoco import (  # noqa: F401
+    COCOeval,
+    Hierarchy,
+    Params,
+    compare,
+    init_as_lvis,
+    init_as_pycocotools,
+    mask,
+)
 
 
 class COCO(_RustCOCO):
@@ -66,7 +74,7 @@ class COCO(_RustCOCO):
             if eval is not None:
                 coco_eval = eval
             else:
-                ev = COCOeval(self, dt_coco, iou_type)  # noqa: F405
+                ev = COCOeval(self, dt_coco, iou_type)
                 ev.evaluate()
                 coco_eval = ev
 
@@ -104,8 +112,8 @@ class LVISeval:
         One of ``"bbox"``, ``"segm"``, or ``"keypoints"``.
     """
 
-    def __new__(cls, gt, dt, iou_type="segm"):  # noqa: F405
-        return COCOeval(gt, dt, iou_type, lvis_style=True)  # noqa: F405
+    def __new__(cls, gt, dt, iou_type="segm"):
+        return COCOeval(gt, dt, iou_type, lvis_style=True)
 
 
 # lvis-api uses LVIS as the dataset class name, not COCO.
@@ -125,3 +133,19 @@ class LVISResults:
 
 
 from .integrations import CocoDetection, CocoEvaluator  # noqa: E402, F401
+
+__all__ = [
+    "COCO",
+    "COCOeval",
+    "CocoDetection",
+    "CocoEvaluator",
+    "Hierarchy",
+    "LVIS",
+    "LVISResults",
+    "LVISeval",
+    "Params",
+    "compare",
+    "init_as_lvis",
+    "init_as_pycocotools",
+    "mask",
+]

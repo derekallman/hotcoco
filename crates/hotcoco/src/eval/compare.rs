@@ -95,31 +95,30 @@ pub fn compare(
     eval_a: &COCOeval,
     eval_b: &COCOeval,
     opts: &CompareOpts,
-) -> Result<ComparisonResult, String> {
+) -> crate::error::Result<ComparisonResult> {
     // --- Validation ---
     if eval_a.eval_imgs.is_empty() {
-        return Err("evaluate() must be called on eval_a before compare()".to_string());
+        return Err("evaluate() must be called on eval_a before compare()".into());
     }
     if eval_b.eval_imgs.is_empty() {
-        return Err("evaluate() must be called on eval_b before compare()".to_string());
+        return Err("evaluate() must be called on eval_b before compare()".into());
     }
     if eval_a.eval_mode != eval_b.eval_mode {
         return Err(format!(
             "eval_mode mismatch: {:?} vs {:?}",
             eval_a.eval_mode, eval_b.eval_mode
-        ));
+        )
+        .into());
     }
     if eval_a.params.iou_type != eval_b.params.iou_type {
         return Err(format!(
             "iou_type mismatch: {:?} vs {:?}",
             eval_a.params.iou_type, eval_b.params.iou_type
-        ));
+        )
+        .into());
     }
     if opts.confidence <= 0.0 || opts.confidence >= 1.0 {
-        return Err(format!(
-            "confidence must be in (0, 1), got {}",
-            opts.confidence
-        ));
+        return Err(format!("confidence must be in (0, 1), got {}", opts.confidence).into());
     }
 
     // --- Shared image set ---
@@ -127,7 +126,7 @@ pub fn compare(
     let imgs_b: HashSet<u64> = eval_b.params.img_ids.iter().copied().collect();
     let shared_set: HashSet<u64> = imgs_a.intersection(&imgs_b).copied().collect();
     if shared_set.is_empty() {
-        return Err("no shared images between eval_a and eval_b".to_string());
+        return Err("no shared images between eval_a and eval_b".into());
     }
     let num_images = shared_set.len();
     let shared_sorted: Vec<u64> = {
@@ -438,7 +437,7 @@ mod tests {
         let ev_b = COCOeval::new(gt2, dt2, IouType::Bbox);
 
         let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
-        assert!(err.contains("evaluate()"));
+        assert!(err.to_string().contains("evaluate()"));
     }
 
     #[test]
@@ -468,6 +467,6 @@ mod tests {
             ..Default::default()
         };
         let err = compare(&ev_a, &ev_b, &opts).unwrap_err();
-        assert!(err.contains("confidence"));
+        assert!(err.to_string().contains("confidence"));
     }
 }

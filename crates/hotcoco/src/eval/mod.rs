@@ -65,10 +65,10 @@ pub struct COCOeval {
     pub coco_gt: COCO,
     pub coco_dt: COCO,
     pub params: Params,
-    pub eval_imgs: Vec<Option<EvalImg>>,
+    pub(crate) eval_imgs: Vec<Option<EvalImg>>,
     ious: HashMap<(u64, u64), types::IouMatrix>,
-    pub eval: Option<AccumulatedEval>,
-    pub stats: Option<Vec<f64>>,
+    pub(crate) eval: Option<AccumulatedEval>,
+    pub(crate) stats: Option<Vec<f64>>,
     /// Evaluation mode (COCO, LVIS, or OpenImages).
     pub eval_mode: EvalMode,
     /// LVIS: k_indices bucketed by category frequency.
@@ -93,6 +93,21 @@ impl COCOeval {
             freq_groups: FreqGroups::default(),
             hierarchy: None,
         }
+    }
+
+    /// Per-image evaluation results (sparse — indexed by image position).
+    pub fn eval_imgs(&self) -> &[Option<EvalImg>] {
+        &self.eval_imgs
+    }
+
+    /// Accumulated precision/recall curves (set after `accumulate()`).
+    pub fn accumulated(&self) -> Option<&AccumulatedEval> {
+        self.eval.as_ref()
+    }
+
+    /// Summary statistics (set after `summarize()`).
+    pub fn stats(&self) -> Option<&[f64]> {
+        self.stats.as_deref()
     }
 
     /// Create a new COCOeval configured for LVIS federated evaluation.

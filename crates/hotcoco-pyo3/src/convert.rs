@@ -2,6 +2,25 @@ use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Image, Rle, Segm
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
+/// Extract an optional field from a Python dict.
+macro_rules! opt {
+    ($dict:expr, $key:expr) => {
+        $dict.get_item($key)?.map(|v| v.extract()).transpose()?
+    };
+}
+
+/// Extract a required field from a Python dict, raising `PyValueError` if missing.
+macro_rules! req {
+    ($dict:expr, $key:expr) => {
+        $dict
+            .get_item($key)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(concat!("dict missing '", $key, "'"))
+            })?
+            .extract()?
+    };
+}
+
 pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("id", ann.id)?;
@@ -58,24 +77,11 @@ pub fn segmentation_to_py(py: Python<'_>, seg: &Segmentation) -> PyResult<PyObje
 }
 
 pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
-    let id: u64 = dict
-        .get_item("id")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or(0);
-    let image_id: u64 = dict
-        .get_item("image_id")?
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err("annotation dict missing 'image_id'")
-        })?
-        .extract()?;
-    let category_id: u64 = dict
-        .get_item("category_id")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or(0);
-    let bbox: Option<[f64; 4]> = dict.get_item("bbox")?.map(|v| v.extract()).transpose()?;
-    let area: Option<f64> = dict.get_item("area")?.map(|v| v.extract()).transpose()?;
+    let id: u64 = opt!(dict, "id").unwrap_or(0);
+    let image_id: u64 = req!(dict, "image_id");
+    let category_id: u64 = opt!(dict, "category_id").unwrap_or(0);
+    let bbox: Option<[f64; 4]> = opt!(dict, "bbox");
+    let area: Option<f64> = opt!(dict, "area");
     let segmentation: Option<Segmentation> = dict
         .get_item("segmentation")?
         .map(|v| py_to_segmentation(&v))
@@ -88,19 +94,10 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         })
         .transpose()?
         .unwrap_or(false);
-    let keypoints: Option<Vec<f64>> = dict
-        .get_item("keypoints")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let num_keypoints: Option<u32> = dict
-        .get_item("num_keypoints")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let score: Option<f64> = dict.get_item("score")?.map(|v| v.extract()).transpose()?;
-    let is_group_of: Option<bool> = dict
-        .get_item("is_group_of")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let keypoints: Option<Vec<f64>> = opt!(dict, "keypoints");
+    let num_keypoints: Option<u32> = opt!(dict, "num_keypoints");
+    let score: Option<f64> = opt!(dict, "score");
+    let is_group_of: Option<bool> = opt!(dict, "is_group_of");
 
     Ok(Annotation {
         id,
@@ -120,13 +117,10 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
 fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     // Try as dict (CompressedRle or UncompressedRle)
     if let Ok(dict) = obj.downcast::<PyDict>() {
-        let size: [u32; 2] = dict
-            .get_item("size")?
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'size'"))?
-            .extract()?;
+        let size: [u32; 2] = req!(dict, "size");
         let counts_obj = dict
             .get_item("counts")?
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'counts'"))?;
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("dict missing 'counts'"))?;
         if let Ok(s) = counts_obj.extract::<String>() {
             return Ok(Segmentation::CompressedRle { size, counts: s });
         }
@@ -260,7 +254,7 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
         // Try str first
         if let Ok(s) = counts_obj.extract::<String>() {
             return hotcoco_core::mask::rle_from_string(&s, size[0], size[1])
-                .map_err(pyo3::exceptions::PyValueError::new_err);
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
         // Try bytes (pycocotools format)
         if let Ok(b) = counts_obj.downcast::<PyBytes>() {
@@ -268,7 +262,7 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
                 pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
             })?;
             return hotcoco_core::mask::rle_from_string(s, size[0], size[1])
-                .map_err(pyo3::exceptions::PyValueError::new_err);
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
         // Try list of ints (uncompressed RLE)
         let counts: Vec<u32> = counts_obj.extract()?;
@@ -294,46 +288,17 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
 }
 
 pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
-    let id: u64 = dict
-        .get_item("id")?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("image dict missing 'id'"))?
-        .extract()?;
-    let file_name: String = dict
-        .get_item("file_name")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or_default();
-    let height: u32 = dict
-        .get_item("height")?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("image dict missing 'height'"))?
-        .extract()?;
-    let width: u32 = dict
-        .get_item("width")?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("image dict missing 'width'"))?
-        .extract()?;
-    let license: Option<u64> = dict.get_item("license")?.map(|v| v.extract()).transpose()?;
-    let coco_url: Option<String> = dict
-        .get_item("coco_url")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let flickr_url: Option<String> = dict
-        .get_item("flickr_url")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let date_captured: Option<String> = dict
-        .get_item("date_captured")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let neg_category_ids: Vec<u64> = dict
-        .get_item("neg_category_ids")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or_default();
-    let not_exhaustive_category_ids: Vec<u64> = dict
-        .get_item("not_exhaustive_category_ids")?
-        .map(|v| v.extract())
-        .transpose()?
-        .unwrap_or_default();
+    let id: u64 = req!(dict, "id");
+    let file_name: String = opt!(dict, "file_name").unwrap_or_default();
+    let height: u32 = req!(dict, "height");
+    let width: u32 = req!(dict, "width");
+    let license: Option<u64> = opt!(dict, "license");
+    let coco_url: Option<String> = opt!(dict, "coco_url");
+    let flickr_url: Option<String> = opt!(dict, "flickr_url");
+    let date_captured: Option<String> = opt!(dict, "date_captured");
+    let neg_category_ids: Vec<u64> = opt!(dict, "neg_category_ids").unwrap_or_default();
+    let not_exhaustive_category_ids: Vec<u64> =
+        opt!(dict, "not_exhaustive_category_ids").unwrap_or_default();
 
     Ok(Image {
         id,
@@ -350,30 +315,12 @@ pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
 }
 
 pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
-    let id: u64 = dict
-        .get_item("id")?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("category dict missing 'id'"))?
-        .extract()?;
-    let name: String = dict
-        .get_item("name")?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("category dict missing 'name'"))?
-        .extract()?;
-    let supercategory: Option<String> = dict
-        .get_item("supercategory")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let skeleton: Option<Vec<[u32; 2]>> = dict
-        .get_item("skeleton")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let keypoints: Option<Vec<String>> = dict
-        .get_item("keypoints")?
-        .map(|v| v.extract())
-        .transpose()?;
-    let frequency: Option<String> = dict
-        .get_item("frequency")?
-        .map(|v| v.extract())
-        .transpose()?;
+    let id: u64 = req!(dict, "id");
+    let name: String = req!(dict, "name");
+    let supercategory: Option<String> = opt!(dict, "supercategory");
+    let skeleton: Option<Vec<[u32; 2]>> = opt!(dict, "skeleton");
+    let keypoints: Option<Vec<String>> = opt!(dict, "keypoints");
+    let frequency: Option<String> = opt!(dict, "frequency");
 
     Ok(Category {
         id,

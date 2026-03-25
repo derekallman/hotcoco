@@ -43,7 +43,7 @@ fn test_bbox_evaluation_runs() {
     coco_eval.evaluate();
     coco_eval.accumulate();
 
-    let eval = coco_eval.eval.as_ref().expect("Accumulate should set eval");
+    let eval = coco_eval.accumulated().expect("Accumulate should set eval");
 
     // Verify dimensions
     assert_eq!(eval.shape.t, 10); // IoU thresholds
@@ -244,7 +244,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
     coco_eval.evaluate();
     coco_eval.accumulate();
 
-    let eval = coco_eval.eval.as_ref().unwrap();
+    let eval = coco_eval.accumulated().unwrap();
     let m_idx = eval.shape.m - 1;
 
     // Correct behavior:
@@ -286,7 +286,10 @@ fn run_bbox_eval(coco_gt: COCO, coco_dt: COCO) -> Vec<f64> {
     coco_eval.evaluate();
     coco_eval.accumulate();
     coco_eval.summarize();
-    coco_eval.stats.expect("summarize should set stats")
+    coco_eval
+        .stats()
+        .expect("summarize should set stats")
+        .to_vec()
 }
 
 /// Edge case test fixture covering crowd re-matching, bbox at origin,
@@ -434,7 +437,7 @@ fn test_crowd_rematching() {
     coco_eval.evaluate();
     coco_eval.accumulate();
 
-    let eval = coco_eval.eval.as_ref().unwrap();
+    let eval = coco_eval.accumulated().unwrap();
     let m_idx = eval.shape.m - 1; // maxDets=100
 
     // With only a crowd GT and no non-crowd GTs:
@@ -2553,7 +2556,7 @@ fn test_accumulate_unchanged_after_refactor() {
     ev.evaluate();
     ev.accumulate();
 
-    let eval = ev.eval.as_ref().unwrap();
+    let eval = ev.accumulated().unwrap();
     assert_eq!(eval.shape.t, 10);
     assert_eq!(eval.shape.k, 2);
     let valid_count = eval.precision.iter().filter(|&&v| v >= 0.0).count();
@@ -3186,7 +3189,7 @@ fn test_oid_group_of_multi_match() {
     ev.accumulate();
     ev.summarize();
 
-    let stats = ev.stats.unwrap();
+    let stats = ev.stats().unwrap();
     // DT1 matches non-group GT. DT2+DT3 match group-of GT (multi-match).
     // All 3 DTs are TPs. Recall denominator = 1 (only non-group GT). AP should be 1.0.
     assert!(
@@ -3279,7 +3282,7 @@ fn test_oid_group_of_no_fn_penalty() {
     ev.accumulate();
     ev.summarize();
 
-    let stats = ev.stats.unwrap();
+    let stats = ev.stats().unwrap();
     // Detection matches non-group GT perfectly. Group-of GT unmatched but NOT FN.
     // AP should be 1.0.
     assert!(
@@ -3485,7 +3488,7 @@ fn test_oid_dt_expansion() {
     ev1.evaluate();
     ev1.accumulate();
     ev1.summarize();
-    let stats_no_expand = ev1.stats.clone().unwrap();
+    let stats_no_expand = ev1.stats().unwrap().to_vec();
 
     // With DT expansion
     let coco_gt2 = COCO::from_dataset(gt_dataset);
@@ -3495,7 +3498,7 @@ fn test_oid_dt_expansion() {
     ev2.evaluate();
     ev2.accumulate();
     ev2.summarize();
-    let stats_expand = ev2.stats.clone().unwrap();
+    let stats_expand = ev2.stats().unwrap().to_vec();
 
     // With DT expansion, AP should be higher
     assert!(
@@ -3588,7 +3591,7 @@ fn test_oid_auto_derive_hierarchy() {
     ev.accumulate();
     ev.summarize();
 
-    let stats = ev.stats.unwrap();
+    let stats = ev.stats().unwrap();
     // Dog GT expanded to Animal, Animal detection matches → AP > 0
     assert!(
         stats[0] > 0.0,

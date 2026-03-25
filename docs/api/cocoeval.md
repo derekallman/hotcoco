@@ -134,12 +134,12 @@ See [Params](params.md) for all configurable fields.
 === "Rust"
 
     ```rust
-    pub stats: Option<Vec<f64>>
+    fn stats(&self) -> Option<&[f64]>
     ```
 
     ```rust
     ev.summarize();
-    if let Some(stats) = &ev.stats {
+    if let Some(stats) = ev.stats() {
         println!("AP: {:.3}", stats[0]);
         println!("AP50: {:.3}", stats[1]);
     }
@@ -160,7 +160,7 @@ Per-image evaluation results, populated after `evaluate()`. See [Working with Re
 === "Rust"
 
     ```rust
-    pub eval_imgs: Vec<Option<EvalImg>>
+    fn eval_imgs(&self) -> &[Option<EvalImg>]
     ```
 
 ---
@@ -180,7 +180,7 @@ Accumulated precision/recall arrays, populated after `accumulate()`. See [Workin
 === "Rust"
 
     ```rust
-    pub eval: Option<AccumulatedEval>
+    fn accumulated(&self) -> Option<&AccumulatedEval>
     ```
 
     Access elements with `precision_idx(t, r, k, a, m)` and `recall_idx(t, k, a, m)`.

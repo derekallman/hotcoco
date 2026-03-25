@@ -12,6 +12,17 @@ use hotcoco_core::Annotation;
 mod convert;
 mod mask;
 
+/// Convert a hotcoco error to a Python exception with appropriate type mapping.
+fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
+    use hotcoco_core::Error;
+    match err {
+        Error::Io(e) => pyo3::exceptions::PyIOError::new_err(e.to_string()),
+        Error::Json(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
+        Error::Convert(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
+        Error::Other(msg) => pyo3::exceptions::PyRuntimeError::new_err(msg),
+    }
+}
+
 use convert::{
     annotation_to_py, category_to_py, dataset_stats_to_py, image_to_py, py_to_annotation,
     py_to_dataset, rle_to_py,
@@ -56,8 +67,7 @@ impl PyCOCO {
         let inner = match annotation_file {
             Some(obj) => {
                 if let Ok(path) = obj.extract::<String>() {
-                    hotcoco_core::COCO::new(Path::new(&path))
-                        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{e}")))?
+                    hotcoco_core::COCO::new(Path::new(&path)).map_err(to_pyerr)?
                 } else if let Ok(dict) = obj.downcast::<PyDict>() {
                     let dataset = py_to_dataset(dict)?;
                     hotcoco_core::COCO::from_dataset(dataset)
@@ -166,7 +176,7 @@ impl PyCOCO {
                     inner,
                     image_dir: self.image_dir.clone(),
                 })
-                .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{e}")));
+                .map_err(to_pyerr);
         }
 
         // Case 2: list of annotation dicts
@@ -189,7 +199,7 @@ impl PyCOCO {
                     inner,
                     image_dir: self.image_dir.clone(),
                 })
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")));
+                .map_err(to_pyerr);
         }
 
         // Case 3: numpy float64 array, shape (N, 6) or (N, 7)
@@ -229,7 +239,7 @@ impl PyCOCO {
                     inner,
                     image_dir: self.image_dir.clone(),
                 })
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e}")));
+                .map_err(to_pyerr);
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -324,8 +334,7 @@ impl PyCOCO {
     fn merge(_cls: &Bound<'_, PyType>, datasets: Vec<PyRef<'_, PyCOCO>>) -> PyResult<PyCOCO> {
         let ds_refs: Vec<&hotcoco_core::Dataset> =
             datasets.iter().map(|p| &p.inner.dataset).collect();
-        let result =
-            hotcoco_core::COCO::merge(&ds_refs).map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let result = hotcoco_core::COCO::merge(&ds_refs).map_err(to_pyerr)?;
         Ok(PyCOCO {
             inner: hotcoco_core::COCO::from_dataset(result),
             image_dir: None, // inputs may come from different directories
@@ -1056,7 +1065,7 @@ impl PyCOCOeval {
     }
 
     fn accumulate(&mut self) {
-        if self.inner.eval_imgs.is_empty() {
+        if self.inner.eval_imgs().is_empty() {
             eprintln!(
                 "hotcoco: accumulate() called before evaluate(). \
                  Call evaluate() first or the results will be empty."
@@ -1066,7 +1075,7 @@ impl PyCOCOeval {
     }
 
     fn summarize(&mut self) {
-        if self.inner.eval.is_none() {
+        if self.inner.accumulated().is_none() {
             eprintln!(
                 "hotcoco: summarize() called before accumulate(). \
                  Call evaluate() then accumulate() first."
@@ -1166,13 +1175,8 @@ dict
     Serializable evaluation results."]
     #[pyo3(signature = (per_class=false))]
     fn results(&self, py: Python<'_>, per_class: bool) -> PyResult<PyObject> {
-        let results = self
-            .inner
-            .results(per_class)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-        let json_str = results
-            .to_json()
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let results = self.inner.results(per_class).map_err(to_pyerr)?;
+        let json_str = results.to_json().map_err(to_pyerr)?;
         let json_mod = py.import("json")?;
         let dict = json_mod.call_method1("loads", (json_str,))?;
         Ok(dict.unbind())
@@ -1199,13 +1203,8 @@ Example
 "]
     #[pyo3(signature = (path, per_class=false))]
     fn save_results(&self, path: &str, per_class: bool) -> PyResult<()> {
-        let results = self
-            .inner
-            .results(per_class)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-        results
-            .save(std::path::Path::new(path))
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let results = self.inner.results(per_class).map_err(to_pyerr)?;
+        results.save(std::path::Path::new(path)).map_err(to_pyerr)?;
         Ok(())
     }
 
@@ -1238,7 +1237,7 @@ Examples
 >>> ev.f_scores(beta=2.0)   # recall-weighted"]
     #[pyo3(signature = (beta = 1.0))]
     fn f_scores(&self, py: Python<'_>, beta: f64) -> PyResult<PyObject> {
-        if self.inner.eval.is_none() {
+        if self.inner.accumulated().is_none() {
             eprintln!(
                 "hotcoco: f_scores() called before accumulate(). \
                  Call evaluate() then accumulate() first. Returning empty dict."
@@ -1291,12 +1290,12 @@ Examples
 
     #[getter]
     fn stats(&self) -> Option<Vec<f64>> {
-        self.inner.stats.clone()
+        self.inner.stats().map(|s| s.to_vec())
     }
 
     #[getter]
     fn eval_imgs(&self, py: Python<'_>) -> PyResult<PyObject> {
-        eval_imgs_to_py(py, &self.inner.eval_imgs)
+        eval_imgs_to_py(py, self.inner.eval_imgs())
     }
 
     #[getter(evalImgs)]
@@ -1306,7 +1305,7 @@ Examples
 
     #[getter(eval)]
     fn get_eval(&self, py: Python<'_>) -> PyResult<PyObject> {
-        accumulated_eval_to_py(py, &self.inner.eval)
+        accumulated_eval_to_py(py, self.inner.accumulated())
     }
 
     #[doc = "Compute a per-category confusion matrix across all images.
@@ -1414,10 +1413,7 @@ Example\n\
 "]
     #[pyo3(signature = (pos_thr=0.5, bg_thr=0.1))]
     fn tide_errors(&self, py: Python<'_>, pos_thr: f64, bg_thr: f64) -> PyResult<PyObject> {
-        let te = self
-            .inner
-            .tide_errors(pos_thr, bg_thr)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+        let te = self.inner.tide_errors(pos_thr, bg_thr).map_err(to_pyerr)?;
 
         let delta_ap = PyDict::new(py);
         for (k, v) in &te.delta_ap {
@@ -1478,7 +1474,7 @@ Example\n\
         let cal = self
             .inner
             .calibration(n_bins, iou_threshold)
-            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            .map_err(to_pyerr)?;
 
         let bins_list = PyList::empty(py);
         for b in &cal.bins {
@@ -1556,10 +1552,7 @@ Example\n\
             map
         };
 
-        let results = self
-            .inner
-            .slice_by(slice_map)
-            .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        let results = self.inner.slice_by(slice_map).map_err(to_pyerr)?;
 
         let out = PyDict::new(py);
 
@@ -1631,7 +1624,7 @@ fn eval_img_to_py(py: Python<'_>, e: &hotcoco_core::EvalImg) -> PyResult<PyObjec
 
 fn accumulated_eval_to_py(
     py: Python<'_>,
-    eval: &Option<hotcoco_core::AccumulatedEval>,
+    eval: Option<&hotcoco_core::AccumulatedEval>,
 ) -> PyResult<PyObject> {
     match eval {
         None => Ok(py.None()),
@@ -1757,8 +1750,7 @@ fn compare(
         seed,
         confidence,
     };
-    let result = hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts)
-        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let result = hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts).map_err(to_pyerr)?;
 
     let f64_map_to_dict =
         |map: &std::collections::HashMap<String, f64>| -> PyResult<Bound<'_, PyDict>> {

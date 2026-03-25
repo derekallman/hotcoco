@@ -76,9 +76,9 @@ impl COCOeval {
         &self,
         n_bins: usize,
         iou_threshold: f64,
-    ) -> Result<CalibrationResult, String> {
+    ) -> crate::error::Result<CalibrationResult> {
         if self.eval_imgs.is_empty() {
-            return Err("calibration() requires evaluate() to be called first".to_string());
+            return Err("calibration() requires evaluate() to be called first".into());
         }
 
         // Find the IoU threshold index
