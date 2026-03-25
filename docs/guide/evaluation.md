@@ -669,6 +669,72 @@ coco eval --gt annotations.json --dt detections.json --slices slices.json
 
 ---
 
+## Model comparison
+
+Compare two models on the same dataset with `hotcoco.compare()`. It computes per-metric deltas, per-category AP differences, and optional bootstrap confidence intervals.
+
+```python
+import hotcoco
+
+gt = hotcoco.COCO("annotations.json")
+dt_a = gt.load_res("model_a.json")
+dt_b = gt.load_res("model_b.json")
+
+ev_a = hotcoco.COCOeval(gt, dt_a, "bbox")
+ev_a.evaluate()
+ev_b = hotcoco.COCOeval(gt, dt_b, "bbox")
+ev_b.evaluate()
+
+result = hotcoco.compare(ev_a, ev_b)
+# result["deltas"]["AP"]  → 0.033 (B is better by 3.3 AP points)
+```
+
+### Bootstrap confidence intervals
+
+Add `n_bootstrap` to get confidence intervals on the metric deltas. This resamples images with replacement and re-accumulates metrics for each sample — parallelized with rayon.
+
+```python
+result = hotcoco.compare(ev_a, ev_b, n_bootstrap=1000, confidence=0.95)
+
+ci = result["ci"]["AP"]
+print(f"AP delta: {result['deltas']['AP']:+.3f}")
+print(f"95% CI:   [{ci['lower']:+.3f}, {ci['upper']:+.3f}]")
+print(f"P(B > A): {ci['prob_positive']:.1%}")
+```
+
+A CI that excludes zero indicates a statistically significant difference.
+
+### Per-category breakdown
+
+`result["per_category"]` is sorted by delta ascending (worst regressions first):
+
+```python
+for cat in result["per_category"][:5]:  # top 5 regressions
+    print(f"{cat['cat_name']:<20} {cat['delta']:+.3f}")
+```
+
+### From the CLI
+
+```bash
+coco compare --gt ann.json --dt-a baseline.json --dt-b improved.json
+coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000
+coco compare --gt ann.json --dt-a a.json --dt-b b.json --json  # CI/CD
+```
+
+### Plotting
+
+```python
+from hotcoco import plot
+
+result = hotcoco.compare(ev_a, ev_b, n_bootstrap=1000)
+plot.comparison_bar(result, save_path="comparison.png")
+plot.category_deltas(result, top_k=10, save_path="deltas.png")
+```
+
+See [`compare`](../api/cocoeval.md#compare) and [`comparison_bar`](../api/plot.md) in the API reference.
+
+---
+
 ## Saving results to JSON
 
 `results()` and `save_results()` serialize the full evaluation output — parameters, summary metrics, and optionally per-category AP — to a JSON dict or file. Both require `summarize()` (or `run()`) first.

@@ -84,12 +84,14 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ### Model Comparison & A/B Testing
 
-Compare two or more models on the same dataset — per-category AP deltas, per-image score comparison, and statistical significance via bootstrap confidence intervals.
+**Shipped.**
 
-- `coco.compare(eval_a, eval_b)` — side-by-side metrics table with deltas and significance
-- Per-category AP delta sorted by largest change; worst regressions and best improvements
-- In browse: toggle Model A / Model B predictions on the same image
-- Bootstrap resampling for confidence intervals on AP ("Model B is better by 0.3 AP, 95% CI [0.1, 0.5]")
+~~Compare two or more models on the same dataset — per-category AP deltas, per-image score comparison, and statistical significance via bootstrap confidence intervals.~~
+
+- ~~`coco.compare(eval_a, eval_b)` — side-by-side metrics table with deltas and significance~~
+- ~~Per-category AP delta sorted by largest change; worst regressions and best improvements~~
+- In browse: toggle Model A / Model B predictions on the same image (future)
+- ~~Bootstrap resampling for confidence intervals on AP ("Model B is better by 0.3 AP, 95% CI [0.1, 0.5]")~~
 
 ### Per-Image Diagnostics & Failure Mining
 

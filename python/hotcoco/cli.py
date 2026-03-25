@@ -10,6 +10,7 @@ Usage:
     coco merge <file1> <file2> ... -o <output>
     coco split <file> -o <prefix> [options]
     coco sample <file> -o <output> [options]
+    coco compare --gt <gt.json> --dt-a <a.json> --dt-b <b.json> [--bootstrap 1000]
     coco convert --from coco --to yolo --input <file> --output <dir>
     coco convert --from yolo --to coco --input <dir> --output <file> [--images-dir <dir>]
 """
@@ -272,13 +273,7 @@ def cmd_eval(args):
         slices_result = ev.slice_by(slices)
 
         if not args.json:
-            # Pick metric names based on eval mode
-            if args.lvis:
-                key_metrics = ["AP", "AP50", "AP75", "APr", "APc", "APf"]
-            elif args.iou_type == "keypoints":
-                key_metrics = ["AP", "AP50", "AP75", "APm", "APl"]
-            else:
-                key_metrics = ["AP", "AP50", "AP75", "APs", "APm", "APl"]
+            key_metrics = [k for k in ev.metric_keys() if k.startswith("AP")]
 
             # Column width matches "0.578 (+0.020)" = 14 chars
             col_w = 14
@@ -583,6 +578,105 @@ def cmd_sample(args):
     print(f"  after:  {n_imgs_after:,} images, {n_anns_after:,} annotations")
 
 
+def cmd_compare(args):
+    try:
+        from hotcoco import COCO, COCOeval, compare
+    except ImportError:
+        print("error: hotcoco is not installed", file=sys.stderr)
+        sys.exit(1)
+
+    gt = _load_coco(args.gt)
+    dt_a = _load_res(gt, args.dt_a)
+    dt_b = _load_res(gt, args.dt_b)
+
+    ev_a = COCOeval(gt, dt_a, args.iou_type, lvis_style=args.lvis)
+    ev_a.evaluate()
+    ev_b = COCOeval(gt, dt_b, args.iou_type, lvis_style=args.lvis)
+    ev_b.evaluate()
+
+    result = compare(
+        ev_a,
+        ev_b,
+        n_bootstrap=args.bootstrap,
+        seed=args.seed,
+        confidence=args.confidence,
+    )
+
+    if args.json:
+        result["name_a"] = args.name_a
+        result["name_b"] = args.name_b
+        return result
+
+    name_a = args.name_a
+    name_b = args.name_b
+    n_images = result["num_images"]
+    iou_type = args.iou_type
+
+    print(f"\nModel Comparison ({n_images:,} images, {iou_type})\n")
+
+    # Header
+    has_ci = result["ci"] is not None
+    ci_pct = f"{int(args.confidence * 100)}% CI"
+    if has_ci:
+        print(f"  {'Metric':<10}  {name_a:>10}  {name_b:>10}  {'Delta':>10}  {ci_pct:>20}")
+        print(f"  {'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 20}")
+    else:
+        print(f"  {'Metric':<10}  {name_a:>10}  {name_b:>10}  {'Delta':>10}")
+        print(f"  {'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 10}")
+
+    ordered_keys = result["metric_keys"]
+
+    for key in ordered_keys:
+        val_a = result["metrics_a"].get(key, -1.0)
+        val_b = result["metrics_b"].get(key, -1.0)
+        delta = result["deltas"].get(key, 0.0)
+
+        sign = "+" if delta >= 0 else ""
+        line = f"  {key:<10}  {val_a:>10.3f}  {val_b:>10.3f}  {sign}{delta:>9.3f}"
+
+        if has_ci:
+            ci = result["ci"].get(key)
+            if ci:
+                sig = "*" if ci["lower"] > 0 or ci["upper"] < 0 else " "
+                line += f"  [{ci['lower']:+.3f}, {ci['upper']:+.3f}]{sig}"
+
+        print(line)
+
+    if has_ci:
+        print(f"\n  * = statistically significant (CI excludes zero)")
+
+    # Per-category section
+    cats = result["per_category"]
+    if cats:
+        n_show = min(5, len(cats))
+
+        # Regressions (most negative deltas)
+        regressions = [c for c in cats if c["delta"] < 0][:n_show]
+        # Improvements (most positive deltas, reversed from end)
+        improvements = [c for c in reversed(cats) if c["delta"] > 0][:n_show]
+
+        if regressions or improvements:
+            print(f"\n  Per-Category AP (top regressions and improvements):\n")
+            print(f"  {'Category':<20}  {name_a:>10}  {name_b:>10}  {'Delta':>10}")
+            print(f"  {'─' * 20}  {'─' * 10}  {'─' * 10}  {'─' * 10}")
+
+            def _cat_row(c, arrow, color_code):
+                ap_a = f"{c['ap_a']:.3f}" if c["ap_a"] >= 0 else "   n/a"
+                ap_b = f"{c['ap_b']:.3f}" if c["ap_b"] >= 0 else "   n/a"
+                print(f"  {c['cat_name']:<20}  {ap_a:>10}  {ap_b:>10}  {c['delta']:>+10.3f}  \033[{color_code}m{arrow}\033[0m")
+
+            for c in regressions:
+                _cat_row(c, "↓", 91)
+
+            if regressions and improvements:
+                print(f"  {'···':^54}")
+
+            for c in reversed(improvements):
+                _cat_row(c, "↑", 92)
+
+    print()
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="coco",
@@ -594,7 +688,8 @@ def main():
               coco eval --gt ann.json --dt det.json --json       JSON output for CI/CD
               coco stats ann.json                                dataset overview
               coco healthcheck ann.json                          validate annotations
-              coco filter ann.json -o out.json --cat-ids 1,2,3  keep only specific categories
+              coco compare --gt ann.json --dt-a a.json --dt-b b.json  compare two models
+              coco filter ann.json -o out.json --cat-ids 1,2,3     keep only specific categories
               coco convert --from coco --to yolo --input ann.json --output labels/
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -794,6 +889,32 @@ def main():
     explore_parser.add_argument("--batch-size", dest="batch_size", type=int, default=12, metavar="N", help="images per batch (default 12)")
     explore_parser.add_argument("--port", type=int, default=7860, help="local server port (default 7860)")
 
+    compare_parser = subparsers.add_parser(
+        "compare",
+        parents=[_json_parent],
+        help="compare two model evaluations on the same dataset",
+        description="Pairwise model comparison with metric deltas, per-category AP breakdown, and optional bootstrap confidence intervals.",
+        epilog=textwrap.dedent("""\
+            examples:
+              coco compare --gt ann.json --dt-a baseline.json --dt-b improved.json
+              coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000
+              coco compare --gt ann.json --dt-a a.json --dt-b b.json --iou-type segm --json
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    compare_parser.add_argument("--gt", required=True, help="ground truth annotations (COCO JSON)")
+    compare_parser.add_argument("--dt-a", dest="dt_a", required=True, help="detections from model A (COCO JSON)")
+    compare_parser.add_argument("--dt-b", dest="dt_b", required=True, help="detections from model B (COCO JSON)")
+    compare_parser.add_argument(
+        "--iou-type", dest="iou_type", default="bbox", choices=["bbox", "segm", "keypoints"],
+        help="evaluation type (default: bbox)",
+    )
+    compare_parser.add_argument("--lvis", action="store_true", help="use LVIS-style federated evaluation")
+    compare_parser.add_argument("--bootstrap", type=int, default=0, metavar="N", help="number of bootstrap samples for confidence intervals (0 = disabled)")
+    compare_parser.add_argument("--seed", type=int, default=42, help="random seed for bootstrap (default: 42)")
+    compare_parser.add_argument("--confidence", type=float, default=0.95, help="confidence level for bootstrap CIs (default: 0.95)")
+    compare_parser.add_argument("--name-a", dest="name_a", default="Model A", metavar="NAME", help="display name for model A (default: 'Model A')")
+    compare_parser.add_argument("--name-b", dest="name_b", default="Model B", metavar="NAME", help="display name for model B (default: 'Model B')")
     try:
         import argcomplete
 
@@ -817,6 +938,7 @@ def main():
         "sample": cmd_sample,
         "convert": cmd_convert,
         "explore": cmd_explore,
+        "compare": cmd_compare,
     }
 
     try:

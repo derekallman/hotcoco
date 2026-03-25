@@ -48,13 +48,6 @@ def _metric_math(key: str) -> str:
     return key
 
 
-# Canonical metric ordering for table rows (superset of all modes).
-# Only keys present in data.metrics are included.
-_AP_ORDER = ["AP", "AP50", "AP75", "APs", "APm", "APl", "APr", "APc", "APf"]
-_AR_COCO_ORDER = ["AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
-_AR_KPT_ORDER = ["AR", "AR50", "AR75", "ARm", "ARl"]
-_AR_LVIS_ORDER = ["AR@300", "ARs@300", "ARm@300", "ARl@300"]
-
 _SIZE_LABEL = {"s": "small", "m": "medium", "l": "large"}
 _FREQ_DESC = {"r": "rare", "c": "common", "f": "frequent"}
 
@@ -108,23 +101,16 @@ def _build_metric_rows(data: PlotData) -> tuple[list, list, str]:
     """Derive (AP_ROWS, AR_ROWS, ar_kpi_key) from PlotData.
 
     Rows are (display_key, description, metric_key) tuples. Only metrics
-    present in data.metrics are included, in canonical display order.
+    present in data.metrics are included, in canonical display order from Rust.
     """
     present = set(data.metrics)
+    ordered = [k for k in data.metric_key_order if k in present]
 
-    if data.eval_mode == "openimages":
-        ap_rows = [("AP", "IoU 0.50", "AP")]
-        return ap_rows, [], "AP"
+    ap_rows = [(_k, _metric_desc(_k, data), _k) for _k in ordered if _k.startswith("AP")]
+    ar_rows = [(_k, _metric_desc(_k, data), _k) for _k in ordered if not _k.startswith("AP")]
 
-    if data.eval_mode == "lvis":
-        ar_order, ar_kpi_key = _AR_LVIS_ORDER, "AR@300"
-    elif data.iou_type == "keypoints":
-        ar_order, ar_kpi_key = _AR_KPT_ORDER, "AR"
-    else:
-        ar_order, ar_kpi_key = _AR_COCO_ORDER, "AR100"
-
-    ap_rows = [(_k, _metric_desc(_k, data), _k) for _k in _AP_ORDER if _k in present]
-    ar_rows = [(_k, _metric_desc(_k, data), _k) for _k in ar_order if _k in present]
+    # Determine the primary AR metric key for the KPI header
+    ar_kpi_key = ar_rows[0][0] if ar_rows else "AR100"
     return ap_rows, ar_rows, ar_kpi_key
 
 # ---------------------------------------------------------------------------

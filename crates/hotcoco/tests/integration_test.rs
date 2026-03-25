@@ -3817,3 +3817,244 @@ fn test_calibration_known_values() {
         cal.mce
     );
 }
+
+// ---------------------------------------------------------------------------
+// Compare / bootstrap validation
+// ---------------------------------------------------------------------------
+
+/// Build a synthetic dataset with `n` images, 1 category, 1 GT bbox per image.
+///
+/// Returns (gt_dataset, dt_good_dataset, dt_weak_dataset) where:
+/// - dt_good has perfect-overlap detections on all images (all TPs, AP≈1.0)
+/// - dt_weak has detections on only the first half of images (misses half, adds FPs)
+///
+/// The AP difference between them is real and measurable.
+fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
+    let cat = Category {
+        id: 1,
+        name: "thing".into(),
+        supercategory: None,
+        skeleton: None,
+        keypoints: None,
+        frequency: None,
+    };
+
+    let images: Vec<Image> = (1..=n)
+        .map(|i| Image {
+            id: i as u64,
+            file_name: format!("img{i}.jpg"),
+            height: 200,
+            width: 200,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        })
+        .collect();
+
+    let gt_anns: Vec<Annotation> = (1..=n)
+        .map(|i| Annotation {
+            id: i as u64,
+            image_id: i as u64,
+            category_id: 1,
+            bbox: Some([10.0, 10.0, 50.0, 50.0]),
+            area: Some(2500.0),
+            iscrowd: false,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+            score: None,
+            is_group_of: None,
+        })
+        .collect();
+
+    let make_ann = |id: u64, image_id: u64, bbox: [f64; 4], score: f64| Annotation {
+        id,
+        image_id,
+        category_id: 1,
+        bbox: Some(bbox),
+        area: Some(bbox[2] * bbox[3]),
+        iscrowd: false,
+        segmentation: None,
+        keypoints: None,
+        num_keypoints: None,
+        score: Some(score),
+        is_group_of: None,
+    };
+
+    // Good model: perfect TP on every image
+    let dt_good_anns: Vec<Annotation> = (1..=n)
+        .map(|i| make_ann(i as u64, i as u64, [10.0, 10.0, 50.0, 50.0], 0.9))
+        .collect();
+
+    // Weak model: TPs on first half only, plus an FP on each detected image
+    let half = n / 2;
+    let mut dt_weak_anns: Vec<Annotation> = Vec::new();
+    for i in 1..=half {
+        // TP
+        dt_weak_anns.push(make_ann(i as u64, i as u64, [10.0, 10.0, 50.0, 50.0], 0.8));
+        // FP (wrong location)
+        dt_weak_anns.push(make_ann(
+            (n + i) as u64,
+            i as u64,
+            [120.0, 120.0, 30.0, 30.0],
+            0.6,
+        ));
+    }
+
+    let dt_good = Dataset {
+        info: None,
+        images: images.clone(),
+        annotations: dt_good_anns,
+        categories: vec![cat.clone()],
+        licenses: vec![],
+    };
+    let dt_weak = Dataset {
+        info: None,
+        images: images.clone(),
+        annotations: dt_weak_anns,
+        categories: vec![cat.clone()],
+        licenses: vec![],
+    };
+
+    let gt = Dataset {
+        info: None,
+        images,
+        annotations: gt_anns,
+        categories: vec![cat],
+        licenses: vec![],
+    };
+
+    (gt, dt_good, dt_weak)
+}
+
+#[test]
+fn test_compare_bootstrap_ci_contains_point_estimate() {
+    // Two genuinely different models: high-score vs low-score detections.
+    // The point estimate delta should lie within the bootstrap CI.
+    let (gt_ds, dt_good_ds, dt_weak_ds) = make_compare_fixtures(30);
+
+    let gt_a = COCO::from_dataset(gt_ds.clone());
+    let dt_a = COCO::from_dataset(dt_good_ds);
+    let mut ev_a = COCOeval::new(gt_a, dt_a, IouType::Bbox);
+    ev_a.evaluate();
+
+    let gt_b = COCO::from_dataset(gt_ds);
+    let dt_b = COCO::from_dataset(dt_weak_ds);
+    let mut ev_b = COCOeval::new(gt_b, dt_b, IouType::Bbox);
+    ev_b.evaluate();
+
+    let opts = hotcoco::CompareOpts {
+        n_bootstrap: 200,
+        seed: 42,
+        confidence: 0.95,
+    };
+    let result = hotcoco::compare(&ev_a, &ev_b, &opts).unwrap();
+
+    // There should be a real difference (weak model has lower AP)
+    let ap_delta = result.deltas["AP"];
+    assert!(
+        ap_delta < -0.01,
+        "Expected negative AP delta (weak vs good), got {ap_delta}"
+    );
+
+    let ci = result.ci.as_ref().unwrap();
+    for (key, boot_ci) in ci {
+        let delta = result.deltas[key];
+        // Skip metrics with no data (delta = 0 for sentinel values)
+        if delta.abs() < 1e-15 {
+            continue;
+        }
+        // Point estimate should be within the CI
+        assert!(
+            boot_ci.lower <= delta && delta <= boot_ci.upper,
+            "{key}: point estimate {delta:.6} outside CI [{:.6}, {:.6}]",
+            boot_ci.lower,
+            boot_ci.upper,
+        );
+        // CI should have positive width
+        assert!(
+            boot_ci.upper >= boot_ci.lower,
+            "{key}: inverted CI [{:.6}, {:.6}]",
+            boot_ci.lower,
+            boot_ci.upper,
+        );
+        // std_err should be non-negative
+        assert!(boot_ci.std_err >= 0.0, "{key}: negative std_err");
+    }
+
+    // AP CI should indicate the difference is significant (CI entirely below zero)
+    let ap_ci = &ci["AP"];
+    assert!(
+        ap_ci.upper < 0.0,
+        "Expected AP CI entirely below zero for weak-vs-good, got [{:.6}, {:.6}]",
+        ap_ci.lower,
+        ap_ci.upper,
+    );
+    assert!(
+        ap_ci.prob_positive < 0.1,
+        "Expected low prob_positive for negative delta, got {:.3}",
+        ap_ci.prob_positive,
+    );
+}
+
+#[test]
+fn test_compare_bootstrap_coverage() {
+    // Run bootstrap with many different seeds and check that the CI
+    // covers the "true" delta (point estimate) at roughly the stated rate.
+    // With 95% confidence and 50 trials, we expect ~47-48 to cover.
+    let (gt_ds, dt_good_ds, dt_weak_ds) = make_compare_fixtures(30);
+
+    // Compute the "true" delta (no bootstrap, full dataset)
+    let gt_a = COCO::from_dataset(gt_ds.clone());
+    let dt_a = COCO::from_dataset(dt_good_ds.clone());
+    let mut ev_a = COCOeval::new(gt_a, dt_a, IouType::Bbox);
+    ev_a.evaluate();
+
+    let gt_b = COCO::from_dataset(gt_ds.clone());
+    let dt_b = COCO::from_dataset(dt_weak_ds.clone());
+    let mut ev_b = COCOeval::new(gt_b, dt_b, IouType::Bbox);
+    ev_b.evaluate();
+
+    let baseline = hotcoco::compare(&ev_a, &ev_b, &hotcoco::CompareOpts::default()).unwrap();
+    let true_ap_delta = baseline.deltas["AP"];
+
+    // Run 50 bootstrap trials with different seeds
+    let n_trials = 50;
+    let mut covers = 0;
+    for seed in 0..n_trials {
+        let gt_a = COCO::from_dataset(gt_ds.clone());
+        let dt_a = COCO::from_dataset(dt_good_ds.clone());
+        let mut ev_a = COCOeval::new(gt_a, dt_a, IouType::Bbox);
+        ev_a.evaluate();
+
+        let gt_b = COCO::from_dataset(gt_ds.clone());
+        let dt_b = COCO::from_dataset(dt_weak_ds.clone());
+        let mut ev_b = COCOeval::new(gt_b, dt_b, IouType::Bbox);
+        ev_b.evaluate();
+
+        let opts = hotcoco::CompareOpts {
+            n_bootstrap: 200,
+            seed,
+            confidence: 0.95,
+        };
+        let result = hotcoco::compare(&ev_a, &ev_b, &opts).unwrap();
+        let ci = result.ci.as_ref().unwrap();
+        let ap_ci = &ci["AP"];
+        if ap_ci.lower <= true_ap_delta && true_ap_delta <= ap_ci.upper {
+            covers += 1;
+        }
+    }
+
+    // With 95% nominal coverage and 50 trials, expect ~47.5 covers.
+    // Allow a wide margin (80-100%) since 50 trials has high variance
+    // and our dedup-bootstrap is slightly conservative (wider CIs).
+    let coverage = covers as f64 / n_trials as f64;
+    assert!(
+        coverage >= 0.80,
+        "Bootstrap coverage {:.1}% ({covers}/{n_trials}) is too low — expected ≥80% for 95% CI",
+        coverage * 100.0
+    );
+}

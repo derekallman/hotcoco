@@ -6,6 +6,7 @@ pub(crate) mod types;
 
 pub(super) mod accumulate;
 mod calibration;
+mod compare;
 mod confusion;
 mod evaluate;
 pub mod expand;
@@ -16,6 +17,7 @@ mod summarize;
 mod tide;
 
 pub use calibration::{CalibrationBin, CalibrationResult};
+pub use compare::{compare, BootstrapCI, CategoryDelta, CompareOpts, ComparisonResult};
 pub use results::EvalResults;
 pub use slice::{SliceResult, SlicedResults};
 pub use types::{AccumulatedEval, ConfusionMatrix, EvalImg, EvalShape, TideErrors};

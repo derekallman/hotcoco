@@ -33,7 +33,6 @@ BENCHMARKS = [
         "dt": DATA / "bbox_val2017_results.json",
         "iou_type": "bbox",
         "tol": 1e-4,
-        "metric_names": ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"],
     },
     {
         "name": "segm",
@@ -41,7 +40,6 @@ BENCHMARKS = [
         "dt": DATA / "segm_val2017_results.json",
         "iou_type": "segm",
         "tol": 2e-4,
-        "metric_names": ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"],
     },
     {
         "name": "keypoints",
@@ -49,7 +47,6 @@ BENCHMARKS = [
         "dt": DATA / "kpt_val2017_results.json",
         "iou_type": "keypoints",
         "tol": 1e-10,
-        "metric_names": ["AP", "AP50", "AP75", "APm", "APl", "AR1", "AR10", "AR100", "ARm", "ARl"],
     },
 ]
 
@@ -90,7 +87,7 @@ def run_hotcoco(gt_file, dt_file, iou_type):
         ev.evaluate()
         ev.accumulate()
         ev.summarize()
-    return ev.stats
+    return ev.stats, ev.metric_keys()
 
 
 all_pass = True
@@ -105,10 +102,10 @@ for bench in BENCHMARKS:
     print(f"  {'-' * 58}")
 
     py = run_pycocotools(bench["gt"], bench["dt"], bench["iou_type"])
-    rs = run_hotcoco(bench["gt"], bench["dt"], bench["iou_type"])
+    rs, metric_names = run_hotcoco(bench["gt"], bench["dt"], bench["iou_type"])
 
     type_pass = True
-    for i, name in enumerate(bench["metric_names"]):
+    for i, name in enumerate(metric_names):
         diff = abs(py[i] - rs[i])
         ok = diff <= tol
         if not ok:

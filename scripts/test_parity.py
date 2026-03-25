@@ -128,15 +128,18 @@ def run_both(gt_dataset, dt_results, iou_type):
         os.unlink(dt_file.name)
 
 
+def _metric_names_for(iou_type):
+    """Get canonical metric names from the Rust evaluator for a given iou_type."""
+    empty = RsCOCOeval(COCO(), COCO(), iou_type)
+    return empty.metric_keys()
+
+
 def assert_metrics_match(py_stats, rs_stats, iou_type):
     """Assert all metrics match within tolerance."""
-    expected_len = 10 if iou_type == "keypoints" else 12
-    assert len(py_stats) == expected_len
-    assert len(rs_stats) == expected_len
-
-    metric_names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
-    if iou_type == "keypoints":
-        metric_names = ["AP", "AP50", "AP75", "APm", "APl", "AR1", "AR10", "AR100", "ARm", "ARl"]
+    metric_names = _metric_names_for(iou_type)
+    expected_len = len(metric_names)
+    assert len(py_stats) == expected_len, f"pycocotools returned {len(py_stats)}, expected {expected_len}"
+    assert len(rs_stats) == expected_len, f"hotcoco returned {len(rs_stats)}, expected {expected_len}"
 
     mismatches = []
     for i in range(expected_len):

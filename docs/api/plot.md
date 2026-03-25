@@ -231,6 +231,55 @@ fig, ax = reliability_diagram(ev, n_bins=15)
 
 ---
 
+## `comparison_bar`
+
+```python
+comparison_bar(
+    compare_result: dict, *,
+    theme: str = "warm-slate",
+    paper_mode: bool = False,
+    ax=None,
+    save_path: str | Path | None = None,
+) -> tuple[Figure, Axes]
+```
+
+Grouped bar chart comparing all metrics between two models. When the compare result includes bootstrap CIs, error bars are drawn on the model B bars.
+
+```python
+from hotcoco import compare
+from hotcoco.plot import comparison_bar
+
+result = compare(ev_a, ev_b, n_bootstrap=1000)
+fig, ax = comparison_bar(result, save_path="comparison.png")
+```
+
+---
+
+## `category_deltas`
+
+```python
+category_deltas(
+    compare_result: dict, *,
+    top_k: int = 20,
+    theme: str = "warm-slate",
+    paper_mode: bool = False,
+    ax=None,
+    save_path: str | Path | None = None,
+) -> tuple[Figure, Axes]
+```
+
+Horizontal bar chart of per-category AP deltas (B − A), sorted by magnitude. Green bars are improvements, red bars are regressions. Shows `top_k` categories from each end.
+
+```python
+from hotcoco import compare
+from hotcoco.plot import category_deltas
+
+result = compare(ev_a, ev_b)
+fig, ax = category_deltas(result, top_k=10, save_path="deltas.png")
+```
+
+---
+
 ## `report`
 
 ```python

@@ -27,6 +27,7 @@ class PlotData:
     recall_pts: np.ndarray  # linspace(0, 1, R)
     cat_ids: list[int]  # ordered — matches precision axis 2
     cat_names: dict[int, str]
+    metric_key_order: list[str]  # canonical display order from Rust
     version: str
 
     # ------------------------------------------------------------------
@@ -104,5 +105,6 @@ class PlotData:
             recall_pts=np.linspace(0.0, 1.0, precision.shape[1]),
             cat_ids=cat_ids,
             cat_names=cat_names,
+            metric_key_order=coco_eval.metric_keys(),
             version=r["hotcoco_version"],
         )

@@ -244,6 +244,24 @@ Run the full pipeline in one call: `evaluate()` → `accumulate()` → `summariz
 
 ---
 
+### `metric_keys`
+
+```python
+metric_keys() -> list[str]
+```
+
+Return metric names in canonical display order for the current evaluation mode. This is the authoritative ordering — the same list that drives `summarize()` and `get_results()`.
+
+```python
+ev = COCOeval(gt, dt, "bbox")
+ev.metric_keys()
+# ['AP', 'AP50', 'AP75', 'APs', 'APm', 'APl', 'AR1', 'AR10', 'AR100', 'ARs', 'ARm', 'ARl']
+```
+
+Does not require `evaluate()` or `run()` — only depends on the evaluation mode and IoU type.
+
+---
+
 ### `get_results`
 
 ```python
@@ -545,4 +563,62 @@ print(ev.f_scores(beta=0.5))   # {"F0.5": ..., "F0.550": ..., "F0.575": ...}
 
 # Recall-weighted
 print(ev.f_scores(beta=2.0))   # {"F2.0": ..., "F2.050": ..., "F2.075": ...}
+```
+
+---
+
+## Module-level functions
+
+### `compare`
+
+```python
+hotcoco.compare(
+    eval_a: COCOeval,
+    eval_b: COCOeval,
+    n_bootstrap: int = 0,
+    seed: int = 42,
+    confidence: float = 0.95,
+) -> dict
+```
+
+Pairwise model comparison. Both evaluators must have had `evaluate()` called and use the same `eval_mode` and `iou_type`. Accumulation and summarization are performed internally on the shared image set.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `eval_a` | `COCOeval` | — | Baseline model evaluation. |
+| `eval_b` | `COCOeval` | — | Improved model evaluation. |
+| `n_bootstrap` | `int` | `0` | Bootstrap samples for CIs (0 = disabled). |
+| `seed` | `int` | `42` | Random seed for reproducibility. |
+| `confidence` | `float` | `0.95` | Confidence level (e.g. 0.95 for 95% CI). |
+
+**Returns** a dict with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `metric_keys` | `list[str]` | Metric names in canonical display order. |
+| `metrics_a` | `dict[str, float]` | Summary metrics for model A. |
+| `metrics_b` | `dict[str, float]` | Summary metrics for model B. |
+| `deltas` | `dict[str, float]` | Per-metric delta (B − A). |
+| `ci` | `dict` or `None` | Bootstrap CIs per metric (`lower`, `upper`, `confidence`, `prob_positive`, `std_err`). `None` if `n_bootstrap=0`. |
+| `per_category` | `list[dict]` | Per-category AP comparison, sorted by delta ascending. Each entry has `cat_id`, `cat_name`, `ap_a`, `ap_b`, `delta`. |
+| `n_bootstrap` | `int` | Number of bootstrap samples used. |
+| `num_images` | `int` | Number of shared images. |
+
+```python
+import hotcoco
+
+gt = hotcoco.COCO("annotations.json")
+ev_a = hotcoco.COCOeval(gt, gt.load_res("baseline.json"), "bbox")
+ev_a.evaluate()
+ev_b = hotcoco.COCOeval(gt, gt.load_res("improved.json"), "bbox")
+ev_b.evaluate()
+
+# Without bootstrap
+result = hotcoco.compare(ev_a, ev_b)
+print(result["deltas"]["AP"])  # e.g. +0.033
+
+# With bootstrap CIs
+result = hotcoco.compare(ev_a, ev_b, n_bootstrap=1000)
+ci = result["ci"]["AP"]
+print(f"[{ci['lower']:+.3f}, {ci['upper']:+.3f}]")  # e.g. [+0.01, +0.05]
 ```

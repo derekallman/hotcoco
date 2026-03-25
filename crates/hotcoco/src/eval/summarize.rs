@@ -601,9 +601,12 @@ impl COCOeval {
         self.params.area_range_idx("all").unwrap_or(0)
     }
 
-    /// Metric key names for the current evaluation mode, derived from the same
-    /// `MetricDef` vec that drives computation in `summarize()`.
-    pub(super) fn metric_keys(&self) -> Vec<&'static str> {
+    /// Metric key names in canonical display order for the current evaluation mode.
+    ///
+    /// Returns the same ordered list that drives `summarize()` and `get_results()`.
+    /// For standard COCO bbox/segm: `["AP", "AP50", ..., "ARl"]` (12 keys).
+    /// For keypoints: 10 keys. For LVIS: 13 keys.
+    pub fn metric_keys(&self) -> Vec<&'static str> {
         build_metric_defs(&self.params, self.eval_mode)
             .into_iter()
             .map(|m| m.name)

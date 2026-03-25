@@ -1,4 +1,4 @@
-"""Public plot functions: pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors, reliability_diagram."""
+"""Public plot functions: pr_curve, confusion_matrix, top_confusions, per_category_ap, tide_errors, reliability_diagram, comparison_bar, category_deltas."""
 
 from __future__ import annotations
 
@@ -732,6 +732,154 @@ def reliability_diagram(
             ax, "Reliability Diagram",
             subtitle=f"IoU\u2265{cal['iou_threshold']:.2f}, {cal['num_detections']:,} detections",
             value_axis="y",
+        )
+
+    return _save_and_return(fig, ax, save_path)
+
+
+def comparison_bar(
+    compare_result: dict[str, Any],
+    *,
+    theme: str = "warm-slate",
+    paper_mode: bool = False,
+    ax=None,
+    save_path: str | Path | None = None,
+) -> tuple:
+    """Grouped bar chart comparing metrics between two models.
+
+    Parameters
+    ----------
+    compare_result : dict
+        Output of ``hotcoco.compare(eval_a, eval_b)``.
+    theme : str
+        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+    paper_mode : bool
+        White figure and axes background for PDF/LaTeX inclusion.
+    ax : matplotlib.axes.Axes, optional
+    save_path : str or Path, optional
+
+    Returns
+    -------
+    (Figure, Axes)
+    """
+    import numpy as np
+
+    mpl, _, _ = _import_mpl()
+
+    metrics_a = compare_result["metrics_a"]
+    metrics_b = compare_result["metrics_b"]
+    ci = compare_result.get("ci")
+    name_a = compare_result.get("name_a", "Model A")
+    name_b = compare_result.get("name_b", "Model B")
+
+    keys = compare_result.get("metric_keys")
+    if keys:
+        keys = [k for k in keys if metrics_a.get(k, -1) >= 0 or metrics_b.get(k, -1) >= 0]
+    else:
+        keys = sorted(k for k in metrics_a if metrics_a[k] >= 0 or metrics_b.get(k, -1) >= 0)
+    # Filter out -1 sentinels
+    keys = [k for k in keys if metrics_a.get(k, -1) >= 0 or metrics_b.get(k, -1) >= 0]
+
+    vals_a = np.array([max(metrics_a.get(k, 0), 0) for k in keys])
+    vals_b = np.array([max(metrics_b.get(k, 0), 0) for k in keys])
+
+    x = np.arange(len(keys))
+    bar_width = 0.35
+
+    with mpl.rc_context(_build_rc(theme, paper_mode)):
+        fig, ax = _new_figure((max(8, 0.8 * len(keys)), 5), ax)
+        colors = mpl.rcParams["axes.prop_cycle"].by_key()["color"]
+        color_a = colors[0]
+        color_b = colors[1] if len(colors) > 1 else colors[0]
+
+        # Error bars from bootstrap CIs (on delta, applied to model B bars)
+        yerr_b = None
+        if ci:
+            lo = np.array([ci[k]["lower"] if k in ci else 0 for k in keys])
+            hi = np.array([ci[k]["upper"] if k in ci else 0 for k in keys])
+            # CI is on delta (B-A), center is vals_b, so asymmetric error
+            yerr_b = np.array([vals_b - (vals_a + lo), vals_a + hi - vals_b])
+            yerr_b = np.clip(yerr_b, 0, None)
+
+        ax.bar(x - bar_width / 2, vals_a, bar_width, label=name_a, color=color_a)
+        ax.bar(
+            x + bar_width / 2, vals_b, bar_width, label=name_b, color=color_b,
+            yerr=yerr_b, capsize=3, error_kw={"linewidth": 1},
+        )
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(keys, rotation=45, ha="right", fontsize=9)
+        ax.set_ylabel("Score")
+        ax.legend(fontsize=9)
+        _configure_axes(ax, "Model Comparison", value_axis="y")
+
+    return _save_and_return(fig, ax, save_path)
+
+
+def category_deltas(
+    compare_result: dict[str, Any],
+    *,
+    top_k: int = 20,
+    theme: str = "warm-slate",
+    paper_mode: bool = False,
+    ax=None,
+    save_path: str | Path | None = None,
+) -> tuple:
+    """Horizontal bar chart of per-category AP deltas between two models.
+
+    Parameters
+    ----------
+    compare_result : dict
+        Output of ``hotcoco.compare(eval_a, eval_b)``.
+    top_k : int
+        Number of categories to show from each end (top improvements + top
+        regressions). Default 20.
+    theme : str
+        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+    paper_mode : bool
+        White figure and axes background for PDF/LaTeX inclusion.
+    ax : matplotlib.axes.Axes, optional
+    save_path : str or Path, optional
+
+    Returns
+    -------
+    (Figure, Axes)
+    """
+    mpl, _, _ = _import_mpl()
+
+    cats = compare_result.get("per_category", [])
+    if not cats:
+        raise ValueError("No per-category data in compare result.")
+
+    name_a = compare_result.get("name_a", "Model A")
+    name_b = compare_result.get("name_b", "Model B")
+
+    # Already sorted by delta ascending (worst regressions first)
+    # Take top_k from each end
+    if len(cats) > 2 * top_k:
+        shown = cats[:top_k] + cats[-top_k:]
+    else:
+        shown = list(cats)
+
+    names = [c["cat_name"] for c in shown]
+    deltas = [c["delta"] for c in shown]
+    colors = ["#c0392b" if d < 0 else "#27ae60" for d in deltas]
+    num_bars = len(names)
+
+    with mpl.rc_context(_build_rc(theme, paper_mode)):
+        fig, ax = _new_figure((8, max(4, 0.3 * num_bars)), ax)
+
+        ax.barh(range(num_bars), deltas, height=0.7, color=colors)
+        ax.axvline(0, color="gray", linewidth=0.8, linestyle="-")
+
+        ax.set_yticks(range(num_bars))
+        ax.set_yticklabels(names)
+        ax.invert_yaxis()
+        ax.set_xlabel(f"AP Delta ({name_b} \u2212 {name_a})")
+        _configure_axes(
+            ax, "Per-Category AP Delta",
+            subtitle=f"{name_b} vs {name_a}",
+            value_axis="x",
         )
 
     return _save_and_return(fig, ax, save_path)

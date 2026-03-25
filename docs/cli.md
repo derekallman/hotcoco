@@ -284,6 +284,41 @@ full-resolution lightbox with canvas annotation overlay. See the [Dataset Browse
 
 ---
 
+### `coco compare`
+
+Compare two model evaluations on the same dataset with per-metric deltas, per-category breakdown, and optional bootstrap confidence intervals.
+
+```bash
+coco compare --gt <annotations.json> --dt-a <model_a.json> --dt-b <model_b.json> [options]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--gt` | Ground truth annotations (COCO JSON) | *required* |
+| `--dt-a` | Detections from model A | *required* |
+| `--dt-b` | Detections from model B | *required* |
+| `--iou-type` | `bbox`, `segm`, or `keypoints` | `bbox` |
+| `--lvis` | LVIS-style federated evaluation | off |
+| `--bootstrap N` | Bootstrap samples for confidence intervals | `0` (disabled) |
+| `--seed` | Random seed for bootstrap | `42` |
+| `--confidence` | Confidence level for CIs | `0.95` |
+| `--name-a` | Display name for model A | `Model A` |
+| `--name-b` | Display name for model B | `Model B` |
+| `--json` | JSON output for CI/CD pipelines | off |
+
+```bash
+# Basic comparison
+coco compare --gt ann.json --dt-a baseline.json --dt-b improved.json
+
+# With bootstrap CIs
+coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000
+
+# JSON output for CI/CD
+coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000 --json
+```
+
+---
+
 ### `coco convert`
 
 Convert between annotation formats. Currently supports COCO JSON ↔ YOLO labels.

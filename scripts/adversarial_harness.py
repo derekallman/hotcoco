@@ -27,8 +27,6 @@ from pathlib import Path
 
 import numpy as np
 
-METRIC_NAMES = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
-
 # IoU thresholds used by COCO eval (np.linspace(0.5, 0.95, 10))
 IOU_THRS = np.linspace(0.5, 0.95, 10).round(2).tolist()
 
@@ -107,8 +105,9 @@ def run_pycocotools(gt_path, detections, iou_type):
 
 def compare_metrics(hc_ev, py_ev, threshold):
     """Return dict of metric_name → (hc_val, py_val, diff) for diffs > threshold."""
-    hc_stats = dict(zip(METRIC_NAMES, hc_ev.stats))
-    py_stats = dict(zip(METRIC_NAMES, py_ev.stats))
+    metric_names = hc_ev.metric_keys()
+    hc_stats = dict(zip(metric_names, hc_ev.stats))
+    py_stats = dict(zip(metric_names, py_ev.stats))
     failures = {}
     for k in py_stats:
         hc_v = hc_stats.get(k, float("nan"))

@@ -33,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `--json` flag on every `coco` subcommand (`eval`, `stats`, `healthcheck`, `filter`, `merge`, `split`, `sample`, `convert`) — writes a single JSON object to stdout; intended for CI/CD pipelines, dashboards, and shell scripts; stderr and exit codes are unchanged; errors also emit JSON when the flag is active
 - `coco eval --json` suppresses the Rust-side metrics table (via fd-level stdout redirect) and returns `{metrics, params, tide?, slices?, healthcheck?}` — optional keys only present when their flags are passed
 - `docs/cli.md` — new "JSON output mode" section with CI gating example and JSON error format; `--json` row added to every subcommand flags table; JSON output shape documented for `eval`
+- Model comparison — `hotcoco.compare(eval_a, eval_b)` computes per-metric deltas, per-category AP differences, and optional bootstrap confidence intervals for statistical significance; `n_bootstrap` resamples images with replacement and re-accumulates in parallel (rayon); result includes `metric_keys`, `metrics_a`, `metrics_b`, `deltas`, `ci`, `per_category`
+- `COCOeval.metric_keys()` — returns metric names in canonical display order for the current evaluation mode; single source of truth for metric ordering across all Python consumers
+- `coco compare` CLI subcommand — `--gt`, `--dt-a`, `--dt-b`, `--bootstrap`, `--seed`, `--confidence`, `--name-a`, `--name-b`, `--json` flags; formatted table with deltas, CIs, and per-category breakdown
+- `hotcoco.plot.comparison_bar()` — grouped bar chart comparing two models, with CI error bars from bootstrap
+- `hotcoco.plot.category_deltas()` — horizontal bar chart of per-category AP deltas sorted by magnitude (green=improvement, red=regression)
+- `ComparisonResult`, `CompareOpts`, `BootstrapCI`, `CategoryDelta` Rust types exported from crate root
+
+### Changed
+
+- Metric display ordering is now derived from Rust `MetricDef` arrays everywhere; removed all hardcoded Python-side metric name lists from `cli.py`, `report.py`, `plots.py`, and parity scripts; `COCOeval.metric_keys()` and `ComparisonResult.metric_keys` are the canonical sources; `report.py` splits AP/AR by key prefix instead of maintaining parallel lists
 
 ### Fixed
 

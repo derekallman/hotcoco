@@ -15,6 +15,8 @@ Pass ``ax=`` to draw on an existing axes, ``save_path=`` to write to disk.
 """
 
 from .plots import (
+    category_deltas,
+    comparison_bar,
     confusion_matrix,
     per_category_ap,
     pr_curve,
@@ -39,6 +41,8 @@ __all__ = [
     "per_category_ap",
     "tide_errors",
     "reliability_diagram",
+    "comparison_bar",
+    "category_deltas",
     "report",
     "SERIES_COLORS",
     "CHROME",

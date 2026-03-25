@@ -1096,19 +1096,26 @@ Use this to distinguish expanded ancestor categories from the model's native cla
             .unwrap_or_default()
     }
 
+    #[doc = "Metric key names in canonical display order for this evaluation mode.
+
+Returns the ordered list that drives ``summarize()`` and ``get_results()``.
+Standard COCO bbox/segm returns 12 keys, keypoints 10, LVIS 13.
+
+>>> ev.metric_keys()
+['AP', 'AP50', 'AP75', 'APs', 'APm', 'APl', 'AR1', 'AR10', 'AR100', 'ARs', 'ARm', 'ARl']
+"]
+    fn metric_keys(&self) -> Vec<String> {
+        self.inner
+            .metric_keys()
+            .into_iter()
+            .map(String::from)
+            .collect()
+    }
+
     #[doc = "Return summary metrics as a dict.
 
 Must be called after ``summarize()`` (or ``run()``). Returns an empty dict
 if ``summarize`` has not been run.
-
-LVIS keys: ``AP``, ``AP50``, ``AP75``, ``APs``, ``APm``, ``APl``,
-``APr``, ``APc``, ``APf``, ``AR@300``, ``ARs@300``, ``ARm@300``, ``ARl@300``.
-
-Standard COCO bbox/segm keys: ``AP``, ``AP50``, ``AP75``, ``APs``, ``APm``,
-``APl``, ``AR1``, ``AR10``, ``AR100``, ``ARs``, ``ARm``, ``ARl``.
-
-Keypoint keys: ``AP``, ``AP50``, ``AP75``, ``APm``, ``APl``,
-``AR``, ``AR50``, ``AR75``, ``ARm``, ``ARl``.
 
 Parameters
 ----------
@@ -1711,6 +1718,102 @@ fn init_as_lvis(py: Python<'_>) -> PyResult<()> {
     Ok(())
 }
 
+/// Compare two model evaluations on the same dataset.
+///
+/// Both evaluators must have had ``evaluate()`` called. Returns a dict with
+/// metric deltas, per-category AP deltas, and optional bootstrap confidence
+/// intervals on the summary metric deltas.
+///
+/// Parameters
+/// ----------
+/// eval_a : COCOeval
+///     First model evaluation (the "baseline").
+/// eval_b : COCOeval
+///     Second model evaluation (the "improved").
+/// n_bootstrap : int
+///     Number of bootstrap samples for confidence intervals (0 = disabled).
+/// seed : int
+///     Random seed for bootstrap reproducibility.
+/// confidence : float
+///     Confidence level for bootstrap intervals (e.g. 0.95 for 95% CI).
+///
+/// Returns
+/// -------
+/// dict
+///     Keys: ``metrics_a``, ``metrics_b``, ``deltas``, ``ci`` (None if
+///     bootstrap disabled), ``per_category``, ``n_bootstrap``, ``num_images``.
+#[pyfunction]
+#[pyo3(signature = (eval_a, eval_b, n_bootstrap=0, seed=42, confidence=0.95))]
+fn compare(
+    py: Python<'_>,
+    eval_a: &PyCOCOeval,
+    eval_b: &PyCOCOeval,
+    n_bootstrap: usize,
+    seed: u64,
+    confidence: f64,
+) -> PyResult<PyObject> {
+    let opts = hotcoco_core::CompareOpts {
+        n_bootstrap,
+        seed,
+        confidence,
+    };
+    let result = hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts)
+        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+
+    let f64_map_to_dict =
+        |map: &std::collections::HashMap<String, f64>| -> PyResult<Bound<'_, PyDict>> {
+            let d = PyDict::new(py);
+            for (k, v) in map {
+                d.set_item(k, v)?;
+            }
+            Ok(d)
+        };
+
+    let metrics_a = f64_map_to_dict(&result.metrics_a)?;
+    let metrics_b = f64_map_to_dict(&result.metrics_b)?;
+    let deltas = f64_map_to_dict(&result.deltas)?;
+
+    let ci = match &result.ci {
+        Some(ci_map) => {
+            let d = PyDict::new(py);
+            for (k, ci) in ci_map {
+                let ci_dict = PyDict::new(py);
+                ci_dict.set_item("lower", ci.lower)?;
+                ci_dict.set_item("upper", ci.upper)?;
+                ci_dict.set_item("confidence", ci.confidence)?;
+                ci_dict.set_item("prob_positive", ci.prob_positive)?;
+                ci_dict.set_item("std_err", ci.std_err)?;
+                d.set_item(k, ci_dict)?;
+            }
+            d.into_any().unbind()
+        }
+        None => py.None(),
+    };
+
+    let per_cat_list = PyList::empty(py);
+    for cat in &result.per_category {
+        let d = PyDict::new(py);
+        d.set_item("cat_id", cat.cat_id)?;
+        d.set_item("cat_name", &cat.cat_name)?;
+        d.set_item("ap_a", cat.ap_a)?;
+        d.set_item("ap_b", cat.ap_b)?;
+        d.set_item("delta", cat.delta)?;
+        per_cat_list.append(d)?;
+    }
+
+    let dict = PyDict::new(py);
+    dict.set_item("metric_keys", &result.metric_keys)?;
+    dict.set_item("metrics_a", metrics_a)?;
+    dict.set_item("metrics_b", metrics_b)?;
+    dict.set_item("deltas", deltas)?;
+    dict.set_item("ci", ci)?;
+    dict.set_item("per_category", per_cat_list)?;
+    dict.set_item("n_bootstrap", result.n_bootstrap)?;
+    dict.set_item("num_images", result.num_images)?;
+
+    Ok(dict.into_any().unbind())
+}
+
 #[pymodule]
 fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCOCO>()?;
@@ -1719,6 +1822,7 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyHierarchy>()?;
     m.add_function(wrap_pyfunction!(init_as_pycocotools, m)?)?;
     m.add_function(wrap_pyfunction!(init_as_lvis, m)?)?;
+    m.add_function(wrap_pyfunction!(compare, m)?)?;
 
     // mask submodule
     let mask_mod = PyModule::new(py, "mask")?;

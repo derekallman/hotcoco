@@ -136,6 +136,21 @@ fig, ax = tide_errors(ev.tide_errors())
 Shows the six TIDE error types (Cls, Loc, Both, Dupe, Bkg, Miss)
 as horizontal bars with their delta-AP values.
 
+### Model comparison
+
+```python
+from hotcoco import compare
+from hotcoco.plot import comparison_bar, category_deltas
+
+result = compare(ev_a, ev_b, n_bootstrap=1000)
+fig, ax = comparison_bar(result)           # grouped bar chart of all metrics
+fig, ax = category_deltas(result, top_k=10) # per-category AP delta bars
+```
+
+`comparison_bar` shows Model A vs Model B side by side for each metric, with
+bootstrap CI error bars when available. `category_deltas` shows per-category
+AP deltas sorted by magnitude — green for improvements, red for regressions.
+
 ## Themes
 
 Every plot function accepts a `theme` argument:

@@ -377,15 +377,18 @@ def run_both(gt_dataset, dt_results, iou_type):
         os.unlink(dt_file.name)
 
 
+def _metric_names_for(iou_type):
+    """Get canonical metric names from the Rust evaluator."""
+    from hotcoco import COCO
+    return RsCOCOeval(COCO(), COCO(), iou_type).metric_keys()
+
+
 def assert_metrics_match(py_stats, rs_stats, iou_type, gt_dataset=None, dt_results=None):
     """Assert all metrics match within tolerance."""
-    expected_len = 10 if iou_type == "keypoints" else 12
+    metric_names = _metric_names_for(iou_type)
+    expected_len = len(metric_names)
     assert len(py_stats) == expected_len, f"pycocotools returned {len(py_stats)} metrics, expected {expected_len}"
     assert len(rs_stats) == expected_len, f"hotcoco returned {len(rs_stats)} metrics, expected {expected_len}"
-
-    metric_names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
-    if iou_type == "keypoints":
-        metric_names = ["AP", "AP50", "AP75", "APm", "APl", "AR1", "AR10", "AR100", "ARm", "ARl"]
 
     mismatches = []
     for i in range(expected_len):
@@ -415,9 +418,7 @@ def save_failure(gt_dataset, dt_results, iou_type, py_stats, rs_stats):
     with open(f"{prefix}_dt.json", "w") as f:
         json.dump(dt_results, f, indent=2)
 
-    metric_names = ["AP", "AP50", "AP75", "APs", "APm", "APl", "AR1", "AR10", "AR100", "ARs", "ARm", "ARl"]
-    if iou_type == "keypoints":
-        metric_names = ["AP", "AP50", "AP75", "APm", "APl", "AR1", "AR10", "AR100", "ARm", "ARl"]
+    metric_names = _metric_names_for(iou_type)
 
     with open(f"{prefix}_stats.txt", "w") as f:
         f.write(f"iou_type: {iou_type}\n")
