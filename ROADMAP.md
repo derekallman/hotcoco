@@ -131,11 +131,13 @@ Unified page showing all evaluation results with click-through to browse.
 
 ### Format Conversion
 
-**Shipped (COCO ↔ YOLO).**
+**Shipped (COCO ↔ YOLO, COCO ↔ Pascal VOC).**
 
 ~~COCO ↔ YOLO first (most requested). Everyone has a slightly broken converter script — a correct, well-tested one has real value.~~
 
-Pascal VOC and CVAT remain as future items when there is demand.
+~~Pascal VOC~~ — bbox-only, bidirectional. VOC `<difficult>` mapped from COCO `iscrowd` on export, dropped on import. Integer-pixel round-trip within ≤1px.
+
+CVAT remains as a future item.
 
 ### Oriented Bounding Boxes (OBB)
 

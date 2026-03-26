@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Pascal VOC format conversion — `COCO.to_voc(output_dir)` exports to VOC XML annotations (`Annotations/*.xml` + `labels.txt`); `COCO.from_voc(voc_dir)` imports VOC XML back to COCO format; `coco convert --from coco --to voc` and `--from voc --to coco` CLI support; COCO `iscrowd` maps to VOC `<difficult>`, VOC `<difficult>` dropped on import; integer-pixel round-trip within ≤1px
 - Confidence calibration analysis — `COCOeval.calibration(n_bins=10, iou_threshold=0.5)` computes Expected Calibration Error (ECE), Maximum Calibration Error (MCE), per-bin accuracy vs confidence breakdown, and per-category ECE; measures how well predicted confidence scores align with actual detection accuracy
 - `coco eval --calibration` CLI flag with `--cal-bins` and `--cal-iou-thr` options; formatted table output with per-bin breakdown and top-10 worst-calibrated categories; included in `--json` output
 - `hotcoco.plot.reliability_diagram()` — matplotlib reliability diagram showing predicted confidence vs actual accuracy per bin, with perfect calibration diagonal, gap overlay, and ECE/MCE annotation; accepts either a calibration dict or COCOeval instance
@@ -45,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `crates/hotcoco/src/convert.rs` split into `convert/mod.rs` (shared types) + `convert/yolo.rs` + `convert/voc.rs` submodules; public API unchanged
+- `quick-xml` 0.37 added as dependency for XML read/write in VOC conversion
+- `ConvertError` gains `XmlError(String)` variant for XML parsing/writing failures
+- `coco convert` CLI `--from`/`--to` choices extended from `{coco, yolo}` to `{coco, yolo, voc}`
 - Metric display ordering is now derived from Rust `MetricDef` arrays everywhere; removed all hardcoded Python-side metric name lists from `cli.py`, `report.py`, `plots.py`, and parity scripts; `COCOeval.metric_keys()` and `ComparisonResult.metric_keys` are the canonical sources; `report.py` splits AP/AR by key prefix instead of maintaining parallel lists
 - `python/hotcoco/__init__.py` — replaced `from .hotcoco import *` with explicit imports; added `__all__` listing all 13 public names
 - `scripts/helpers.py` — extracted `suppress_stdout()`, keypoint constants (`COCO_KEYPOINT_NAMES`, `COCO_SKELETON`, `COCO_KPT_OKS_SIGMAS`), and path constants (`WORKSPACE`, `DATA_DIR`) shared across `parity.py`, `bench.py`, `test_parity.py`, `fuzz_parity.py`

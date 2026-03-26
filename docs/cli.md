@@ -324,7 +324,7 @@ coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000 --json
 
 ### `coco convert`
 
-Convert between annotation formats. Currently supports COCO JSON ↔ YOLO labels.
+Convert between annotation formats. Supports COCO JSON ↔ YOLO labels and COCO JSON ↔ Pascal VOC XML.
 
 **COCO → YOLO:**
 
@@ -338,14 +338,26 @@ coco convert --from coco --to yolo --input <annotations.json> --output <labels_d
 coco convert --from yolo --to coco --input <labels_dir/> --output <annotations.json> [--images-dir <images/>]
 ```
 
+**COCO → Pascal VOC:**
+
+```bash
+coco convert --from coco --to voc --input <annotations.json> --output <voc_dir/>
+```
+
+**Pascal VOC → COCO:**
+
+```bash
+coco convert --from voc --to coco --input <voc_dir/> --output <annotations.json>
+```
+
 | Flag | Description |
 |------|-------------|
-| `--from` | Source format: `coco` or `yolo` |
-| `--to` | Target format: `coco` or `yolo` |
-| `--input` | Input path — JSON file (COCO) or label directory (YOLO) |
-| `--output` | Output path — label directory (YOLO) or JSON file (COCO) |
+| `--from` | Source format: `coco`, `yolo`, or `voc` |
+| `--to` | Target format: `coco`, `yolo`, or `voc` |
+| `--input` | Input path — JSON file (COCO), label directory (YOLO), or annotation directory (VOC) |
+| `--output` | Output path — label directory (YOLO), annotation directory (VOC), or JSON file (COCO) |
 | `--images-dir` | *(YOLO → COCO only)* Directory of source images; used by Pillow to populate `width`/`height` on each image record. Requires `pip install Pillow`. |
-| `--json` | Write conversion stats as JSON to stdout | |
+| `--json` | Write conversion stats as JSON to stdout |
 
 ```bash
 # Export val2017 to YOLO labels
@@ -358,6 +370,16 @@ coco convert --from yolo --to coco \
     --input labels/val2017/ \
     --output reconstructed.json \
     --images-dir images/val2017/
+
+# Export to Pascal VOC
+coco convert --from coco --to voc \
+    --input instances_val2017.json \
+    --output voc_output/
+
+# Import Pascal VOC
+coco convert --from voc --to coco \
+    --input VOCdevkit/VOC2012/ \
+    --output voc2012_as_coco.json
 ```
 
 ---

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use hotcoco::convert::{coco_to_yolo, yolo_to_coco};
+use hotcoco::convert::{coco_to_voc, coco_to_yolo, voc_to_coco, yolo_to_coco};
 use hotcoco::params::IouType;
 use hotcoco::types::{Annotation, Category, Dataset, Image};
 use hotcoco::{healthcheck, COCOeval, Hierarchy, COCO};
@@ -2264,6 +2264,327 @@ fn test_yolo_round_trip() {
             );
         }
     }
+}
+
+// ── VOC conversion tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_coco_to_voc_basic() {
+    let dataset = make_test_dataset_basic();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stats = coco_to_voc(&dataset, dir.path()).expect("coco_to_voc");
+
+    assert_eq!(stats.images, 2);
+    assert_eq!(stats.annotations, 3);
+    assert_eq!(stats.crowd_as_difficult, 0);
+    assert_eq!(stats.missing_bbox, 0);
+
+    // Annotations/ directory should exist
+    let ann_dir = dir.path().join("Annotations");
+    assert!(ann_dir.is_dir(), "Annotations/ directory should exist");
+
+    // labels.txt should list categories sorted by COCO ID
+    let labels = std::fs::read_to_string(dir.path().join("labels.txt")).expect("labels.txt");
+    assert_eq!(labels.trim(), "cat\ndog");
+
+    // img1.xml should exist with 2 objects
+    let xml1 = std::fs::read_to_string(ann_dir.join("img1.xml")).expect("img1.xml");
+    assert!(xml1.contains("<filename>img1.jpg</filename>"), "filename");
+    assert!(xml1.contains("<width>100</width>"), "width");
+    assert!(xml1.contains("<height>200</height>"), "height");
+
+    // Spot-check first annotation: bbox=[10,20,30,40] → xmin=10, ymin=20, xmax=40, ymax=60
+    assert!(xml1.contains("<xmin>10</xmin>"), "xmin");
+    assert!(xml1.contains("<ymin>20</ymin>"), "ymin");
+    assert!(xml1.contains("<xmax>40</xmax>"), "xmax");
+    assert!(xml1.contains("<ymax>60</ymax>"), "ymax");
+    assert!(xml1.contains("<name>cat</name>"), "cat object");
+    assert!(xml1.contains("<name>dog</name>"), "dog object");
+
+    // img2.xml should have 1 object
+    let xml2 = std::fs::read_to_string(ann_dir.join("img2.xml")).expect("img2.xml");
+    assert!(xml2.contains("<name>cat</name>"), "cat object in img2");
+    // bbox=[0,0,200,150] → xmin=0, ymin=0, xmax=200, ymax=150
+    assert!(xml2.contains("<xmax>200</xmax>"), "xmax img2");
+    assert!(xml2.contains("<ymax>150</ymax>"), "ymax img2");
+}
+
+#[test]
+fn test_voc_to_coco_basic() {
+    // Write a known VOC XML and parse it back
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ann_dir = dir.path().join("Annotations");
+    std::fs::create_dir_all(&ann_dir).expect("mkdir");
+
+    let xml = r#"<annotation>
+  <folder>Annotations</folder>
+  <filename>test.jpg</filename>
+  <size>
+    <width>640</width>
+    <height>480</height>
+    <depth>3</depth>
+  </size>
+  <segmented>0</segmented>
+  <object>
+    <name>person</name>
+    <pose>Unspecified</pose>
+    <truncated>0</truncated>
+    <difficult>0</difficult>
+    <bndbox>
+      <xmin>100</xmin>
+      <ymin>50</ymin>
+      <xmax>300</xmax>
+      <ymax>400</ymax>
+    </bndbox>
+  </object>
+  <object>
+    <name>car</name>
+    <pose>Left</pose>
+    <truncated>1</truncated>
+    <difficult>1</difficult>
+    <bndbox>
+      <xmin>400</xmin>
+      <ymin>200</ymin>
+      <xmax>600</xmax>
+      <ymax>450</ymax>
+    </bndbox>
+  </object>
+</annotation>"#;
+    std::fs::write(ann_dir.join("test.xml"), xml).expect("write xml");
+
+    let dataset = voc_to_coco(dir.path()).expect("voc_to_coco");
+
+    assert_eq!(dataset.images.len(), 1);
+    assert_eq!(dataset.images[0].file_name, "test.jpg");
+    assert_eq!(dataset.images[0].width, 640);
+    assert_eq!(dataset.images[0].height, 480);
+
+    assert_eq!(dataset.annotations.len(), 2);
+    // Categories sorted alphabetically: car=1, person=2
+    assert_eq!(dataset.categories.len(), 2);
+    assert_eq!(dataset.categories[0].name, "car");
+    assert_eq!(dataset.categories[1].name, "person");
+
+    // person: xmin=100, ymin=50, xmax=300, ymax=400 → bbox=[100, 50, 200, 350]
+    let person_ann = dataset
+        .annotations
+        .iter()
+        .find(|a| {
+            a.category_id
+                == dataset
+                    .categories
+                    .iter()
+                    .find(|c| c.name == "person")
+                    .unwrap()
+                    .id
+        })
+        .expect("person annotation");
+    let bbox = person_ann.bbox.unwrap();
+    assert_eq!(bbox, [100.0, 50.0, 200.0, 350.0]);
+
+    // car: xmin=400, ymin=200, xmax=600, ymax=450 → bbox=[400, 200, 200, 250]
+    let car_ann = dataset
+        .annotations
+        .iter()
+        .find(|a| {
+            a.category_id
+                == dataset
+                    .categories
+                    .iter()
+                    .find(|c| c.name == "car")
+                    .unwrap()
+                    .id
+        })
+        .expect("car annotation");
+    let bbox = car_ann.bbox.unwrap();
+    assert_eq!(bbox, [400.0, 200.0, 200.0, 250.0]);
+
+    // difficult flag is dropped (not mapped to iscrowd)
+    assert!(!person_ann.iscrowd);
+    assert!(!car_ann.iscrowd);
+}
+
+#[test]
+fn test_voc_round_trip() {
+    let original = make_test_dataset_basic();
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // COCO → VOC
+    coco_to_voc(&original, dir.path()).expect("coco_to_voc");
+
+    // VOC → COCO
+    let recovered = voc_to_coco(dir.path()).expect("voc_to_coco");
+
+    assert_eq!(recovered.images.len(), original.images.len());
+    assert_eq!(recovered.annotations.len(), original.annotations.len());
+    assert_eq!(recovered.categories.len(), original.categories.len());
+
+    // Build lookup for original bboxes by (image filename, category name)
+    let cat_id_to_name: HashMap<u64, &str> = original
+        .categories
+        .iter()
+        .map(|c| (c.id, c.name.as_str()))
+        .collect();
+    let img_id_to_fname: HashMap<u64, &str> = original
+        .images
+        .iter()
+        .map(|img| (img.id, img.file_name.as_str()))
+        .collect();
+
+    let mut orig_bboxes: Vec<(String, String, [f64; 4])> = original
+        .annotations
+        .iter()
+        .map(|ann| {
+            let fname = img_id_to_fname[&ann.image_id].to_string();
+            let cat = cat_id_to_name[&ann.category_id].to_string();
+            (fname, cat, ann.bbox.unwrap())
+        })
+        .collect();
+    orig_bboxes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let rec_cat_id_to_name: HashMap<u64, &str> = recovered
+        .categories
+        .iter()
+        .map(|c| (c.id, c.name.as_str()))
+        .collect();
+    let rec_img_id_to_fname: HashMap<u64, &str> = recovered
+        .images
+        .iter()
+        .map(|img| (img.id, img.file_name.as_str()))
+        .collect();
+
+    let mut rec_bboxes: Vec<(String, String, [f64; 4])> = recovered
+        .annotations
+        .iter()
+        .map(|ann| {
+            let fname = rec_img_id_to_fname[&ann.image_id].to_string();
+            let cat = rec_cat_id_to_name[&ann.category_id].to_string();
+            (fname, cat, ann.bbox.unwrap())
+        })
+        .collect();
+    rec_bboxes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    // VOC uses integer coords, so round-trip tolerance is 1.0 pixel
+    for ((o_fname, o_cat, o_bbox), (r_fname, r_cat, r_bbox)) in
+        orig_bboxes.iter().zip(rec_bboxes.iter())
+    {
+        assert_eq!(o_fname, r_fname, "filename mismatch");
+        assert_eq!(o_cat, r_cat, "category mismatch");
+        for i in 0..4 {
+            assert!(
+                (o_bbox[i] - r_bbox[i]).abs() <= 1.0,
+                "bbox[{i}] mismatch for {o_fname}/{o_cat}: orig={} recovered={}",
+                o_bbox[i],
+                r_bbox[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_coco_to_voc_crowd_as_difficult() {
+    let dataset = Dataset {
+        info: None,
+        images: vec![Image {
+            id: 1,
+            file_name: "img.jpg".into(),
+            width: 100,
+            height: 100,
+            license: None,
+            coco_url: None,
+            flickr_url: None,
+            date_captured: None,
+            neg_category_ids: vec![],
+            not_exhaustive_category_ids: vec![],
+        }],
+        annotations: vec![
+            Annotation {
+                id: 1,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([10.0, 20.0, 30.0, 40.0]),
+                area: Some(1200.0),
+                iscrowd: true,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None,
+            },
+            Annotation {
+                id: 2,
+                image_id: 1,
+                category_id: 1,
+                bbox: Some([50.0, 60.0, 10.0, 10.0]),
+                area: Some(100.0),
+                iscrowd: false,
+                segmentation: None,
+                keypoints: None,
+                num_keypoints: None,
+                score: None,
+                is_group_of: None,
+            },
+        ],
+        categories: vec![Category {
+            id: 1,
+            name: "thing".into(),
+            supercategory: None,
+            skeleton: None,
+            keypoints: None,
+            frequency: None,
+        }],
+        licenses: vec![],
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stats = coco_to_voc(&dataset, dir.path()).expect("coco_to_voc");
+
+    assert_eq!(stats.annotations, 2, "both annotations should be written");
+    assert_eq!(stats.crowd_as_difficult, 1, "one crowd annotation");
+
+    let xml = std::fs::read_to_string(dir.path().join("Annotations/img.xml")).expect("img.xml");
+    // The crowd annotation should have <difficult>1</difficult>
+    assert!(
+        xml.contains("<difficult>1</difficult>"),
+        "crowd → difficult=1"
+    );
+    assert!(
+        xml.contains("<difficult>0</difficult>"),
+        "non-crowd → difficult=0"
+    );
+}
+
+#[test]
+fn test_voc_labels_txt_ordering() {
+    // When labels.txt is present, it should determine category ordering
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ann_dir = dir.path().join("Annotations");
+    std::fs::create_dir_all(&ann_dir).expect("mkdir");
+
+    // Write labels.txt with non-alphabetical order
+    std::fs::write(dir.path().join("labels.txt"), "zebra\napple\n").expect("labels.txt");
+
+    let xml = r#"<annotation>
+  <filename>img.jpg</filename>
+  <size><width>100</width><height>100</height><depth>3</depth></size>
+  <object>
+    <name>apple</name>
+    <bndbox><xmin>0</xmin><ymin>0</ymin><xmax>50</xmax><ymax>50</ymax></bndbox>
+  </object>
+  <object>
+    <name>zebra</name>
+    <bndbox><xmin>50</xmin><ymin>50</ymin><xmax>100</xmax><ymax>100</ymax></bndbox>
+  </object>
+</annotation>"#;
+    std::fs::write(ann_dir.join("img.xml"), xml).expect("write xml");
+
+    let dataset = voc_to_coco(dir.path()).expect("voc_to_coco");
+
+    // labels.txt ordering: zebra=1, apple=2
+    assert_eq!(dataset.categories[0].name, "zebra");
+    assert_eq!(dataset.categories[0].id, 1);
+    assert_eq!(dataset.categories[1].name, "apple");
+    assert_eq!(dataset.categories[1].id, 2);
 }
 
 // ── f_scores tests ────────────────────────────────────────────────────────────

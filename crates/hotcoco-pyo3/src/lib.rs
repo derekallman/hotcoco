@@ -610,6 +610,93 @@ impl PyCOCO {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
     }
 
+    /// Export the dataset to Pascal VOC annotation format.
+    ///
+    /// Writes one XML file per image into ``output_dir/Annotations/``, plus a
+    /// ``labels.txt`` file listing category names sorted by COCO ID.
+    ///
+    /// Parameters
+    /// ----------
+    /// output_dir : str
+    ///     Directory to write the VOC annotations into.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     ``{'images': int, 'annotations': int, 'crowd_as_difficult': int, 'missing_bbox': int}``
+    ///
+    /// Examples
+    /// --------
+    /// >>> coco = COCO("instances_val2017.json")
+    /// >>> stats = coco.to_voc("voc_output/")
+    /// >>> print(stats)
+    /// {'images': 5000, 'annotations': 36781, 'crowd_as_difficult': 12, 'missing_bbox': 0}
+    fn to_voc(&self, py: Python<'_>, output_dir: &str) -> PyResult<PyObject> {
+        let stats = hotcoco_core::convert::coco_to_voc(&self.inner.dataset, Path::new(output_dir))
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let dict = PyDict::new(py);
+        dict.set_item("images", stats.images)?;
+        dict.set_item("annotations", stats.annotations)?;
+        dict.set_item("crowd_as_difficult", stats.crowd_as_difficult)?;
+        dict.set_item("missing_bbox", stats.missing_bbox)?;
+        Ok(dict.into_any().unbind())
+    }
+
+    /// Load a Pascal VOC annotation directory as a COCO dataset.
+    ///
+    /// Scans for ``*.xml`` files in ``voc_dir/Annotations/`` (falls back to
+    /// ``voc_dir/`` directly). Image dimensions are read from each XML's
+    /// ``<size>`` element.
+    ///
+    /// If ``labels.txt`` exists in ``voc_dir``, it determines category ordering;
+    /// otherwise categories are sorted alphabetically.
+    ///
+    /// Parameters
+    /// ----------
+    /// voc_dir : str
+    ///     Directory containing an ``Annotations/`` subdirectory with ``.xml``
+    ///     files, or a flat directory of ``.xml`` files.
+    ///
+    /// Returns
+    /// -------
+    /// COCO
+    ///     A new ``COCO`` object containing the parsed dataset.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If XML files cannot be parsed or required elements are missing.
+    ///
+    /// Examples
+    /// --------
+    /// >>> coco = COCO.from_voc("VOCdevkit/VOC2012/")
+    /// >>> print(len(coco.dataset['images']))
+    /// 5717
+    /// >>> coco.save("voc2012_as_coco.json")
+    #[classmethod]
+    fn from_voc(cls: &Bound<'_, PyType>, voc_dir: &str) -> PyResult<PyCOCO> {
+        let _ = cls;
+        hotcoco_core::convert::voc_to_coco(Path::new(voc_dir))
+            .map(|ds| PyCOCO {
+                inner: hotcoco_core::COCO::from_dataset(ds),
+                image_dir: None,
+            })
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Export the dataset to Pascal VOC format (camelCase alias).
+    #[pyo3(name = "toVoc")]
+    fn to_voc_camel(&self, py: Python<'_>, output_dir: &str) -> PyResult<PyObject> {
+        self.to_voc(py, output_dir)
+    }
+
+    /// Load a Pascal VOC annotation directory (camelCase alias).
+    #[classmethod]
+    #[pyo3(name = "fromVoc")]
+    fn from_voc_camel(cls: &Bound<'_, PyType>, voc_dir: &str) -> PyResult<PyCOCO> {
+        Self::from_voc(cls, voc_dir)
+    }
+
     #[getter]
     fn dataset(&self, py: Python<'_>) -> PyResult<PyObject> {
         let ds = &self.inner.dataset;

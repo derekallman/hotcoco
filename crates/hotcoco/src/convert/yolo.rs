@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::types::{Annotation, Category, Dataset, Image};
+
+use super::ConvertError;
 
 /// Statistics returned by [`coco_to_yolo`].
 #[derive(Debug, Clone)]
@@ -16,40 +18,6 @@ pub struct YoloStats {
     pub skipped_crowd: usize,
     /// Annotations skipped because they had no `bbox`.
     pub missing_bbox: usize,
-}
-
-/// Errors that can occur during format conversion.
-#[derive(Debug)]
-pub enum ConvertError {
-    /// An I/O error occurred while reading or writing files.
-    Io(io::Error),
-    /// An image has `width == 0` or `height == 0`, preventing normalization.
-    MissingImageDimensions(u64),
-    /// No `data.yaml` found in the YOLO directory.
-    MissingDataYaml,
-    /// A label file or `data.yaml` could not be parsed.
-    ParseError(String),
-}
-
-impl std::fmt::Display for ConvertError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConvertError::Io(e) => write!(f, "I/O error: {e}"),
-            ConvertError::MissingImageDimensions(id) => {
-                write!(f, "image id={id} has zero width or height")
-            }
-            ConvertError::MissingDataYaml => write!(f, "data.yaml not found in YOLO directory"),
-            ConvertError::ParseError(s) => write!(f, "parse error: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for ConvertError {}
-
-impl From<io::Error> for ConvertError {
-    fn from(e: io::Error) -> Self {
-        ConvertError::Io(e)
-    }
 }
 
 /// Convert a COCO dataset to YOLO label format.
@@ -74,8 +42,7 @@ impl From<io::Error> for ConvertError {
 pub fn coco_to_yolo(dataset: &Dataset, output_dir: &Path) -> Result<YoloStats, ConvertError> {
     fs::create_dir_all(output_dir)?;
 
-    // Sort categories by ID → 0-indexed YOLO class IDs
-    let mut sorted_cats = dataset.categories.clone();
+    let mut sorted_cats: Vec<&Category> = dataset.categories.iter().collect();
     sorted_cats.sort_by_key(|c| c.id);
     let cat_id_to_idx: HashMap<u64, usize> = sorted_cats
         .iter()
@@ -83,11 +50,7 @@ pub fn coco_to_yolo(dataset: &Dataset, output_dir: &Path) -> Result<YoloStats, C
         .map(|(i, c)| (c.id, i))
         .collect();
 
-    // Group annotations by image_id
-    let mut anns_by_image: HashMap<u64, Vec<&Annotation>> = HashMap::new();
-    for ann in &dataset.annotations {
-        anns_by_image.entry(ann.image_id).or_default().push(ann);
-    }
+    let anns_by_image = super::anns_by_image(dataset);
 
     let mut total_annotations = 0usize;
     let mut skipped_crowd = 0usize;
@@ -98,12 +61,7 @@ pub fn coco_to_yolo(dataset: &Dataset, output_dir: &Path) -> Result<YoloStats, C
             return Err(ConvertError::MissingImageDimensions(img.id));
         }
 
-        let path = Path::new(&img.file_name);
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(img.file_name.as_str())
-            .to_string();
+        let stem = super::file_stem(&img.file_name);
 
         let txt_path = output_dir.join(format!("{stem}.txt"));
         let mut file = fs::File::create(&txt_path)?;
@@ -224,7 +182,7 @@ pub fn yolo_to_coco(
             .unwrap_or("")
             .to_string();
 
-        let (width, height) = lookup_image_dims(image_dims, &stem);
+        let (width, height) = super::lookup_image_dims(image_dims, &stem);
 
         images.push(Image {
             id: img_id,
@@ -309,20 +267,6 @@ pub fn yolo_to_coco(
         categories,
         licenses: vec![],
     })
-}
-
-/// Look up image dimensions by stem; try common extensions as fallback.
-fn lookup_image_dims(image_dims: &HashMap<String, (u32, u32)>, stem: &str) -> (u32, u32) {
-    if let Some(&dims) = image_dims.get(stem) {
-        return dims;
-    }
-    for ext in &["jpg", "jpeg", "png", "bmp", "tif", "tiff"] {
-        let key = format!("{stem}.{ext}");
-        if let Some(&dims) = image_dims.get(&key) {
-            return dims;
-        }
-    }
-    (0, 0)
 }
 
 /// Parse `data.yaml` produced by [`coco_to_yolo`] and return the names list.

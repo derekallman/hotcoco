@@ -169,10 +169,12 @@ coco.filter(cat_ids=[person_id]).sample(n=1000, seed=0).save("person_sample.json
 
 ## convert
 
-Export a COCO dataset to YOLO label format, or import YOLO labels back to COCO.
-This is the most-used format pair in practice — every YOLO model trainer expects
-label files and a `data.yaml`, but evaluation and annotation tooling generally
-speaks COCO JSON.
+Convert between COCO and other annotation formats. Supported formats:
+
+| Format | Direction | Method |
+|--------|-----------|--------|
+| YOLO | COCO ↔ YOLO | `to_yolo()` / `from_yolo()` |
+| Pascal VOC | COCO ↔ VOC | `to_voc()` / `from_voc()` |
 
 ### COCO → YOLO
 
@@ -227,6 +229,58 @@ error for typical image sizes):
 coco     = COCO("instances_val2017.json")
 stats    = coco.to_yolo("labels/")
 coco2    = COCO.from_yolo("labels/", images_dir="images/val2017/")
+coco2.save("reconstructed.json")
+```
+
+### COCO → Pascal VOC
+
+```python
+from hotcoco import COCO
+
+coco = COCO("instances_val2017.json")
+stats = coco.to_voc("voc_output/")
+print(stats)
+# {'images': 5000, 'annotations': 36781, 'crowd_as_difficult': 12, 'missing_bbox': 0}
+```
+
+`to_voc` creates `voc_output/Annotations/` and writes one `<stem>.xml` per image
+in standard Pascal VOC format (`<annotation>/<object>/<bndbox>` with absolute
+pixel coordinates). Also writes `labels.txt` listing category names sorted by
+COCO ID.
+
+Field mapping:
+
+- COCO `bbox [x, y, w, h]` → VOC `<xmin>/<ymin>/<xmax>/<ymax>` (rounded to integers)
+- COCO `iscrowd` → VOC `<difficult>1</difficult>` (approximate mapping)
+- Segmentation and keypoints are not exported (bbox-only)
+
+### Pascal VOC → COCO
+
+```python
+coco = COCO.from_voc("VOCdevkit/VOC2012/")
+coco.save("voc2012_as_coco.json")
+print(f"{len(coco.dataset['images'])} images, {len(coco.dataset['annotations'])} annotations")
+```
+
+`from_voc` scans for `*.xml` files in `voc_dir/Annotations/` (falls back to the
+root directory). Image dimensions are read from each XML's `<size>` element — no
+Pillow needed.
+
+If `labels.txt` is present (as written by `to_voc`), it determines category
+ordering. Otherwise, categories are sorted alphabetically with IDs starting at 1.
+
+VOC `<difficult>` and `<truncated>` fields are dropped — `difficult` is not
+equivalent to COCO `iscrowd` (different concepts).
+
+### Round-trip precision
+
+VOC uses integer pixel coordinates, so COCO→VOC→COCO round-trip error is bounded
+at ≤1 pixel per coordinate due to rounding:
+
+```python
+coco  = COCO("instances_val2017.json")
+coco.to_voc("voc_output/")
+coco2 = COCO.from_voc("voc_output/")
 coco2.save("reconstructed.json")
 ```
 

@@ -844,3 +844,58 @@ Load a YOLO label directory as a COCO dataset. Class method.
 !!! tip
     See the [Format Conversion guide](../guide/datasets.md#convert) for a full
     worked example including a round-trip and CLI usage.
+
+### `to_voc`
+
+Export the dataset to Pascal VOC annotation format.
+
+=== "Python"
+
+    ```python
+    to_voc(output_dir: str) -> dict
+    ```
+
+    Writes one XML file per image into `output_dir/Annotations/`, plus `labels.txt`.
+    Returns a stats dict with keys: `images`, `annotations`, `crowd_as_difficult`, `missing_bbox`.
+
+    ```python
+    coco = COCO("instances_val2017.json")
+    stats = coco.to_voc("voc_output/")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use hotcoco::convert::{coco_to_voc, VocStats};
+    use std::path::Path;
+
+    let stats: VocStats = coco_to_voc(&coco.dataset, Path::new("voc_output/"))?;
+    ```
+
+### `from_voc`
+
+Load a Pascal VOC annotation directory as a COCO dataset.
+
+=== "Python"
+
+    ```python
+    COCO.from_voc(voc_dir: str) -> COCO
+    ```
+
+    Scans `voc_dir/Annotations/` for `.xml` files (falls back to `voc_dir/` directly).
+    Image dimensions come from each XML's `<size>` element.
+
+    ```python
+    coco = COCO.from_voc("VOCdevkit/VOC2012/")
+    coco.save("voc2012_as_coco.json")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use hotcoco::convert::voc_to_coco;
+    use std::path::Path;
+
+    let dataset = voc_to_coco(Path::new("VOCdevkit/VOC2012/"))?;
+    let coco = hotcoco::COCO::from_dataset(dataset);
+    ```
