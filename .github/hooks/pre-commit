@@ -12,10 +12,10 @@ cargo fmt --all -- --check
 echo "[2/4] cargo clippy -p hotcoco -p hotcoco-cli --all-targets -- -D warnings"
 cargo clippy -p hotcoco -p hotcoco-cli --all-targets -- -D warnings
 
-echo "[3/4] cargo check -p hotcoco-pyo3"
-cargo check -p hotcoco-pyo3
-
-echo "[4/4] cargo test -p hotcoco -p hotcoco-cli"
+echo "[3/4] cargo test -p hotcoco -p hotcoco-cli"
 cargo test -p hotcoco -p hotcoco-cli
+
+echo "[4/4] cargo check -p hotcoco-pyo3"
+cargo check -p hotcoco-pyo3
 
 echo "All pre-commit checks passed."

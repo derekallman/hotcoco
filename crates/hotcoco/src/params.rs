@@ -50,6 +50,23 @@ impl FromStr for IouType {
     }
 }
 
+/// Small-object area upper bound: 32² = 1024 px².
+pub(crate) const AREA_SMALL: f64 = 32.0 * 32.0;
+
+/// Medium/large-object area boundary: 96² = 9216 px².
+pub(crate) const AREA_LARGE: f64 = 96.0 * 96.0;
+
+/// Default OKS sigmas for the 17 COCO keypoints (nose, eyes, ears, shoulders, …, ankles).
+pub(crate) const KPT_OKS_SIGMAS: [f64; 17] = [
+    0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107, 0.107,
+    0.087, 0.087, 0.089, 0.089,
+];
+
+/// Generate the default COCO IoU threshold range: 0.50, 0.55, …, 0.95.
+pub(crate) fn default_iou_thrs() -> Vec<f64> {
+    (0..10).map(|i| 0.5 + 0.05 * i as f64).collect()
+}
+
 /// Evaluation parameters controlling IoU thresholds, area ranges, and detection limits.
 ///
 /// Defaults match pycocotools: 10 IoU thresholds (0.50:0.05:0.95), 101 recall
@@ -103,11 +120,11 @@ impl Params {
                     },
                     AreaRange {
                         label: "medium".into(),
-                        range: [32_f64.powi(2), 96_f64.powi(2)],
+                        range: [AREA_SMALL, AREA_LARGE],
                     },
                     AreaRange {
                         label: "large".into(),
-                        range: [96_f64.powi(2), 1e10],
+                        range: [AREA_LARGE, 1e10],
                     },
                 ],
             ),
@@ -120,27 +137,22 @@ impl Params {
                     },
                     AreaRange {
                         label: "small".into(),
-                        range: [0.0, 32_f64.powi(2)],
+                        range: [0.0, AREA_SMALL],
                     },
                     AreaRange {
                         label: "medium".into(),
-                        range: [32_f64.powi(2), 96_f64.powi(2)],
+                        range: [AREA_SMALL, AREA_LARGE],
                     },
                     AreaRange {
                         label: "large".into(),
-                        range: [96_f64.powi(2), 1e10],
+                        range: [AREA_LARGE, 1e10],
                     },
                 ],
             ),
         };
 
-        // Default OKS sigmas for 17 COCO keypoints
-        let kpt_oks_sigmas = vec![
-            0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107,
-            0.107, 0.087, 0.087, 0.089, 0.089,
-        ];
-
-        let iou_thrs: Vec<f64> = (0..10).map(|i| 0.5 + 0.05 * i as f64).collect();
+        let kpt_oks_sigmas = KPT_OKS_SIGMAS.to_vec();
+        let iou_thrs = default_iou_thrs();
         let rec_thrs: Vec<f64> = (0..=100).map(|i| i as f64 / 100.0).collect();
 
         Params {

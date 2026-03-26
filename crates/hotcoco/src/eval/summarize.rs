@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::params::{IouType, Params};
+use crate::params::{default_iou_thrs, IouType, Params};
 
 use super::results::{EvalParams, EvalResults};
 use super::types::{AccumulatedEval, FreqGroup, FreqGroups};
@@ -503,7 +503,7 @@ impl COCOeval {
             let defaults = Params::new(self.params.iou_type);
             let mut warnings = Vec::new();
 
-            let default_iou: Vec<f64> = (0..10).map(|i| 0.5 + 0.05 * i as f64).collect();
+            let default_iou = default_iou_thrs();
             if self.params.iou_thrs != default_iou {
                 warnings.push(
                     "iou_thrs differ from default (0.50:0.05:0.95). AP50/AP75 lines may show -1.000."
