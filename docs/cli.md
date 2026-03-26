@@ -324,7 +324,7 @@ coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000 --json
 
 ### `coco convert`
 
-Convert between annotation formats. Supports COCO JSON ↔ YOLO labels and COCO JSON ↔ Pascal VOC XML.
+Convert between annotation formats. Supports COCO JSON ↔ YOLO labels, COCO JSON ↔ Pascal VOC XML, and COCO JSON ↔ CVAT for Images XML.
 
 **COCO → YOLO:**
 
@@ -350,12 +350,24 @@ coco convert --from coco --to voc --input <annotations.json> --output <voc_dir/>
 coco convert --from voc --to coco --input <voc_dir/> --output <annotations.json>
 ```
 
+**COCO → CVAT:**
+
+```bash
+coco convert --from coco --to cvat --input <annotations.json> --output <annotations.xml>
+```
+
+**CVAT → COCO:**
+
+```bash
+coco convert --from cvat --to coco --input <annotations.xml> --output <annotations.json>
+```
+
 | Flag | Description |
 |------|-------------|
-| `--from` | Source format: `coco`, `yolo`, or `voc` |
-| `--to` | Target format: `coco`, `yolo`, or `voc` |
-| `--input` | Input path — JSON file (COCO), label directory (YOLO), or annotation directory (VOC) |
-| `--output` | Output path — label directory (YOLO), annotation directory (VOC), or JSON file (COCO) |
+| `--from` | Source format: `coco`, `yolo`, `voc`, or `cvat` |
+| `--to` | Target format: `coco`, `yolo`, `voc`, or `cvat` |
+| `--input` | Input path — JSON file (COCO), label directory (YOLO), annotation directory (VOC), or XML file (CVAT) |
+| `--output` | Output path — label directory (YOLO), annotation directory (VOC), XML file (CVAT), or JSON file (COCO) |
 | `--images-dir` | *(YOLO → COCO only)* Directory of source images; used by Pillow to populate `width`/`height` on each image record. Requires `pip install Pillow`. |
 | `--json` | Write conversion stats as JSON to stdout |
 
@@ -380,6 +392,16 @@ coco convert --from coco --to voc \
 coco convert --from voc --to coco \
     --input VOCdevkit/VOC2012/ \
     --output voc2012_as_coco.json
+
+# Export to CVAT
+coco convert --from coco --to cvat \
+    --input instances_val2017.json \
+    --output annotations.xml
+
+# Import CVAT
+coco convert --from cvat --to coco \
+    --input annotations.xml \
+    --output cvat_as_coco.json
 ```
 
 ---

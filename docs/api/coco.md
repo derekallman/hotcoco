@@ -899,3 +899,57 @@ Load a Pascal VOC annotation directory as a COCO dataset.
     let dataset = voc_to_coco(Path::new("VOCdevkit/VOC2012/"))?;
     let coco = hotcoco::COCO::from_dataset(dataset);
     ```
+
+### `to_cvat`
+
+Export the dataset to CVAT for Images 1.1 XML format.
+
+=== "Python"
+
+    ```python
+    to_cvat(output_path: str) -> dict
+    ```
+
+    Writes a single XML file. Bboxes become `<box>`, polygons become `<polygon>`.
+    Returns a stats dict with keys: `images`, `boxes`, `polygons`, `skipped_no_geometry`.
+
+    ```python
+    coco = COCO("instances_val2017.json")
+    stats = coco.to_cvat("annotations.xml")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use hotcoco::convert::{coco_to_cvat, CvatStats};
+    use std::path::Path;
+
+    let stats: CvatStats = coco_to_cvat(&coco.dataset, Path::new("annotations.xml"))?;
+    ```
+
+### `from_cvat`
+
+Load a CVAT for Images 1.1 XML file as a COCO dataset.
+
+=== "Python"
+
+    ```python
+    COCO.from_cvat(cvat_path: str) -> COCO
+    ```
+
+    Reads a single XML file. Supports `<box>` and `<polygon>` elements.
+
+    ```python
+    coco = COCO.from_cvat("annotations.xml")
+    coco.save("cvat_as_coco.json")
+    ```
+
+=== "Rust"
+
+    ```rust
+    use hotcoco::convert::cvat_to_coco;
+    use std::path::Path;
+
+    let dataset = cvat_to_coco(Path::new("annotations.xml"))?;
+    let coco = hotcoco::COCO::from_dataset(dataset);
+    ```

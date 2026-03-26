@@ -550,6 +550,54 @@ def cmd_convert(args):
         print(f"  images:      {n_imgs:,}")
         print(f"  annotations: {n_anns:,}")
 
+    elif from_fmt == "coco" and to_fmt == "cvat":
+        coco = _load_coco(args.input)
+        try:
+            stats = coco.to_cvat(args.output)
+        except Exception as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        if args.json:
+            return {"direction": "coco_to_cvat", "input": args.input, "output": args.output, **stats}
+
+        print("convert: COCO → CVAT")
+        print(f"  input:       {os.path.basename(args.input)}")
+        print(f"  output:      {args.output}")
+        print(f"  images:      {stats['images']:,}")
+        print(f"  boxes:       {stats['boxes']:,}")
+        print(f"  polygons:    {stats['polygons']:,}")
+        if stats["skipped_no_geometry"] > 0:
+            print(f"  skipped (no geometry): {stats['skipped_no_geometry']:,}")
+
+    elif from_fmt == "cvat" and to_fmt == "coco":
+        try:
+            from hotcoco import COCO
+        except ImportError:
+            print("error: hotcoco is not installed", file=sys.stderr)
+            sys.exit(1)
+        try:
+            coco = COCO.from_cvat(args.input)
+        except Exception as e:
+            print(f"error: {e}", file=sys.stderr)
+            sys.exit(1)
+        try:
+            coco.save(args.output)
+        except Exception as e:
+            print(f"error saving {args.output}: {e}", file=sys.stderr)
+            sys.exit(1)
+        n_imgs = len(coco.dataset["images"])
+        n_anns = len(coco.dataset["annotations"])
+
+        if args.json:
+            return {"direction": "cvat_to_coco", "input": args.input, "output": args.output, "images": n_imgs, "annotations": n_anns}
+
+        print("convert: CVAT → COCO")
+        print(f"  input:       {args.input}")
+        print(f"  output:      {os.path.basename(args.output)}")
+        print(f"  images:      {n_imgs:,}")
+        print(f"  annotations: {n_anns:,}")
+
     else:
         print(f"error: unsupported conversion: {from_fmt} → {to_fmt}", file=sys.stderr)
         sys.exit(1)
@@ -971,11 +1019,11 @@ def main():
     sample_parser.add_argument("--frac", type=float, default=None, help="fraction of images to sample")
     sample_parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
 
-    convert_parser = subparsers.add_parser("convert", parents=[_json_parent], help="convert between annotation formats (COCO ↔ YOLO/VOC)")
+    convert_parser = subparsers.add_parser("convert", parents=[_json_parent], help="convert between annotation formats (COCO ↔ YOLO/VOC/CVAT)")
     convert_parser.add_argument(
-        "--from", dest="from_fmt", required=True, choices=["coco", "yolo", "voc"], help="source format"
+        "--from", dest="from_fmt", required=True, choices=["coco", "yolo", "voc", "cvat"], help="source format"
     )
-    convert_parser.add_argument("--to", dest="to_fmt", required=True, choices=["coco", "yolo", "voc"], help="target format")
+    convert_parser.add_argument("--to", dest="to_fmt", required=True, choices=["coco", "yolo", "voc", "cvat"], help="target format")
     convert_parser.add_argument("--input", required=True, help="input file (COCO JSON) or directory (YOLO labels / VOC Annotations)")
     convert_parser.add_argument("--output", required=True, help="output file (COCO JSON) or directory (YOLO labels / VOC Annotations)")
     convert_parser.add_argument(

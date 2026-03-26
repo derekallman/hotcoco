@@ -1,6 +1,8 @@
+mod cvat;
 mod voc;
 mod yolo;
 
+pub use cvat::{coco_to_cvat, cvat_to_coco, CvatStats};
 pub use voc::{coco_to_voc, voc_to_coco, VocStats};
 pub use yolo::{coco_to_yolo, yolo_to_coco, YoloStats};
 
@@ -85,4 +87,17 @@ pub(crate) fn lookup_image_dims(
         }
     }
     (0, 0)
+}
+
+/// Write a simple `<tag>text</tag>` XML element.
+pub(crate) fn write_text_element<W: std::io::Write>(
+    writer: &mut quick_xml::writer::Writer<W>,
+    tag: &str,
+    text: &str,
+) -> Result<(), quick_xml::Error> {
+    use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+    writer.write_event(Event::Start(BytesStart::new(tag)))?;
+    writer.write_event(Event::Text(BytesText::new(text)))?;
+    writer.write_event(Event::End(BytesEnd::new(tag)))?;
+    Ok(())
 }

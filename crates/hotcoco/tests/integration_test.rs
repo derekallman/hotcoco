@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use hotcoco::convert::{coco_to_voc, coco_to_yolo, voc_to_coco, yolo_to_coco};
+use hotcoco::convert::{
+    coco_to_cvat, coco_to_voc, coco_to_yolo, cvat_to_coco, voc_to_coco, yolo_to_coco,
+};
 use hotcoco::params::IouType;
 use hotcoco::types::{Annotation, Category, Dataset, Image};
 use hotcoco::{healthcheck, COCOeval, Hierarchy, COCO};
@@ -2585,6 +2587,218 @@ fn test_voc_labels_txt_ordering() {
     assert_eq!(dataset.categories[0].id, 1);
     assert_eq!(dataset.categories[1].name, "apple");
     assert_eq!(dataset.categories[1].id, 2);
+}
+
+// ── CVAT conversion tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_coco_to_cvat_basic() {
+    let dataset = make_test_dataset_basic();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = dir.path().join("annotations.xml");
+    let stats = coco_to_cvat(&dataset, &out).expect("coco_to_cvat");
+
+    assert_eq!(stats.images, 2);
+    assert_eq!(stats.boxes, 3);
+    assert_eq!(stats.polygons, 0);
+    assert_eq!(stats.skipped_no_geometry, 0);
+
+    let xml = std::fs::read_to_string(&out).expect("read xml");
+    assert!(xml.contains("<version>1.1</version>"), "version");
+    assert!(xml.contains("<name>cat</name>"), "cat label");
+    assert!(xml.contains("<name>dog</name>"), "dog label");
+    assert!(xml.contains("name=\"img1.jpg\""), "image name");
+    // ann id=1: bbox=[10,20,30,40] → xtl=10, ytl=20, xbr=40, ybr=60
+    assert!(xml.contains("xtl=\"10.00\""), "xtl");
+    assert!(xml.contains("ytl=\"20.00\""), "ytl");
+    assert!(xml.contains("xbr=\"40.00\""), "xbr");
+    assert!(xml.contains("ybr=\"60.00\""), "ybr");
+}
+
+#[test]
+fn test_cvat_to_coco_basic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml_path = dir.path().join("annotations.xml");
+    let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta>
+    <task>
+      <labels>
+        <label><name>person</name></label>
+        <label><name>car</name></label>
+      </labels>
+    </task>
+  </meta>
+  <image id="0" name="test.jpg" width="640" height="480">
+    <box label="person" xtl="100" ytl="50" xbr="300" ybr="400" occluded="0"/>
+    <box label="car" xtl="400" ytl="200" xbr="600" ybr="450" occluded="0"/>
+  </image>
+</annotations>"#;
+    std::fs::write(&xml_path, xml).expect("write xml");
+
+    let dataset = cvat_to_coco(&xml_path).expect("cvat_to_coco");
+
+    assert_eq!(dataset.images.len(), 1);
+    assert_eq!(dataset.images[0].file_name, "test.jpg");
+    assert_eq!(dataset.images[0].width, 640);
+    assert_eq!(dataset.images[0].height, 480);
+
+    assert_eq!(dataset.annotations.len(), 2);
+    // Categories from meta: person=1, car=2 (meta ordering preserved)
+    assert_eq!(dataset.categories[0].name, "person");
+    assert_eq!(dataset.categories[1].name, "car");
+
+    // person: xtl=100, ytl=50, xbr=300, ybr=400 → bbox=[100, 50, 200, 350]
+    let person_cat = dataset
+        .categories
+        .iter()
+        .find(|c| c.name == "person")
+        .unwrap();
+    let person_ann = dataset
+        .annotations
+        .iter()
+        .find(|a| a.category_id == person_cat.id)
+        .expect("person annotation");
+    let bbox = person_ann.bbox.unwrap();
+    assert_eq!(bbox, [100.0, 50.0, 200.0, 350.0]);
+}
+
+#[test]
+fn test_cvat_round_trip_boxes() {
+    let original = make_test_dataset_basic();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml_path = dir.path().join("output.xml");
+
+    coco_to_cvat(&original, &xml_path).expect("coco_to_cvat");
+    let recovered = cvat_to_coco(&xml_path).expect("cvat_to_coco");
+
+    assert_eq!(recovered.images.len(), original.images.len());
+    assert_eq!(recovered.annotations.len(), original.annotations.len());
+    assert_eq!(recovered.categories.len(), original.categories.len());
+
+    // Build lookup for comparison
+    let cat_id_to_name: HashMap<u64, &str> = original
+        .categories
+        .iter()
+        .map(|c| (c.id, c.name.as_str()))
+        .collect();
+    let img_id_to_fname: HashMap<u64, &str> = original
+        .images
+        .iter()
+        .map(|img| (img.id, img.file_name.as_str()))
+        .collect();
+    let mut orig_bboxes: Vec<(String, String, [f64; 4])> = original
+        .annotations
+        .iter()
+        .map(|ann| {
+            let fname = img_id_to_fname[&ann.image_id].to_string();
+            let cat = cat_id_to_name[&ann.category_id].to_string();
+            (fname, cat, ann.bbox.unwrap())
+        })
+        .collect();
+    orig_bboxes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let rec_cat: HashMap<u64, &str> = recovered
+        .categories
+        .iter()
+        .map(|c| (c.id, c.name.as_str()))
+        .collect();
+    let rec_img: HashMap<u64, &str> = recovered
+        .images
+        .iter()
+        .map(|img| (img.id, img.file_name.as_str()))
+        .collect();
+    let mut rec_bboxes: Vec<(String, String, [f64; 4])> = recovered
+        .annotations
+        .iter()
+        .map(|ann| {
+            let fname = rec_img[&ann.image_id].to_string();
+            let cat = rec_cat[&ann.category_id].to_string();
+            (fname, cat, ann.bbox.unwrap())
+        })
+        .collect();
+    rec_bboxes.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    // CVAT uses float coords — round-trip should be exact within formatting precision
+    for ((o_f, o_c, o_b), (r_f, r_c, r_b)) in orig_bboxes.iter().zip(rec_bboxes.iter()) {
+        assert_eq!(o_f, r_f, "filename mismatch");
+        assert_eq!(o_c, r_c, "category mismatch");
+        for i in 0..4 {
+            assert!(
+                (o_b[i] - r_b[i]).abs() < 0.01,
+                "bbox[{i}] mismatch for {o_f}/{o_c}: orig={} recovered={}",
+                o_b[i],
+                r_b[i]
+            );
+        }
+    }
+}
+
+#[test]
+fn test_cvat_polygons() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml_path = dir.path().join("poly.xml");
+    let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta><task><labels><label><name>shape</name></label></labels></task></meta>
+  <image id="0" name="img.jpg" width="100" height="100">
+    <polygon label="shape" points="10.0,20.0;50.0,20.0;50.0,80.0;10.0,80.0" occluded="0"/>
+  </image>
+</annotations>"#;
+    std::fs::write(&xml_path, xml).expect("write xml");
+
+    let dataset = cvat_to_coco(&xml_path).expect("cvat_to_coco");
+    assert_eq!(dataset.annotations.len(), 1);
+
+    let ann = &dataset.annotations[0];
+    // bbox should be [10, 20, 40, 60]
+    let bbox = ann.bbox.unwrap();
+    assert!((bbox[0] - 10.0).abs() < 1e-6, "x");
+    assert!((bbox[1] - 20.0).abs() < 1e-6, "y");
+    assert!((bbox[2] - 40.0).abs() < 1e-6, "w");
+    assert!((bbox[3] - 60.0).abs() < 1e-6, "h");
+
+    // area via shoelace: 40 * 60 = 2400
+    assert!((ann.area.unwrap() - 2400.0).abs() < 1e-6, "area");
+
+    // segmentation should be a polygon
+    match &ann.segmentation {
+        Some(hotcoco::types::Segmentation::Polygon(polys)) => {
+            assert_eq!(polys.len(), 1);
+            assert_eq!(
+                polys[0],
+                vec![10.0, 20.0, 50.0, 20.0, 50.0, 80.0, 10.0, 80.0]
+            );
+        }
+        other => panic!("expected Polygon segmentation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn test_cvat_skips_unsupported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml_path = dir.path().join("mixed.xml");
+    let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<annotations>
+  <version>1.1</version>
+  <meta><task><labels><label><name>thing</name></label></labels></task></meta>
+  <image id="0" name="img.jpg" width="100" height="100">
+    <box label="thing" xtl="10" ytl="10" xbr="50" ybr="50" occluded="0"/>
+    <polyline label="thing" points="10,10;50,50" occluded="0"/>
+    <points label="thing" points="25,25" occluded="0"/>
+  </image>
+</annotations>"#;
+    std::fs::write(&xml_path, xml).expect("write xml");
+
+    let dataset = cvat_to_coco(&xml_path).expect("cvat_to_coco");
+    // Only the box should be imported; polyline and points are unsupported
+    assert_eq!(dataset.annotations.len(), 1);
+    assert_eq!(
+        dataset.annotations[0].bbox.unwrap(),
+        [10.0, 10.0, 40.0, 40.0]
+    );
 }
 
 // ── f_scores tests ────────────────────────────────────────────────────────────

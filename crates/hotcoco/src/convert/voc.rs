@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, BufWriter};
 use std::path::Path;
 
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
 
@@ -299,18 +299,9 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
     })
 }
 
-// ── Internal helpers ─────────────────────────────────────────────────────────
+// ── Internal types ───────────────────────────────────────────────────────────
 
-fn write_text_element<W: std::io::Write>(
-    writer: &mut Writer<W>,
-    tag: &str,
-    text: &str,
-) -> Result<(), quick_xml::Error> {
-    writer.write_event(Event::Start(BytesStart::new(tag)))?;
-    writer.write_event(Event::Text(BytesText::new(text)))?;
-    writer.write_event(Event::End(BytesEnd::new(tag)))?;
-    Ok(())
-}
+use super::write_text_element;
 
 struct ParsedVocImage {
     filename: String,

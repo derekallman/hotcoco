@@ -175,6 +175,7 @@ Convert between COCO and other annotation formats. Supported formats:
 |--------|-----------|--------|
 | YOLO | COCO ↔ YOLO | `to_yolo()` / `from_yolo()` |
 | Pascal VOC | COCO ↔ VOC | `to_voc()` / `from_voc()` |
+| CVAT | COCO ↔ CVAT | `to_cvat()` / `from_cvat()` |
 
 ### COCO → YOLO
 
@@ -283,6 +284,36 @@ coco.to_voc("voc_output/")
 coco2 = COCO.from_voc("voc_output/")
 coco2.save("reconstructed.json")
 ```
+
+### COCO → CVAT
+
+```python
+from hotcoco import COCO
+
+coco = COCO("instances_val2017.json")
+stats = coco.to_cvat("annotations.xml")
+print(stats)
+# {'images': 5000, 'boxes': 36781, 'polygons': 0, 'skipped_no_geometry': 0}
+```
+
+`to_cvat` writes a single CVAT for Images 1.1 XML file. Bounding boxes become
+`<box>` elements; polygon segmentations become `<polygon>` elements with
+semicolon-separated point pairs.
+
+### CVAT → COCO
+
+```python
+coco = COCO.from_cvat("annotations.xml")
+coco.save("cvat_as_coco.json")
+print(f"{len(coco.dataset['images'])} images, {len(coco.dataset['annotations'])} annotations")
+```
+
+`from_cvat` reads a single CVAT XML file. Category ordering comes from the
+`<meta><task><labels>` block. Supports `<box>` and `<polygon>` elements;
+`<polyline>`, `<points>`, and `<cuboid>` are skipped.
+
+Polygon area is computed via the shoelace formula; bounding boxes are derived
+from polygon vertex extents.
 
 ---
 

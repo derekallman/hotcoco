@@ -697,6 +697,91 @@ impl PyCOCO {
         Self::from_voc(cls, voc_dir)
     }
 
+    /// Export the dataset to CVAT for Images 1.1 XML format.
+    ///
+    /// Writes a single XML file at ``output_path`` containing all images and
+    /// annotations. Bounding boxes become ``<box>`` elements; polygon
+    /// segmentations become ``<polygon>`` elements.
+    ///
+    /// Parameters
+    /// ----------
+    /// output_path : str
+    ///     Path to the output XML file.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     ``{'images': int, 'boxes': int, 'polygons': int, 'skipped_no_geometry': int}``
+    ///
+    /// Examples
+    /// --------
+    /// >>> coco = COCO("instances_val2017.json")
+    /// >>> stats = coco.to_cvat("annotations.xml")
+    /// >>> print(stats)
+    /// {'images': 5000, 'boxes': 36781, 'polygons': 0, 'skipped_no_geometry': 0}
+    fn to_cvat(&self, py: Python<'_>, output_path: &str) -> PyResult<PyObject> {
+        let stats =
+            hotcoco_core::convert::coco_to_cvat(&self.inner.dataset, Path::new(output_path))
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        let dict = PyDict::new(py);
+        dict.set_item("images", stats.images)?;
+        dict.set_item("boxes", stats.boxes)?;
+        dict.set_item("polygons", stats.polygons)?;
+        dict.set_item("skipped_no_geometry", stats.skipped_no_geometry)?;
+        Ok(dict.into_any().unbind())
+    }
+
+    /// Load a CVAT for Images 1.1 XML file as a COCO dataset.
+    ///
+    /// Reads a single XML file. Category ordering comes from the
+    /// ``<meta><task><labels>`` block. Supports ``<box>`` and ``<polygon>``
+    /// elements; ``<polyline>``, ``<points>``, and ``<cuboid>`` are skipped.
+    ///
+    /// Parameters
+    /// ----------
+    /// cvat_path : str
+    ///     Path to the CVAT XML file.
+    ///
+    /// Returns
+    /// -------
+    /// COCO
+    ///     A new ``COCO`` object containing the parsed dataset.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If the XML file cannot be parsed or required attributes are missing.
+    ///
+    /// Examples
+    /// --------
+    /// >>> coco = COCO.from_cvat("annotations.xml")
+    /// >>> print(len(coco.dataset['images']))
+    /// 5000
+    /// >>> coco.save("cvat_as_coco.json")
+    #[classmethod]
+    fn from_cvat(cls: &Bound<'_, PyType>, cvat_path: &str) -> PyResult<PyCOCO> {
+        let _ = cls;
+        hotcoco_core::convert::cvat_to_coco(Path::new(cvat_path))
+            .map(|ds| PyCOCO {
+                inner: hotcoco_core::COCO::from_dataset(ds),
+                image_dir: None,
+            })
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))
+    }
+
+    /// Export to CVAT format (camelCase alias).
+    #[pyo3(name = "toCvat")]
+    fn to_cvat_camel(&self, py: Python<'_>, output_path: &str) -> PyResult<PyObject> {
+        self.to_cvat(py, output_path)
+    }
+
+    /// Load a CVAT XML file (camelCase alias).
+    #[classmethod]
+    #[pyo3(name = "fromCvat")]
+    fn from_cvat_camel(cls: &Bound<'_, PyType>, cvat_path: &str) -> PyResult<PyCOCO> {
+        Self::from_cvat(cls, cvat_path)
+    }
+
     #[getter]
     fn dataset(&self, py: Python<'_>) -> PyResult<PyObject> {
         let ds = &self.inner.dataset;
