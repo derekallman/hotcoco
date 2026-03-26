@@ -117,13 +117,15 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ### Interactive Eval Dashboard
 
-Unified page showing all evaluation results with click-through to browse.
+**Shipped.**
 
-- `/dashboard` route in browse server with embedded Plotly charts (via `fig.to_html()`)
-- Click confusion matrix cell → filtered gallery
-- Click PR curve point → browse images at that threshold
-- Click per-category AP bar → browse that category's predictions
-- Drill-down: aggregate → category → image → annotation
+~~Unified page showing all evaluation results with click-through to browse.~~
+
+- ~~`/dashboard` route in browse server with embedded Plotly charts (via `fig.to_html()`)~~
+- ~~Click confusion matrix cell → filtered gallery~~
+- Click PR curve point → browse images at that threshold (future)
+- ~~Click per-category AP bar → browse that category's predictions~~
+- Drill-down: aggregate → category → image → annotation (future)
 
 ---
 

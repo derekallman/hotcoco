@@ -228,3 +228,33 @@ run_server(app, port=7861, open_browser=True)
 
 `create_app` returns a FastAPI app. You can mount it inside a larger application
 or run it with any ASGI server.
+
+---
+
+## Eval dashboard
+
+When you pass detection results, the browse server adds an interactive
+**Dashboard** page at `/dashboard`. Navigate to it via the Gallery ↔ Dashboard
+pills in the sidebar.
+
+```python
+ev = COCOeval(coco, coco.load_res("results.json"), "bbox")
+ev.evaluate(); ev.accumulate(); ev.summarize()
+
+coco.browse(eval=ev, image_dir="images/")
+# click "Dashboard" in the sidebar
+```
+
+The dashboard shows:
+
+- **KPI tiles** — AP, AP50, AP75, AR100 at a glance
+- **PR curves** — IoU-sweep precision-recall across 10 thresholds
+- **Per-category AP** — ranked leaderboard with click-through to gallery
+- **Confusion matrix** — interactive heatmap; click a cell to browse those misclassifications
+- **TIDE error breakdown** — classification, localization, duplicate, background, missed
+- **Calibration** — reliability diagram with ECE/MCE
+- **Per-image F1** — histogram colored by error profile (perfect, FP-heavy, FN-heavy, mixed)
+- **Label errors** — suspected annotation mistakes; click a row to view the image
+
+All charts use the same dark theme as the gallery. The layout is fully
+responsive — from narrow Jupyter panes (~400px) to wide monitors (1600px+).

@@ -6,6 +6,12 @@
         <div class="sidebar-brand">
             <h1>hotcoco</h1>
             <p class="subtitle">dataset browser</p>
+            {% if has_eval %}
+            <nav class="sidebar-nav">
+                <a href="/" class="nav-pill active">Gallery</a>
+                <a href="/dashboard" class="nav-pill">Dashboard</a>
+            </nav>
+            {% endif %}
         </div>
 
         <form id="filters">
@@ -465,6 +471,58 @@ document.addEventListener('keydown', function(e) {
     // Restore cat view preference
     if (document.getElementById('cat-tree') && _catView === 'tree') {
         setCatView('tree');
+    }
+
+    // Parse URL query params (used by dashboard click-through)
+    var params = new URLSearchParams(window.location.search);
+
+    // Apply category filter from URL
+    var catParam = params.get('categories');
+    if (catParam) {
+        var cats = catParam.split(',').map(function(c) { return c.trim(); });
+        var catSet = new Set(cats);
+        // Check matching checkboxes in the flat list
+        document.querySelectorAll('#cat-list input[type=checkbox]').forEach(function(c) {
+            c.checked = catSet.has(c.value);
+        });
+        syncCatViews();
+        updateCatSummary();
+    }
+
+    // Apply eval filter from URL
+    var evalFilterParam = params.get('eval_filter');
+    if (evalFilterParam) {
+        var el = document.getElementById('eval-filter');
+        if (el) el.value = evalFilterParam;
+    }
+
+    // Apply sort from URL
+    var sortParam = params.get('sort');
+    if (sortParam) {
+        var el = document.getElementById('eval-sort');
+        if (el) el.value = sortParam;
+    }
+
+    // If any URL params were set, override the initial gallery load
+    if (catParam || evalFilterParam || sortParam) {
+        var gallery = document.getElementById('gallery');
+        if (gallery) {
+            gallery.setAttribute('hx-get', buildGalleryUrl(1));
+        }
+    }
+
+    // Open lightbox for a specific image from URL (used by label errors table)
+    var detailParam = params.get('detail');
+    if (detailParam) {
+        // Wait for gallery to load, then trigger lightbox
+        document.body.addEventListener('htmx:afterSettle', function onGalleryLoad(e) {
+            if (e.detail.target && e.detail.target.id === 'gallery') {
+                document.body.removeEventListener('htmx:afterSettle', onGalleryLoad);
+                // Trigger detail load into lightbox
+                var query = buildGalleryUrl(1).replace('/gallery?', '');
+                htmx.ajax('GET', '/detail/' + detailParam + '?' + query, {target: '#lightbox-content', swap: 'innerHTML'});
+            }
+        });
     }
 })();
 </script>

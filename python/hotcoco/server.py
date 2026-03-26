@@ -350,6 +350,30 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
             return Response(status_code=404, content="Not found")
         return FileResponse(path)
 
+    # ------------------------------------------------------------------
+    # Dashboard
+    # ------------------------------------------------------------------
+
+    _dashboard_cache: dict[str, str | None] = {"html": None}
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard():
+        if _dashboard_cache["html"] is not None:
+            return HTMLResponse(_dashboard_cache["html"])
+
+        template = env.get_template("dashboard.html")
+
+        if not has_eval:
+            html = template.render(has_eval=False)
+            return HTMLResponse(html)
+
+        from .dashboard import build_dashboard
+
+        data = build_dashboard(coco_eval, slices=slices)
+        html = template.render(has_eval=True, **data)
+        _dashboard_cache["html"] = html
+        return HTMLResponse(html)
+
     return app
 
 

@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Per-image diagnostics & label error detection — `COCOeval.image_diagnostics(iou_thr=0.5, score_thr=0.5)` computes per-annotation TP/FP/FN classification, per-image F1 and AP scores, error profiles, and automatically flags suspected label errors (wrong_label: cross-category GT mislabels; missing_annotation: high-confidence FPs with no nearby GT)
 - `coco eval --diagnostics` CLI flag with `--diag-iou-thr` and `--diag-score-thr` options; compact summary output with F1 distribution and top label error categories
 - `ImageDiagnostics`, `AnnotationIndex`, `ImageSummary`, `LabelError`, `DtStatus`, `GtStatus`, `ErrorProfile`, `LabelErrorType` Rust types exported from crate root
+- Eval dashboard — `/dashboard` route in browse server with KPI tiles (AP, AP50, AP75, AR100), IoU-sweep PR curves, per-category AP leaderboard with expand/collapse, confusion matrix heatmap (click cell → gallery), TIDE error breakdown, calibration reliability diagram (ECE/MCE), per-image F1 histogram colored by error profile, and suspected label errors table (click row → image); all charts Plotly.js with dark theme matching browse UI; Gallery↔Dashboard nav pills in sidebar; dashboard data cached after first compute
+- `python/hotcoco/dashboard.py` — Plotly chart generation module: `build_dashboard()`, `kpi_tiles()`, `chart_pr_curves()`, `chart_per_category_ap()`, `chart_confusion_matrix()`, `chart_tide_errors()`, `chart_calibration()`, `chart_f1_distribution()`, `label_errors_table()`
+- `python/hotcoco/templates/dashboard.html` — dashboard template with sidebar metadata, KPI row, chart grid, and label errors table
+- Dashboard responsive layout — 5 breakpoints (1400px max-width, 1000px single-column charts, 768px toolbar mode with inline metadata, 480px compact with hidden chart hints and 3-column TIDE, 350px+ ultra-narrow); matches gallery responsive behavior at all widths
 
 ### Changed
 

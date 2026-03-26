@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+
+{% block body %}
+<div class="layout">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h1>hotcoco</h1>
+            <p class="subtitle">eval dashboard</p>
+            <nav class="sidebar-nav">
+                <a href="/" class="nav-pill">Gallery</a>
+                <a href="/dashboard" class="nav-pill active">Dashboard</a>
+            </nav>
+        </div>
+
+        {% if has_eval %}
+        <div class="dashboard-meta">
+            <div class="meta-item">
+                <span class="meta-label">Eval Type</span>
+                <span class="meta-value">{{ iou_type }}</span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Categories</span>
+                <span class="meta-value">{{ num_categories | number_format }}</span>
+            </div>
+            <div class="meta-item">
+                <span class="meta-label">Images</span>
+                <span class="meta-value">{{ num_images | number_format }}</span>
+            </div>
+        </div>
+        {% endif %}
+    </aside>
+
+    <main class="dashboard-main">
+        {% if not has_eval %}
+        <div class="dashboard-empty">
+            <h2>No evaluation data</h2>
+            <p>Run with detection results to enable the dashboard:</p>
+            <pre><code>coco.browse(dt=results, image_dir="path/to/images")</code></pre>
+            <p>or from the CLI:</p>
+            <pre><code>coco explore --gt ann.json --dt results.json --images path/to/images/</code></pre>
+        </div>
+        {% else %}
+
+        <!-- KPI tiles -->
+        <section class="kpi-row">
+            {% for item in kpi %}
+            <div class="kpi-tile">
+                <span class="kpi-value">{{ "%.3f" | format(item.value) }}</span>
+                <span class="kpi-label">{{ item.key }}</span>
+            </div>
+            {% endfor %}
+        </section>
+
+        <!-- Plotly.js must load before chart inline scripts execute -->
+        <script src="https://cdn.plot.ly/plotly-cartesian-3.4.0.min.js"></script>
+
+        <!-- Chart grid -->
+        <section class="chart-grid">
+            <div class="chart-card chart-wide">
+                <h3 class="chart-title">Precision-Recall</h3>
+                {{ pr_curves_html | safe }}
+            </div>
+
+            <div class="chart-card chart-wide">
+                <h3 class="chart-title">Per-Category AP <span class="chart-hint">click bar → gallery</span></h3>
+                {{ per_cat_ap_html | safe }}
+            </div>
+
+            <div class="chart-card chart-wide">
+                <h3 class="chart-title">Confusion Matrix <span class="chart-hint">IoU≥0.50 · click cell → gallery</span></h3>
+                {{ confusion_html | safe }}
+            </div>
+
+            <div class="chart-card">
+                <h3 class="chart-title">TIDE Error Breakdown</h3>
+                {{ tide_html | safe }}
+            </div>
+
+            <div class="chart-card">
+                <h3 class="chart-title">Calibration</h3>
+                {{ calibration_html | safe }}
+            </div>
+
+            <div class="chart-card chart-wide">
+                <h3 class="chart-title">Per-Image F1</h3>
+                {{ f1_dist_html | safe }}
+            </div>
+        </section>
+
+        <!-- Label errors table -->
+        {% if label_errors %}
+        <section class="chart-card label-errors-section">
+            <h3 class="chart-title">Suspected Label Errors <span class="chart-hint">click row → image</span></h3>
+            <div class="label-errors-scroll">
+                <table class="label-errors-table">
+                    <thead>
+                        <tr>
+                            <th>Image</th>
+                            <th>Type</th>
+                            <th>DT Category</th>
+                            <th>GT Category</th>
+                            <th>Score</th>
+                            <th>IoU</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for err in label_errors %}
+                        <tr onclick="window.location.href='/?detail={{ err.image_id }}'">
+                            <td class="mono">{{ err.image_id }}</td>
+                            <td>
+                                {% if err.type == "wrong_label" %}
+                                <span class="error-badge error-badge-wrong">wrong label</span>
+                                {% else %}
+                                <span class="error-badge error-badge-missing">missing ann</span>
+                                {% endif %}
+                            </td>
+                            <td>{{ err.dt_category }}</td>
+                            <td>{{ err.gt_category if err.gt_category else "—" }}</td>
+                            <td class="mono">{{ "%.3f" | format(err.dt_score) }}</td>
+                            <td class="mono">{{ "%.3f" | format(err.iou) if err.iou else "—" }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+
+        {% endif %}
+    </main>
+</div>
+
+{% if has_eval %}
+<script>
+/* ResizeObserver: Plotly responsive mode only listens to window resize,
+   not CSS grid container changes. This ensures charts re-layout when
+   the sidebar collapses at 768px. */
+(function() {
+    var grid = document.querySelector('.chart-grid');
+    if (!grid || typeof ResizeObserver === 'undefined') return;
+    var timeout;
+    new ResizeObserver(function() {
+        clearTimeout(timeout);
+        timeout = setTimeout(function() {
+            var plots = grid.querySelectorAll('.js-plotly-plot');
+            for (var i = 0; i < plots.length; i++) {
+                Plotly.Plots.resize(plots[i]);
+            }
+        }, 100);
+    }).observe(grid);
+})();
+</script>
+{% endif %}
+{% endblock %}

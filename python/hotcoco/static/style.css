@@ -1333,6 +1333,16 @@ main {
         display: none;
     }
 
+    .sidebar-nav {
+        margin-top: 0;
+        gap: 4px;
+    }
+
+    .nav-pill {
+        font-size: 0.65rem;
+        padding: 3px 10px;
+    }
+
     #filters {
         flex: 1;
         flex-direction: row;
@@ -1456,8 +1466,13 @@ main {
         padding: 8px 10px;
     }
 
-    .sidebar-brand {
+    /* Hide brand text on gallery (filters present), keep nav pills on dashboard */
+    .sidebar-brand h1 {
         display: none;
+    }
+
+    .sidebar-nav {
+        margin-top: 0;
     }
 
     .filter-section {
@@ -1519,5 +1534,685 @@ main {
 
     .info-panel {
         padding: 10px;
+    }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════
+   Dashboard
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── Navigation pills ── */
+.sidebar-nav {
+    display: flex;
+    gap: 6px;
+    margin-top: 12px;
+}
+
+.nav-pill {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 4px 12px;
+    border-radius: 12px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    transition: color 0.15s, background 0.15s;
+}
+
+.nav-pill:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+}
+
+.nav-pill.active {
+    color: var(--accent);
+    background: var(--accent-muted);
+}
+
+/* ── Dashboard sidebar metadata ── */
+.dashboard-meta {
+    padding: 16px;
+    border-top: 1px solid var(--border-subtle);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.meta-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.meta-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.meta-value {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+/* ── Dashboard main area ── */
+.dashboard-main {
+    padding: 24px;
+    overflow-y: auto;
+    max-width: 1400px;
+}
+
+.dashboard-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 60vh;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.dashboard-empty h2 {
+    font-family: var(--font-display);
+    font-size: 1.4rem;
+    color: var(--text-primary);
+    margin-bottom: 12px;
+}
+
+.dashboard-empty pre {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 10px 16px;
+    margin: 8px 0;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+}
+
+/* ── KPI tiles ── */
+.kpi-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.kpi-tile {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 20px 16px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    transition: border-color 0.15s;
+}
+
+.kpi-tile:hover {
+    border-color: var(--border-default);
+}
+
+.kpi-value {
+    font-family: var(--font-display);
+    font-size: 1.8rem;
+    color: var(--accent);
+    line-height: 1;
+}
+
+.kpi-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+/* ── Chart grid ── */
+.chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+    margin-bottom: 24px;
+    align-items: start;
+}
+
+.chart-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    overflow: hidden;
+    transition: border-color 0.15s;
+}
+
+.chart-card:hover {
+    border-color: var(--border-default);
+}
+
+.chart-card .js-plotly-plot {
+    width: 100% !important;
+}
+
+/* Plotly chart containers should not overflow their card */
+.chart-card .plotly-graph-div {
+    width: 100% !important;
+}
+
+.chart-wide {
+    grid-column: span 2;
+}
+
+/* ── Per-category AP leaderboard ── */
+.cat-mean {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-subtle);
+    border: 1px solid rgba(212, 165, 116, 0.1);
+}
+
+.cat-mean-label {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.cat-mean-value {
+    font-family: var(--font-display);
+    font-size: 1.1rem;
+    color: var(--accent);
+}
+
+.cat-ap-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.cat-row {
+    display: grid;
+    grid-template-columns: 28px 1fr 3fr 52px;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    text-decoration: none;
+    border-radius: 4px;
+    transition: background 0.1s;
+    cursor: pointer;
+}
+
+.cat-row:hover {
+    background: var(--bg-hover);
+}
+
+.cat-row.hidden {
+    display: none;
+}
+
+.cat-rank {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-tertiary);
+    text-align: right;
+}
+
+.cat-name {
+    font-family: var(--font-body);
+    font-size: 0.78rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cat-bar-wrap {
+    height: 14px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.cat-bar {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+.cat-bar.above {
+    background: var(--accent);
+}
+
+.cat-bar.below {
+    background: var(--accent);
+    opacity: 0.5;
+}
+
+.cat-ap {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+.cat-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 10px;
+    margin-top: 4px;
+    border: none;
+    border-top: 1px solid var(--border-subtle);
+    background: transparent;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    font-weight: 500;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    transition: color 0.15s;
+}
+
+.cat-toggle:hover {
+    color: var(--accent-hover);
+}
+
+.cat-toggle-icon {
+    font-size: 0.8rem;
+}
+
+/* ── TIDE error breakdown ── */
+.tide-header {
+    padding: 4px 0 10px 0;
+}
+
+.tide-header-label {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.tide-row {
+    display: grid;
+    grid-template-columns: 90px 1fr 56px 52px;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 4px;
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.tide-row:last-of-type {
+    border-bottom: none;
+}
+
+.tide-label {
+    font-family: var(--font-body);
+    font-size: 0.8rem;
+    color: var(--text-primary);
+}
+
+.tide-bar-wrap {
+    height: 18px;
+    background: var(--bg-elevated);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.tide-bar {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+    transition: width 0.3s ease;
+}
+
+.tide-delta {
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--accent);
+    text-align: right;
+}
+
+.tide-count {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--text-tertiary);
+    text-align: right;
+}
+
+.tide-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 4px 4px 4px;
+    margin-top: 6px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.tide-footer-label {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.tide-footer-value {
+    font-family: var(--font-display);
+    font-size: 1rem;
+    color: var(--accent);
+}
+
+.chart-title {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 8px 0;
+}
+
+.chart-hint {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    font-weight: 400;
+    color: var(--text-tertiary);
+    margin-left: 8px;
+}
+
+/* ── Label errors ── */
+.label-errors-section {
+    margin-bottom: 24px;
+}
+
+.label-errors-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.label-errors-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+}
+
+.label-errors-table th {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    font-weight: 500;
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-default);
+}
+
+.label-errors-table td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+}
+
+.label-errors-table tbody tr {
+    cursor: pointer;
+    transition: background 0.1s;
+}
+
+.label-errors-table tbody tr:hover {
+    background: var(--bg-hover);
+}
+
+.label-errors-table .mono {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+}
+
+.error-badge {
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.error-badge-wrong {
+    background: rgba(239, 68, 68, 0.15);
+    color: #ef4444;
+}
+
+.error-badge-missing {
+    background: rgba(59, 130, 246, 0.15);
+    color: #3b82f6;
+}
+
+/* ── Plotly modebar fix: icons invisible on dark bg ── */
+.modebar-btn path {
+    fill: rgba(255, 255, 255, 0.5) !important;
+}
+
+.modebar-btn.active path,
+.modebar-btn:hover path {
+    fill: var(--accent) !important;
+}
+
+/* ── Dashboard Responsive ── */
+
+/* Medium screens: single-column chart grid */
+@media (max-width: 1000px) {
+    .chart-grid {
+        grid-template-columns: 1fr;
+        gap: 16px;
+    }
+
+    .chart-wide {
+        grid-column: span 1;
+    }
+
+    .cat-row {
+        grid-template-columns: 24px 1fr 2.5fr 48px;
+        gap: 6px;
+        padding: 4px 6px;
+    }
+}
+
+/* Toolbar mode: sidebar collapses to horizontal bar */
+@media (max-width: 768px) {
+    .dashboard-main {
+        padding: 16px 12px;
+    }
+
+    .dashboard-meta {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 4px 16px;
+        padding: 8px 0;
+        border-top: none;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .meta-item {
+        gap: 6px;
+    }
+
+    .meta-label {
+        font-size: 0.6rem;
+    }
+
+    .meta-value {
+        font-size: 0.72rem;
+    }
+
+    .kpi-row {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 16px;
+    }
+
+    .kpi-tile {
+        padding: 14px 12px;
+    }
+
+    .kpi-value {
+        font-size: 1.4rem;
+    }
+
+    .kpi-label {
+        font-size: 0.6rem;
+    }
+
+    .chart-grid {
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .chart-card {
+        padding: 12px;
+    }
+
+    .chart-title {
+        font-size: 0.8rem;
+        margin-bottom: 6px;
+    }
+
+    .tide-row {
+        grid-template-columns: 80px 1fr 50px 44px;
+        gap: 6px;
+        padding: 6px 2px;
+    }
+
+    .tide-label {
+        font-size: 0.75rem;
+    }
+
+    .tide-delta {
+        font-size: 0.65rem;
+    }
+
+    .tide-count {
+        font-size: 0.6rem;
+    }
+
+    .label-errors-table {
+        font-size: 0.72rem;
+    }
+
+    .label-errors-table th {
+        font-size: 0.6rem;
+        padding: 6px 8px;
+    }
+
+    .label-errors-table td {
+        padding: 6px 8px;
+    }
+
+    .label-errors-table .mono {
+        font-size: 0.68rem;
+    }
+
+    .error-badge {
+        font-size: 0.55rem;
+        padding: 2px 6px;
+    }
+}
+
+/* Very narrow: stacked KPI, minimal padding */
+@media (max-width: 480px) {
+    .dashboard-main {
+        padding: 10px 8px;
+    }
+
+    .dashboard-meta {
+        display: none;
+    }
+
+    .kpi-row {
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        margin-bottom: 12px;
+    }
+
+    .kpi-tile {
+        padding: 10px 8px;
+    }
+
+    .kpi-value {
+        font-size: 1.15rem;
+    }
+
+    .chart-grid {
+        gap: 10px;
+        margin-bottom: 12px;
+    }
+
+    .chart-card {
+        padding: 10px 8px;
+    }
+
+    .chart-title {
+        font-size: 0.75rem;
+    }
+
+    .chart-hint {
+        display: none;
+    }
+
+    .cat-row {
+        grid-template-columns: 20px 1fr 2fr 40px;
+        gap: 4px;
+        padding: 3px 4px;
+    }
+
+    .cat-name {
+        font-size: 0.72rem;
+    }
+
+    .cat-ap {
+        font-size: 0.65rem;
+    }
+
+    .cat-bar-wrap {
+        height: 10px;
+    }
+
+    .tide-row {
+        grid-template-columns: 70px 1fr 44px;
+        gap: 4px;
+        padding: 5px 2px;
+    }
+
+    .tide-count {
+        display: none;
+    }
+
+    .tide-label {
+        font-size: 0.72rem;
+    }
+
+    .tide-bar-wrap {
+        height: 14px;
+    }
+
+    .label-errors-table th:nth-child(4),
+    .label-errors-table td:nth-child(4),
+    .label-errors-table th:nth-child(6),
+    .label-errors-table td:nth-child(6) {
+        display: none;
     }
 }
