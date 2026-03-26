@@ -95,20 +95,25 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ### Per-Image Diagnostics & Failure Mining
 
-Find the hardest images, understand failure modes, sort by difficulty.
+**Shipped.**
 
-- Per-image AP / F1 / loss proxy — sortable in gallery ("worst images first")
-- Failure clustering — group images by dominant TIDE error type
-- Quick filters: "Images with only FP", "Images with only FN"
-- Click-through from confusion matrix cell to browse filtered to those misclassifications
+~~Find the hardest images, understand failure modes, sort by difficulty.~~
+
+- ~~Per-image AP / F1 — sortable in gallery ("worst images first")~~
+- ~~Error profiles: perfect / FP-heavy / FN-heavy / mixed~~
+- Failure clustering — group images by dominant TIDE error type (future)
+- Quick filters: "Images with only FP", "Images with only FN" (browse UI — future)
+- Click-through from confusion matrix cell to browse filtered to those misclassifications (browse UI — future)
 
 ### Label Error Detection
 
-Automatically surface likely annotation mistakes using model predictions as a proxy.
+**Shipped.**
 
-- "Suspicious labels" — high-confidence predictions that disagree with GT labels
-- Missing annotation detector — FPs that might be GT errors
-- Integration with healthcheck: flag likely label errors alongside structural issues
+~~Automatically surface likely annotation mistakes using model predictions as a proxy.~~
+
+- ~~"Wrong label" — high-confidence predictions that disagree with GT labels~~
+- ~~Missing annotation detector — FPs that might be GT errors~~
+- Integration with healthcheck: flag likely label errors alongside structural issues (future)
 
 ### Interactive Eval Dashboard
 

@@ -9,7 +9,7 @@ Fast enough for every epoch, lean enough for every dataset. A drop-in replacemen
 
 Available as a **Python package**, **CLI tool**, and **Rust library**. Pure Rust — no Cython, no C compiler, no Microsoft Build Tools. Prebuilt wheels for Linux, macOS, and Windows.
 
-Beyond raw speed, hotcoco ships a diagnostic toolkit that pycocotools and faster-coco-eval don't have: TIDE error breakdown, cross-category confusion matrix, per-category AP, F-scores, confidence calibration (ECE/MCE), sliced evaluation, dataset healthcheck, and publication-quality plots with a one-call PDF report. Same pip install, no extra config.
+Beyond raw speed, hotcoco ships a diagnostic toolkit that pycocotools and faster-coco-eval don't have: TIDE error breakdown, cross-category confusion matrix, per-category AP, F-scores, confidence calibration (ECE/MCE), per-image diagnostics with label error detection, sliced evaluation, dataset healthcheck, and publication-quality plots with a one-call PDF report. Same pip install, no extra config.
 
 **[Documentation](https://derekallman.github.io/hotcoco/)** | **[Changelog](CHANGELOG.md)** | **[Roadmap](ROADMAP.md)**
 
@@ -59,6 +59,7 @@ ev.run()
 - **COCO, LVIS & Open Images evaluation** — bbox, segmentation, and keypoints; all standard metrics plus LVIS federated eval (APr/APc/APf) and Open Images hierarchy-aware eval (group-of matching, GT expansion). See the [evaluation guide](https://derekallman.github.io/hotcoco/guide/evaluation/).
 - **Confidence calibration** — ECE/MCE metrics and reliability diagrams measure whether your model's confidence scores are meaningful. See [calibration](https://derekallman.github.io/hotcoco/guide/evaluation/#confidence-calibration).
 - **Model comparison** — `hotcoco.compare(eval_a, eval_b)` with per-metric deltas, per-category AP breakdown, and bootstrap confidence intervals for statistical significance. See [model comparison](https://derekallman.github.io/hotcoco/guide/evaluation/#model-comparison).
+- **Per-image diagnostics & label errors** — per-image F1/AP scores, automatic detection of wrong labels and missing annotations in your ground truth. See [diagnostics](https://derekallman.github.io/hotcoco/guide/evaluation/#per-image-diagnostics-label-error-detection).
 - **TIDE error analysis** — breaks down every FP and FN into six error types so you know *why* your model falls short, not just by how much. See [TIDE errors](https://derekallman.github.io/hotcoco/guide/tide/).
 - **Confusion matrix** — cross-category matching with per-class breakdowns. See [confusion matrix](https://derekallman.github.io/hotcoco/guide/confusion-matrix/).
 - **F-scores** — F-beta averaging over precision/recall curves, analogous to mAP. See [F-scores](https://derekallman.github.io/hotcoco/guide/f-scores/).

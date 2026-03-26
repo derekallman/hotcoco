@@ -12,9 +12,10 @@ pub use coco::COCO;
 pub use convert::{ConvertError, YoloStats};
 pub use error::Error;
 pub use eval::{
-    compare, AccumulatedEval, BootstrapCI, COCOeval, CalibrationBin, CalibrationResult,
-    CategoryDelta, CompareOpts, ComparisonResult, ConfusionMatrix, EvalImg, EvalMode, EvalResults,
-    EvalShape, SliceResult, SlicedResults, TideErrors,
+    compare, AccumulatedEval, AnnotationIndex, BootstrapCI, COCOeval, CalibrationBin,
+    CalibrationResult, CategoryDelta, CompareOpts, ComparisonResult, ConfusionMatrix, DtStatus,
+    ErrorProfile, EvalImg, EvalMode, EvalResults, EvalShape, GtStatus, ImageDiagnostics,
+    ImageSummary, LabelError, LabelErrorType, SliceResult, SlicedResults, TideErrors,
 };
 pub use healthcheck::{DatasetSummary, Finding, HealthReport, Layer};
 pub use hierarchy::Hierarchy;

@@ -1577,6 +1577,142 @@ Example\n\
 
         Ok(out.into_any().unbind())
     }
+
+    /// Per-image diagnostics: annotation TP/FP/FN index, per-image F1 and AP scores,
+    /// error profiles, and label error candidates.
+    ///
+    /// Requires ``evaluate()`` to have been called first.
+    ///
+    /// Parameters
+    /// ----------
+    /// iou_thr : float, default 0.5
+    ///     IoU threshold for TP/FP classification (snapped to nearest in params).
+    /// score_thr : float, default 0.5
+    ///     Minimum detection confidence for label error candidates.
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     Keys: ``dt_status``, ``gt_status``, ``dt_match``, ``gt_match``,
+    ///     ``img_summary``, ``label_errors``, ``iou_thr``.
+    #[pyo3(signature = (iou_thr=0.5, score_thr=0.5))]
+    fn image_diagnostics(
+        &self,
+        py: Python<'_>,
+        iou_thr: f64,
+        score_thr: f64,
+    ) -> PyResult<PyObject> {
+        let diag = self
+            .inner
+            .image_diagnostics(iou_thr, score_thr)
+            .map_err(to_pyerr)?;
+
+        // dt_status: {ann_id: "tp" | "fp"}
+        let dt_status = PyDict::new(py);
+        for (&id, status) in &diag.annotations.dt_status {
+            let s = match status {
+                hotcoco_core::DtStatus::Tp => "tp",
+                hotcoco_core::DtStatus::Fp => "fp",
+            };
+            dt_status.set_item(id, s)?;
+        }
+
+        // gt_status: {ann_id: "matched" | "fn"}
+        let gt_status = PyDict::new(py);
+        for (&id, status) in &diag.annotations.gt_status {
+            let s = match status {
+                hotcoco_core::GtStatus::Matched => "matched",
+                hotcoco_core::GtStatus::Fn => "fn",
+            };
+            gt_status.set_item(id, s)?;
+        }
+
+        // dt_match / gt_match: {id: id}
+        let dt_match = PyDict::new(py);
+        for (&dt_id, &gt_id) in &diag.annotations.dt_match {
+            dt_match.set_item(dt_id, gt_id)?;
+        }
+        let gt_match = PyDict::new(py);
+        for (&gt_id, &dt_id) in &diag.annotations.gt_match {
+            gt_match.set_item(gt_id, dt_id)?;
+        }
+
+        // img_summary: {img_id: {tp, fp, fn, f1, ap, error_profile}}
+        let img_summary = PyDict::new(py);
+        for (&img_id, summary) in &diag.images {
+            let d = PyDict::new(py);
+            d.set_item("tp", summary.tp)?;
+            d.set_item("fp", summary.fp)?;
+            d.set_item("fn", summary.fn_count)?;
+            d.set_item("f1", summary.f1)?;
+            d.set_item("ap", summary.ap)?;
+            let profile = match summary.error_profile {
+                hotcoco_core::ErrorProfile::Perfect => "perfect",
+                hotcoco_core::ErrorProfile::FpHeavy => "fp_heavy",
+                hotcoco_core::ErrorProfile::FnHeavy => "fn_heavy",
+                hotcoco_core::ErrorProfile::Mixed => "mixed",
+            };
+            d.set_item("error_profile", profile)?;
+            img_summary.set_item(img_id, d)?;
+        }
+
+        // label_errors: [{image_id, dt_id, dt_score, dt_category, gt_id, gt_category, iou, type}]
+        let label_errors = PyList::empty(py);
+        for le in &diag.label_errors {
+            let d = PyDict::new(py);
+            d.set_item("image_id", le.image_id)?;
+            d.set_item("dt_id", le.dt_id)?;
+            d.set_item("dt_score", le.dt_score)?;
+
+            // Category names for display
+            let dt_cat_name = self
+                .inner
+                .coco_gt
+                .get_cat(le.dt_category_id)
+                .map(|c| c.name.as_str())
+                .unwrap_or("?");
+            d.set_item("dt_category", dt_cat_name)?;
+            d.set_item("dt_category_id", le.dt_category_id)?;
+
+            match le.gt_id {
+                Some(gt_id) => {
+                    d.set_item("gt_id", gt_id)?;
+                    let gt_cat_name = le
+                        .gt_category_id
+                        .and_then(|cid| self.inner.coco_gt.get_cat(cid))
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("?");
+                    d.set_item("gt_category", gt_cat_name)?;
+                    d.set_item("gt_category_id", le.gt_category_id)?;
+                }
+                None => {
+                    d.set_item("gt_id", py.None())?;
+                    d.set_item("gt_category", py.None())?;
+                    d.set_item("gt_category_id", py.None())?;
+                }
+            }
+
+            d.set_item("iou", le.iou)?;
+            let error_type = match le.error_type {
+                hotcoco_core::LabelErrorType::WrongLabel => "wrong_label",
+                hotcoco_core::LabelErrorType::MissingAnnotation => "missing_annotation",
+            };
+            d.set_item("type", error_type)?;
+            label_errors.append(d)?;
+        }
+
+        let result = PyDict::new(py);
+        result.set_item("dt_status", dt_status)?;
+        result.set_item("gt_status", gt_status)?;
+        result.set_item("dt_match", dt_match)?;
+        result.set_item("gt_match", gt_match)?;
+        result.set_item("img_summary", img_summary)?;
+        result.set_item("label_errors", label_errors)?;
+        result.set_item("iou_thr", diag.iou_thr)?;
+        result.set_item("score_thr", score_thr)?;
+
+        Ok(result.into_any().unbind())
+    }
 }
 
 // ---------------------------------------------------------------------------

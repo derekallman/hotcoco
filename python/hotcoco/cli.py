@@ -321,6 +321,12 @@ def cmd_eval(args):
         if not args.json:
             _print_tide(tide_result)
 
+    diag_result = None
+    if args.diagnostics:
+        diag_result = ev.image_diagnostics(iou_thr=args.diag_iou_thr, score_thr=args.diag_score_thr)
+        if not args.json:
+            _print_diagnostics(diag_result)
+
     if args.report:
         try:
             from hotcoco.plot import report
@@ -346,6 +352,15 @@ def cmd_eval(args):
             result["slices"] = slices_result
         if hc_result is not None:
             result["healthcheck"] = {"errors": hc_result["errors"], "warnings": hc_result["warnings"]}
+        if diag_result is not None:
+            result["diagnostics"] = {
+                "label_errors": diag_result["label_errors"],
+                "worst_images": sorted(
+                    [{"image_id": k, **v} for k, v in diag_result["img_summary"].items()],
+                    key=lambda x: x["f1"],
+                )[:20],
+                "iou_thr": diag_result["iou_thr"],
+            }
         return result
 
 
@@ -394,6 +409,43 @@ def _print_calibration(cal):
         print("  Per-category ECE (top 10 worst-calibrated):")
         for name, ece in top:
             print(f"    {name:<20} {ece:.4f}")
+
+
+def _print_diagnostics(diag):
+    summaries = diag["img_summary"]
+    n_images = len(summaries)
+    label_errors = diag["label_errors"]
+    wrong = [le for le in label_errors if le["type"] == "wrong_label"]
+    missing = [le for le in label_errors if le["type"] == "missing_annotation"]
+
+    print(
+        f"\nPer-Image Diagnostics"
+        f"  (iou_thr={diag['iou_thr']:.2f}, images={n_images:,})\n"
+    )
+
+    # F1 distribution buckets
+    f1s = [s["f1"] for s in summaries.values()]
+    poor = sum(1 for f in f1s if f < 0.5)
+    moderate = sum(1 for f in f1s if 0.5 <= f <= 0.8)
+    good = sum(1 for f in f1s if f > 0.8)
+    print(f"  F1 distribution:  {poor:,} poor (<0.5)  {moderate:,} moderate (0.5–0.8)  {good:,} good (>0.8)")
+
+    # Label error summary
+    score_thr = diag.get("score_thr", 0.5)
+    print(f"\n  Label errors:     {len(label_errors):,} candidates (score ≥ {score_thr:.2f})")
+    if wrong:
+        top_wrong = ", ".join(f"{le['dt_category']}→{le['gt_category']}" for le in wrong[:3])
+        print(f"    wrong_label:        {len(wrong)}  (top: {top_wrong})")
+    if missing:
+        # Aggregate by category
+        from collections import Counter
+        cat_counts = Counter(le["dt_category"] for le in missing)
+        top_cats = ", ".join(f"{cat} {n}" for cat, n in cat_counts.most_common(5))
+        print(f"    missing_annotation: {len(missing):,}  (top categories: {top_cats})")
+    if not wrong and not missing:
+        print("    (none found)")
+
+    print(f"\n  Tip: use ev.image_diagnostics() or coco explore --dt for interactive analysis.")
 
 
 def cmd_convert(args):
@@ -519,13 +571,12 @@ def cmd_explore(args):
     if dt_coco is not None and not args.no_eval:
         try:
             from hotcoco import COCOeval
-            from hotcoco.eval_index import build_eval_index
             ev = COCOeval(coco, dt_coco, args.iou_type)
             print(f"Running {args.iou_type} evaluation...")
             ev.evaluate()
             coco_eval = ev
             # Print summary at default IoU threshold
-            eval_index = build_eval_index(ev, iou_thr=args.iou_thr)
+            eval_index = ev.image_diagnostics(iou_thr=args.iou_thr)
             summary = {}
             for s in eval_index["img_summary"].values():
                 for k in ("tp", "fp", "fn"):
@@ -754,6 +805,25 @@ def main():
     )
     eval_parser.add_argument(
         "--calibration", action="store_true", help="compute confidence calibration (ECE/MCE) after standard metrics"
+    )
+    eval_parser.add_argument(
+        "--diagnostics", action="store_true", help="per-image diagnostics: worst images by F1/AP, label error candidates"
+    )
+    eval_parser.add_argument(
+        "--diag-iou-thr",
+        dest="diag_iou_thr",
+        type=float,
+        default=0.5,
+        metavar="THR",
+        help="IoU threshold for diagnostics TP/FP classification (default: 0.5)",
+    )
+    eval_parser.add_argument(
+        "--diag-score-thr",
+        dest="diag_score_thr",
+        type=float,
+        default=0.5,
+        metavar="THR",
+        help="min detection score for label error candidates (default: 0.5)",
     )
     eval_parser.add_argument(
         "--cal-bins",

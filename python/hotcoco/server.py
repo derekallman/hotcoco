@@ -96,8 +96,7 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
         if iou_thr in _eval_cache:
             _eval_cache.move_to_end(iou_thr)
             return _eval_cache[iou_thr]
-        from .eval_index import build_eval_index
-        idx = build_eval_index(coco_eval, iou_thr=iou_thr)
+        idx = coco_eval.image_diagnostics(iou_thr=iou_thr)
         _eval_cache[iou_thr] = idx
         if len(_eval_cache) > _EVAL_CACHE_MAX:
             _eval_cache.popitem(last=False)

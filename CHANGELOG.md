@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `hotcoco.plot.comparison_bar()` — grouped bar chart comparing two models, with CI error bars from bootstrap
 - `hotcoco.plot.category_deltas()` — horizontal bar chart of per-category AP deltas sorted by magnitude (green=improvement, red=regression)
 - `ComparisonResult`, `CompareOpts`, `BootstrapCI`, `CategoryDelta` Rust types exported from crate root
+- Per-image diagnostics & label error detection — `COCOeval.image_diagnostics(iou_thr=0.5, score_thr=0.5)` computes per-annotation TP/FP/FN classification, per-image F1 and AP scores, error profiles, and automatically flags suspected label errors (wrong_label: cross-category GT mislabels; missing_annotation: high-confidence FPs with no nearby GT)
+- `coco eval --diagnostics` CLI flag with `--diag-iou-thr` and `--diag-score-thr` options; compact summary output with F1 distribution and top label error categories
+- `ImageDiagnostics`, `AnnotationIndex`, `ImageSummary`, `LabelError`, `DtStatus`, `GtStatus`, `ErrorProfile`, `LabelErrorType` Rust types exported from crate root
 
 ### Changed
 
@@ -75,6 +78,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `docs/stylesheets/extra.css` — full docs theme redesign: custom CSS variable palettes for light (stone-cream) and dark (cool charcoal) modes; all 12 `--md-code-hl-*` syntax token colors set to a warm editorial palette (dusty steel blue keywords, sage strings, clay numbers, plum functions); admonition type overrides (note/info/warning/tip) with flat tinted backgrounds and no title-bar box artifact; hero pill buttons, feature card lift-on-hover, warm-tinted shadows throughout
 - `zensical.toml` — docs theme: `primary`/`accent` palette entries switched to `"custom"`; `navigation.tabs` added to features (top-level sections move to tab bar, freeing sidebar width); `[project.theme.font]` added with `text = "Nunito"` and `code = "IBM Plex Mono"`; color palette shifted from saturated warm-brown to desaturated gray-brown (`#4A4540`) with dusty slate blue accent (`#6B7E9A`) for a cooler, less heavy feel; logo icon updated to `lucide/coffee`
 - Internal: extracted named constants `AREA_SMALL` (32²), `AREA_LARGE` (96²), `KPT_OKS_SIGMAS` and `default_iou_thrs()` helper in `params.rs`; replaced inline literals in `Params::new()` and deduplicated the IoU range formula between `params.rs` and `summarize.rs`
+- Browse server (`server.py`) and CLI (`cli.py`) now use `COCOeval.image_diagnostics()` instead of the Python-side `build_eval_index()`; `eval_index.py` reduced to a backward-compatible thin wrapper
+- Per-image AP in `image_diagnostics()` uses the shared `precision_recall_curve` from `accumulate.rs` (monotone precision correction, O(N+R) two-pointer scan) instead of a separate O(N×R) implementation
 
 ## [0.3.0] - 2026-03-16
 

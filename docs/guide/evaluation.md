@@ -735,6 +735,69 @@ See [`compare`](../api/cocoeval.md#compare) and [`comparison_bar`](../api/plot.m
 
 ---
 
+## Per-image diagnostics & label error detection
+
+`image_diagnostics()` gives you per-image F1 and AP scores, per-annotation TP/FP/FN classification, and automatically flags suspected label errors in your ground truth. It's the single call that answers "which images should I look at?" and "are my annotations trustworthy?"
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+diag = ev.image_diagnostics(iou_thr=0.5, score_thr=0.5)
+```
+
+### Per-image scores
+
+Every image gets an F1 score, AP at the selected IoU threshold, TP/FP/FN counts, and an error profile (`perfect`, `fp_heavy`, `fn_heavy`, or `mixed`):
+
+```python
+# Find the worst images
+worst = sorted(diag["img_summary"].items(), key=lambda x: x[1]["f1"])
+for img_id, s in worst[:5]:
+    print(f"Image {img_id}: F1={s['f1']:.3f}  TP={s['tp']} FP={s['fp']} FN={s['fn']}")
+```
+
+### Label error detection
+
+Two types of GT errors are flagged:
+
+- **Wrong label** — a high-confidence FP detection that overlaps an unmatched GT of a *different* category (bbox IoU ≥ 0.5). The model thinks it's a dog, the annotation says cat, and they're in the same spot.
+- **Missing annotation** — a high-confidence FP with no nearby GT at all (max bbox IoU < 0.1). Likely a real object the annotators missed.
+
+```python
+for le in diag["label_errors"][:5]:
+    if le["type"] == "wrong_label":
+        print(f"Image {le['image_id']}: {le['dt_category']}→{le['gt_category']} IoU={le['iou']:.2f}")
+    else:
+        print(f"Image {le['image_id']}: {le['dt_category']} (score={le['dt_score']:.2f}) — no GT match")
+```
+
+Only detections with `score >= score_thr` are considered, so lower the threshold to cast a wider net or raise it to focus on high-confidence candidates.
+
+### Annotation index
+
+The result also includes the per-annotation TP/FP/FN index that powers the browse viewer's eval coloring:
+
+```python
+diag["dt_status"]  # {ann_id: "tp" | "fp"}
+diag["gt_status"]  # {ann_id: "matched" | "fn"}
+diag["dt_match"]   # {dt_id: gt_id}  (TP pairs)
+diag["gt_match"]   # {gt_id: dt_id}  (reverse)
+```
+
+### From the CLI
+
+```bash
+coco eval --gt annotations.json --dt detections.json --diagnostics
+
+# Custom thresholds
+coco eval --gt ann.json --dt det.json --diagnostics --diag-iou-thr 0.75 --diag-score-thr 0.3
+```
+
+See [`image_diagnostics`](../api/cocoeval.md#image_diagnostics) in the API reference for full parameter details.
+
+---
+
 ## Saving results to JSON
 
 `results()` and `save_results()` serialize the full evaluation output — parameters, summary metrics, and optionally per-category AP — to a JSON dict or file. Both require `summarize()` (or `run()`) first.

@@ -567,6 +567,83 @@ print(ev.f_scores(beta=2.0))   # {"F2.0": ..., "F2.050": ..., "F2.075": ...}
 
 ---
 
+### `image_diagnostics`
+
+```python
+image_diagnostics(
+    iou_thr: float = 0.5,
+    score_thr: float = 0.5,
+) -> dict
+```
+
+Per-image diagnostics: annotation TP/FP/FN index, per-image F1 and AP scores, error profiles, and label error candidates.
+
+Requires `evaluate()` to have been called first.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `iou_thr` | `float` | `0.5` | IoU threshold for TP/FP classification (snapped to nearest in `params.iouThrs`). |
+| `score_thr` | `float` | `0.5` | Minimum detection confidence to consider for label error detection. |
+
+**Returns** a dict with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"dt_status"` | `dict[int, str]` | Detection annotation ID → `"tp"` or `"fp"`. |
+| `"gt_status"` | `dict[int, str]` | GT annotation ID → `"matched"` or `"fn"`. |
+| `"dt_match"` | `dict[int, int]` | TP detection → matched GT annotation ID. |
+| `"gt_match"` | `dict[int, int]` | Matched GT → the detection that matched it. |
+| `"img_summary"` | `dict[int, dict]` | Per-image summary (see below). |
+| `"label_errors"` | `list[dict]` | Suspected label errors, sorted by detection score descending (see below). |
+| `"iou_thr"` | `float` | Actual IoU threshold used (snapped). |
+| `"score_thr"` | `float` | Score threshold used for label error detection. |
+
+Each **image summary** dict contains:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"tp"` | `int` | True positive count. |
+| `"fp"` | `int` | False positive count. |
+| `"fn"` | `int` | False negative count. |
+| `"f1"` | `float` | F1 score: `2*tp / (2*tp + fp + fn)`. 1.0 for empty images. |
+| `"ap"` | `float` | AP at the selected IoU threshold (101-point interpolation). |
+| `"error_profile"` | `str` | One of `"perfect"`, `"fp_heavy"`, `"fn_heavy"`, `"mixed"`. |
+
+Each **label error** dict contains:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `"image_id"` | `int` | Image containing the suspected error. |
+| `"dt_id"` | `int` | Detection annotation ID. |
+| `"dt_score"` | `float` | Detection confidence. |
+| `"dt_category"` | `str` | Detection category name. |
+| `"dt_category_id"` | `int` | Detection category ID. |
+| `"gt_id"` | `int \| None` | Overlapping GT annotation ID (`None` for missing_annotation). |
+| `"gt_category"` | `str \| None` | GT category name. |
+| `"gt_category_id"` | `int \| None` | GT category ID. |
+| `"iou"` | `float` | Bbox IoU between detection and GT (0.0 for missing_annotation). |
+| `"type"` | `str` | `"wrong_label"` or `"missing_annotation"`. |
+
+```python
+ev = COCOeval(coco_gt, coco_dt, "bbox")
+ev.evaluate()
+
+diag = ev.image_diagnostics(iou_thr=0.5, score_thr=0.5)
+
+# Worst images by F1
+worst = sorted(diag["img_summary"].items(), key=lambda x: x[1]["f1"])[:5]
+
+# Label errors
+for le in diag["label_errors"]:
+    print(f"{le['type']}: {le['dt_category']}→{le.get('gt_category', 'N/A')}")
+```
+
+See [Per-image diagnostics](../guide/evaluation.md#per-image-diagnostics-label-error-detection) in the evaluation guide.
+
+---
+
 ## Module-level functions
 
 ### `compare`

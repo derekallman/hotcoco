@@ -62,6 +62,9 @@ coco eval --gt <gt.json> --dt <dt.json> [options]
 | `--tide` | Print TIDE error decomposition after standard metrics | off |
 | `--tide-pos-thr` | IoU threshold for TP/FP classification in TIDE | `0.5` |
 | `--tide-bg-thr` | Minimum IoU with any GT for Loc/Both/Bkg distinction | `0.1` |
+| `--diagnostics` | Per-image diagnostics: F1 distribution and label error candidates | off |
+| `--diag-iou-thr` | IoU threshold for diagnostics TP/FP classification | `0.5` |
+| `--diag-score-thr` | Min detection score for label error candidates | `0.5` |
 | `--report <path>` | Save a PDF evaluation report to this path (requires `hotcoco[plot]`) | off |
 | `--title` | Report title shown in the header | `COCO Evaluation Report` |
 | `--slices <path>` | JSON file with named image ID groups for sliced evaluation | off |
