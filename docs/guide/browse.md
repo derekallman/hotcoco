@@ -174,6 +174,7 @@ people.browse()  # image_dir carried over from coco
 | Annotation type | How it's rendered |
 |----------------|-------------------|
 | Bounding box | Canvas overlay — solid stroke for GT, dashed for DT |
+| Oriented bounding box (OBB) | Rotated rectangle polygon — same solid/dashed convention; hover hit-testing follows the rotated shape |
 | Segmentation | Canvas polygon fill + stroke |
 | Keypoints | Dots + skeleton lines on canvas |
 

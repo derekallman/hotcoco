@@ -138,19 +138,21 @@ def render_thumbnail(
     draw = ImageDraw.Draw(img)
     line_width = 2
 
-    # GT bboxes — solid
+    # GT annotations — solid outlines (OBB as rotated polygon, else AABB)
     ann_ids = coco.get_ann_ids(img_ids=[img_id])
     anns = coco.load_anns(ann_ids)
     for ann in anns:
-        bbox = ann.get("bbox")
-        if not bbox:
-            continue
         color = cat_colors.get(ann["category_id"], (255, 0, 0)) if cat_colors else (255, 0, 0)
-        x, y, w, h = bbox
-        x0, y0, x1, y1 = x * sx, y * sy, (x + w) * sx, (y + h) * sy
-        draw.rectangle([x0, y0, x1, y1], outline=color, width=line_width)
+        obb = ann.get("obb")
+        if obb:
+            corners = [(x * sx, y * sy) for x, y in _obb_to_corners(obb)]
+            draw.polygon(corners, outline=color, width=line_width)
+        elif ann.get("bbox"):
+            x, y, w, h = ann["bbox"]
+            x0, y0, x1, y1 = x * sx, y * sy, (x + w) * sx, (y + h) * sy
+            draw.rectangle([x0, y0, x1, y1], outline=color, width=line_width)
 
-    # DT bboxes — dashed
+    # DT annotations — dashed outlines (OBB as rotated polygon, else AABB)
     if dt_coco is not None:
         dt_ann_ids = dt_coco.get_ann_ids(img_ids=[img_id])
         dt_anns = dt_coco.load_anns(dt_ann_ids)
@@ -158,13 +160,15 @@ def render_thumbnail(
             score = ann.get("score", 1.0)
             if score < score_thr:
                 continue
-            bbox = ann.get("bbox")
-            if not bbox:
-                continue
             color = _lighten_color(cat_colors.get(ann["category_id"], (255, 0, 0))) if cat_colors else (200, 200, 255)
-            x, y, w, h = bbox
-            x0, y0, x1, y1 = x * sx, y * sy, (x + w) * sx, (y + h) * sy
-            _draw_dashed_rect(draw, x0, y0, x1, y1, color, width=line_width, dash_len=6)
+            obb = ann.get("obb")
+            if obb:
+                corners = [(x * sx, y * sy) for x, y in _obb_to_corners(obb)]
+                _draw_dashed_polygon(draw, corners, color, width=line_width, dash_len=6)
+            elif ann.get("bbox"):
+                x, y, w, h = ann["bbox"]
+                x0, y0, x1, y1 = x * sx, y * sy, (x + w) * sx, (y + h) * sy
+                _draw_dashed_rect(draw, x0, y0, x1, y1, color, width=line_width, dash_len=6)
 
     return img
 
@@ -174,6 +178,29 @@ def _draw_dashed_rect(draw, x0, y0, x1, y1, color, width=2, dash_len=6):
     for start, end in [((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)),
                         ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))]:
         _draw_dashed_line(draw, start, end, color, width, dash_len)
+
+
+def _obb_to_corners(obb):
+    """Convert OBB [cx, cy, w, h, angle] to 4 corner points as flat list of (x, y) tuples."""
+    cx, cy, w, h, angle = obb
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    hw, hh = w / 2, h / 2
+    dx_w, dy_w = hw * cos_a, hw * sin_a
+    dx_h, dy_h = hh * sin_a, hh * cos_a
+    return [
+        (cx - dx_w + dx_h, cy - dy_w - dy_h),
+        (cx + dx_w + dx_h, cy + dy_w - dy_h),
+        (cx + dx_w - dx_h, cy + dy_w + dy_h),
+        (cx - dx_w - dx_h, cy - dy_w + dy_h),
+    ]
+
+
+def _draw_dashed_polygon(draw, corners, color, width=2, dash_len=6):
+    """Draw a dashed polygon outline through a list of (x, y) corners."""
+    n = len(corners)
+    for i in range(n):
+        _draw_dashed_line(draw, corners[i], corners[(i + 1) % n], color, width, dash_len)
 
 
 def _draw_dashed_line(draw, start, end, color, width=2, dash_len=6):
@@ -248,6 +275,7 @@ def prepare_annotation_data(coco, img_id: int, cat_colors: dict, dt_coco=None, s
                 "category": cat["name"],
                 "color": color,
                 "bbox": ann.get("bbox"),
+                "obb": ann.get("obb"),
                 "score": round(score, 4) if score is not None else None,
                 "source": source,
                 "segmentation": None,

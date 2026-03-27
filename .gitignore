@@ -143,3 +143,16 @@ external/
 # Local working directories (specs, scratch notes)
 specs/
 scratch/
+
+# MCP / plugin artifacts (not part of the project)
+node_modules/
+package.json
+package-lock.json
+.mcp.json
+.playwright-mcp/
+.serena/
+.superpowers/
+docs/superpowers/
+
+# Generated reports
+report.pdf

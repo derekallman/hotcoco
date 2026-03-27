@@ -64,6 +64,53 @@ let _mouseUpHandler = null;
 let _touchHandler = null;
 let _mouseMoveRAF = null;
 
+// ── OBB geometry ──
+
+/**
+ * Convert OBB [cx, cy, w, h, angle] to 4 corner points.
+ * Returns [[x0,y0], [x1,y1], [x2,y2], [x3,y3]] in counter-clockwise order.
+ * Mirrors crates/hotcoco/src/geometry.rs obb_to_corners().
+ */
+function _obbToCorners(obb) {
+    const [cx, cy, w, h, angle] = obb;
+    const cosA = Math.cos(angle);
+    const sinA = Math.sin(angle);
+    const hw = w / 2, hh = h / 2;
+    const dxW = hw * cosA, dyW = hw * sinA;
+    const dxH = hh * sinA, dyH = hh * cosA;
+    return [
+        [cx - dxW + dxH, cy - dyW - dyH],
+        [cx + dxW + dxH, cy + dyW - dyH],
+        [cx + dxW - dxH, cy + dyW + dyH],
+        [cx - dxW - dxH, cy - dyW + dyH],
+    ];
+}
+
+/** Point-in-convex-polygon test via cross-product sign consistency. */
+function _pointInObb(px, py, corners) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+        const [x1, y1] = corners[i];
+        const [x2, y2] = corners[(i + 1) % 4];
+        const cross = (x2 - x1) * (py - y1) - (y2 - y1) * (px - x1);
+        if (cross !== 0) {
+            if (sign === 0) sign = cross > 0 ? 1 : -1;
+            else if ((cross > 0 ? 1 : -1) !== sign) return false;
+        }
+    }
+    return true;
+}
+
+/** Get the center of an annotation — works for both bbox and OBB-only. */
+function _annCenter(ann) {
+    if (ann.obb) return [ann.obb[0], ann.obb[1]];
+    if (ann.bbox) {
+        const [bx, by, bw, bh] = ann.bbox;
+        return [bx + bw / 2, by + bh / 2];
+    }
+    return null;
+}
+
 // ── Helpers ──
 
 function _resolveMatchHighlight(idx) {
@@ -314,13 +361,43 @@ function drawOverlays(canvas, img) {
             ctx.setLineDash([]);
         }
 
-        // 2. Bounding box + label
-        if (state.layers.bbox && ann.bbox) {
-            const [bx, by, bw, bh] = ann.bbox;
+        // 2. Bounding box / OBB + label
+        const hasObb = ann.obb && ann.obb.length === 5;
+        const hasBbox = !!ann.bbox;
+        if (state.layers.bbox && (hasBbox || hasObb)) {
             ctx.strokeStyle = strokeColor;
             ctx.lineWidth = activeHighlight ? 2.5 / state.scale : 1.5 / state.scale;
             ctx.setLineDash(dashPattern);
-            ctx.strokeRect(bx * scaleX, by * scaleY, bw * scaleX, bh * scaleY);
+
+            // Label anchor position (top-left of the visual box)
+            let labelX, labelY;
+
+            if (hasObb) {
+                // Draw rotated rectangle from OBB corners
+                const corners = _obbToCorners(ann.obb);
+                ctx.beginPath();
+                ctx.moveTo(corners[0][0] * scaleX, corners[0][1] * scaleY);
+                for (let c = 1; c < 4; c++) {
+                    ctx.lineTo(corners[c][0] * scaleX, corners[c][1] * scaleY);
+                }
+                ctx.closePath();
+                ctx.stroke();
+                // Label at topmost corner
+                let minY = Infinity;
+                for (const [cx, cy] of corners) {
+                    if (cy * scaleY < minY) {
+                        minY = cy * scaleY;
+                        labelX = cx * scaleX;
+                        labelY = minY;
+                    }
+                }
+            } else {
+                // Axis-aligned bbox
+                const [bx, by, bw, bh] = ann.bbox;
+                ctx.strokeRect(bx * scaleX, by * scaleY, bw * scaleX, bh * scaleY);
+                labelX = bx * scaleX;
+                labelY = by * scaleY;
+            }
             ctx.setLineDash([]);
 
             if (activeHighlight || !hasHover) {
@@ -343,8 +420,8 @@ function drawOverlays(canvas, img) {
                 ctx.font = `600 ${fontSize}px "DM Sans", -apple-system, sans-serif`;
                 const tw = ctx.measureText(label).width;
                 const pad = 3 / state.scale;
-                const lx = bx * scaleX;
-                const ly = by * scaleY - fontSize - pad * 2;
+                const lx = labelX;
+                const ly = labelY - fontSize - pad * 2;
                 ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.85)`;
                 ctx.fillRect(lx, ly, tw + pad * 2, fontSize + pad * 2);
                 ctx.fillStyle = '#fff';
@@ -353,20 +430,16 @@ function drawOverlays(canvas, img) {
         }
 
         // 3. Match line: connecting line between matched DT↔GT on hover
-        if (state.colorMode === 'eval' && activeHighlight && ann.matched_id && ann.bbox) {
+        if (state.colorMode === 'eval' && activeHighlight && ann.matched_id) {
+            const c1 = _annCenter(ann);
             const matchIdx = _cache.annIdToIdx[ann.matched_id];
-            if (matchIdx !== undefined) {
+            if (c1 && matchIdx !== undefined) {
                 const matchAnn = state.annotations[matchIdx];
-                if (matchAnn && matchAnn.bbox) {
-                    const [bx1, by1, bw1, bh1] = ann.bbox;
-                    const [bx2, by2, bw2, bh2] = matchAnn.bbox;
-                    const cx1 = (bx1 + bw1 / 2) * scaleX;
-                    const cy1 = (by1 + bh1 / 2) * scaleY;
-                    const cx2 = (bx2 + bw2 / 2) * scaleX;
-                    const cy2 = (by2 + bh2 / 2) * scaleY;
+                const c2 = matchAnn ? _annCenter(matchAnn) : null;
+                if (c2) {
                     ctx.beginPath();
-                    ctx.moveTo(cx1, cy1);
-                    ctx.lineTo(cx2, cy2);
+                    ctx.moveTo(c1[0] * scaleX, c1[1] * scaleY);
+                    ctx.lineTo(c2[0] * scaleX, c2[1] * scaleY);
                     ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
                     ctx.lineWidth = 1.5 / state.scale;
                     ctx.setLineDash([MATCH_DASH / state.scale, MATCH_GAP / state.scale]);
@@ -450,12 +523,18 @@ function onCanvasMouseMove(e, canvas, img) {
     for (let i = state.annotations.length - 1; i >= 0; i--) {
         const ann = state.annotations[i];
         if (!state.sources[ann.source]) continue;
-        if (!ann.bbox) continue;
-        const [bx, by, bw, bh] = ann.bbox;
-        if (mx >= bx * scaleX && mx <= (bx + bw) * scaleX &&
-            my >= by * scaleY && my <= (by + bh) * scaleY) {
-            hit = i;
-            break;
+        if (ann.obb && ann.obb.length === 5) {
+            // OBB hit test — point-in-rotated-rect
+            const corners = _obbToCorners(ann.obb);
+            const scaled = corners.map(([x, y]) => [x * scaleX, y * scaleY]);
+            if (_pointInObb(mx, my, scaled)) { hit = i; break; }
+        } else if (ann.bbox) {
+            const [bx, by, bw, bh] = ann.bbox;
+            if (mx >= bx * scaleX && mx <= (bx + bw) * scaleX &&
+                my >= by * scaleY && my <= (by + bh) * scaleY) {
+                hit = i;
+                break;
+            }
         }
     }
 

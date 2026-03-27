@@ -151,7 +151,7 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 - ~~OBB parameterized as `(cx, cy, w, h, angle)` in radians~~
 - ~~DOTA format import/export~~
 - ~~Shapely-based parity fuzzer for IoU kernel verification~~
-- OBB visualization in browse (rotated rectangle overlays, hit-testing)
+- ~~OBB visualization in browse (rotated rectangle overlays, hit-testing)~~
 
 ### Panoptic Segmentation (PQ)
 
