@@ -21,7 +21,36 @@ import os
 import sys
 import textwrap
 
-from hotcoco._style import Timer, Spinner, dim, error, green, red, status, warning, yellow
+from hotcoco._style import Timer, Spinner, dim, error, green, red, section, status, warning, yellow
+
+
+def _table(columns, rows, footer=None):
+    """Print an aligned table with ─ separators.
+
+    columns: [("Name", "<"), ("Value", ">")]  — header text + alignment
+    rows:    [["Loc", "0.0432"], ...]          — pre-formatted cell strings
+    footer:  optional rows after a second separator
+    """
+    widths = [len(c[0]) for c in columns]
+    for row in rows + (footer or []):
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], len(cell))
+
+    def fmt_row(cells):
+        parts = []
+        for i, cell in enumerate(cells):
+            align = columns[i][1]
+            parts.append(f"{cell:{align}{widths[i]}}")
+        return "  " + "  ".join(parts)
+
+    print(fmt_row([c[0] for c in columns]))
+    print("  " + "  ".join("─" * w for w in widths))
+    for row in rows:
+        print(fmt_row(row))
+    if footer is not None:
+        print("  " + "  ".join("─" * w for w in widths))
+        for row in footer:
+            print(fmt_row(row))
 
 
 def cmd_stats(args):
@@ -277,40 +306,33 @@ def cmd_eval(args):
 
         if not args.json:
             key_metrics = [k for k in ev.metric_keys() if k.startswith("AP")]
+            section("Sliced Evaluation")
 
-            # Column width matches "0.578 (+0.020)" = 14 chars
-            col_w = 14
-            header = f"  {'Slice':<20} {'N':>6}"
-            for km in key_metrics:
-                header += f"  {km:>{col_w}}"
-            print()
-            print(header)
-            print("  " + "-" * (len(header) - 2))
-
+            cols = [("Slice", "<"), ("N", ">")] + [(km, ">") for km in key_metrics]
+            rows = []
             for name in sorted(slices_result.keys()):
                 if name == "_overall":
                     continue
                 sr = slices_result[name]
-                row = f"  {name:<20} {sr['num_images']:>6}"
+                cells = [name, f"{sr['num_images']:,}"]
                 for km in key_metrics:
                     val = sr.get(km, -1.0)
                     delta = sr.get("delta", {}).get(km, 0.0)
                     if val < 0:
-                        row += f"  {'n/a':>{col_w}}"
+                        cells.append("n/a")
                     else:
                         sign = "+" if delta >= 0 else ""
-                        row += f"  {val:.3f} ({sign}{delta:.3f})"
-                print(row)
+                        cells.append(f"{val:.3f} ({sign}{delta:.3f})")
+                rows.append(cells)
 
             ov = slices_result["_overall"]
-            row = f"  {'_overall':<20} {ov['num_images']:>6}"
+            ov_cells = ["_overall", f"{ov['num_images']:,}"]
             for km in key_metrics:
                 val = ov.get(km, -1.0)
-                if val < 0:
-                    row += f"  {'n/a':>{col_w}}"
-                else:
-                    row += f"  {val:.3f}{'':>9}"
-            print(row)
+                ov_cells.append("n/a" if val < 0 else f"{val:.3f}")
+            rows.append(ov_cells)
+
+            _table(cols, rows)
 
     cal_result = None
     if args.calibration:
@@ -370,46 +392,43 @@ def cmd_eval(args):
 def _print_tide(te):
     delta = te["delta_ap"]
     counts = te["counts"]
-    print(
-        f"\nTIDE Error Analysis"
-        f"  (pos_thr={te['pos_thr']:.2f}, bg_thr={te['bg_thr']:.2f},"
-        f" baseline_AP={te['ap_base']:.4f})\n"
+    section(
+        "TIDE Error Analysis",
+        f"pos_thr={te['pos_thr']:.2f}, bg_thr={te['bg_thr']:.2f}, baseline_AP={te['ap_base']:.4f}",
     )
-    print(f"  {'Type':<6}  {'ΔAP':>7}  {'Count':>7}")
-    print(f"  {'─' * 6}  {'─' * 7}  {'─' * 7}")
-    for error_type in ("Loc", "Cls", "Both", "Dupe", "Bkg", "Miss"):
-        dap = delta.get(error_type, 0.0)
-        cnt = counts.get(error_type, 0)
-        print(f"  {error_type:<6}  {dap:>7.4f}  {cnt:>7,}")
-    print(f"  {'─' * 6}  {'─' * 7}  {'─' * 7}")
-    print(f"  {'FP':<6}  {delta.get('FP', 0.0):>7.4f}")
-    print(f"  {'FN':<6}  {delta.get('FN', 0.0):>7.4f}")
+    _table(
+        [("Type", "<"), ("ΔAP", ">"), ("Count", ">")],
+        [[et, f"{delta.get(et, 0.0):.4f}", f"{counts.get(et, 0):,}"]
+         for et in ("Loc", "Cls", "Both", "Dupe", "Bkg", "Miss")],
+        footer=[
+            ["FP", f"{delta.get('FP', 0.0):.4f}", ""],
+            ["FN", f"{delta.get('FN', 0.0):.4f}", ""],
+        ],
+    )
 
 
 def _print_calibration(cal):
-    print(
-        f"\nCalibration Analysis"
-        f"  (iou_thr={cal['iou_threshold']:.2f},"
-        f" bins={cal['n_bins']}, detections={cal['num_detections']:,})\n"
+    section(
+        "Calibration Analysis",
+        f"iou_thr={cal['iou_threshold']:.2f}, bins={cal['n_bins']}, detections={cal['num_detections']:,}",
     )
     print(f"  ECE: {cal['ece']:.4f}")
     print(f"  MCE: {cal['mce']:.4f}")
     print()
-    print(f"  {'Bin':>11}  {'Conf':>6}  {'Acc':>6}  {'Count':>7}")
-    print(f"  {'─' * 11}  {'─' * 6}  {'─' * 6}  {'─' * 7}")
+    bin_rows = []
     for b in cal["bins"]:
         label = f"[{b['bin_lower']:.1f}, {b['bin_upper']:.1f})"
         if b["count"] > 0:
-            print(f"  {label:>11}  {b['avg_confidence']:>6.3f}  {b['avg_accuracy']:>6.3f}  {b['count']:>7,}")
+            bin_rows.append([label, f"{b['avg_confidence']:.3f}", f"{b['avg_accuracy']:.3f}", f"{b['count']:,}"])
         else:
-            print(f"  {label:>11}  {'─':>6}  {'─':>6}  {0:>7}")
+            bin_rows.append([label, "─", "─", "0"])
+    _table([("Bin", ">"), ("Conf", ">"), ("Acc", ">"), ("Count", ">")], bin_rows)
 
     per_cat = cal.get("per_category", {})
     if per_cat:
         sorted_cats = sorted(per_cat.items(), key=lambda x: x[1], reverse=True)
         top = sorted_cats[:10]
-        print()
-        print("  Per-category ECE (top 10 worst-calibrated):")
+        print(f"\n  Per-category ECE {dim('(top 10 worst-calibrated)')}:")
         for name, ece in top:
             print(f"    {name:<20} {ece:.4f}")
 
@@ -421,10 +440,7 @@ def _print_diagnostics(diag):
     wrong = [le for le in label_errors if le["type"] == "wrong_label"]
     missing = [le for le in label_errors if le["type"] == "missing_annotation"]
 
-    print(
-        f"\nPer-Image Diagnostics"
-        f"  (iou_thr={diag['iou_thr']:.2f}, images={n_images:,})\n"
-    )
+    section("Per-Image Diagnostics", f"iou_thr={diag['iou_thr']:.2f}, images={n_images:,}")
 
     # F1 distribution buckets
     f1s = [s["f1"] for s in summaries.values()]
@@ -440,7 +456,6 @@ def _print_diagnostics(diag):
         top_wrong = ", ".join(f"{le['dt_category']}→{le['gt_category']}" for le in wrong[:3])
         print(f"    wrong_label:        {len(wrong)}  (top: {top_wrong})")
     if missing:
-        # Aggregate by category
         from collections import Counter
         cat_counts = Counter(le["dt_category"] for le in missing)
         top_cats = ", ".join(f"{cat} {n}" for cat, n in cat_counts.most_common(5))
@@ -448,7 +463,7 @@ def _print_diagnostics(diag):
     if not wrong and not missing:
         print("    (none found)")
 
-    print(f"\n  Tip: use ev.image_diagnostics() or coco explore --dt for interactive analysis.")
+    print(f"\n  {dim('Tip: use ev.image_diagnostics() or coco explore --dt for interactive analysis.')}")
 
 
 def cmd_convert(args):
@@ -755,67 +770,62 @@ def cmd_compare(args):
     n_images = result["num_images"]
     iou_type = args.iou_type
 
-    print(f"\nModel Comparison ({n_images:,} images, {iou_type})\n")
+    section("Model Comparison", f"{n_images:,} images, {iou_type}")
 
-    # Header
     has_ci = result["ci"] is not None
     ci_pct = f"{int(args.confidence * 100)}% CI"
+    cols = [("Metric", "<"), (name_a, ">"), (name_b, ">"), ("Delta", ">")]
     if has_ci:
-        print(f"  {'Metric':<10}  {name_a:>10}  {name_b:>10}  {'Delta':>10}  {ci_pct:>20}")
-        print(f"  {'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 20}")
-    else:
-        print(f"  {'Metric':<10}  {name_a:>10}  {name_b:>10}  {'Delta':>10}")
-        print(f"  {'─' * 10}  {'─' * 10}  {'─' * 10}  {'─' * 10}")
+        cols.append((ci_pct, ">"))
 
     ordered_keys = result["metric_keys"]
-
+    rows = []
     for key in ordered_keys:
         val_a = result["metrics_a"].get(key, -1.0)
         val_b = result["metrics_b"].get(key, -1.0)
         delta = result["deltas"].get(key, 0.0)
-
         sign = "+" if delta >= 0 else ""
-        line = f"  {key:<10}  {val_a:>10.3f}  {val_b:>10.3f}  {sign}{delta:>9.3f}"
-
+        cells = [key, f"{val_a:.3f}", f"{val_b:.3f}", f"{sign}{delta:.3f}"]
         if has_ci:
             ci = result["ci"].get(key)
             if ci:
                 sig = "*" if ci["lower"] > 0 or ci["upper"] < 0 else " "
-                line += f"  [{ci['lower']:+.3f}, {ci['upper']:+.3f}]{sig}"
+                cells.append(f"[{ci['lower']:+.3f}, {ci['upper']:+.3f}]{sig}")
+            else:
+                cells.append("")
+        rows.append(cells)
 
-        print(line)
+    _table(cols, rows)
 
     if has_ci:
-        print(f"\n  * = statistically significant (CI excludes zero)")
+        print(f"\n  {dim('* = statistically significant (CI excludes zero)')}")
 
     # Per-category section
     cats = result["per_category"]
     if cats:
         n_show = min(5, len(cats))
 
-        # Regressions (most negative deltas)
         regressions = [c for c in cats if c["delta"] < 0][:n_show]
-        # Improvements (most positive deltas, reversed from end)
         improvements = [c for c in reversed(cats) if c["delta"] > 0][:n_show]
 
         if regressions or improvements:
-            print(f"\n  Per-Category AP (top regressions and improvements):\n")
-            print(f"  {'Category':<20}  {name_a:>10}  {name_b:>10}  {'Delta':>10}")
-            print(f"  {'─' * 20}  {'─' * 10}  {'─' * 10}  {'─' * 10}")
-
-            def _cat_row(c, arrow, color_fn):
-                ap_a = f"{c['ap_a']:.3f}" if c["ap_a"] >= 0 else "   n/a"
-                ap_b = f"{c['ap_b']:.3f}" if c["ap_b"] >= 0 else "   n/a"
-                print(f"  {c['cat_name']:<20}  {ap_a:>10}  {ap_b:>10}  {c['delta']:>+10.3f}  {color_fn(arrow)}")
-
+            print(f"\n  Per-Category AP {dim('(top regressions and improvements)')}:")
+            cat_cols = [("Category", "<"), (name_a, ">"), (name_b, ">"), ("Delta", ">")]
+            cat_rows = []
             for c in regressions:
-                _cat_row(c, "↓", red)
+                ap_a = f"{c['ap_a']:.3f}" if c["ap_a"] >= 0 else "n/a"
+                ap_b = f"{c['ap_b']:.3f}" if c["ap_b"] >= 0 else "n/a"
+                cat_rows.append([c["cat_name"], ap_a, ap_b, f"{c['delta']:+.3f}  {red('↓')}"])
 
             if regressions and improvements:
-                print(f"  {'···':^54}")
+                cat_rows.append(["···", "", "", ""])
 
             for c in reversed(improvements):
-                _cat_row(c, "↑", green)
+                ap_a = f"{c['ap_a']:.3f}" if c["ap_a"] >= 0 else "n/a"
+                ap_b = f"{c['ap_b']:.3f}" if c["ap_b"] >= 0 else "n/a"
+                cat_rows.append([c["cat_name"], ap_a, ap_b, f"{c['delta']:+.3f}  {green('↑')}"])
+
+            _table(cat_cols, cat_rows)
 
     print()
 

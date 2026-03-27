@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `COCOeval.summarize_lines()` (Rust) / `ev.summary_lines()` (Python) — returns metric summary as `Vec<String>` / `list[str]` without printing; `summarize()` now delegates to it
 - Styled CLI output — all `coco` subcommands show colored status lines on stderr (green action verbs, dimmed file paths and timing); `NO_COLOR` env var respected; color works in Jupyter, spinners disabled in non-TTY
 - Rust CLI (`coco-eval`) — `anstyle`/`anstream` colored output, `indicatif` braille spinners, elapsed timing on all operations; uses `summarize_lines()` for metrics output
+- `_style.section(title, params)` — prints a section header with green title and dim `(params)`; used by all analysis outputs (TIDE, calibration, diagnostics, slices, compare)
+- `_table(columns, rows, footer)` helper in `cli.py` — auto-aligned table with `─` separators; replaces 5 hand-built table implementations
 
 ### Changed
 
@@ -105,6 +107,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Browse UI: extracted 367 lines of inline JavaScript from `index.html` into `static/gallery.js` (IIFE module, browser-cacheable) and 20 lines from `dashboard.html` into `static/dashboard.js`
 - `python/hotcoco/cli.py` — all raw ANSI escape codes (`\033[91m`, etc.) replaced with `_style` module helpers; all `print("error: ...", file=sys.stderr)` calls replaced with `error()` helper; `cmd_eval --json` uses `ev.summary_lines()` instead of `dup2`/`devnull` fd-level stdout suppression; `cmd_stats` and `cmd_merge` use shared `_load_coco()` helper (removes redundant `ImportError` guards)
 - `crates/hotcoco-cli` — added `anstyle`, `anstream`, `indicatif` dependencies; `clap` feature `color` enabled
+- Unified CLI analysis output formatting — TIDE, calibration, diagnostics, slices, and compare tables all use `_table()` helper with consistent `─` separators, 2-space indent, and `section()` headers; sub-section labels use `dim()` for parenthetical qualifiers; diagnostics tip line dimmed
+- Removed `Eval type: bbox` line from `summarize()` output — redundant with status line and `--iou-type` flag
 - Browse UI: `overlay.js` restructured — scattered module-level variables consolidated into `_cache`/`_ui` namespaces; all `var` replaced with `const`/`let`; magic numbers extracted into named constants (`DASH_SEGMENT`, `MIN_FONT_SIZE`, `BASE_KPT_RADIUS`, etc.); JSDoc added to `drawOverlays()` documenting the 4-pass rendering pipeline
 - Browse UI: checkbox styling DRYed — shared base selector for all 3 variants (category filter, overlay toggles, tree group) with per-variant size/position overrides; reduces ~90 lines of duplicated CSS
 - Browse UI: `metric_fmt` Jinja2 filter added for consistent metric formatting across templates; replaces scattered `"%.3f" | format()` patterns in dashboard and gallery

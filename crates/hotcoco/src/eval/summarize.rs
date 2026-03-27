@@ -586,9 +586,6 @@ impl COCOeval {
             }
         }
 
-        if self.eval_mode == EvalMode::Coco {
-            lines.push(format!("Eval type: {}", self.params.iou_type));
-        }
         self.stats = Some(stats);
         lines
     }

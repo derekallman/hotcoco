@@ -61,6 +61,14 @@ def warning(message: str) -> None:
     print(f"{yellow('warning')}: {message}", file=sys.stderr)
 
 
+def section(title: str, params: str = "") -> None:
+    """Print a section header to stdout: green title, dim parameters."""
+    if params:
+        print(f"\n{green(title)}  {dim('(' + params + ')')}\n")
+    else:
+        print(f"\n{green(title)}\n")
+
+
 class Timer:
     """Context manager that measures elapsed wall-clock time."""
 
