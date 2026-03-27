@@ -1,4 +1,5 @@
 use crate::coco::COCO;
+use crate::geometry;
 use crate::mask;
 use crate::params::{IouType, Params};
 use crate::types::Rle;
@@ -31,6 +32,9 @@ impl COCOeval {
             }
             IouType::Keypoints => {
                 Self::compute_oks_static(coco_gt, coco_dt, params, dt_anns, gt_anns)
+            }
+            IouType::Obb => {
+                Self::compute_obb_iou_static(coco_gt, coco_dt, dt_anns, gt_anns, eval_mode)
             }
         }
     }
@@ -204,5 +208,33 @@ impl COCOeval {
         }
 
         result
+    }
+
+    /// Compute oriented bounding box IoU by extracting OBB arrays and calling `geometry::obb_iou`.
+    pub(super) fn compute_obb_iou_static(
+        coco_gt: &COCO,
+        coco_dt: &COCO,
+        dt_ids: &[u64],
+        gt_ids: &[u64],
+        eval_mode: EvalMode,
+    ) -> Vec<Vec<f64>> {
+        let dt_obbs: Vec<[f64; 5]> = dt_ids
+            .iter()
+            .filter_map(|&id| coco_dt.get_ann(id)?.obb)
+            .collect();
+        let (gt_obbs, iscrowd): (Vec<[f64; 5]>, Vec<bool>) = gt_ids
+            .iter()
+            .filter_map(|&id| {
+                let ann = coco_gt.get_ann(id)?;
+                let crowd = if eval_mode == EvalMode::OpenImages {
+                    false
+                } else {
+                    ann.iscrowd
+                };
+                Some((ann.obb?, crowd))
+            })
+            .unzip();
+
+        geometry::obb_iou(&dt_obbs, &gt_obbs, &iscrowd)
     }
 }

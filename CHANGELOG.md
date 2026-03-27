@@ -52,6 +52,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Browse UI: `@media (prefers-reduced-motion: reduce)` — disables all CSS animations and transitions for users with motion sensitivity preferences
 - Browse UI: `:focus-visible` ring on custom range slider thumbs for keyboard accessibility
 - Browse UI: `title` attributes on eval badges in annotation sidebar ("True positive", "False positive", "False negative") for screen reader and tooltip accessibility
+- Oriented bounding box (OBB) evaluation — `IouType::Obb` / `iou_type="obb"` for rotated detection tasks (aerial imagery, document analysis, scene text); `Annotation.obb` field as `[cx, cy, w, h, angle]` (radians); rotated IoU via Sutherland-Hodgman polygon clipping in new `geometry` module; same 12 AP/AR metrics as bbox; `load_res` auto-computes `area` and axis-aligned `bbox` from OBB
+- DOTA format conversion — `coco_to_dota()` exports OBB annotations to DOTA text format (one `.txt` per image, 8-point polygon corners); `dota_to_coco()` imports DOTA text files with auto-category discovery and corner-to-OBB reconstruction; `DotaStats` type exported from crate root
+- `crates/hotcoco/src/geometry.rs` — new computational geometry module with `obb_to_corners()`, `obb_iou()` (rayon-parallelized D×G matrix), and Sutherland-Hodgman polygon clipping internals
+- `scripts/fuzz_obb_parity.py` — hypothesis-based OBB IoU parity fuzzer using Shapely (GEOS) as reference implementation; 200 random cases + 8 deterministic known-value tests
 
 ### Changed
 

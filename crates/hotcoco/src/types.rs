@@ -75,6 +75,10 @@ pub struct Annotation {
     pub keypoints: Option<Vec<f64>>,
     #[serde(default)]
     pub num_keypoints: Option<u32>,
+    /// Oriented bounding box as `[cx, cy, w, h, angle]` where angle is in radians.
+    /// Used for rotated detection evaluation (aerial imagery, document analysis, scene text).
+    #[serde(default)]
+    pub obb: Option<[f64; 5]>,
     /// Detection score (present only in result annotations).
     #[serde(default)]
     pub score: Option<f64>,

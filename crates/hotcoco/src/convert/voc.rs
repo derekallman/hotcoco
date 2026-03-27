@@ -282,6 +282,7 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
                 iscrowd: false,
                 keypoints: None,
                 num_keypoints: None,
+                obb: None,
                 score: None,
                 is_group_of: None,
             });

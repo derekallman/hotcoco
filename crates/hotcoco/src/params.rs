@@ -22,6 +22,8 @@ pub enum IouType {
     Segm,
     /// Keypoint OKS (object keypoint similarity).
     Keypoints,
+    /// Oriented bounding box IoU (rotated rectangle intersection).
+    Obb,
 }
 
 impl fmt::Display for IouType {
@@ -30,6 +32,7 @@ impl fmt::Display for IouType {
             IouType::Bbox => write!(f, "bbox"),
             IouType::Segm => write!(f, "segm"),
             IouType::Keypoints => write!(f, "keypoints"),
+            IouType::Obb => write!(f, "obb"),
         }
     }
 }
@@ -42,8 +45,9 @@ impl FromStr for IouType {
             "bbox" => Ok(IouType::Bbox),
             "segm" => Ok(IouType::Segm),
             "keypoints" => Ok(IouType::Keypoints),
+            "obb" => Ok(IouType::Obb),
             _ => Err(format!(
-                "Unknown iou_type: '{}'. Expected 'bbox', 'segm', or 'keypoints'",
+                "Unknown iou_type: '{}'. Expected 'bbox', 'segm', 'keypoints', or 'obb'",
                 s
             )),
         }

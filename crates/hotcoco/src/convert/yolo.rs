@@ -252,6 +252,7 @@ pub fn yolo_to_coco(
                 iscrowd: false,
                 keypoints: None,
                 num_keypoints: None,
+                obb: None,
                 score: None,
                 is_group_of: None,
             });

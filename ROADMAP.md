@@ -143,12 +143,15 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ### Oriented Bounding Boxes (OBB)
 
-Evaluate rotated/oriented detections for aerial imagery, document analysis, and scene text. The rotated IoU kernel is the only new Rust code (~150 lines); everything else (AP accumulation, TIDE, confusion matrix) works unchanged with the different IoU function.
+**Shipped.**
 
-- Rotated IoU computation (polygon intersection of two rotated rectangles)
-- OBB parameterized as `(cx, cy, w, h, angle)` — DOTA format
-- DOTA format import/export
-- OBB visualization in browse
+~~Evaluate rotated/oriented detections for aerial imagery, document analysis, and scene text. The rotated IoU kernel is the only new Rust code (~175 lines); everything else (AP accumulation, TIDE, confusion matrix) works unchanged with the different IoU function.~~
+
+- ~~Rotated IoU computation (polygon intersection of two rotated rectangles via Sutherland-Hodgman clipping)~~
+- ~~OBB parameterized as `(cx, cy, w, h, angle)` in radians~~
+- ~~DOTA format import/export~~
+- ~~Shapely-based parity fuzzer for IoU kernel verification~~
+- OBB visualization in browse (rotated rectangle overlays, hit-testing)
 
 ### Panoptic Segmentation (PQ)
 

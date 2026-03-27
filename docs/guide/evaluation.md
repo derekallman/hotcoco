@@ -1,6 +1,6 @@
 # Evaluation
 
-hotcoco supports three evaluation types: bounding box, segmentation, and keypoints. All three follow the same workflow.
+hotcoco supports four evaluation types: bounding box, segmentation, keypoints, and oriented bounding box (OBB). All four follow the same workflow.
 
 ## The three-step pipeline
 
@@ -117,6 +117,39 @@ Similarity is measured using Object Keypoint Similarity ([OKS](https://cocodatas
 - 10 metrics instead of 12 (no small area range — keypoints are only meaningful on medium and large objects)
 - Default max detections is `[20]` instead of `[1, 10, 100]`
 - Ground truth annotations with `num_keypoints == 0` are automatically ignored
+
+## Oriented bounding box (OBB) evaluation
+
+Set `iou_type` to `"obb"` (Python) or `IouType::Obb` (Rust).
+
+OBB evaluation is for rotated/oriented detection tasks — aerial imagery, document analysis, and scene text. Each annotation uses a 5-parameter representation: center coordinates, dimensions, and rotation angle.
+
+Detection format — each result needs `image_id`, `category_id`, `obb` as `[cx, cy, w, h, angle]`, and `score`:
+
+```json
+[
+  {"image_id": 42, "category_id": 1, "obb": [150.0, 200.0, 80.0, 40.0, 0.785], "score": 0.95},
+  ...
+]
+```
+
+The `obb` field is `[cx, cy, w, h, angle]` where:
+
+- `cx, cy` — center of the rotated rectangle
+- `w, h` — width and height of the rectangle
+- `angle` — rotation angle in **radians**, counter-clockwise positive
+
+IoU is computed via polygon intersection of the two rotated rectangles (Sutherland-Hodgman clipping). This is exact — no approximation or rasterization.
+
+**Differences from bbox:**
+
+- Uses rotated IoU instead of axis-aligned IoU
+- Same 12 metrics as bbox/segm
+- `load_res` automatically computes `area` (w × h) and an axis-aligned `bbox` (for area-range filtering) from the OBB
+- No pycocotools equivalent exists — hotcoco defines the evaluation protocol
+
+!!! tip
+    hotcoco includes DOTA format conversion (`to_dota()` / `from_dota()`) for the standard aerial detection benchmark format. See [format conversion](datasets.md#dota).
 
 ## The 12 COCO metrics
 

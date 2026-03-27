@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use hotcoco::convert::{
-    coco_to_cvat, coco_to_voc, coco_to_yolo, cvat_to_coco, voc_to_coco, yolo_to_coco,
+    coco_to_cvat, coco_to_dota, coco_to_voc, coco_to_yolo, cvat_to_coco, dota_to_coco, voc_to_coco,
+    yolo_to_coco,
 };
 use hotcoco::params::IouType;
 use hotcoco::types::{Annotation, Category, Dataset, Image};
@@ -149,6 +150,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -162,6 +164,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -197,6 +200,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 bbox: Some([10.0, 10.0, 20.0, 20.0]),
                 area: Some(400.0),
                 score: Some(0.9),
+                obb: None,
                 is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
@@ -210,6 +214,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 bbox: Some([10.0, 10.0, 25.0, 20.0]),
                 area: Some(500.0),
                 score: Some(0.8),
+                obb: None,
                 is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
@@ -223,6 +228,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 bbox: Some([50.0, 50.0, 100.0, 100.0]),
                 area: Some(10000.0),
                 score: Some(0.7),
+                obb: None,
                 is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
@@ -370,6 +376,7 @@ fn test_crowd_rematching() {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            obb: None,
             is_group_of: None,
         }],
         categories: vec![Category {
@@ -395,6 +402,7 @@ fn test_crowd_rematching() {
                 bbox: Some([10.0, 10.0, 50.0, 50.0]),
                 area: Some(2500.0),
                 score: Some(0.9),
+                obb: None,
                 is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
@@ -408,6 +416,7 @@ fn test_crowd_rematching() {
                 bbox: Some([12.0, 12.0, 48.0, 48.0]),
                 area: Some(2304.0),
                 score: Some(0.8),
+                obb: None,
                 is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
@@ -421,6 +430,7 @@ fn test_crowd_rematching() {
                 bbox: Some([15.0, 15.0, 45.0, 45.0]),
                 area: Some(2025.0),
                 score: Some(0.7),
+                obb: None,
                 is_group_of: None,
                 iscrowd: false,
                 segmentation: None,
@@ -864,6 +874,7 @@ fn lvis_gt_ann(id: u64, image_id: u64, category_id: u64, area: f64) -> Annotatio
         keypoints: None,
         num_keypoints: None,
         score: None,
+        obb: None,
         is_group_of: None,
     }
 }
@@ -880,6 +891,7 @@ fn lvis_dt_ann(id: u64, image_id: u64, category_id: u64, area: f64, score: f64) 
         keypoints: None,
         num_keypoints: None,
         score: Some(score),
+        obb: None,
         is_group_of: None,
     }
 }
@@ -1064,6 +1076,7 @@ fn cm_gt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4]) -> Annotation {
         keypoints: None,
         num_keypoints: None,
         score: None,
+        obb: None,
         is_group_of: None,
     }
 }
@@ -1080,6 +1093,7 @@ fn cm_dt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4], score: f64) -> A
         keypoints: None,
         num_keypoints: None,
         score: Some(score),
+        obb: None,
         is_group_of: None,
     }
 }
@@ -1740,6 +1754,7 @@ fn make_test_dataset_basic() -> Dataset {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -1753,6 +1768,7 @@ fn make_test_dataset_basic() -> Dataset {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -1766,6 +1782,7 @@ fn make_test_dataset_basic() -> Dataset {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -1860,6 +1877,7 @@ fn test_coco_to_yolo_category_remapping() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -1873,6 +1891,7 @@ fn test_coco_to_yolo_category_remapping() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -1960,6 +1979,7 @@ fn test_coco_to_yolo_crowd_skipped() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -1973,6 +1993,7 @@ fn test_coco_to_yolo_crowd_skipped() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -2025,6 +2046,7 @@ fn test_coco_to_yolo_missing_bbox() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -2038,6 +2060,7 @@ fn test_coco_to_yolo_missing_bbox() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -2511,6 +2534,7 @@ fn test_coco_to_voc_crowd_as_difficult() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -2524,6 +2548,7 @@ fn test_coco_to_voc_crowd_as_difficult() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -3476,6 +3501,7 @@ fn test_gt_expansion_basic() {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            obb: None,
             is_group_of: None,
         }],
         categories: vec![
@@ -3559,6 +3585,7 @@ fn test_gt_expansion_idempotent() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -3572,6 +3599,7 @@ fn test_gt_expansion_idempotent() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -3642,6 +3670,7 @@ fn test_oid_group_of_multi_match() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None, // NOT group-of — provides recall denominator
             },
             Annotation {
@@ -3655,6 +3684,7 @@ fn test_oid_group_of_multi_match() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: Some(true), // Group-of GT
             },
         ],
@@ -3684,6 +3714,7 @@ fn test_oid_group_of_multi_match() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.9),
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -3697,6 +3728,7 @@ fn test_oid_group_of_multi_match() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.8),
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -3710,6 +3742,7 @@ fn test_oid_group_of_multi_match() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.7),
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -3763,6 +3796,7 @@ fn test_oid_group_of_no_fn_penalty() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None, // NOT group-of
             },
             Annotation {
@@ -3776,6 +3810,7 @@ fn test_oid_group_of_no_fn_penalty() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: Some(true), // Group-of, no detection nearby
             },
         ],
@@ -3804,6 +3839,7 @@ fn test_oid_group_of_no_fn_penalty() {
             keypoints: None,
             num_keypoints: None,
             score: Some(0.9),
+            obb: None,
             is_group_of: None,
         }],
         categories: gt_dataset.categories.clone(),
@@ -3862,6 +3898,7 @@ fn test_oid_hierarchy_evaluation() {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            obb: None,
             is_group_of: None,
         }],
         categories: vec![
@@ -3907,6 +3944,7 @@ fn test_oid_hierarchy_evaluation() {
             keypoints: None,
             num_keypoints: None,
             score: Some(0.9),
+            obb: None,
             is_group_of: None,
         }],
         categories: gt_dataset.categories.clone(),
@@ -3990,6 +4028,7 @@ fn test_oid_dt_expansion() {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            obb: None,
             is_group_of: None,
         }],
         categories: cats.clone(),
@@ -4010,6 +4049,7 @@ fn test_oid_dt_expansion() {
             keypoints: None,
             num_keypoints: None,
             score: Some(0.9),
+            obb: None,
             is_group_of: None,
         }],
         categories: cats,
@@ -4074,6 +4114,7 @@ fn test_oid_auto_derive_hierarchy() {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            obb: None,
             is_group_of: None,
         }],
         categories: vec![
@@ -4111,6 +4152,7 @@ fn test_oid_auto_derive_hierarchy() {
             keypoints: None,
             num_keypoints: None,
             score: Some(0.9),
+            obb: None,
             is_group_of: None,
         }],
         categories: gt_dataset.categories.clone(),
@@ -4228,6 +4270,7 @@ fn test_calibration_known_values() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
             Annotation {
@@ -4241,6 +4284,7 @@ fn test_calibration_known_values() {
                 keypoints: None,
                 num_keypoints: None,
                 score: None,
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -4271,6 +4315,7 @@ fn test_calibration_known_values() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.9),
+                obb: None,
                 is_group_of: None,
             },
             // TP: matches GT 2
@@ -4285,6 +4330,7 @@ fn test_calibration_known_values() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.9),
+                obb: None,
                 is_group_of: None,
             },
             // FP: no matching GT
@@ -4299,6 +4345,7 @@ fn test_calibration_known_values() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.2),
+                obb: None,
                 is_group_of: None,
             },
             // FP: no matching GT
@@ -4313,6 +4360,7 @@ fn test_calibration_known_values() {
                 keypoints: None,
                 num_keypoints: None,
                 score: Some(0.2),
+                obb: None,
                 is_group_of: None,
             },
         ],
@@ -4404,6 +4452,7 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
             keypoints: None,
             num_keypoints: None,
             score: None,
+            obb: None,
             is_group_of: None,
         })
         .collect();
@@ -4419,6 +4468,7 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
         keypoints: None,
         num_keypoints: None,
         score: Some(score),
+        obb: None,
         is_group_of: None,
     };
 
@@ -4595,4 +4645,210 @@ fn test_compare_bootstrap_coverage() {
         "Bootstrap coverage {:.1}% ({covers}/{n_trials}) is too low — expected ≥80% for 95% CI",
         coverage * 100.0
     );
+}
+
+// =============================================================================
+// OBB (Oriented Bounding Box) evaluation tests
+// =============================================================================
+
+fn obb_test_image() -> Image {
+    Image {
+        id: 1,
+        file_name: "obb_test.png".into(),
+        width: 800,
+        height: 600,
+        license: None,
+        coco_url: None,
+        flickr_url: None,
+        date_captured: None,
+        neg_category_ids: vec![],
+        not_exhaustive_category_ids: vec![],
+    }
+}
+
+fn obb_test_category() -> Category {
+    Category {
+        id: 1,
+        name: "vehicle".into(),
+        supercategory: None,
+        skeleton: None,
+        keypoints: None,
+        frequency: None,
+    }
+}
+
+#[test]
+fn test_obb_eval_basic() {
+    // GT: one rotated box, DT: same box with high score → AP ≈ 1.0
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![obb_test_image()],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([90.0, 90.0, 220.0, 120.0]),
+            area: Some(20000.0),
+            segmentation: None,
+            iscrowd: false,
+            keypoints: None,
+            num_keypoints: None,
+            obb: Some([200.0, 150.0, 200.0, 100.0, 0.3]),
+            score: None,
+            is_group_of: None,
+        }],
+        categories: vec![obb_test_category()],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: gt_dataset.images.clone(),
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([90.0, 90.0, 220.0, 120.0]),
+            area: Some(20000.0),
+            segmentation: None,
+            iscrowd: false,
+            keypoints: None,
+            num_keypoints: None,
+            obb: Some([200.0, 150.0, 200.0, 100.0, 0.3]),
+            score: Some(0.99),
+            is_group_of: None,
+        }],
+        categories: gt_dataset.categories.clone(),
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Obb);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+
+    let stats = ev.stats().unwrap();
+    // 12 metrics (same as bbox)
+    assert_eq!(stats.len(), 12, "OBB should produce 12 metrics");
+    // AP should be 1.0 (perfect detection)
+    assert!(
+        stats[0] > 0.99,
+        "AP should be ~1.0 for identical OBBs, got {}",
+        stats[0]
+    );
+}
+
+#[test]
+fn test_obb_eval_no_overlap() {
+    // GT and DT have non-overlapping OBBs → AP = 0 (or -1)
+    let gt_dataset = Dataset {
+        info: None,
+        images: vec![obb_test_image()],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([0.0, 0.0, 50.0, 50.0]),
+            area: Some(2500.0),
+            segmentation: None,
+            iscrowd: false,
+            keypoints: None,
+            num_keypoints: None,
+            obb: Some([25.0, 25.0, 50.0, 50.0, 0.0]),
+            score: None,
+            is_group_of: None,
+        }],
+        categories: vec![obb_test_category()],
+        licenses: vec![],
+    };
+
+    let dt_dataset = Dataset {
+        info: None,
+        images: gt_dataset.images.clone(),
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([700.0, 500.0, 50.0, 50.0]),
+            area: Some(2500.0),
+            segmentation: None,
+            iscrowd: false,
+            keypoints: None,
+            num_keypoints: None,
+            obb: Some([725.0, 525.0, 50.0, 50.0, 0.0]),
+            score: Some(0.9),
+            is_group_of: None,
+        }],
+        categories: gt_dataset.categories.clone(),
+        licenses: vec![],
+    };
+
+    let coco_gt = COCO::from_dataset(gt_dataset);
+    let coco_dt = COCO::from_dataset(dt_dataset);
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Obb);
+    ev.evaluate();
+    ev.accumulate();
+    ev.summarize();
+
+    let stats = ev.stats().unwrap();
+    assert_eq!(stats.len(), 12);
+    // AP should be 0 or -1 (no match)
+    assert!(
+        stats[0] <= 0.0,
+        "AP should be 0 for non-overlapping OBBs, got {}",
+        stats[0]
+    );
+}
+
+#[test]
+fn test_dota_round_trip_integration() {
+    let dataset = Dataset {
+        info: None,
+        images: vec![obb_test_image()],
+        annotations: vec![Annotation {
+            id: 1,
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([90.0, 90.0, 220.0, 120.0]),
+            area: Some(20000.0),
+            segmentation: None,
+            iscrowd: false,
+            keypoints: None,
+            num_keypoints: None,
+            obb: Some([200.0, 150.0, 200.0, 100.0, 0.0]),
+            score: None,
+            is_group_of: None,
+        }],
+        categories: vec![obb_test_category()],
+        licenses: vec![],
+    };
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let label_dir = tmp.path().join("labels");
+
+    // Export COCO → DOTA
+    let stats = coco_to_dota(&dataset, &label_dir).unwrap();
+    assert_eq!(stats.images, 1);
+    assert_eq!(stats.annotations, 1);
+
+    // Import DOTA → COCO
+    let mut dims = HashMap::new();
+    dims.insert("obb_test".into(), (800u32, 600u32));
+    let result = dota_to_coco(&label_dir, &dims, None).unwrap();
+
+    assert_eq!(result.images.len(), 1);
+    assert_eq!(result.annotations.len(), 1);
+    assert_eq!(result.categories.len(), 1);
+    assert_eq!(result.categories[0].name, "vehicle");
+
+    let ann = &result.annotations[0];
+    let obb = ann.obb.unwrap();
+    // Round-trip tolerance: DOTA uses 1 decimal place formatting
+    assert!((obb[0] - 200.0).abs() < 0.2, "cx round-trip: {}", obb[0]);
+    assert!((obb[1] - 150.0).abs() < 0.2, "cy round-trip: {}", obb[1]);
+    assert!((obb[2] - 200.0).abs() < 0.2, "w round-trip: {}", obb[2]);
+    assert!((obb[3] - 100.0).abs() < 0.2, "h round-trip: {}", obb[3]);
+    assert!(obb[4].abs() < 0.01, "angle round-trip: {}", obb[4]);
 }

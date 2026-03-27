@@ -176,6 +176,7 @@ Convert between COCO and other annotation formats. Supported formats:
 | YOLO | COCO ↔ YOLO | `to_yolo()` / `from_yolo()` |
 | Pascal VOC | COCO ↔ VOC | `to_voc()` / `from_voc()` |
 | CVAT | COCO ↔ CVAT | `to_cvat()` / `from_cvat()` |
+| DOTA | COCO ↔ DOTA | `to_dota()` / `from_dota()` |
 
 ### COCO → YOLO
 
@@ -314,6 +315,29 @@ print(f"{len(coco.dataset['images'])} images, {len(coco.dataset['annotations'])}
 
 Polygon area is computed via the shoelace formula; bounding boxes are derived
 from polygon vertex extents.
+
+### COCO → DOTA {#dota}
+
+```python
+coco = COCO("annotations.json")
+stats = coco.to_dota("dota_labels/")
+print(f"{stats['images']} images, {stats['annotations']} annotations")
+```
+
+Exports oriented bounding box annotations to DOTA text format. Each image gets
+a `.txt` file with one line per annotation: `x1 y1 x2 y2 x3 y3 x4 y4 category difficulty`.
+Annotations without an `obb` field are skipped.
+
+### DOTA → COCO
+
+```python
+coco = COCO.from_dota("dota_labels/", image_dir="images/")
+coco.save("dota_as_coco.json")
+```
+
+Reads DOTA text files and converts 8-point polygon coordinates to the
+`[cx, cy, w, h, angle]` OBB representation. Categories are auto-discovered
+from the label files. Image dimensions are read from the `image_dir` if provided.
 
 ---
 

@@ -340,6 +340,7 @@ impl COCO {
             let has_bbox = first.bbox.is_some();
             let has_seg = first.segmentation.is_some();
             let has_kpts = first.keypoints.is_some();
+            let has_obb = first.obb.is_some();
 
             if has_bbox {
                 // bbox results: area = bbox w*h, create segmentation from bbox if missing
@@ -394,6 +395,15 @@ impl COCO {
                             });
                         ann.area = Some((x1 - x0) * (y1 - y0));
                         ann.bbox = Some([x0, y0, x1 - x0, y1 - y0]);
+                    }
+                    ann.iscrowd = false;
+                }
+            } else if has_obb {
+                // OBB results: area = w*h, bbox = axis-aligned bounding box of rotated rect
+                for ann in &mut dataset.annotations {
+                    if let Some(ref obb) = ann.obb {
+                        ann.area = Some(obb[2] * obb[3]);
+                        ann.bbox = Some(crate::geometry::obb_to_aabb(obb));
                     }
                     ann.iscrowd = false;
                 }
@@ -834,6 +844,7 @@ mod tests {
                     iscrowd: false,
                     keypoints: None,
                     num_keypoints: None,
+                    obb: None,
                     score: None,
                     is_group_of: None,
                 },
@@ -847,6 +858,7 @@ mod tests {
                     iscrowd: false,
                     keypoints: None,
                     num_keypoints: None,
+                    obb: None,
                     score: None,
                     is_group_of: None,
                 },
@@ -860,6 +872,7 @@ mod tests {
                     iscrowd: true,
                     keypoints: None,
                     num_keypoints: None,
+                    obb: None,
                     score: None,
                     is_group_of: None,
                 },

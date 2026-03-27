@@ -2,6 +2,7 @@ pub mod coco;
 pub mod convert;
 pub mod error;
 pub mod eval;
+pub mod geometry;
 pub mod healthcheck;
 pub mod hierarchy;
 pub mod mask;
@@ -9,7 +10,7 @@ pub mod params;
 pub mod types;
 
 pub use coco::COCO;
-pub use convert::{ConvertError, CvatStats, VocStats, YoloStats};
+pub use convert::{ConvertError, CvatStats, DotaStats, VocStats, YoloStats};
 pub use error::Error;
 pub use eval::{
     compare, AccumulatedEval, AnnotationIndex, BootstrapCI, COCOeval, CalibrationBin,

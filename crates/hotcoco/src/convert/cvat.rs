@@ -332,6 +332,7 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
                         iscrowd: false,
                         keypoints: None,
                         num_keypoints: None,
+                        obb: None,
                         score: None,
                         is_group_of: None,
                     });
@@ -351,6 +352,7 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
                         iscrowd: false,
                         keypoints: None,
                         num_keypoints: None,
+                        obb: None,
                         score: None,
                         is_group_of: None,
                     });

@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use rayon::prelude::*;
 
 use crate::coco::COCO;
+use crate::geometry;
 use crate::mask;
 use crate::params::IouType;
 use crate::types::Rle;
@@ -69,6 +70,22 @@ impl COCOeval {
                         gt_ann_ids,
                         super::EvalMode::Coco,
                     )
+                }
+            }
+            IouType::Obb => {
+                let dt_obbs: Vec<[f64; 5]> = dt_ann_ids
+                    .iter()
+                    .filter_map(|&id| coco_dt.get_ann(id)?.obb)
+                    .collect();
+                let gt_obbs: Vec<[f64; 5]> = gt_ann_ids
+                    .iter()
+                    .filter_map(|&id| coco_gt.get_ann(id)?.obb)
+                    .collect();
+                if dt_obbs.len() == d && gt_obbs.len() == g {
+                    let iscrowd = vec![false; g];
+                    geometry::obb_iou(&dt_obbs, &gt_obbs, &iscrowd)
+                } else {
+                    vec![vec![0.0; g]; d]
                 }
             }
         }

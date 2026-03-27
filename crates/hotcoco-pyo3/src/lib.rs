@@ -229,6 +229,7 @@ impl PyCOCO {
                     iscrowd: false,
                     keypoints: None,
                     num_keypoints: None,
+                    obb: None,
                     is_group_of: None,
                 })
                 .collect::<Vec<_>>();
@@ -1254,6 +1255,25 @@ impl PyCOCOeval {
             );
         }
         self.inner.summarize();
+    }
+
+    #[doc = "Return summary metric lines as a list of strings without printing.
+
+Computes stats (populating ``ev.stats``) and returns each formatted line.
+Use this instead of ``summarize()`` when you need to capture or restyle the output.
+
+>>> lines = ev.summary_lines()
+>>> for line in lines:
+...     print(line)
+"]
+    fn summary_lines(&mut self) -> Vec<String> {
+        if self.inner.accumulated().is_none() {
+            eprintln!(
+                "hotcoco: summary_lines() called before accumulate(). \
+                 Call evaluate() then accumulate() first."
+            );
+        }
+        self.inner.summarize_lines()
     }
 
     #[doc = "Run the full evaluation pipeline: evaluate → accumulate → summarize.

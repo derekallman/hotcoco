@@ -42,6 +42,9 @@ pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<PyObject> 
     if let Some(nk) = ann.num_keypoints {
         dict.set_item("num_keypoints", nk)?;
     }
+    if let Some(ref obb) = ann.obb {
+        dict.set_item("obb", obb.to_vec())?;
+    }
     if let Some(score) = ann.score {
         dict.set_item("score", score)?;
     }
@@ -96,6 +99,7 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         .unwrap_or(false);
     let keypoints: Option<Vec<f64>> = opt!(dict, "keypoints");
     let num_keypoints: Option<u32> = opt!(dict, "num_keypoints");
+    let obb: Option<[f64; 5]> = opt!(dict, "obb");
     let score: Option<f64> = opt!(dict, "score");
     let is_group_of: Option<bool> = opt!(dict, "is_group_of");
 
@@ -109,6 +113,7 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         iscrowd,
         keypoints,
         num_keypoints,
+        obb,
         score,
         is_group_of,
     })
