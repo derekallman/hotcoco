@@ -18,5 +18,8 @@ path = "src/main.rs"
 
 [dependencies]
 hotcoco = { version = "0.3.0", path = "../hotcoco" }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "color"] }
 clap_complete = "4"
+anstyle = "1"
+anstream = "0.6"
+indicatif = "0.17"

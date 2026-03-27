@@ -487,13 +487,16 @@ pub(super) fn summarize_impl(
 }
 
 impl COCOeval {
-    /// Print the standard 12-line COCO evaluation summary.
-    pub fn summarize(&mut self) {
+    /// Return the summary metric lines as strings without printing.
+    ///
+    /// Computes stats (setting `self.stats`) and returns each formatted line.
+    /// Warnings about non-default parameters are printed to stderr.
+    pub fn summarize_lines(&mut self) -> Vec<String> {
         let eval = match &self.eval {
             Some(e) => e,
             None => {
                 eprintln!("Please run evaluate() and accumulate() first.");
-                return;
+                return Vec::new();
             }
         };
 
@@ -554,11 +557,13 @@ impl COCOeval {
             &metrics,
         );
 
+        let mut lines = Vec::with_capacity(metrics.len() + 1);
+
         for (m, &val) in metrics.iter().zip(stats.iter()) {
             let val_str = Self::format_metric(val);
 
             if self.eval_mode == EvalMode::Lvis || self.eval_mode == EvalMode::OpenImages {
-                println!(" {:>10} = {}", m.name, val_str);
+                lines.push(format!(" {:>10} = {}", m.name, val_str));
             } else {
                 let metric_name = if m.ap {
                     "Average Precision"
@@ -570,21 +575,31 @@ impl COCOeval {
                     Some(thr) => format!("{:.2}", thr),
                     None => "0.50:0.95".to_string(),
                 };
-                println!(
+                lines.push(format!(
                     " {:<22} @[ IoU={:<9} | area={:>6} | maxDets={:>3} ] = {}",
                     format!("{} ({})", metric_name, metric_short),
                     iou_str,
                     m.area_lbl,
                     m.max_det,
                     val_str
-                );
+                ));
             }
         }
 
         if self.eval_mode == EvalMode::Coco {
-            println!("Eval type: {}", self.params.iou_type);
+            lines.push(format!("Eval type: {}", self.params.iou_type));
         }
         self.stats = Some(stats);
+        lines
+    }
+
+    /// Print the standard COCO evaluation summary.
+    ///
+    /// Calls [`summarize_lines`] and prints each line to stdout.
+    pub fn summarize(&mut self) {
+        for line in self.summarize_lines() {
+            println!("{}", line);
+        }
     }
 
     /// Format a metric value: -1.0 sentinel stays as "-1.000", positive values use 3 decimal places.

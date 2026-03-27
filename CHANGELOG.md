@@ -56,6 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - DOTA format conversion — `coco_to_dota()` exports OBB annotations to DOTA text format (one `.txt` per image, 8-point polygon corners); `dota_to_coco()` imports DOTA text files with auto-category discovery and corner-to-OBB reconstruction; `DotaStats` type exported from crate root
 - `crates/hotcoco/src/geometry.rs` — new computational geometry module with `obb_to_corners()`, `obb_iou()` (rayon-parallelized D×G matrix), and Sutherland-Hodgman polygon clipping internals
 - `scripts/fuzz_obb_parity.py` — hypothesis-based OBB IoU parity fuzzer using Shapely (GEOS) as reference implementation; 200 random cases + 8 deterministic known-value tests
+- `python/hotcoco/_style.py` — new zero-dependency terminal styling module with `green()`, `red()`, `yellow()`, `dim()` color helpers, `status()` / `error()` / `warning()` output helpers, `Timer` context manager, and `Spinner` (delayed-start braille spinner, 100ms threshold, no-op in non-TTY/Jupyter)
+- `COCOeval.summarize_lines()` (Rust) / `ev.summary_lines()` (Python) — returns metric summary as `Vec<String>` / `list[str]` without printing; `summarize()` now delegates to it
+- Styled CLI output — all `coco` subcommands show colored status lines on stderr (green action verbs, dimmed file paths and timing); `NO_COLOR` env var respected; color works in Jupyter, spinners disabled in non-TTY
+- Rust CLI (`coco-eval`) — `anstyle`/`anstream` colored output, `indicatif` braille spinners, elapsed timing on all operations; uses `summarize_lines()` for metrics output
 
 ### Changed
 
@@ -99,6 +103,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Browse server (`server.py`) and CLI (`cli.py`) now use `COCOeval.image_diagnostics()` instead of the Python-side `build_eval_index()`; `eval_index.py` reduced to a backward-compatible thin wrapper
 - Per-image AP in `image_diagnostics()` uses the shared `precision_recall_curve` from `accumulate.rs` (monotone precision correction, O(N+R) two-pointer scan) instead of a separate O(N×R) implementation
 - Browse UI: extracted 367 lines of inline JavaScript from `index.html` into `static/gallery.js` (IIFE module, browser-cacheable) and 20 lines from `dashboard.html` into `static/dashboard.js`
+- `python/hotcoco/cli.py` — all raw ANSI escape codes (`\033[91m`, etc.) replaced with `_style` module helpers; all `print("error: ...", file=sys.stderr)` calls replaced with `error()` helper; `cmd_eval --json` uses `ev.summary_lines()` instead of `dup2`/`devnull` fd-level stdout suppression; `cmd_stats` and `cmd_merge` use shared `_load_coco()` helper (removes redundant `ImportError` guards)
+- `crates/hotcoco-cli` — added `anstyle`, `anstream`, `indicatif` dependencies; `clap` feature `color` enabled
 - Browse UI: `overlay.js` restructured — scattered module-level variables consolidated into `_cache`/`_ui` namespaces; all `var` replaced with `const`/`let`; magic numbers extracted into named constants (`DASH_SEGMENT`, `MIN_FONT_SIZE`, `BASE_KPT_RADIUS`, etc.); JSDoc added to `drawOverlays()` documenting the 4-pass rendering pipeline
 - Browse UI: checkbox styling DRYed — shared base selector for all 3 variants (category filter, overlay toggles, tree group) with per-variant size/position overrides; reduces ~90 lines of duplicated CSS
 - Browse UI: `metric_fmt` Jinja2 filter added for consistent metric formatting across templates; replaces scattered `"%.3f" | format()` patterns in dashboard and gallery
