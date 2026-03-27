@@ -96,6 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Internal: added `IouMatrix` type alias for `Vec<Vec<f64>>` in eval module, removed `#[allow(clippy::type_complexity)]`
 - Internal: pre-allocated `Vec`s in `accumulate()` with capacity hints based on total detection count, eliminating repeated reallocations
 - Internal: added `#[inline]` to hot mask functions (`area`, `to_bbox`, `intersection_area`)
+- `examples/coco_evaluation_101.ipynb` — restructured and expanded: 5-act narrative (Getting Started → Understand Your Model → Compare & Slice → Dataset Tools → Integration); added sections for confusion matrix, calibration, per-image diagnostics, model comparison, sliced evaluation, dataset operations, interactive browse, and publication plots with inline visualisations; richer 4-image synthetic dataset for diagnostic demos
+- `docs/getting-started/quickstart.md` — updated notebook description to reflect new content
 - `coco --help` and subcommand help: new description and epilog examples on top-level parser and `eval`/`healthcheck` subparsers; `--gt`/`--dt`/`--slices` help text improved; `stats` one-liner updated
 - `scripts/test_parity.py` renamed to `scripts/fuzz_parity.py` — clarifies that this is the slow hypothesis-based fuzzer (`just fuzz`), distinct from `scripts/test_parity.py` (the fast CI regression suite, `just test`)
 - `scripts/fixtures/adversarial/` added to `.gitignore` and removed from tracking — hypothesis-generated fixtures are ephemeral outputs, not source files; the directory is recreated locally by running `just fuzz`

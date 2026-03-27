@@ -216,4 +216,4 @@ Output:
 - [PyTorch Integration](../guide/pytorch.md) — `CocoDetection` dataset and `CocoEvaluator` for training loops
 - [Working with Results](../guide/results.md) — load_res, eval_imgs, precision/recall arrays
 - [API Reference](../api/coco.md) — full class and method reference
-- [Notebook: COCO Evaluation 101](../../examples/coco_evaluation_101.ipynb) — end-to-end walkthrough with per-class AP, experiment tracking, TIDE, and more
+- [Notebook: COCO Evaluation 101](../../examples/coco_evaluation_101.ipynb) — end-to-end walkthrough: diagnostics (TIDE, confusion matrix, calibration, label errors), model comparison, dataset ops, plots, and more
