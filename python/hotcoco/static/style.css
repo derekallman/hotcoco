@@ -234,13 +234,13 @@ body::after {
     color: var(--text-primary);
 }
 
-.cat-option input[type="checkbox"] {
+/* Shared checkbox base — reset + theme for all custom checkboxes */
+.cat-option input[type="checkbox"],
+.overlay-toggles input[type="checkbox"],
+.tree-group-check {
     appearance: none;
     -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
     border: 1.5px solid var(--border-strong);
-    border-radius: 4px;
     background: transparent;
     cursor: pointer;
     position: relative;
@@ -248,21 +248,35 @@ body::after {
     transition: border-color 0.1s, background 0.1s;
 }
 
-.cat-option input[type="checkbox"]:checked {
+.cat-option input[type="checkbox"]:checked,
+.overlay-toggles input[type="checkbox"]:checked,
+.tree-group-check:checked {
     background: var(--accent);
     border-color: var(--accent);
 }
 
-.cat-option input[type="checkbox"]:checked::after {
+.cat-option input[type="checkbox"]:checked::after,
+.overlay-toggles input[type="checkbox"]:checked::after,
+.tree-group-check:checked::after {
     content: '';
     position: absolute;
+    border: solid var(--text-inverse);
+    transform: rotate(45deg);
+}
+
+/* Category filter checkbox — 16px variant */
+.cat-option input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+}
+
+.cat-option input[type="checkbox"]:checked::after {
     left: 4.5px;
     top: 1.5px;
     width: 5px;
     height: 9px;
-    border: solid var(--text-inverse);
     border-width: 0 2px 2px 0;
-    transform: rotate(45deg);
 }
 
 .cat-actions {
@@ -336,6 +350,14 @@ body::after {
 
 .range-slider input[type="range"]::-webkit-slider-thumb:hover {
     box-shadow: 0 0 0 4px var(--accent-muted);
+}
+
+.range-slider input[type="range"]:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 0 0 3px var(--accent-muted), 0 0 0 5px var(--accent);
+}
+
+.range-slider input[type="range"]:focus-visible::-moz-range-thumb {
+    box-shadow: 0 0 0 3px var(--accent-muted), 0 0 0 5px var(--accent);
 }
 
 .range-slider input[type="range"]::-moz-range-thumb {
@@ -549,7 +571,7 @@ main {
     color: var(--text-tertiary);
 }
 
-/* ── HTMX Loading ── */
+/* ── HTMX Loading & Errors ── */
 .htmx-request .thumb-ratio img {
     opacity: 0.4;
 }
@@ -557,6 +579,54 @@ main {
 .htmx-indicator { display: none; }
 .htmx-request .htmx-indicator,
 .htmx-request.htmx-indicator { display: block; }
+
+.loading-spinner {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    color: var(--text-tertiary);
+    font-size: 0.85rem;
+    gap: 10px;
+}
+
+.loading-spinner::before {
+    content: '';
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.error-toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    padding: 10px 20px;
+    border-radius: var(--radius-md);
+    font-size: 0.82rem;
+    box-shadow: var(--shadow-md);
+    z-index: 10000;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+}
+
+.error-toast.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
 
 /* ── Lightbox ── */
 .lightbox {
@@ -778,34 +848,19 @@ main {
     color: var(--text-primary);
 }
 
+/* Overlay toggles checkbox — 14px variant */
 .overlay-toggles input[type="checkbox"] {
-    appearance: none;
-    -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    border: 1.5px solid var(--border-strong);
     border-radius: 3px;
-    background: transparent;
-    cursor: pointer;
-    position: relative;
-    transition: border-color 0.1s, background 0.1s;
-}
-
-.overlay-toggles input[type="checkbox"]:checked {
-    background: var(--accent);
-    border-color: var(--accent);
 }
 
 .overlay-toggles input[type="checkbox"]:checked::after {
-    content: '';
-    position: absolute;
     left: 3.5px;
     top: 0.5px;
     width: 5px;
     height: 8px;
-    border: solid var(--text-inverse);
     border-width: 0 1.5px 1.5px 0;
-    transform: rotate(45deg);
 }
 
 .toggle-sep {
@@ -1163,35 +1218,19 @@ main {
     transition: transform 0.15s;
 }
 
+/* Tree group checkbox — 14px variant (same size as overlay) */
 .tree-group-check {
-    appearance: none;
-    -webkit-appearance: none;
     width: 14px;
     height: 14px;
-    border: 1.5px solid var(--border-strong);
     border-radius: 3px;
-    background: transparent;
-    cursor: pointer;
-    position: relative;
-    flex-shrink: 0;
-    transition: border-color 0.1s, background 0.1s;
-}
-
-.tree-group-check:checked {
-    background: var(--accent);
-    border-color: var(--accent);
 }
 
 .tree-group-check:checked::after {
-    content: '';
-    position: absolute;
     left: 3.5px;
     top: 0.5px;
     width: 5px;
     height: 8px;
-    border: solid var(--text-inverse);
     border-width: 0 1.5px 1.5px 0;
-    transform: rotate(45deg);
 }
 
 .tree-group-check:indeterminate {
@@ -2214,5 +2253,14 @@ main {
     .label-errors-table th:nth-child(6),
     .label-errors-table td:nth-child(6) {
         display: none;
+    }
+}
+
+/* ── Accessibility: Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
     }
 }

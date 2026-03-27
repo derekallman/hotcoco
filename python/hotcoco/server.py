@@ -5,18 +5,21 @@ import asyncio
 import collections
 import io
 import json
+import logging
 import os
 import random
 import threading
 import webbrowser
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
 
 from . import browse as _browse
+
+logger = logging.getLogger("hotcoco.server")
 
 _HERE = Path(__file__).parent
 _TEMPLATES_DIR = _HERE / "templates"
@@ -77,10 +80,9 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
         if has_eval:
             try:
                 sliced_results = coco_eval.slice_by(slices)
-                # sliced_results is a dict: {slice_name: {num_images, AP, ...delta...}, _overall: {...}}
                 slice_metrics = sliced_results
-            except Exception:
-                pass  # Non-fatal — slices still work for filtering
+            except (KeyError, ValueError, TypeError) as exc:
+                logger.warning("Failed to compute slice metrics: %s", exc)
 
     all_img_ids = list(coco.get_img_ids())
     total_images = len(all_img_ids)
@@ -109,9 +111,20 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
     # Jinja2 environment
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
     env.filters["number_format"] = lambda v: f"{v:,}"
+    env.filters["metric_fmt"] = lambda v, fmt="%.3f": fmt % v if v is not None else "—"
 
     app = FastAPI(title="hotcoco browse")
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    _error_template = env.get_template("partials/error.html")
+
+    @app.exception_handler(Exception)
+    async def _unhandled_error(request: Request, exc: Exception):
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return HTMLResponse(
+            _error_template.render(title="Something went wrong", subtitle="Check the server logs for details"),
+            status_code=500,
+        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -294,13 +307,17 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
     ):
         imgs = coco.load_imgs([image_id])
         if not imgs:
-            return Response(status_code=404, content="Image not found")
+            return HTMLResponse(
+                _error_template.render(title="Image not found", subtitle=f"No image with id {image_id}"),
+                status_code=404,
+            )
         img_info = imgs[0]
 
         img_ids, id_to_pos = _resolve_img_ids(categories, shuffle_seed, sort=sort, eval_filter=eval_filter, iou_thr=iou_thr, slice_name=slice)
         nav = _get_nav(img_ids, id_to_pos, image_id)
 
         nav_query = _build_query(categories, shuffle_seed, min_score, sort=sort, eval_filter=eval_filter, iou_thr=iou_thr, slice_name=slice)
+        nav_data = {"prev_id": nav["prev_id"], "next_id": nav["next_id"], "query": nav_query}
 
         eval_index = _get_eval_index(iou_thr) if has_eval else None
 
@@ -308,7 +325,6 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
             coco, image_id, cat_colors, dt_coco=dt_coco, score_thr=min_score, img_info=img_info,
             eval_index=eval_index,
         )
-        annotation_data["nav"] = nav
 
         template = env.get_template("partials/detail.html")
         html = template.render(
@@ -317,6 +333,7 @@ def create_app(coco, image_dir: str | None = None, batch_size: int = 12, dt_coco
             annotation_json=json.dumps(annotation_data),
             nav=nav,
             nav_query=nav_query,
+            nav_json=json.dumps(nav_data),
             has_dt=has_dt,
             has_eval=has_eval,
         )

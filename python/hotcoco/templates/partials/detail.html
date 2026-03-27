@@ -71,10 +71,4 @@
 
 <script type="application/json" id="annotation-data">{{ annotation_json | safe }}</script>
 
-<script>
-window._navData = {
-    prev_id: {{ nav.prev_id if nav.prev_id is not none else 'null' }},
-    next_id: {{ nav.next_id if nav.next_id is not none else 'null' }},
-    query: '{{ nav_query | safe }}'
-};
-</script>
+<script type="application/json" id="nav-data">{{ nav_json | safe }}</script>

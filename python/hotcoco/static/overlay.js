@@ -1,11 +1,23 @@
 /* hotcoco — Canvas annotation overlay for dataset browser lightbox */
 
-// Eval color scheme
+// ── Constants ──
+
 const EVAL_COLORS = {
     tp: { r: 34, g: 197, b: 94 },   // green #22c55e
     fp: { r: 239, g: 68, b: 68 },    // red #ef4444
     fn: { r: 59, g: 130, b: 246 },   // blue #3b82f6
 };
+
+const DASH_SEGMENT = 6;
+const DASH_GAP = 3;
+const MATCH_DASH = 4;
+const MATCH_GAP = 3;
+const MIN_FONT_SIZE = 10;
+const BASE_FONT_SIZE = 12;
+const MIN_KPT_RADIUS = 3;
+const BASE_KPT_RADIUS = 4;
+
+// ── Render state ──
 
 const state = {
     annotations: [],
@@ -17,7 +29,7 @@ const state = {
     sources: { gt: true, dt: true },
     colorMode: 'category',  // 'category' or 'eval'
     hoveredIdx: null,
-    matchHighlightIdx: null,  // index of matched annotation to highlight
+    matchHighlightIdx: null,
     scale: 1,
     offsetX: 0,
     offsetY: 0,
@@ -26,26 +38,60 @@ const state = {
     dragStartY: 0,
     lastDragOffsetX: 0,
     lastDragOffsetY: 0,
-    // Image position within container (set by sizeCanvasAndDraw)
     imgOffsetX: 0,
     imgOffsetY: 0,
     imgW: 0,
     imgH: 0,
 };
 
-// Build a lookup from annotation id to index for match highlighting
-let _annIdToIdx = {};
+// ── Module-private caches & UI refs ──
+
+const _cache = {
+    annIdToIdx: {},         // annotation id → index for match highlighting
+    annItems: [],           // sidebar DOM elements
+    annIdxToItem: {},       // annotation index → sidebar DOM element
+    canvasRect: null,       // cached getBoundingClientRect() — updated on resize
+};
+
+const _ui = {
+    prevHighlightedItem: null,
+    prevMatchItem: null,
+};
+
+// ── Event handler refs (for cleanup on re-init) ──
+
+let _mouseUpHandler = null;
+let _touchHandler = null;
+let _mouseMoveRAF = null;
+
+// ── Helpers ──
 
 function _resolveMatchHighlight(idx) {
     if (idx !== null && state.colorMode === 'eval') {
         const ann = state.annotations[idx];
         if (ann && ann.matched_id) {
-            const mi = _annIdToIdx[ann.matched_id];
+            const mi = _cache.annIdToIdx[ann.matched_id];
             if (mi !== undefined) return mi;
         }
     }
     return null;
 }
+
+function _getAnnColor(ann) {
+    if (state.colorMode === 'eval' && ann.eval_status) {
+        const ec = EVAL_COLORS[ann.eval_status];
+        if (ec) return [ec.r, ec.g, ec.b];
+    }
+    return ann.color;
+}
+
+function _redraw() {
+    const canvas = document.getElementById('overlay-canvas');
+    const img = document.getElementById('detail-img');
+    if (canvas && img) drawOverlays(canvas, img);
+}
+
+// ── Init ──
 
 function initOverlay() {
     const dataEl = document.getElementById('annotation-data');
@@ -65,6 +111,12 @@ function initOverlay() {
     state.skeleton = data.skeleton || [];
     state.hasEval = data.has_eval || false;
     state.iouThr = data.iou_thr || null;
+
+    // Parse nav data (prev/next image + query string for navigation)
+    const navEl = document.getElementById('nav-data');
+    if (navEl) {
+        try { window._navData = JSON.parse(navEl.textContent); } catch (e) { /* ignore */ }
+    }
     state.hoveredIdx = null;
     state.matchHighlightIdx = null;
     state.scale = 1;
@@ -79,10 +131,10 @@ function initOverlay() {
         state._initialized = true;
     }
 
-    // Build id -> index lookup
-    _annIdToIdx = {};
+    // Build id → index lookup
+    _cache.annIdToIdx = {};
     for (let i = 0; i < state.annotations.length; i++) {
-        _annIdToIdx[state.annotations[i].id] = i;
+        _cache.annIdToIdx[state.annotations[i].id] = i;
     }
 
     // Sync checkbox DOM to match persisted state
@@ -111,7 +163,7 @@ function initOverlay() {
 
     // Resize canvas when container resizes (e.g. window resize while lightbox open)
     if (window._overlayResizeObserver) window._overlayResizeObserver.disconnect();
-    var container = document.getElementById('image-container');
+    const container = document.getElementById('image-container');
     if (container && typeof ResizeObserver !== 'undefined') {
         window._overlayResizeObserver = new ResizeObserver(function () {
             if (img.complete && img.naturalWidth > 0) {
@@ -129,23 +181,26 @@ function initOverlay() {
     canvas.onmouseup = function () { state.isDragging = false; canvas.style.cursor = state.scale > 1 ? 'grab' : ''; };
     canvas.ondblclick = function () { state.scale = 1; state.offsetX = 0; state.offsetY = 0; canvas.style.cursor = ''; drawOverlays(canvas, img); };
 
-    // Touch: tap to highlight annotation
-    canvas.addEventListener('touchstart', function (e) {
+    // Touch: tap to highlight annotation — clean up previous handler first
+    if (_touchHandler) canvas.removeEventListener('touchstart', _touchHandler);
+    _touchHandler = function (e) {
         if (e.touches.length === 1) {
-            var touch = e.touches[0];
-            // Simulate mousemove for hit-test
-            onCanvasMouseMove(touch, canvas, img);
+            onCanvasMouseMove(e.touches[0], canvas, img);
         }
-    }, { passive: true });
+    };
+    canvas.addEventListener('touchstart', _touchHandler, { passive: true });
+
+    // Global mouseup to handle drag ending outside canvas — clean up previous handler first
+    if (_mouseUpHandler) document.removeEventListener('mouseup', _mouseUpHandler);
+    _mouseUpHandler = function () {
+        state.isDragging = false;
+        const c = document.getElementById('overlay-canvas');
+        if (c) c.style.cursor = state.scale > 1 ? 'grab' : '';
+    };
+    document.addEventListener('mouseup', _mouseUpHandler);
 }
 
-function _getAnnColor(ann) {
-    if (state.colorMode === 'eval' && ann.eval_status) {
-        const ec = EVAL_COLORS[ann.eval_status];
-        if (ec) return [ec.r, ec.g, ec.b];
-    }
-    return ann.color;
-}
+// ── Canvas sizing & transform ──
 
 function sizeCanvasAndDraw(img, canvas) {
     // Reset transform before measuring so getBoundingClientRect gives true size
@@ -170,7 +225,9 @@ function sizeCanvasAndDraw(img, canvas) {
     state.imgW = imgRect.width;
     state.imgH = imgRect.height;
 
-    // drawOverlays will re-apply the image transform via syncImageTransform
+    // Cache canvas rect for hit-testing (avoids forced layout on every mousemove)
+    _cache.canvasRect = canvas.getBoundingClientRect();
+
     drawOverlays(canvas, img);
 }
 
@@ -179,12 +236,25 @@ function syncImageTransform(img) {
         img.style.transform = '';
         img.style.transformOrigin = '';
     } else {
-        // Transform origin at image's top-left; offset is relative to image position
         img.style.transformOrigin = '0 0';
         img.style.transform = `translate(${state.offsetX}px, ${state.offsetY}px) scale(${state.scale})`;
     }
 }
 
+// ── Drawing ──
+
+/**
+ * Render all visible annotations to canvas.
+ *
+ * Rendering passes per annotation (in order):
+ * 1. Segmentation polygons — filled + stroked
+ * 2. Bounding boxes — stroked, with label/score/eval tag
+ * 3. Match lines — dashed connector between matched DT↔GT (eval mode, on hover)
+ * 4. Keypoint skeleton lines + dots
+ *
+ * Opacity varies by hover state: unhovered annotations fade to 0.15 when
+ * any annotation is hovered, while the hovered + matched pair stay at 0.8.
+ */
 function drawOverlays(canvas, img) {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -193,19 +263,16 @@ function drawOverlays(canvas, img) {
 
     if (!state.image || !img.naturalWidth) return;
 
-    // Scale from image coords to rendered image size
     const scaleX = state.imgW / state.image.width;
     const scaleY = state.imgH / state.image.height;
 
     ctx.save();
-    // Translate to image position within container, then apply zoom/pan
     ctx.translate(state.imgOffsetX + state.offsetX, state.imgOffsetY + state.offsetY);
     ctx.scale(state.scale, state.scale);
 
     for (let i = 0; i < state.annotations.length; i++) {
         const ann = state.annotations[i];
 
-        // Filter by source
         if (!state.sources[ann.source]) continue;
 
         const isHovered = state.hoveredIdx === i;
@@ -218,15 +285,15 @@ function drawOverlays(canvas, img) {
         const strokeColor = `rgba(${r}, ${g}, ${b}, ${hasHover ? (activeHighlight ? 1 : 0.2) : 0.9})`;
         const fillColor = `rgba(${r}, ${g}, ${b}, ${baseAlpha * 0.5})`;
 
-        // Determine dash pattern based on eval mode
+        // Dashed stroke for FN in eval mode, or DT in category mode
         let dashPattern = [];
         if (state.colorMode === 'eval' && ann.eval_status === 'fn') {
-            dashPattern = [6 / state.scale, 3 / state.scale];
+            dashPattern = [DASH_SEGMENT / state.scale, DASH_GAP / state.scale];
         } else if (state.colorMode !== 'eval' && ann.source === 'dt') {
-            dashPattern = [6 / state.scale, 3 / state.scale];
+            dashPattern = [DASH_SEGMENT / state.scale, DASH_GAP / state.scale];
         }
 
-        // Segmentation polygons
+        // 1. Segmentation polygons
         if (state.layers.segm && ann.segmentation) {
             ctx.fillStyle = fillColor;
             ctx.strokeStyle = strokeColor;
@@ -247,7 +314,7 @@ function drawOverlays(canvas, img) {
             ctx.setLineDash([]);
         }
 
-        // Bounding box
+        // 2. Bounding box + label
         if (state.layers.bbox && ann.bbox) {
             const [bx, by, bw, bh] = ann.bbox;
             ctx.strokeStyle = strokeColor;
@@ -256,7 +323,6 @@ function drawOverlays(canvas, img) {
             ctx.strokeRect(bx * scaleX, by * scaleY, bw * scaleX, bh * scaleY);
             ctx.setLineDash([]);
 
-            // Label + score + eval status
             if (activeHighlight || !hasHover) {
                 let label;
                 if (state.colorMode === 'eval' && ann.eval_status) {
@@ -273,7 +339,7 @@ function drawOverlays(canvas, img) {
                         ? `${ann.category} ${ann.score.toFixed(2)}`
                         : ann.category;
                 }
-                const fontSize = Math.max(10, 12 / state.scale);
+                const fontSize = Math.max(MIN_FONT_SIZE, BASE_FONT_SIZE / state.scale);
                 ctx.font = `600 ${fontSize}px "DM Sans", -apple-system, sans-serif`;
                 const tw = ctx.measureText(label).width;
                 const pad = 3 / state.scale;
@@ -286,9 +352,9 @@ function drawOverlays(canvas, img) {
             }
         }
 
-        // Match line: draw a connecting line between matched DT↔GT on hover
+        // 3. Match line: connecting line between matched DT↔GT on hover
         if (state.colorMode === 'eval' && activeHighlight && ann.matched_id && ann.bbox) {
-            const matchIdx = _annIdToIdx[ann.matched_id];
+            const matchIdx = _cache.annIdToIdx[ann.matched_id];
             if (matchIdx !== undefined) {
                 const matchAnn = state.annotations[matchIdx];
                 if (matchAnn && matchAnn.bbox) {
@@ -303,20 +369,19 @@ function drawOverlays(canvas, img) {
                     ctx.lineTo(cx2, cy2);
                     ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
                     ctx.lineWidth = 1.5 / state.scale;
-                    ctx.setLineDash([4 / state.scale, 3 / state.scale]);
+                    ctx.setLineDash([MATCH_DASH / state.scale, MATCH_GAP / state.scale]);
                     ctx.stroke();
                     ctx.setLineDash([]);
                 }
             }
         }
 
-        // Keypoints
+        // 4. Keypoints — skeleton lines + dots
         if (state.layers.kpts && ann.keypoints) {
             const kpts = ann.keypoints;
             const kptAlpha = hasHover ? (activeHighlight ? 1 : 0.15) : 0.8;
-            const radius = Math.max(3, 4 / state.scale);
+            const radius = Math.max(MIN_KPT_RADIUS, BASE_KPT_RADIUS / state.scale);
 
-            // Skeleton lines
             if (state.skeleton && state.skeleton.length > 0) {
                 ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${kptAlpha * 0.6})`;
                 ctx.lineWidth = Math.max(1, 1.5 / state.scale);
@@ -335,7 +400,6 @@ function drawOverlays(canvas, img) {
                 }
             }
 
-            // Keypoint dots
             for (let k = 0; k < kpts.length; k += 3) {
                 const kx = kpts[k];
                 const ky = kpts[k + 1];
@@ -356,7 +420,7 @@ function drawOverlays(canvas, img) {
     ctx.restore();
 }
 
-let _mouseMoveRAF = null;
+// ── Mouse & touch interaction ──
 
 function onCanvasMouseMove(e, canvas, img) {
     if (state.isDragging) {
@@ -374,7 +438,7 @@ function onCanvasMouseMove(e, canvas, img) {
     }
 
     // Hit test against annotation bboxes (account for image offset within container)
-    const rect = canvas.getBoundingClientRect();
+    const rect = _cache.canvasRect || canvas.getBoundingClientRect();
     const mx = (e.clientX - rect.left - state.imgOffsetX - state.offsetX) / state.scale;
     const my = (e.clientY - rect.top - state.imgOffsetY - state.offsetY) / state.scale;
 
@@ -405,8 +469,7 @@ function onCanvasMouseMove(e, canvas, img) {
 
 function onCanvasWheel(e, canvas, img) {
     e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    // Mouse position relative to image origin (not container origin)
+    const rect = _cache.canvasRect || canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left - state.imgOffsetX;
     const my = e.clientY - rect.top - state.imgOffsetY;
 
@@ -418,7 +481,6 @@ function onCanvasWheel(e, canvas, img) {
         state.offsetX = 0;
         state.offsetY = 0;
     } else {
-        // Zoom toward cursor (relative to image origin)
         state.offsetX = mx - (mx - state.offsetX) * (newScale / state.scale);
         state.offsetY = my - (my - state.offsetY) * (newScale / state.scale);
     }
@@ -440,18 +502,7 @@ function onCanvasMouseDown(e) {
     }
 }
 
-// Global mouseup to handle drag ending outside canvas
-document.addEventListener('mouseup', function () {
-    state.isDragging = false;
-    const canvas = document.getElementById('overlay-canvas');
-    if (canvas) canvas.style.cursor = state.scale > 1 ? 'grab' : '';
-});
-
-function _redraw() {
-    const canvas = document.getElementById('overlay-canvas');
-    const img = document.getElementById('detail-img');
-    if (canvas && img) drawOverlays(canvas, img);
-}
+// ── Layer / source / color-mode toggles ──
 
 function toggleLayer(type) {
     state.layers[type] = !state.layers[type];
@@ -492,17 +543,15 @@ function _syncCheckboxes() {
     _syncColorModeToggle();
 }
 
-let _annItems = [];
-let _annIdxToItem = {};
+// ── Annotation sidebar ──
 
 function buildAnnotationList() {
     const list = document.getElementById('annotation-list');
     if (!list) return;
     list.innerHTML = '';
-    _annItems = [];
-    _annIdxToItem = {};
+    _cache.annItems = [];
+    _cache.annIdxToItem = {};
 
-    // Count visible annotations
     let visibleCount = 0;
     for (let i = 0; i < state.annotations.length; i++) {
         if (state.sources[state.annotations[i].source]) visibleCount++;
@@ -534,11 +583,12 @@ function buildAnnotationList() {
 
         item.appendChild(dot);
 
-        // Eval badge (before label)
         if (state.colorMode === 'eval' && ann.eval_status) {
             const badge = document.createElement('span');
             badge.className = 'eval-badge eval-' + ann.eval_status;
             badge.textContent = ann.eval_status.toUpperCase();
+            const titles = { tp: 'True positive', fp: 'False positive', fn: 'False negative' };
+            badge.title = titles[ann.eval_status] || ann.eval_status;
             item.appendChild(badge);
         }
 
@@ -556,7 +606,6 @@ function buildAnnotationList() {
         source.textContent = ann.source;
         item.appendChild(source);
 
-        // Hover sync: sidebar → canvas (refs cached outside loop)
         item.addEventListener('mouseenter', function () {
             const idx = parseInt(this.dataset.idx);
             state.hoveredIdx = idx;
@@ -572,34 +621,33 @@ function buildAnnotationList() {
         });
 
         list.appendChild(item);
-        _annItems.push(item);
-        _annIdxToItem[i] = item;
+        _cache.annItems.push(item);
+        _cache.annIdxToItem[i] = item;
     }
 }
 
-var _prevHighlightedItem = null;
-var _prevMatchItem = null;
-
 function syncSidebarHighlight() {
-    if (_prevHighlightedItem) {
-        _prevHighlightedItem.classList.remove('highlighted');
+    if (_ui.prevHighlightedItem) {
+        _ui.prevHighlightedItem.classList.remove('highlighted');
     }
-    if (_prevMatchItem) {
-        _prevMatchItem.classList.remove('match-highlighted');
+    if (_ui.prevMatchItem) {
+        _ui.prevMatchItem.classList.remove('match-highlighted');
     }
-    var item = state.hoveredIdx !== null ? _annIdxToItem[state.hoveredIdx] : null;
+    const item = state.hoveredIdx !== null ? _cache.annIdxToItem[state.hoveredIdx] : null;
     if (item) {
         item.classList.add('highlighted');
         item.scrollIntoView({ block: 'nearest' });
     }
-    _prevHighlightedItem = item || null;
+    _ui.prevHighlightedItem = item || null;
 
-    var matchItem = state.matchHighlightIdx !== null ? _annIdxToItem[state.matchHighlightIdx] : null;
+    const matchItem = state.matchHighlightIdx !== null ? _cache.annIdxToItem[state.matchHighlightIdx] : null;
     if (matchItem) {
         matchItem.classList.add('match-highlighted');
     }
-    _prevMatchItem = matchItem || null;
+    _ui.prevMatchItem = matchItem || null;
 }
+
+// ── Lightbox navigation ──
 
 function navigateLightbox(direction) {
     if (!window._navData) return;
@@ -607,11 +655,11 @@ function navigateLightbox(direction) {
     if (id === null) return;
     let url = '/detail/' + id;
     if (window._navData.query) url += '?' + window._navData.query;
-    // htmx:afterSettle listener in index.html handles initOverlay
     htmx.ajax('GET', url, { target: '#lightbox-content', swap: 'innerHTML' });
 }
 
-// Make functions available globally
+// ── Public API ──
+
 window.initOverlay = initOverlay;
 window.toggleLayer = toggleLayer;
 window.toggleSource = toggleSource;

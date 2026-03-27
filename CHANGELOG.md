@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `python/hotcoco/dashboard.py` — Plotly chart generation module: `build_dashboard()`, `kpi_tiles()`, `chart_pr_curves()`, `chart_per_category_ap()`, `chart_confusion_matrix()`, `chart_tide_errors()`, `chart_calibration()`, `chart_f1_distribution()`, `label_errors_table()`
 - `python/hotcoco/templates/dashboard.html` — dashboard template with sidebar metadata, KPI row, chart grid, and label errors table
 - Dashboard responsive layout — 5 breakpoints (1400px max-width, 1000px single-column charts, 768px toolbar mode with inline metadata, 480px compact with hidden chart hints and 3-column TIDE, 350px+ ultra-narrow); matches gallery responsive behavior at all widths
+- Browse UI: HTMX loading spinner on gallery container (`hx-indicator`); error toast for failed HTMX requests (`htmx:responseError`, `htmx:sendError`) with 4-second auto-dismiss
+- Browse UI: `@media (prefers-reduced-motion: reduce)` — disables all CSS animations and transitions for users with motion sensitivity preferences
+- Browse UI: `:focus-visible` ring on custom range slider thumbs for keyboard accessibility
+- Browse UI: `title` attributes on eval badges in annotation sidebar ("True positive", "False positive", "False negative") for screen reader and tooltip accessibility
 
 ### Changed
 
@@ -90,6 +94,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Internal: extracted named constants `AREA_SMALL` (32²), `AREA_LARGE` (96²), `KPT_OKS_SIGMAS` and `default_iou_thrs()` helper in `params.rs`; replaced inline literals in `Params::new()` and deduplicated the IoU range formula between `params.rs` and `summarize.rs`
 - Browse server (`server.py`) and CLI (`cli.py`) now use `COCOeval.image_diagnostics()` instead of the Python-side `build_eval_index()`; `eval_index.py` reduced to a backward-compatible thin wrapper
 - Per-image AP in `image_diagnostics()` uses the shared `precision_recall_curve` from `accumulate.rs` (monotone precision correction, O(N+R) two-pointer scan) instead of a separate O(N×R) implementation
+- Browse UI: extracted 367 lines of inline JavaScript from `index.html` into `static/gallery.js` (IIFE module, browser-cacheable) and 20 lines from `dashboard.html` into `static/dashboard.js`
+- Browse UI: `overlay.js` restructured — scattered module-level variables consolidated into `_cache`/`_ui` namespaces; all `var` replaced with `const`/`let`; magic numbers extracted into named constants (`DASH_SEGMENT`, `MIN_FONT_SIZE`, `BASE_KPT_RADIUS`, etc.); JSDoc added to `drawOverlays()` documenting the 4-pass rendering pipeline
+- Browse UI: checkbox styling DRYed — shared base selector for all 3 variants (category filter, overlay toggles, tree group) with per-variant size/position overrides; reduces ~90 lines of duplicated CSS
+- Browse UI: `metric_fmt` Jinja2 filter added for consistent metric formatting across templates; replaces scattered `"%.3f" | format()` patterns in dashboard and gallery
+- Browse UI: `nav_query | safe` in `detail.html` replaced with JSON-encoded `<script type="application/json">` data element parsed in `overlay.js`, eliminating a potential XSS surface from string interpolation
+- Browse UI: canvas `getBoundingClientRect()` result cached in `_cache.canvasRect` (updated on resize), avoiding forced layout reflow on every mousemove during hover hit-testing
+- Browse UI: redundant `syncCatViews()` calls removed from per-checkbox handlers (`onCatChange`, `onTreeChildChange`, `toggleGroupCheck`); cross-view sync now runs only on view switch via `setCatView()`
+- Browse server: inline HTML error strings in `server.py` replaced with `partials/error.html` template; `image_id` no longer duplicated inside `annotation_json` (dead `nav` key removed)
+
+### Fixed
+
+- Browse UI: `mouseup` and `touchstart` event listeners in `overlay.js` accumulated on every lightbox open (memory leak); now stored in module-level refs and cleaned up before re-attaching in `initOverlay()`
+- Browse server: unhandled exceptions returned FastAPI's default JSON error instead of themed HTML; added `@app.exception_handler(Exception)` with styled error page and `logging.exception()` for 500s; `/detail/{id}` 404 now returns themed HTML instead of plain text
+- Browse server: broad `except Exception: pass` on slice metric computation replaced with `except (KeyError, ValueError, TypeError)` and `logger.warning()` to avoid silently hiding bugs
 
 ## [0.3.0] - 2026-03-16
 

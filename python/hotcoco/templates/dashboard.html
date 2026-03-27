@@ -45,7 +45,7 @@
         <section class="kpi-row">
             {% for item in kpi %}
             <div class="kpi-tile">
-                <span class="kpi-value">{{ "%.3f" | format(item.value) }}</span>
+                <span class="kpi-value">{{ item.value | metric_fmt }}</span>
                 <span class="kpi-label">{{ item.key }}</span>
             </div>
             {% endfor %}
@@ -116,8 +116,8 @@
                             </td>
                             <td>{{ err.dt_category }}</td>
                             <td>{{ err.gt_category if err.gt_category else "—" }}</td>
-                            <td class="mono">{{ "%.3f" | format(err.dt_score) }}</td>
-                            <td class="mono">{{ "%.3f" | format(err.iou) if err.iou else "—" }}</td>
+                            <td class="mono">{{ err.dt_score | metric_fmt }}</td>
+                            <td class="mono">{{ err.iou | metric_fmt }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -131,24 +131,6 @@
 </div>
 
 {% if has_eval %}
-<script>
-/* ResizeObserver: Plotly responsive mode only listens to window resize,
-   not CSS grid container changes. This ensures charts re-layout when
-   the sidebar collapses at 768px. */
-(function() {
-    var grid = document.querySelector('.chart-grid');
-    if (!grid || typeof ResizeObserver === 'undefined') return;
-    var timeout;
-    new ResizeObserver(function() {
-        clearTimeout(timeout);
-        timeout = setTimeout(function() {
-            var plots = grid.querySelectorAll('.js-plotly-plot');
-            for (var i = 0; i < plots.length; i++) {
-                Plotly.Plots.resize(plots[i]);
-            }
-        }, 100);
-    }).observe(grid);
-})();
-</script>
+<script src="/static/dashboard.js"></script>
 {% endif %}
 {% endblock %}
