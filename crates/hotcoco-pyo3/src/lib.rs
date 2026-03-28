@@ -1233,18 +1233,18 @@ impl PyCOCOeval {
         Ok(PyCOCOeval { inner })
     }
 
-    fn evaluate(&mut self) {
-        self.inner.evaluate();
+    fn evaluate(&mut self, py: Python<'_>) {
+        py.allow_threads(|| self.inner.evaluate());
     }
 
-    fn accumulate(&mut self) {
+    fn accumulate(&mut self, py: Python<'_>) {
         if self.inner.eval_imgs().is_empty() {
             eprintln!(
                 "hotcoco: accumulate() called before evaluate(). \
                  Call evaluate() first or the results will be empty."
             );
         }
-        self.inner.accumulate();
+        py.allow_threads(|| self.inner.accumulate());
     }
 
     fn summarize(&mut self) {
@@ -1280,8 +1280,8 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
 
 Equivalent to calling the three methods in sequence. Primarily used with
 LVIS pipelines (Detectron2, MMDetection) that expect a single ``run()`` call."]
-    fn run(&mut self) {
-        self.inner.run();
+    fn run(&mut self, py: Python<'_>) {
+        py.allow_threads(|| self.inner.run());
     }
 
     #[getter]
@@ -1549,7 +1549,7 @@ Example
         max_det: Option<usize>,
         min_score: Option<f64>,
     ) -> PyResult<PyObject> {
-        let cm = self.inner.confusion_matrix(iou_thr, max_det, min_score);
+        let cm = py.allow_threads(|| self.inner.confusion_matrix(iou_thr, max_det, min_score));
         let k = cm.num_cats + 1;
 
         // matrix: Vec<u64> → numpy int64, reshaped to (k, k)
@@ -1605,7 +1605,9 @@ Example\n\
 "]
     #[pyo3(signature = (pos_thr=0.5, bg_thr=0.1))]
     fn tide_errors(&self, py: Python<'_>, pos_thr: f64, bg_thr: f64) -> PyResult<PyObject> {
-        let te = self.inner.tide_errors(pos_thr, bg_thr).map_err(to_pyerr)?;
+        let te = py
+            .allow_threads(|| self.inner.tide_errors(pos_thr, bg_thr))
+            .map_err(to_pyerr)?;
 
         let delta_ap = PyDict::new(py);
         for (k, v) in &te.delta_ap {
@@ -1663,9 +1665,8 @@ Example\n\
 "]
     #[pyo3(signature = (n_bins=10, iou_threshold=0.5))]
     fn calibration(&self, py: Python<'_>, n_bins: usize, iou_threshold: f64) -> PyResult<PyObject> {
-        let cal = self
-            .inner
-            .calibration(n_bins, iou_threshold)
+        let cal = py
+            .allow_threads(|| self.inner.calibration(n_bins, iou_threshold))
             .map_err(to_pyerr)?;
 
         let bins_list = PyList::empty(py);
@@ -1744,7 +1745,9 @@ Example\n\
             map
         };
 
-        let results = self.inner.slice_by(slice_map).map_err(to_pyerr)?;
+        let results = py
+            .allow_threads(|| self.inner.slice_by(slice_map))
+            .map_err(to_pyerr)?;
 
         let out = PyDict::new(py);
 
@@ -1794,9 +1797,8 @@ Example\n\
         iou_thr: f64,
         score_thr: f64,
     ) -> PyResult<PyObject> {
-        let diag = self
-            .inner
-            .image_diagnostics(iou_thr, score_thr)
+        let diag = py
+            .allow_threads(|| self.inner.image_diagnostics(iou_thr, score_thr))
             .map_err(to_pyerr)?;
 
         // dt_status: {ann_id: "tp" | "fp"}
@@ -2078,7 +2080,9 @@ fn compare(
         seed,
         confidence,
     };
-    let result = hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts).map_err(to_pyerr)?;
+    let result = py
+        .allow_threads(|| hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts))
+        .map_err(to_pyerr)?;
 
     let f64_map_to_dict =
         |map: &std::collections::HashMap<String, f64>| -> PyResult<Bound<'_, PyDict>> {
