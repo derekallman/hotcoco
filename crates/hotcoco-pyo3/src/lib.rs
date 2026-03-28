@@ -2071,7 +2071,10 @@ fn init_as_lvis(py: Python<'_>) -> PyResult<()> {
 ///     Keys: ``metrics_a``, ``metrics_b``, ``deltas``, ``ci`` (None if
 ///     bootstrap disabled), ``per_category``, ``n_bootstrap``, ``num_images``.
 #[pyfunction]
-#[pyo3(signature = (eval_a, eval_b, n_bootstrap=0, seed=42, confidence=0.95))]
+#[pyo3(
+    signature = (eval_a, eval_b, n_bootstrap=0, seed=42, confidence=0.95),
+    text_signature = "(eval_a, eval_b, n_bootstrap=0, seed=42, confidence=0.95)"
+)]
 fn compare(
     py: Python<'_>,
     eval_a: &PyCOCOeval,

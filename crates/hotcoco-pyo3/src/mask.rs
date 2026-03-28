@@ -56,6 +56,7 @@ fn extract_rle_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<hotcoco_core::Rle>> 
 /// dict or list[dict]
 ///     ``{"size": [H, W], "counts": b"..."}`` matching pycocotools.
 #[pyfunction]
+#[pyo3(text_signature = "(mask)")]
 pub fn encode(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let ndim: usize = mask.getattr("ndim")?.extract()?;
     match ndim {
@@ -129,6 +130,7 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 /// -------
 /// numpy.ndarray
 #[pyfunction]
+#[pyo3(text_signature = "(rle)")]
 pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
         // Single RLE → (H, W) Fortran-order
@@ -181,6 +183,7 @@ pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 ///     Single RLE dict → scalar uint64.
 ///     List of RLE dicts → numpy uint64 array.
 #[pyfunction]
+#[pyo3(text_signature = "(rle)")]
 pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
         let r = py_to_rle(dict)?;
@@ -206,6 +209,7 @@ pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 ///     Single RLE dict → numpy float64(4,).
 ///     List of RLE dicts → numpy float64(N, 4).
 #[pyfunction]
+#[pyo3(text_signature = "(rle)")]
 pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
         let r = py_to_rle(dict)?;
@@ -249,6 +253,7 @@ pub fn merge(py: Python<'_>, rles: &Bound<'_, PyAny>, intersect: bool) -> PyResu
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
+#[pyo3(text_signature = "(dt, gt, iscrowd)")]
 pub fn iou(
     py: Python<'_>,
     dt: &Bound<'_, PyAny>,
@@ -270,6 +275,7 @@ pub fn iou(
 }
 
 #[pyfunction]
+#[pyo3(text_signature = "(dt, gt, iscrowd)")]
 pub fn bbox_iou(
     py: Python<'_>,
     dt: Vec<[f64; 4]>,
@@ -293,6 +299,7 @@ pub fn bbox_iou(
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
+#[pyo3(text_signature = "(xy, h, w)")]
 pub fn fr_poly(py: Python<'_>, xy: Vec<f64>, h: u32, w: u32) -> PyResult<Py<PyAny>> {
     let rle = rmask::fr_poly(&xy, h, w);
     rle_to_coco_py(py, &rle)
@@ -310,6 +317,7 @@ pub fn fr_poly_camel(py: Python<'_>, xy: Vec<f64>, h: u32, w: u32) -> PyResult<P
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
+#[pyo3(text_signature = "(bb, h, w)")]
 pub fn fr_bbox(py: Python<'_>, bb: [f64; 4], h: u32, w: u32) -> PyResult<Py<PyAny>> {
     let rle = rmask::fr_bbox(&bb, h, w);
     rle_to_coco_py(py, &rle)
@@ -327,12 +335,14 @@ pub fn fr_bbox_camel(py: Python<'_>, bb: [f64; 4], h: u32, w: u32) -> PyResult<P
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
+#[pyo3(text_signature = "(rle)")]
 pub fn rle_to_string(rle: &Bound<'_, PyDict>) -> PyResult<String> {
     let rle = py_to_rle(rle)?;
     Ok(rmask::rle_to_string(&rle))
 }
 
 #[pyfunction]
+#[pyo3(text_signature = "(s, h, w)")]
 pub fn rle_from_string(py: Python<'_>, s: &str, h: u32, w: u32) -> PyResult<Py<PyAny>> {
     let rle = rmask::rle_from_string(s, h, w)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -361,7 +371,7 @@ pub fn rle_from_string(py: Python<'_>, s: &str, h: u32, w: u32) -> PyResult<Py<P
 /// list[dict]
 ///     List of RLE dicts in pycocotools format.
 #[pyfunction]
-#[pyo3(name = "frPyObjects")]
+#[pyo3(name = "frPyObjects", text_signature = "(seg, h, w)")]
 pub fn fr_py_objects(
     py: Python<'_>,
     seg: &Bound<'_, PyAny>,
