@@ -16,6 +16,9 @@ print("hotcoco installed successfully")
 !!! note "numpy"
     hotcoco requires numpy, which is installed automatically. If you need a specific numpy version, install it first.
 
+!!! tip "IDE support"
+    hotcoco ships with type stubs (`.pyi`) and a `py.typed` marker. Autocomplete, hover docs, and type checking work out of the box in VS Code, PyCharm, and other editors.
+
 ??? info "Build from source"
     Install prerequisites if you don't have them:
     ```bash

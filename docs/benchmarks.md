@@ -12,7 +12,7 @@
 | **F-scores** | No | No | Yes — F-beta at any β |
 | **Per-class AP** | Manual only | Yes — via `extended_metrics` | Built-in via `get_results(per_class=True)` |
 | **Dataset operations** | No | No | Yes — filter, merge, split, sample, stats |
-| **Format conversion** | No | No | Yes — COCO ↔ YOLO |
+| **Format conversion** | No | No | Yes — COCO ↔ YOLO, VOC, CVAT, DOTA |
 | **PyTorch integration** | Via torchvision | Yes — TorchVision compatible | Yes — `CocoDetection`, `CocoEvaluator` |
 | **Rust API** | No | No | Yes — native crate on crates.io |
 | **CLI** | No | No | Yes — `coco` (Python) + `coco-eval` (Rust) |

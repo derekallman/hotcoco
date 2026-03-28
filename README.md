@@ -72,6 +72,7 @@ ev.run()
 - **Dataset browser** — `coco.browse()` / `coco explore` opens a local browser with category filter, annotation overlays (bbox/segm/keypoints), hover-to-highlight, zoom/pan, and detection comparison. Pass `eval=` to enable an interactive eval dashboard with PR curves, confusion matrix, TIDE errors, calibration, and per-image F1. `pip install hotcoco[browse]`. See [Dataset Browser](https://derekallman.github.io/hotcoco/guide/browse/).
 - **Python CLI** (`coco`) — included with `pip install hotcoco`; `eval`, `healthcheck`, `stats`, `filter`, `merge`, `split`, `sample`, `convert`, and `explore` subcommands. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
 - **Rust CLI** (`coco-eval`) — lightweight eval-only binary; `cargo install hotcoco-cli`. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
+- **Type stubs** — ships with `.pyi` stubs and `py.typed` marker for full autocomplete and type checking in VS Code, PyCharm, and other IDEs.
 - **Rust library** — use hotcoco directly in your Rust projects via `cargo add hotcoco`. See [Rust API](https://docs.rs/hotcoco).
 
 See the [documentation](https://derekallman.github.io/hotcoco/) for full API reference and examples.

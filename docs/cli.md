@@ -69,6 +69,9 @@ coco eval --gt <gt.json> --dt <dt.json> [options]
 | `--title` | Report title shown in the header | `COCO Evaluation Report` |
 | `--slices <path>` | JSON file with named image ID groups for sliced evaluation | off |
 | `--healthcheck` | Run dataset healthcheck before evaluation (warnings to stderr) | off |
+| `--calibration` | Compute confidence calibration (ECE/MCE) after standard metrics | off |
+| `--cal-bins` | Number of calibration bins | `10` |
+| `--cal-iou-thr` | IoU threshold for calibration TP/FP classification | `0.5` |
 | `--json` | Write results as JSON to stdout instead of human-readable text | off |
 
 ```bash

@@ -63,8 +63,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Rust CLI (`coco-eval`) — `anstyle`/`anstream` colored output, `indicatif` braille spinners, elapsed timing on all operations; uses `summarize_lines()` for metrics output
 - `_style.section(title, params)` — prints a section header with green title and dim `(params)`; used by all analysis outputs (TIDE, calibration, diagnostics, slices, compare)
 - `_table(columns, rows, footer)` helper in `cli.py` — auto-aligned table with `─` separators; replaces 5 hand-built table implementations
+- Type stubs — `python/hotcoco/__init__.pyi` and `py.typed` marker ship with the package; full coverage of COCO, COCOeval, Params, Hierarchy, mask, and compare APIs; enables autocomplete and type checking in VS Code, PyCharm, etc.
+- `scripts/test_stubs.py` — stub coverage test verifying every public name in the runtime module has a corresponding stub entry; wired into `just test`
+- `text_signature` on all mask functions and `compare()` — `help()` and IPython `?` now show real parameter names instead of `(*args, **kwargs)`
+- `deny.toml` — cargo-deny configuration for dependency auditing (security advisories, license compliance, duplicate crate detection)
 
 ### Changed
+
+- Rust edition 2021 → 2024, MSRV 1.74 → 1.85, workspace resolver 2 → 3
+- PyO3 0.23 → 0.28, numpy crate 0.23 → 0.28 — `PyObject` → `Py<PyAny>`, `allow_threads` → `detach`, `downcast` → `cast`, `#[pyclass(from_py_object)]` for Clone types
+- `[workspace.lints]` — centralized clippy/rust lint configuration across all 3 crates; `unsafe_code = "forbid"`, `unwrap_used = "warn"`, `dbg_macro = "deny"`, `clippy::pedantic` with targeted allows
+- Cargo profiles — `dist-release` (LTO + codegen-units=1 + strip) for PyPI wheels, `profiling` (release + debug symbols) for flamegraphs, `opt-level = 1` for dev/test profiles
+- GIL released during heavy computation — `py.detach()` wraps `evaluate()`, `accumulate()`, `run()`, `confusion_matrix()`, `tide_errors()`, `calibration()`, `slice_by()`, `image_diagnostics()`, `compare()`; enables concurrent Python workloads
+- Library `.unwrap()` calls replaced with `.expect()` or safe alternatives; `#[allow(clippy::unwrap_used)]` in test modules only
 
 - `crates/hotcoco/src/convert.rs` split into `convert/mod.rs` (shared types) + `convert/yolo.rs` + `convert/voc.rs` + `convert/cvat.rs` submodules; public API unchanged
 - `quick-xml` 0.37 added as dependency for XML read/write in VOC conversion
