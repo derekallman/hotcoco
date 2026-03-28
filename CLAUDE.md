@@ -115,7 +115,6 @@ The `coco` CLI is installed into `.venv/bin/coco` by `just build`. Run it as `uv
 
 ## Documentation
 
-- **Read `STYLE.md` before writing any user-facing text** — it defines terminology, CLI output conventions, error message format, and docstring style. This ensures consistency across human and AI-authored contributions.
 - This project targets Python users first, Rust users second. Documentation, README, and examples should lead with Python usage in a Python-first tone similar to Polars. Do not be Rust-centric.
 - Before making large-scale changes (docs revamps, major refactors), present a concrete preview or small example for approval first. Do not rewrite everything at once. For small additions (a single new page, a new section), just write it directly.
 
