@@ -1,0 +1,34 @@
+# cargo-deny configuration — https://embarkstudios.github.io/cargo-deny/
+# Run: cargo deny check
+
+[advisories]
+ignore = [
+    # number_prefix is unmaintained but only used transitively via indicatif;
+    # no security risk, just missing a new maintainer.
+    { id = "RUSTSEC-2025-0119", reason = "transitive dep of indicatif, no security impact" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
