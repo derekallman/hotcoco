@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 
 use crate::types::{Annotation, Category, Dataset};
-use crate::{Hierarchy, COCO};
+use crate::{COCO, Hierarchy};
 
 /// Expand ground-truth annotations up the category hierarchy.
 ///

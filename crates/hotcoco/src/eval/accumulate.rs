@@ -4,8 +4,8 @@ use rayon::prelude::*;
 
 use crate::params::Params;
 
-use super::types::{AccumulatedEval, EvalImg, EvalShape};
 use super::COCOeval;
+use super::types::{AccumulatedEval, EvalImg, EvalShape};
 
 /// Compute precision interpolated at fixed recall thresholds from cumulative TP/FP arrays.
 ///

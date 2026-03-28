@@ -308,18 +308,10 @@ pub fn iou(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<Vec<f64>> {
             let gt_a = gt_areas[j] as f64;
             let inter_f = inter as f64;
             let iou_val = if iscrowd[j] {
-                if dt_a == 0.0 {
-                    0.0
-                } else {
-                    inter_f / dt_a
-                }
+                if dt_a == 0.0 { 0.0 } else { inter_f / dt_a }
             } else {
                 let union = dt_a + gt_a - inter_f;
-                if union == 0.0 {
-                    0.0
-                } else {
-                    inter_f / union
-                }
+                if union == 0.0 { 0.0 } else { inter_f / union }
             };
             row[j] = iou_val;
         }
@@ -364,18 +356,10 @@ pub fn bbox_iou(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<Vec<f
             let inter = iw * ih;
 
             let iou_val = if iscrowd[j] {
-                if da == 0.0 {
-                    0.0
-                } else {
-                    inter / da
-                }
+                if da == 0.0 { 0.0 } else { inter / da }
             } else {
                 let union = da + gt_areas[j] - inter;
-                if union == 0.0 {
-                    0.0
-                } else {
-                    inter / union
-                }
+                if union == 0.0 { 0.0 } else { inter / union }
             };
             row[j] = iou_val;
         }

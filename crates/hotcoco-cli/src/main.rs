@@ -5,9 +5,9 @@ use std::time::{Duration, Instant};
 use anstream::stderr;
 use anstyle::{AnsiColor, Color, Style};
 use clap::{CommandFactory, Parser};
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 use hotcoco::params::IouType;
-use hotcoco::{COCOeval, COCO};
+use hotcoco::{COCO, COCOeval};
 use indicatif::{ProgressBar, ProgressStyle};
 
 const GREEN: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));

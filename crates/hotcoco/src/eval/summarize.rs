@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::params::{default_iou_thrs, IouType, Params};
+use crate::params::{IouType, Params, default_iou_thrs};
 
 use super::results::{EvalParams, EvalResults};
 use super::types::{AccumulatedEval, FreqGroup, FreqGroups};
@@ -336,11 +336,7 @@ pub(super) fn per_cat_ap_static(eval: &AccumulatedEval, params: &Params) -> Vec<
                     }
                 }
             }
-            if count == 0 {
-                -1.0
-            } else {
-                sum / count as f64
-            }
+            if count == 0 { -1.0 } else { sum / count as f64 }
         })
         .collect()
 }
@@ -413,7 +409,7 @@ pub(super) fn summarize_impl(
                 .iou_thrs
                 .iter()
                 .enumerate()
-                .filter(|(_, &t)| (t - thr).abs() < 1e-9)
+                .filter(|&(_, &t)| (t - thr).abs() < 1e-9)
                 .map(|(i, _)| i)
                 .collect()
         } else {
@@ -460,11 +456,7 @@ pub(super) fn summarize_impl(
             .iter()
             .filter_map(|&k| {
                 let v = per_cat[k];
-                if v >= 0.0 {
-                    Some(v)
-                } else {
-                    None
-                }
+                if v >= 0.0 { Some(v) } else { None }
             })
             .collect();
         if valid.is_empty() {
@@ -781,13 +773,8 @@ impl COCOeval {
             }
         }
 
-        let mean_or_neg1 = |sum: f64, count: usize| -> f64 {
-            if count == 0 {
-                -1.0
-            } else {
-                sum / count as f64
-            }
-        };
+        let mean_or_neg1 =
+            |sum: f64, count: usize| -> f64 { if count == 0 { -1.0 } else { sum / count as f64 } };
 
         let prefix = if (beta - 1.0).abs() < 1e-9 {
             "F1".to_string()
@@ -852,7 +839,7 @@ impl COCOeval {
                 per_cat
                     .iter()
                     .zip(self.params.cat_ids.iter())
-                    .filter(|(&ap, _)| ap >= 0.0)
+                    .filter(|&(&ap, _)| ap >= 0.0)
                     .filter_map(|(&ap, &cat_id)| {
                         self.coco_gt
                             .get_cat(cat_id)

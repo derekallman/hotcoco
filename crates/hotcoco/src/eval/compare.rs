@@ -5,9 +5,9 @@ use rand::rngs::SmallRng;
 use rayon::prelude::*;
 use serde::Serialize;
 
-use super::accumulate::accumulate_impl;
-use super::summarize::{build_metric_defs, per_cat_ap_static, summarize_impl, MetricDef};
 use super::COCOeval;
+use super::accumulate::accumulate_impl;
+use super::summarize::{MetricDef, build_metric_defs, per_cat_ap_static, summarize_impl};
 
 /// Options for pairwise model comparison.
 #[derive(Debug, Clone)]
@@ -344,8 +344,8 @@ fn stats_to_map(metric_keys: &[&str], stats: &[f64]) -> HashMap<String, f64> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::params::IouType;
     use crate::COCO;
+    use crate::params::IouType;
     use std::path::PathBuf;
 
     fn fixtures_dir() -> PathBuf {

@@ -18,7 +18,7 @@ mod summarize;
 mod tide;
 
 pub use calibration::{CalibrationBin, CalibrationResult};
-pub use compare::{compare, BootstrapCI, CategoryDelta, CompareOpts, ComparisonResult};
+pub use compare::{BootstrapCI, CategoryDelta, CompareOpts, ComparisonResult, compare};
 pub use diagnostics::{
     AnnotationIndex, DtStatus, ErrorProfile, GtStatus, ImageDiagnostics, ImageSummary, LabelError,
     LabelErrorType,

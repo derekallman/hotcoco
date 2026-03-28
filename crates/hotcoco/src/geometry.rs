@@ -380,7 +380,7 @@ mod tests {
         // Crowd mode: IoU = intersection / dt_area
         let a = [0.0, 0.0, 2.0, 2.0, 0.0]; // dt, area = 4
         let b = [0.0, 0.0, 4.0, 4.0, 0.0]; // gt crowd, area = 16
-                                           // a is fully inside b, so intersection = 4, IoU_crowd = 4/4 = 1.0
+        // a is fully inside b, so intersection = 4, IoU_crowd = 4/4 = 1.0
         let iou = obb_iou_single(&a, &b, true);
         assert!(
             (iou - 1.0).abs() < EPS,

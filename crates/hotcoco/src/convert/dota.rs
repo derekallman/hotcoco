@@ -12,7 +12,7 @@ use std::path::Path;
 use crate::geometry::{corners_to_obb, obb_to_aabb, obb_to_corners};
 use crate::types::{Annotation, Category, Dataset, Image};
 
-use super::{anns_by_image, file_stem, ConvertError};
+use super::{ConvertError, anns_by_image, file_stem};
 
 /// Statistics from a COCO → DOTA conversion.
 #[derive(Debug, Default)]

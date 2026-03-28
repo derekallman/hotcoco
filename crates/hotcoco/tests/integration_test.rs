@@ -9,7 +9,7 @@ use hotcoco::convert::{
 };
 use hotcoco::params::IouType;
 use hotcoco::types::{Annotation, Category, Dataset, Image};
-use hotcoco::{healthcheck, COCOeval, Hierarchy, COCO};
+use hotcoco::{COCO, COCOeval, Hierarchy, healthcheck};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -273,11 +273,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
         .map(|r| {
             let idx = eval.precision_idx(0, r, 0, 0, m_idx);
             let p = eval.precision[idx];
-            if p < 0.0 {
-                0.0
-            } else {
-                p
-            }
+            if p < 0.0 { 0.0 } else { p }
         })
         .sum();
     let ap = ap_sum / eval.shape.r as f64;

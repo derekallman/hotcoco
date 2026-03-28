@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use rayon::prelude::*;
 
-use super::types::{EvalImg, TideErrors};
 use super::COCOeval;
+use super::types::{EvalImg, TideErrors};
 
 impl COCOeval {
     /// Compute average precision from per-detection matched/ignored flags.
@@ -88,7 +88,7 @@ impl COCOeval {
             .iou_thrs
             .iter()
             .enumerate()
-            .min_by(|(_, &a), (_, &b)| {
+            .min_by(|&(_, &a), &(_, &b)| {
                 (a - pos_thr)
                     .abs()
                     .partial_cmp(&(b - pos_thr).abs())

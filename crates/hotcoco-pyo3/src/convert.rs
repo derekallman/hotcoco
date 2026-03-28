@@ -21,7 +21,7 @@ macro_rules! req {
     };
 }
 
-pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<PyObject> {
+pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("id", ann.id)?;
     dict.set_item("image_id", ann.image_id)?;
@@ -54,7 +54,7 @@ pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<PyObject> 
     Ok(dict.into_any().unbind())
 }
 
-pub fn segmentation_to_py(py: Python<'_>, seg: &Segmentation) -> PyResult<PyObject> {
+pub fn segmentation_to_py(py: Python<'_>, seg: &Segmentation) -> PyResult<Py<PyAny>> {
     match seg {
         Segmentation::Polygon(polys) => {
             let inner_lists: Vec<Bound<'_, PyList>> = polys
@@ -121,7 +121,7 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
 
 fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     // Try as dict (CompressedRle or UncompressedRle)
-    if let Ok(dict) = obj.downcast::<PyDict>() {
+    if let Ok(dict) = obj.cast::<PyDict>() {
         let size: [u32; 2] = req!(dict, "size");
         let counts_obj = dict
             .get_item("counts")?
@@ -137,7 +137,7 @@ fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     Ok(Segmentation::Polygon(polys))
 }
 
-pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<PyObject> {
+pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("id", img.id)?;
     dict.set_item("file_name", &img.file_name)?;
@@ -167,7 +167,7 @@ pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<PyObject> {
     Ok(dict.into_any().unbind())
 }
 
-pub fn category_to_py(py: Python<'_>, cat: &Category) -> PyResult<PyObject> {
+pub fn category_to_py(py: Python<'_>, cat: &Category) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("id", cat.id)?;
     dict.set_item("name", &cat.name)?;
@@ -187,7 +187,7 @@ pub fn category_to_py(py: Python<'_>, cat: &Category) -> PyResult<PyObject> {
     Ok(dict.into_any().unbind())
 }
 
-pub fn dataset_stats_to_py(py: Python<'_>, stats: &DatasetStats) -> PyResult<PyObject> {
+pub fn dataset_stats_to_py(py: Python<'_>, stats: &DatasetStats) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("image_count", stats.image_count)?;
     dict.set_item("annotation_count", stats.annotation_count)?;
@@ -199,7 +199,7 @@ pub fn dataset_stats_to_py(py: Python<'_>, stats: &DatasetStats) -> PyResult<PyO
         stats
             .per_category
             .iter()
-            .map(|c| -> PyResult<PyObject> {
+            .map(|c| -> PyResult<Py<PyAny>> {
                 let d = PyDict::new(py);
                 d.set_item("id", c.id)?;
                 d.set_item("name", &c.name)?;
@@ -212,7 +212,7 @@ pub fn dataset_stats_to_py(py: Python<'_>, stats: &DatasetStats) -> PyResult<PyO
     )?;
     dict.set_item("per_category", per_cat)?;
 
-    let summary_to_dict = |s: &hotcoco_core::SummaryStats| -> PyResult<PyObject> {
+    let summary_to_dict = |s: &hotcoco_core::SummaryStats| -> PyResult<Py<PyAny>> {
         let d = PyDict::new(py);
         d.set_item("min", s.min)?;
         d.set_item("max", s.max)?;
@@ -227,7 +227,7 @@ pub fn dataset_stats_to_py(py: Python<'_>, stats: &DatasetStats) -> PyResult<PyO
     Ok(dict.into_any().unbind())
 }
 
-pub fn rle_to_py(py: Python<'_>, rle: &Rle) -> PyResult<PyObject> {
+pub fn rle_to_py(py: Python<'_>, rle: &Rle) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("h", rle.h)?;
     dict.set_item("w", rle.w)?;
@@ -239,7 +239,7 @@ pub fn rle_to_py(py: Python<'_>, rle: &Rle) -> PyResult<PyObject> {
 ///
 /// The `counts` value is a `bytes` object containing the LEB128-compressed
 /// string, matching what `pycocotools.mask.encode` returns.
-pub fn rle_to_coco_py(py: Python<'_>, rle: &Rle) -> PyResult<PyObject> {
+pub fn rle_to_coco_py(py: Python<'_>, rle: &Rle) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("size", vec![rle.h, rle.w])?;
     let compressed = hotcoco_core::mask::rle_to_string(rle);
@@ -262,7 +262,7 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
                 .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
         // Try bytes (pycocotools format)
-        if let Ok(b) = counts_obj.downcast::<PyBytes>() {
+        if let Ok(b) = counts_obj.cast::<PyBytes>() {
             let s = std::str::from_utf8(b.as_bytes()).map_err(|e| {
                 pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
             })?;
@@ -347,13 +347,13 @@ fn extract_dict_list<'py, T>(
     match dict.get_item(key)? {
         None => Ok(Vec::new()),
         Some(v) => v
-            .downcast::<PyList>()
+            .cast::<PyList>()
             .map_err(|_| {
                 pyo3::exceptions::PyTypeError::new_err(format!("'{key}' must be a list of dicts"))
             })?
             .iter()
             .map(|item| {
-                let d = item.downcast::<PyDict>().map_err(|_| {
+                let d = item.cast::<PyDict>().map_err(|_| {
                     pyo3::exceptions::PyTypeError::new_err(format!(
                         "each item in '{key}' must be a dict"
                     ))

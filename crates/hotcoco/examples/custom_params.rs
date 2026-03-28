@@ -13,7 +13,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use hotcoco::params::IouType;
-use hotcoco::{COCOeval, COCO};
+use hotcoco::{COCO, COCOeval};
 
 fn load(gt_path: &Path, dt_path: &Path) -> Result<(COCO, COCO), Box<dyn std::error::Error>> {
     let coco_gt = COCO::new(gt_path)?;

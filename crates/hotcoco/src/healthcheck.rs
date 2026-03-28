@@ -95,11 +95,7 @@ where
         .iter()
         .filter_map(|item| {
             let id = id_fn(item);
-            if seen.insert(id) {
-                None
-            } else {
-                Some(id)
-            }
+            if seen.insert(id) { None } else { Some(id) }
         })
         .collect()
 }
@@ -223,11 +219,7 @@ fn bbox_iou_pair(a: &[f64; 4], b: &[f64; 4]) -> f64 {
     let area_b = b[2] * b[3];
     let union = area_a + area_b - inter;
 
-    if union <= 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
+    if union <= 0.0 { 0.0 } else { inter / union }
 }
 
 fn check_quality(dataset: &Dataset, warnings: &mut Vec<Finding>) {
@@ -429,7 +421,7 @@ fn build_summary(dataset: &Dataset, warnings: &mut Vec<Finding>) -> DatasetSumma
     // Warn about categories with 0 instances
     let zero_cats: Vec<u64> = cat_counts
         .iter()
-        .filter(|(_, &count)| count == 0)
+        .filter(|&(_, &count)| count == 0)
         .map(|(&id, _)| id)
         .collect();
     if !zero_cats.is_empty() {
@@ -447,7 +439,7 @@ fn build_summary(dataset: &Dataset, warnings: &mut Vec<Finding>) -> DatasetSumma
     // Warn about categories with <10 instances (but >0)
     let low_cats: Vec<u64> = cat_counts
         .iter()
-        .filter(|(_, &count)| count > 0 && count < 10)
+        .filter(|&(_, &count)| count > 0 && count < 10)
         .map(|(&id, _)| id)
         .collect();
     if !low_cats.is_empty() {

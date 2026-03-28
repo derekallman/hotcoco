@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use hotcoco::params::IouType;
-use hotcoco::{COCOeval, COCO};
+use hotcoco::{COCO, COCOeval};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();

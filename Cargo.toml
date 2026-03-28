@@ -1,11 +1,11 @@
 [workspace]
 members = ["crates/hotcoco", "crates/hotcoco-cli", "crates/hotcoco-pyo3"]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "0.3.0"
-edition = "2021"
-rust-version = "1.74"
+edition = "2024"
+rust-version = "1.85"
 authors = ["Derek Allman <derek.allman@yahoo.com>"]
 license = "MIT"
 repository = "https://github.com/derekallman/hotcoco"

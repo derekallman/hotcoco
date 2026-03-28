@@ -3,10 +3,10 @@ mod dota;
 mod voc;
 mod yolo;
 
-pub use cvat::{coco_to_cvat, cvat_to_coco, CvatStats};
-pub use dota::{coco_to_dota, dota_to_coco, DotaStats};
-pub use voc::{coco_to_voc, voc_to_coco, VocStats};
-pub use yolo::{coco_to_yolo, yolo_to_coco, YoloStats};
+pub use cvat::{CvatStats, coco_to_cvat, cvat_to_coco};
+pub use dota::{DotaStats, coco_to_dota, dota_to_coco};
+pub use voc::{VocStats, coco_to_voc, voc_to_coco};
+pub use yolo::{YoloStats, coco_to_yolo, yolo_to_coco};
 
 use std::collections::HashMap;
 use std::io;

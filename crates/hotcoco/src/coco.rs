@@ -656,8 +656,8 @@ impl COCO {
         test_frac: Option<f64>,
         seed: u64,
     ) -> (Dataset, Dataset, Option<Dataset>) {
-        use rand::seq::SliceRandom;
         use rand::SeedableRng;
+        use rand::seq::SliceRandom;
 
         let mut img_ids: Vec<u64> = self.dataset.images.iter().map(|img| img.id).collect();
         let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
@@ -690,8 +690,8 @@ impl COCO {
     /// Provide either `n` (exact count) or `frac` (fraction of images).
     /// The sample is deterministic given the same `seed`.
     pub fn sample(&self, n: Option<usize>, frac: Option<f64>, seed: u64) -> Dataset {
-        use rand::seq::SliceRandom;
         use rand::SeedableRng;
+        use rand::seq::SliceRandom;
 
         let total = self.dataset.images.len();
         let count = match (n, frac) {
@@ -787,7 +787,7 @@ fn summary_stats(mut values: Vec<f64>) -> SummaryStats {
     let median = if n % 2 == 1 {
         sorted[n / 2]
     } else {
-        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+        f64::midpoint(sorted[n / 2 - 1], sorted[n / 2])
     };
     SummaryStats {
         min,

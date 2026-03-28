@@ -38,7 +38,7 @@ use convert::{
 /// this dataset. It is used by `browse()` and `coco explore` to locate
 /// image files. Propagated automatically through `filter`, `split`,
 /// `sample`, and `load_res`.
-#[pyclass(name = "COCO", subclass)]
+#[pyclass(name = "COCO", subclass, from_py_object)]
 struct PyCOCO {
     inner: hotcoco_core::COCO,
     /// Root directory for image files. Used by `browse()` and `coco explore`.
@@ -68,7 +68,7 @@ impl PyCOCO {
             Some(obj) => {
                 if let Ok(path) = obj.extract::<String>() {
                     hotcoco_core::COCO::new(Path::new(&path)).map_err(to_pyerr)?
-                } else if let Ok(dict) = obj.downcast::<PyDict>() {
+                } else if let Ok(dict) = obj.cast::<PyDict>() {
                     let dataset = py_to_dataset(dict)?;
                     hotcoco_core::COCO::from_dataset(dataset)
                 } else {
@@ -117,7 +117,7 @@ impl PyCOCO {
         self.inner.get_img_ids(&img_ids, &cat_ids)
     }
 
-    fn load_anns(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<PyObject> {
+    fn load_anns(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Py<PyAny>> {
         let anns = self.inner.load_anns(&ids);
         let list = PyList::new(
             py,
@@ -128,7 +128,7 @@ impl PyCOCO {
         Ok(list.into_any().unbind())
     }
 
-    fn load_cats(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<PyObject> {
+    fn load_cats(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Py<PyAny>> {
         let cats = self.inner.load_cats(&ids);
         let list = PyList::new(
             py,
@@ -139,7 +139,7 @@ impl PyCOCO {
         Ok(list.into_any().unbind())
     }
 
-    fn load_imgs(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<PyObject> {
+    fn load_imgs(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Py<PyAny>> {
         let imgs = self.inner.load_imgs(&ids);
         let list = PyList::new(
             py,
@@ -180,11 +180,11 @@ impl PyCOCO {
         }
 
         // Case 2: list of annotation dicts
-        if let Ok(list) = res.downcast::<PyList>() {
+        if let Ok(list) = res.cast::<PyList>() {
             let anns = list
                 .iter()
                 .map(|item| {
-                    let dict = item.downcast::<PyDict>().map_err(|_| {
+                    let dict = item.cast::<PyDict>().map_err(|_| {
                         pyo3::exceptions::PyTypeError::new_err(
                             "load_res: list elements must be dicts",
                         )
@@ -205,7 +205,7 @@ impl PyCOCO {
         // Case 3: numpy float64 array, shape (N, 6) or (N, 7)
         //   (N, 6): [image_id, x, y, w, h, score]           — category_id defaults to 1
         //   (N, 7): [image_id, x, y, w, h, score, cat_id]   — matches pycocotools loadNumpyAnnotations
-        if let Ok(arr) = res.downcast::<PyArray2<f64>>() {
+        if let Ok(arr) = res.cast::<PyArray2<f64>>() {
             let arr = arr.readonly();
             let arr = arr.as_array();
             let ncols = arr.ncols();
@@ -249,7 +249,7 @@ impl PyCOCO {
         ))
     }
 
-    fn ann_to_rle(&self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<PyObject> {
+    fn ann_to_rle(&self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         let annotation = py_to_annotation(ann)?;
         match self.inner.ann_to_rle(&annotation) {
             Some(rle) => rle_to_py(py, &rle),
@@ -279,7 +279,7 @@ impl PyCOCO {
         Ok(arr.unbind())
     }
 
-    fn stats(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let s = self.inner.stats();
         dataset_stats_to_py(py, &s)
     }
@@ -290,7 +290,7 @@ impl PyCOCO {
     ///
     /// Returns a dict with ``"errors"``, ``"warnings"``, and ``"summary"`` keys.
     #[pyo3(signature = (dt=None))]
-    fn healthcheck(&self, py: Python<'_>, dt: Option<&PyCOCO>) -> PyResult<PyObject> {
+    fn healthcheck(&self, py: Python<'_>, dt: Option<&PyCOCO>) -> PyResult<Py<PyAny>> {
         let report = match dt {
             Some(dt_coco) => self.inner.healthcheck_compatibility(&dt_coco.inner),
             None => self.inner.healthcheck(),
@@ -353,7 +353,7 @@ impl PyCOCO {
         val_frac: f64,
         test_frac: Option<f64>,
         seed: u64,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let (train_ds, val_ds, test_ds) = self.inner.split(val_frac, test_frac, seed);
         let train_py = Py::new(
             py,
@@ -440,17 +440,17 @@ impl PyCOCO {
     }
 
     #[pyo3(name = "loadAnns")]
-    fn load_anns_camel(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<PyObject> {
+    fn load_anns_camel(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Py<PyAny>> {
         self.load_anns(py, ids)
     }
 
     #[pyo3(name = "loadCats")]
-    fn load_cats_camel(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<PyObject> {
+    fn load_cats_camel(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Py<PyAny>> {
         self.load_cats(py, ids)
     }
 
     #[pyo3(name = "loadImgs")]
-    fn load_imgs_camel(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<PyObject> {
+    fn load_imgs_camel(&self, py: Python<'_>, ids: Vec<u64>) -> PyResult<Py<PyAny>> {
         self.load_imgs(py, ids)
     }
 
@@ -460,7 +460,7 @@ impl PyCOCO {
     }
 
     #[pyo3(name = "annToRLE")]
-    fn ann_to_rle_camel(&self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<PyObject> {
+    fn ann_to_rle_camel(&self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         self.ann_to_rle(py, ann)
     }
 
@@ -508,7 +508,7 @@ impl PyCOCO {
     /// >>> stats = coco.to_yolo("labels/val2017/")
     /// >>> print(stats)
     /// {'images': 5000, 'annotations': 36781, 'skipped_crowd': 12, 'missing_bbox': 0}
-    fn to_yolo(&self, py: Python<'_>, output_dir: &str) -> PyResult<PyObject> {
+    fn to_yolo(&self, py: Python<'_>, output_dir: &str) -> PyResult<Py<PyAny>> {
         let stats = hotcoco_core::convert::coco_to_yolo(&self.inner.dataset, Path::new(output_dir))
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let dict = PyDict::new(py);
@@ -632,7 +632,7 @@ impl PyCOCO {
     /// >>> stats = coco.to_voc("voc_output/")
     /// >>> print(stats)
     /// {'images': 5000, 'annotations': 36781, 'crowd_as_difficult': 12, 'missing_bbox': 0}
-    fn to_voc(&self, py: Python<'_>, output_dir: &str) -> PyResult<PyObject> {
+    fn to_voc(&self, py: Python<'_>, output_dir: &str) -> PyResult<Py<PyAny>> {
         let stats = hotcoco_core::convert::coco_to_voc(&self.inner.dataset, Path::new(output_dir))
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
         let dict = PyDict::new(py);
@@ -687,7 +687,7 @@ impl PyCOCO {
 
     /// Export the dataset to Pascal VOC format (camelCase alias).
     #[pyo3(name = "toVoc")]
-    fn to_voc_camel(&self, py: Python<'_>, output_dir: &str) -> PyResult<PyObject> {
+    fn to_voc_camel(&self, py: Python<'_>, output_dir: &str) -> PyResult<Py<PyAny>> {
         self.to_voc(py, output_dir)
     }
 
@@ -720,7 +720,7 @@ impl PyCOCO {
     /// >>> stats = coco.to_cvat("annotations.xml")
     /// >>> print(stats)
     /// {'images': 5000, 'boxes': 36781, 'polygons': 0, 'skipped_no_geometry': 0}
-    fn to_cvat(&self, py: Python<'_>, output_path: &str) -> PyResult<PyObject> {
+    fn to_cvat(&self, py: Python<'_>, output_path: &str) -> PyResult<Py<PyAny>> {
         let stats =
             hotcoco_core::convert::coco_to_cvat(&self.inner.dataset, Path::new(output_path))
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
@@ -772,7 +772,7 @@ impl PyCOCO {
 
     /// Export to CVAT format (camelCase alias).
     #[pyo3(name = "toCvat")]
-    fn to_cvat_camel(&self, py: Python<'_>, output_path: &str) -> PyResult<PyObject> {
+    fn to_cvat_camel(&self, py: Python<'_>, output_path: &str) -> PyResult<Py<PyAny>> {
         self.to_cvat(py, output_path)
     }
 
@@ -784,7 +784,7 @@ impl PyCOCO {
     }
 
     #[getter]
-    fn dataset(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn dataset(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ds = &self.inner.dataset;
         let dict = PyDict::new(py);
 
@@ -818,7 +818,7 @@ impl PyCOCO {
     }
 
     #[getter]
-    fn imgs(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         for img in &self.inner.dataset.images {
             dict.set_item(img.id, image_to_py(py, img)?)?;
@@ -827,7 +827,7 @@ impl PyCOCO {
     }
 
     #[getter]
-    fn anns(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn anns(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         for ann in &self.inner.dataset.annotations {
             dict.set_item(ann.id, annotation_to_py(py, ann)?)?;
@@ -836,7 +836,7 @@ impl PyCOCO {
     }
 
     #[getter]
-    fn cats(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn cats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         for cat in &self.inner.dataset.categories {
             dict.set_item(cat.id, category_to_py(py, cat)?)?;
@@ -849,7 +849,7 @@ impl PyCOCO {
 // Params
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "Params")]
+#[pyclass(name = "Params", from_py_object)]
 #[derive(Clone)]
 struct PyParams {
     inner: hotcoco_core::Params,
@@ -1087,7 +1087,7 @@ Example::
     ev = COCOeval(coco_gt, coco_dt, \"bbox\", oid_style=True, hierarchy=h)
     ev.run()
 "]
-#[pyclass(name = "Hierarchy")]
+#[pyclass(name = "Hierarchy", from_py_object)]
 #[derive(Clone)]
 struct PyHierarchy {
     inner: hotcoco_core::Hierarchy,
@@ -1234,7 +1234,7 @@ impl PyCOCOeval {
     }
 
     fn evaluate(&mut self, py: Python<'_>) {
-        py.allow_threads(|| self.inner.evaluate());
+        py.detach(|| self.inner.evaluate());
     }
 
     fn accumulate(&mut self, py: Python<'_>) {
@@ -1244,7 +1244,7 @@ impl PyCOCOeval {
                  Call evaluate() first or the results will be empty."
             );
         }
-        py.allow_threads(|| self.inner.accumulate());
+        py.detach(|| self.inner.accumulate());
     }
 
     fn summarize(&mut self) {
@@ -1281,7 +1281,7 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
 Equivalent to calling the three methods in sequence. Primarily used with
 LVIS pipelines (Detectron2, MMDetection) that expect a single ``run()`` call."]
     fn run(&mut self, py: Python<'_>) {
-        py.allow_threads(|| self.inner.run());
+        py.detach(|| self.inner.run());
     }
 
     #[getter]
@@ -1331,7 +1331,7 @@ per_class : bool
         py: Python<'_>,
         prefix: Option<&str>,
         per_class: bool,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         for (k, v) in self.inner.get_results(prefix, per_class) {
             dict.set_item(k, v)?;
@@ -1366,7 +1366,7 @@ Returns
 dict
     Serializable evaluation results."]
     #[pyo3(signature = (per_class=false))]
-    fn results(&self, py: Python<'_>, per_class: bool) -> PyResult<PyObject> {
+    fn results(&self, py: Python<'_>, per_class: bool) -> PyResult<Py<PyAny>> {
         let results = self.inner.results(per_class).map_err(to_pyerr)?;
         let json_str = results.to_json().map_err(to_pyerr)?;
         let json_mod = py.import("json")?;
@@ -1428,7 +1428,7 @@ Examples
 >>> ev.f_scores(beta=0.5)   # precision-weighted
 >>> ev.f_scores(beta=2.0)   # recall-weighted"]
     #[pyo3(signature = (beta = 1.0))]
-    fn f_scores(&self, py: Python<'_>, beta: f64) -> PyResult<PyObject> {
+    fn f_scores(&self, py: Python<'_>, beta: f64) -> PyResult<Py<PyAny>> {
         if self.inner.accumulated().is_none() {
             eprintln!(
                 "hotcoco: f_scores() called before accumulate(). \
@@ -1486,17 +1486,17 @@ Examples
     }
 
     #[getter]
-    fn eval_imgs(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn eval_imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         eval_imgs_to_py(py, self.inner.eval_imgs())
     }
 
     #[getter(evalImgs)]
-    fn eval_imgs_camel(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn eval_imgs_camel(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.eval_imgs(py)
     }
 
     #[getter(eval)]
-    fn get_eval(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn get_eval(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         accumulated_eval_to_py(py, self.inner.accumulated())
     }
 
@@ -1548,8 +1548,8 @@ Example
         iou_thr: f64,
         max_det: Option<usize>,
         min_score: Option<f64>,
-    ) -> PyResult<PyObject> {
-        let cm = py.allow_threads(|| self.inner.confusion_matrix(iou_thr, max_det, min_score));
+    ) -> PyResult<Py<PyAny>> {
+        let cm = py.detach(|| self.inner.confusion_matrix(iou_thr, max_det, min_score));
         let k = cm.num_cats + 1;
 
         // matrix: Vec<u64> → numpy int64, reshaped to (k, k)
@@ -1604,9 +1604,9 @@ Example\n\
     print(result['counts'])\n\
 "]
     #[pyo3(signature = (pos_thr=0.5, bg_thr=0.1))]
-    fn tide_errors(&self, py: Python<'_>, pos_thr: f64, bg_thr: f64) -> PyResult<PyObject> {
+    fn tide_errors(&self, py: Python<'_>, pos_thr: f64, bg_thr: f64) -> PyResult<Py<PyAny>> {
         let te = py
-            .allow_threads(|| self.inner.tide_errors(pos_thr, bg_thr))
+            .detach(|| self.inner.tide_errors(pos_thr, bg_thr))
             .map_err(to_pyerr)?;
 
         let delta_ap = PyDict::new(py);
@@ -1664,9 +1664,14 @@ Example\n\
     print(f\"MCE: {cal['mce']:.4f}\")\n\
 "]
     #[pyo3(signature = (n_bins=10, iou_threshold=0.5))]
-    fn calibration(&self, py: Python<'_>, n_bins: usize, iou_threshold: f64) -> PyResult<PyObject> {
+    fn calibration(
+        &self,
+        py: Python<'_>,
+        n_bins: usize,
+        iou_threshold: f64,
+    ) -> PyResult<Py<PyAny>> {
         let cal = py
-            .allow_threads(|| self.inner.calibration(n_bins, iou_threshold))
+            .detach(|| self.inner.calibration(n_bins, iou_threshold))
             .map_err(to_pyerr)?;
 
         let bins_list = PyList::empty(py);
@@ -1710,7 +1715,7 @@ Example\n\
     /// takes an image dict and returns a slice name (or ``None`` to skip).
     /// Returns a dict with one entry per slice plus ``"_overall"``.
     #[pyo3(signature = (slices))]
-    fn slice_by(&mut self, py: Python<'_>, slices: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+    fn slice_by(&mut self, py: Python<'_>, slices: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         use std::collections::HashMap;
 
         // If slices is callable, group images by return value
@@ -1729,7 +1734,7 @@ Example\n\
             }
             groups
         } else {
-            let dict = slices.downcast::<PyDict>().map_err(|_| {
+            let dict = slices.cast::<PyDict>().map_err(|_| {
                 pyo3::exceptions::PyTypeError::new_err("slices must be a dict or callable")
             })?;
             let mut map = HashMap::new();
@@ -1746,12 +1751,12 @@ Example\n\
         };
 
         let results = py
-            .allow_threads(|| self.inner.slice_by(slice_map))
+            .detach(|| self.inner.slice_by(slice_map))
             .map_err(to_pyerr)?;
 
         let out = PyDict::new(py);
 
-        let to_dict = |sr: &hotcoco_core::SliceResult, py: Python<'_>| -> PyResult<PyObject> {
+        let to_dict = |sr: &hotcoco_core::SliceResult, py: Python<'_>| -> PyResult<Py<PyAny>> {
             let d = PyDict::new(py);
             for (k, v) in &sr.metrics {
                 d.set_item(k, v)?;
@@ -1796,9 +1801,9 @@ Example\n\
         py: Python<'_>,
         iou_thr: f64,
         score_thr: f64,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let diag = py
-            .allow_threads(|| self.inner.image_diagnostics(iou_thr, score_thr))
+            .detach(|| self.inner.image_diagnostics(iou_thr, score_thr))
             .map_err(to_pyerr)?;
 
         // dt_status: {ann_id: "tp" | "fp"}
@@ -1916,7 +1921,7 @@ Example\n\
 fn eval_imgs_to_py(
     py: Python<'_>,
     eval_imgs: &[Option<hotcoco_core::EvalImg>],
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let list = PyList::new(
         py,
         eval_imgs
@@ -1930,7 +1935,7 @@ fn eval_imgs_to_py(
     Ok(list.into_any().unbind())
 }
 
-fn eval_img_to_py(py: Python<'_>, e: &hotcoco_core::EvalImg) -> PyResult<PyObject> {
+fn eval_img_to_py(py: Python<'_>, e: &hotcoco_core::EvalImg) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("image_id", e.image_id)?;
     dict.set_item("category_id", e.category_id)?;
@@ -1955,7 +1960,7 @@ fn eval_img_to_py(py: Python<'_>, e: &hotcoco_core::EvalImg) -> PyResult<PyObjec
 fn accumulated_eval_to_py(
     py: Python<'_>,
     eval: Option<&hotcoco_core::AccumulatedEval>,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     match eval {
         None => Ok(py.None()),
         Some(e) => {
@@ -2074,14 +2079,14 @@ fn compare(
     n_bootstrap: usize,
     seed: u64,
     confidence: f64,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let opts = hotcoco_core::CompareOpts {
         n_bootstrap,
         seed,
         confidence,
     };
     let result = py
-        .allow_threads(|| hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts))
+        .detach(|| hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts))
         .map_err(to_pyerr)?;
 
     let f64_map_to_dict =

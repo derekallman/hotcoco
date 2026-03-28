@@ -8,8 +8,8 @@ use crate::mask;
 use crate::params::IouType;
 use crate::types::Rle;
 
-use super::types::ConfusionMatrix;
 use super::COCOeval;
+use super::types::ConfusionMatrix;
 
 impl COCOeval {
     /// Compute a cross-category IoU matrix between DT and GT annotations.
