@@ -32,6 +32,7 @@ Justfile             # Task runner: just build / test / parity / bench / lint / 
 - Python bindings return plain dicts (not wrapped Rust structs) matching pycocotools conventions
 - Mask operations handle numpy row-major <-> Rust column-major transposition in the PyO3 layer
 - `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expected — cdylib needs Python). Use `cargo check` instead, or build via maturin.
+- **Type stubs:** `python/hotcoco/__init__.pyi` is hand-written and must be updated whenever the Python API changes (new methods, renamed parameters, changed return types). Run `uv run pytest scripts/test_stubs.py` to check for drift. The test catches missing names but not signature mismatches — review the stub manually when changing signatures.
 
 ## Metric Parity
 

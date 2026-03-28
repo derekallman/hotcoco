@@ -397,6 +397,12 @@ class mask:
         w: int,
     ) -> list[dict[str, Any]]: ...
     @staticmethod
+    def fr_py_objects_snake(
+        seg: list[list[float]] | dict[str, Any] | list[dict[str, Any]],
+        h: int,
+        w: int,
+    ) -> list[dict[str, Any]]: ...
+    @staticmethod
     def rle_to_string(rle: dict[str, Any]) -> str:
         """Encode RLE to compact string format."""
         ...
