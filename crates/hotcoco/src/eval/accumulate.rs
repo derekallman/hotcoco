@@ -113,7 +113,10 @@ pub(super) fn accumulate_impl(
         }
         if let Some(&k_idx) = cat_id_to_k_idx.get(&eval.category_id) {
             let a_key = [eval.area_rng[0].to_bits(), eval.area_rng[1].to_bits()];
-            let a_idx = area_rng_to_idx.get(&a_key).copied().unwrap_or(0);
+            let a_idx = match area_rng_to_idx.get(&a_key).copied() {
+                Some(idx) => idx,
+                None => continue, // skip eval results with area ranges not in current params
+            };
             grouped[k_idx * a + a_idx].push(eval);
         }
     }

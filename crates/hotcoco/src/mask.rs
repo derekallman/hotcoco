@@ -199,6 +199,7 @@ fn merge_two(a: &Rle, b: &Rle, intersect: bool) -> Rle {
             Some(prev) if prev == v => {
                 // Extend the last run
                 if let Some(last) = counts.last_mut() {
+                    debug_assert!(u32::try_from(step).is_ok(), "RLE run exceeds u32::MAX");
                     *last += step as u32;
                 }
             }
@@ -207,6 +208,7 @@ fn merge_two(a: &Rle, b: &Rle, intersect: bool) -> Rle {
                 if counts.is_empty() && v {
                     counts.push(0);
                 }
+                debug_assert!(u32::try_from(step).is_ok(), "RLE run exceeds u32::MAX");
                 counts.push(step as u32);
             }
         }
@@ -222,6 +224,7 @@ fn merge_two(a: &Rle, b: &Rle, intersect: bool) -> Rle {
     }
 
     if counts.is_empty() {
+        debug_assert!(u32::try_from(n).is_ok(), "RLE total pixels exceed u32::MAX");
         counts.push(n as u32);
     }
 
@@ -513,7 +516,7 @@ pub fn fr_poly(xy: &[f64], h: u32, w: u32) -> Rle {
 
     // Convert sorted positions to run lengths via successive differences
     let mut prev: u32 = 0;
-    for val in a.iter_mut() {
+    for val in &mut a {
         let t = *val;
         *val = t - prev;
         prev = t;
@@ -671,6 +674,13 @@ pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
         let mut shift = 0;
         let mut more = true;
         while more && i < bytes.len() {
+            if bytes[i] < 48 {
+                return Err(format!(
+                    "invalid RLE: byte value {} at position {} is below ASCII '0' (48)",
+                    bytes[i], i
+                )
+                .into());
+            }
             let c = (bytes[i] - 48) as i64;
             i += 1;
             x |= (c & 0x1f) << shift;
@@ -684,6 +694,13 @@ pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
         // maskApi.c rleFrString: if(m>2) x += (long) cnts[m-2];
         if counts.len() > 2 {
             x = x.wrapping_add(counts[counts.len() - 2] as i64);
+        }
+        if x < 0 {
+            return Err(format!(
+                "invalid RLE: negative count {x} at position {}",
+                counts.len()
+            )
+            .into());
         }
         counts.push(x as u32);
     }
@@ -715,6 +732,7 @@ pub fn fr_polys(polygons: &[Vec<f64>], h: u32, w: u32) -> Rle {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -1010,5 +1028,26 @@ mod tests {
         let a = area(&rle);
         // pycocotools gives area=1600 for this rect
         assert_eq!(a, 1600, "Rect area should match pycocotools");
+    }
+
+    #[test]
+    fn test_rle_from_string_byte_below_48() {
+        // Byte value below ASCII '0' (48) should return an error, not panic
+        let bad = "\x1f"; // byte 31
+        assert!(rle_from_string(bad, 10, 10).is_err());
+
+        let bad2 = "\x00"; // null byte
+        assert!(rle_from_string(bad2, 10, 10).is_err());
+    }
+
+    #[test]
+    fn test_rle_from_string_negative_count() {
+        // A crafted string that decodes to a negative run count should error.
+        // Encode a valid RLE, then corrupt the string to produce a negative delta.
+        // The simplest negative encoding: a single group with sign bit set and value -1.
+        // bits: value=0x1f (all 5 bits set), no-more flag (bit 5 clear) → byte = 0x1f + 48 = 79 = 'O'
+        // This decodes to raw=0x1f=31, sign-extended → -1
+        let negative_one = "O"; // byte 79 = 48 + 31, decodes to x=31, sign-extended to -1
+        assert!(rle_from_string(negative_one, 10, 10).is_err());
     }
 }

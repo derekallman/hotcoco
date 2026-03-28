@@ -177,16 +177,14 @@ impl Hierarchy {
     pub fn ancestors(&self, cat_id: u64) -> &[u64] {
         self.ancestors_map
             .get(&cat_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 
     /// Returns direct children of `cat_id`, or an empty slice if none.
     pub fn children(&self, cat_id: u64) -> &[u64] {
         self.children_map
             .get(&cat_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 
     /// Returns the parent of `cat_id`, or `None` if it is a root.
@@ -196,7 +194,7 @@ impl Hierarchy {
 
     /// Returns the human-readable name for a virtual node, if known.
     pub fn name_of(&self, id: u64) -> Option<&str> {
-        self.virtual_names.get(&id).map(|s| s.as_str())
+        self.virtual_names.get(&id).map(std::string::String::as_str)
     }
 
     /// Returns all node IDs known to this hierarchy (sorted).

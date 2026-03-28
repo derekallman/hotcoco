@@ -211,6 +211,7 @@ fn compute_ece_mce(bins: &[CalibrationBin], total: usize) -> (f64, f64) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -189,8 +189,7 @@ pub fn compare(
             let cat_name = eval_a
                 .coco_gt
                 .get_cat(cat_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| cat_id.to_string());
+                .map_or_else(|| cat_id.to_string(), |c| c.name.clone());
             let delta = match (ap_a >= 0.0, ap_b >= 0.0) {
                 (true, true) => ap_b - ap_a,
                 (false, true) => ap_b,
@@ -208,7 +207,11 @@ pub fn compare(
         .collect();
 
     // Sort by delta ascending (worst regressions first)
-    per_category.sort_by(|a, b| a.delta.partial_cmp(&b.delta).unwrap());
+    per_category.sort_by(|a, b| {
+        a.delta
+            .partial_cmp(&b.delta)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // --- Bootstrap ---
     let ci = if opts.n_bootstrap > 0 {
@@ -297,7 +300,7 @@ fn bootstrap_compare(
         .enumerate()
         .map(|(m, &name)| {
             let mut samples: Vec<f64> = all_deltas.iter().map(|d| d[m]).collect();
-            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
 
             let lo_idx = ((alpha / 2.0) * nb as f64).floor() as usize;
             let hi_idx = ((1.0 - alpha / 2.0) * nb as f64).ceil() as usize;
@@ -338,6 +341,7 @@ fn stats_to_map(metric_keys: &[&str], stats: &[f64]) -> HashMap<String, f64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::params::IouType;

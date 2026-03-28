@@ -29,7 +29,7 @@ fn spinner(message: &str) -> ProgressBar {
         .with_message(message.to_string())
         .with_style(
             ProgressStyle::with_template("{spinner:.green} {msg}")
-                .unwrap()
+                .expect("valid template")
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
     pb.enable_steady_tick(Duration::from_millis(80));

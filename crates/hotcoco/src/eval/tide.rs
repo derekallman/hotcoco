@@ -77,8 +77,9 @@ impl COCOeval {
         let target_area_rng = self
             .params
             .area_range_idx("all")
-            .map(|idx| self.params.area_ranges[idx].range)
-            .unwrap_or(self.params.area_ranges[0].range);
+            .map_or(self.params.area_ranges[0].range, |idx| {
+                self.params.area_ranges[idx].range
+            });
         let max_det = *self.params.max_dets.last().unwrap_or(&100);
 
         // Find t_idx for pos_thr (nearest threshold in params.iou_thrs)
@@ -93,8 +94,7 @@ impl COCOeval {
                     .partial_cmp(&(b - pos_thr).abs())
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .map_or(0, |(i, _)| i);
 
         let coco_gt = &self.coco_gt;
         let coco_dt = &self.coco_dt;

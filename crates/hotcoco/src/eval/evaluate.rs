@@ -181,7 +181,15 @@ impl COCOeval {
 
         // Evaluate each (image, category, area_range) combination in parallel.
         // sparse_pairs × area_ranges replaces the old cat_ids × area_ranges × img_ids product.
-        let max_det = *self.params.max_dets.last().unwrap_or(&100);
+        assert!(
+            !self.params.max_dets.is_empty(),
+            "params.max_dets must not be empty"
+        );
+        let max_det = *self
+            .params
+            .max_dets
+            .last()
+            .expect("asserted non-empty above");
 
         // Build shared context (borrows self after self.ious is fully populated).
         let ctx = EvalImgContext {

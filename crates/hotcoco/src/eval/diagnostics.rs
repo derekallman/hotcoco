@@ -197,8 +197,7 @@ impl COCOeval {
                     .partial_cmp(&((**b - iou_thr).abs()))
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .map_or(0, |(i, _)| i);
         let actual_iou_thr = self.params.iou_thrs[t_idx];
 
         // Use "all" area range
@@ -416,13 +415,11 @@ impl COCOeval {
                 }
 
                 // Check for missing_annotation: no nearby GT at all
-                let max_iou_any_gt = all_gts
-                    .map(|gts| {
-                        gts.iter()
-                            .map(|&gt_bbox| bbox_iou(dt_bbox, gt_bbox))
-                            .fold(0.0f64, f64::max)
-                    })
-                    .unwrap_or(0.0);
+                let max_iou_any_gt = all_gts.map_or(0.0, |gts| {
+                    gts.iter()
+                        .map(|&gt_bbox| bbox_iou(dt_bbox, gt_bbox))
+                        .fold(0.0f64, f64::max)
+                });
 
                 if max_iou_any_gt < 0.1 {
                     label_errors.push(LabelError {
@@ -462,6 +459,7 @@ impl COCOeval {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::coco::COCO;

@@ -13,3 +13,60 @@ homepage = "https://derekallman.github.io/hotcoco/"
 readme = "README.md"
 keywords = ["coco", "object-detection", "evaluation", "computer-vision", "segmentation"]
 categories = ["computer-vision", "science"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Safety
+unwrap_used = "warn"
+dbg_macro = "deny"
+# Pedantic — catch real issues, allow common false positives
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Domain-specific: coco_gt/coco_dt, t/r/k/a/m dimensions are standard COCO terminology
+similar_names = "allow"
+many_single_char_names = "allow"
+# Style preferences that don't catch bugs
+doc_markdown = "allow"
+doc_link_with_quotes = "allow"
+items_after_statements = "allow"
+too_many_lines = "allow"
+# Intentional in eval code matching pycocotools behavior
+float_cmp = "allow"
+# Noisy with little benefit for this codebase
+uninlined_format_args = "allow"
+single_match_else = "allow"
+if_not_else = "allow"
+implicit_hasher = "allow"
+struct_field_names = "allow"
+manual_let_else = "allow"
+cast_possible_wrap = "allow"
+needless_pass_by_value = "allow"
+unreadable_literal = "allow"
+
+# Profiles -----------------------------------------------------------------
+
+[profile.dist-release]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false
+
+[profile.dev]
+opt-level = 1
+
+[profile.test]
+opt-level = 1

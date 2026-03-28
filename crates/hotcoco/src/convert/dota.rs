@@ -54,7 +54,7 @@ pub fn coco_to_dota(dataset: &Dataset, output_dir: &Path) -> Result<DotaStats, C
                 };
 
                 let cat_name = cat_map.get(&ann.category_id).copied().unwrap_or("unknown");
-                let difficulty = if ann.iscrowd { 1 } else { 0 };
+                let difficulty = i32::from(ann.iscrowd);
                 let corners = obb_to_corners(obb);
 
                 writeln!(
@@ -119,14 +119,19 @@ pub fn dota_to_coco(
 
     // Collect and sort label files for deterministic output
     let mut entries: Vec<_> = fs::read_dir(label_dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
         .collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let path = entry.path();
-        let stem = file_stem(path.file_name().unwrap().to_str().unwrap_or(""));
+        let stem = file_stem(
+            path.file_name()
+                .expect("entry has a file name")
+                .to_str()
+                .unwrap_or(""),
+        );
 
         let (width, height) = super::lookup_image_dims(image_dims, stem);
 
@@ -216,6 +221,7 @@ pub fn dota_to_coco(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

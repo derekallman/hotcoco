@@ -407,7 +407,7 @@ fn build_summary(dataset: &Dataset, warnings: &mut Vec<Finding>) -> DatasetSumma
         .filter_map(|(&cat_id, &count)| {
             cat_name_map
                 .get(&cat_id)
-                .map(|name| (name.to_string(), count))
+                .map(|name| ((*name).to_string(), count))
         })
         .collect();
     category_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -421,8 +421,8 @@ fn build_summary(dataset: &Dataset, warnings: &mut Vec<Finding>) -> DatasetSumma
     let imbalance_ratio = if nonzero_counts.len() < 2 {
         1.0
     } else {
-        let max = *nonzero_counts.iter().max().unwrap() as f64;
-        let min = *nonzero_counts.iter().min().unwrap() as f64;
+        let max = *nonzero_counts.iter().max().expect("len >= 2") as f64;
+        let min = *nonzero_counts.iter().min().expect("len >= 2") as f64;
         max / min
     };
 

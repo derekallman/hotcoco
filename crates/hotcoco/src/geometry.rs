@@ -264,6 +264,7 @@ pub fn obb_iou(dt: &[[f64; 5]], gt: &[[f64; 5]], iscrowd: &[bool]) -> Vec<Vec<f6
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};

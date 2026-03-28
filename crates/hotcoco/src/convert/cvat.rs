@@ -456,22 +456,22 @@ fn parse_box_attrs(e: &BytesStart) -> Result<ParsedCvatShape, ConvertError> {
             b"xtl" => {
                 xtl = val
                     .parse()
-                    .map_err(|_| ConvertError::ParseError(format!("invalid xtl: {val}")))?
+                    .map_err(|_| ConvertError::ParseError(format!("invalid xtl: {val}")))?;
             }
             b"ytl" => {
                 ytl = val
                     .parse()
-                    .map_err(|_| ConvertError::ParseError(format!("invalid ytl: {val}")))?
+                    .map_err(|_| ConvertError::ParseError(format!("invalid ytl: {val}")))?;
             }
             b"xbr" => {
                 xbr = val
                     .parse()
-                    .map_err(|_| ConvertError::ParseError(format!("invalid xbr: {val}")))?
+                    .map_err(|_| ConvertError::ParseError(format!("invalid xbr: {val}")))?;
             }
             b"ybr" => {
                 ybr = val
                     .parse()
-                    .map_err(|_| ConvertError::ParseError(format!("invalid ybr: {val}")))?
+                    .map_err(|_| ConvertError::ParseError(format!("invalid ybr: {val}")))?;
             }
             _ => {}
         }

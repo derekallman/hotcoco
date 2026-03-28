@@ -56,9 +56,11 @@ impl COCOeval {
                     .map(|&id| coco_gt.get_ann(id).and_then(|a| coco_gt.ann_to_rle(a)))
                     .collect();
 
-                if dt_rles.iter().all(|r| r.is_some()) && gt_rles.iter().all(|r| r.is_some()) {
-                    let dt_r: Vec<Rle> = dt_rles.into_iter().map(|r| r.unwrap()).collect();
-                    let gt_r: Vec<Rle> = gt_rles.into_iter().map(|r| r.unwrap()).collect();
+                if dt_rles.iter().all(std::option::Option::is_some)
+                    && gt_rles.iter().all(std::option::Option::is_some)
+                {
+                    let dt_r: Vec<Rle> = dt_rles.into_iter().flatten().collect();
+                    let gt_r: Vec<Rle> = gt_rles.into_iter().flatten().collect();
                     let iscrowd = vec![false; g];
                     mask::iou(&dt_r, &gt_r, &iscrowd)
                 } else {
@@ -274,8 +276,7 @@ impl COCOeval {
             .map(|&id| {
                 self.coco_gt
                     .get_cat(id)
-                    .map(|c| c.name.clone())
-                    .unwrap_or_else(|| format!("cat_{id}"))
+                    .map_or_else(|| format!("cat_{id}"), |c| c.name.clone())
             })
             .collect();
 

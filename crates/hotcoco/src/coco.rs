@@ -245,16 +245,14 @@ impl COCO {
     pub fn get_ann_ids_for_img_cat(&self, img_id: u64, cat_id: u64) -> &[u64] {
         self.img_cat_to_anns
             .get(&(img_id, cat_id))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 
     /// Get annotation IDs for a specific image.
     pub fn get_ann_ids_for_img(&self, img_id: u64) -> &[u64] {
         self.img_to_anns
             .get(&img_id)
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
+            .map_or(&[], std::vec::Vec::as_slice)
     }
 
     /// Returns (img_id, cat_id) pairs that have at least one annotation.
@@ -667,9 +665,9 @@ impl COCO {
 
         let n = img_ids.len();
         let n_val = ((n as f64 * val_frac).round() as usize).min(n);
-        let n_test = test_frac
-            .map(|f| ((n as f64 * f).round() as usize).min(n.saturating_sub(n_val)))
-            .unwrap_or(0);
+        let n_test = test_frac.map_or(0, |f| {
+            ((n as f64 * f).round() as usize).min(n.saturating_sub(n_val))
+        });
         let n_train = n.saturating_sub(n_val + n_test);
 
         let train_ids = &img_ids[..n_train];
@@ -742,7 +740,7 @@ impl COCO {
                 id: cat.id,
                 name: cat.name.clone(),
                 ann_count: cat_ann_counts.get(&cat.id).copied().unwrap_or(0),
-                img_count: self.cat_to_imgs.get(&cat.id).map(|v| v.len()).unwrap_or(0),
+                img_count: self.cat_to_imgs.get(&cat.id).map_or(0, std::vec::Vec::len),
                 crowd_count: cat_crowd_counts.get(&cat.id).copied().unwrap_or(0),
             })
             .collect();
@@ -783,7 +781,7 @@ fn summary_stats(mut values: Vec<f64>) -> SummaryStats {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let sorted = values;
     let min = sorted[0];
-    let max = *sorted.last().unwrap();
+    let max = *sorted.last().expect("non-empty after early return");
     let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
     let n = sorted.len();
     let median = if n % 2 == 1 {
@@ -800,6 +798,7 @@ fn summary_stats(mut values: Vec<f64>) -> SummaryStats {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::types::*;

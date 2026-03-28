@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -719,24 +721,24 @@ fn test_split_determinism() {
 
     let train1_ids: Vec<u64> = {
         let mut v: Vec<u64> = train1.images.iter().map(|i| i.id).collect();
-        v.sort();
+        v.sort_unstable();
         v
     };
     let train2_ids: Vec<u64> = {
         let mut v: Vec<u64> = train2.images.iter().map(|i| i.id).collect();
-        v.sort();
+        v.sort_unstable();
         v
     };
     assert_eq!(train1_ids, train2_ids, "Same seed must produce same split");
 
     let val1_ids: Vec<u64> = {
         let mut v: Vec<u64> = val1.images.iter().map(|i| i.id).collect();
-        v.sort();
+        v.sort_unstable();
         v
     };
     let val2_ids: Vec<u64> = {
         let mut v: Vec<u64> = val2.images.iter().map(|i| i.id).collect();
-        v.sort();
+        v.sort_unstable();
         v
     };
     assert_eq!(val1_ids, val2_ids, "Same seed must produce same split");
@@ -745,7 +747,7 @@ fn test_split_determinism() {
     let (train3, _, _) = coco.split(0.33, None, 99);
     let train3_ids: Vec<u64> = {
         let mut v: Vec<u64> = train3.images.iter().map(|i| i.id).collect();
-        v.sort();
+        v.sort_unstable();
         v
     };
     // With 3 images and different seeds the shuffle may still coincide, but we at least
@@ -2341,7 +2343,7 @@ fn test_voc_to_coco_basic() {
     let ann_dir = dir.path().join("Annotations");
     std::fs::create_dir_all(&ann_dir).expect("mkdir");
 
-    let xml = r#"<annotation>
+    let xml = r"<annotation>
   <folder>Annotations</folder>
   <filename>test.jpg</filename>
   <size>
@@ -2374,7 +2376,7 @@ fn test_voc_to_coco_basic() {
       <ymax>450</ymax>
     </bndbox>
   </object>
-</annotation>"#;
+</annotation>";
     std::fs::write(ann_dir.join("test.xml"), xml).expect("write xml");
 
     let dataset = voc_to_coco(dir.path()).expect("voc_to_coco");
@@ -2591,7 +2593,7 @@ fn test_voc_labels_txt_ordering() {
     // Write labels.txt with non-alphabetical order
     std::fs::write(dir.path().join("labels.txt"), "zebra\napple\n").expect("labels.txt");
 
-    let xml = r#"<annotation>
+    let xml = r"<annotation>
   <filename>img.jpg</filename>
   <size><width>100</width><height>100</height><depth>3</depth></size>
   <object>
@@ -2602,7 +2604,7 @@ fn test_voc_labels_txt_ordering() {
     <name>zebra</name>
     <bndbox><xmin>50</xmin><ymin>50</ymin><xmax>100</xmax><ymax>100</ymax></bndbox>
   </object>
-</annotation>"#;
+</annotation>";
     std::fs::write(ann_dir.join("img.xml"), xml).expect("write xml");
 
     let dataset = voc_to_coco(dir.path()).expect("voc_to_coco");
@@ -4291,7 +4293,7 @@ fn test_calibration_known_values() {
         categories: vec![Category {
             id: 1,
             name: "obj".into(),
-            supercategory: Some("".into()),
+            supercategory: Some(String::new()),
             skeleton: None,
             keypoints: None,
             frequency: None,
@@ -4851,4 +4853,17 @@ fn test_dota_round_trip_integration() {
     assert!((obb[2] - 200.0).abs() < 0.2, "w round-trip: {}", obb[2]);
     assert!((obb[3] - 100.0).abs() < 0.2, "h round-trip: {}", obb[3]);
     assert!(obb[4].abs() < 0.01, "angle round-trip: {}", obb[4]);
+}
+
+#[test]
+#[should_panic(expected = "params.max_dets must not be empty")]
+fn test_empty_max_dets_panics() {
+    let gt_path = fixtures_dir().join("gt.json");
+    let dt_path = fixtures_dir().join("dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load GT");
+    let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
+
+    let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    coco_eval.params.max_dets = vec![];
+    coco_eval.evaluate(); // should panic with a clear message
 }
