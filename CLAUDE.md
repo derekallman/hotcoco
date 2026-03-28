@@ -128,12 +128,11 @@ A git pre-commit hook in `.github/hooks/pre-commit` runs four checks automatical
 
 ```bash
 cargo fmt --all -- --check                                              # 1. Formatting
-cargo clippy -p hotcoco -p hotcoco-cli --all-targets -- -D warnings     # 2. Lint (core + CLI)
+cargo clippy --workspace --all-targets -- -D warnings                   # 2. Lint (all crates)
 cargo test -p hotcoco -p hotcoco-cli                                    # 3. Tests
-cargo check -p hotcoco-pyo3                                             # 4. PyO3 compiles
 ```
 
-The hook excludes `hotcoco-pyo3` from clippy and tests (it's a cdylib with heavy PyO3 compile overhead and no Rust tests). `cargo check` ensures it still compiles. CI runs the full `--workspace` clippy and tests.
+The hook excludes `hotcoco-pyo3` from tests (it's a cdylib with no Rust tests). Clippy runs on the full workspace to match CI.
 
 To install the hook (one-time setup):
 

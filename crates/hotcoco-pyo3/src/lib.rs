@@ -107,8 +107,8 @@ impl PyCOCO {
         sup_nms: Vec<String>,
         cat_ids: Vec<u64>,
     ) -> Vec<u64> {
-        let cat_nms_ref: Vec<&str> = cat_nms.iter().map(|s| s.as_str()).collect();
-        let sup_nms_ref: Vec<&str> = sup_nms.iter().map(|s| s.as_str()).collect();
+        let cat_nms_ref: Vec<&str> = cat_nms.iter().map(String::as_str).collect();
+        let sup_nms_ref: Vec<&str> = sup_nms.iter().map(String::as_str).collect();
         self.inner.get_cat_ids(&cat_nms_ref, &sup_nms_ref, &cat_ids)
     }
 
@@ -585,7 +585,7 @@ impl PyCOCO {
                 let ext_lower = path
                     .extension()
                     .and_then(|e| e.to_str())
-                    .map(|e| e.to_lowercase());
+                    .map(str::to_lowercase);
                 if let Some(ext) = ext_lower {
                     if img_exts.contains(&ext.as_str()) {
                         let path_str = path.to_string_lossy().into_owned();
@@ -1002,7 +1002,7 @@ impl PyParams {
     }
     #[setter(imgIds)]
     fn set_img_ids_camel(&mut self, val: Vec<u64>) {
-        self.set_img_ids(val)
+        self.set_img_ids(val);
     }
     #[getter(catIds)]
     fn cat_ids_camel(&self) -> Vec<u64> {
@@ -1010,7 +1010,7 @@ impl PyParams {
     }
     #[setter(catIds)]
     fn set_cat_ids_camel(&mut self, val: Vec<u64>) {
-        self.set_cat_ids(val)
+        self.set_cat_ids(val);
     }
     #[getter(iouThrs)]
     fn iou_thrs_camel(&self) -> Vec<f64> {
@@ -1018,7 +1018,7 @@ impl PyParams {
     }
     #[setter(iouThrs)]
     fn set_iou_thrs_camel(&mut self, val: Vec<f64>) {
-        self.set_iou_thrs(val)
+        self.set_iou_thrs(val);
     }
     #[getter(recThrs)]
     fn rec_thrs_camel(&self) -> Vec<f64> {
@@ -1026,7 +1026,7 @@ impl PyParams {
     }
     #[setter(recThrs)]
     fn set_rec_thrs_camel(&mut self, val: Vec<f64>) {
-        self.set_rec_thrs(val)
+        self.set_rec_thrs(val);
     }
     #[getter(maxDets)]
     fn max_dets_camel(&self) -> Vec<usize> {
@@ -1034,7 +1034,7 @@ impl PyParams {
     }
     #[setter(maxDets)]
     fn set_max_dets_camel(&mut self, val: Vec<usize>) {
-        self.set_max_dets(val)
+        self.set_max_dets(val);
     }
     #[getter(areaRng)]
     fn area_rng_camel(&self) -> Vec<[f64; 2]> {
@@ -1042,7 +1042,7 @@ impl PyParams {
     }
     #[setter(areaRng)]
     fn set_area_rng_camel(&mut self, val: Vec<[f64; 2]>) {
-        self.set_area_rng(val)
+        self.set_area_rng(val);
     }
     #[getter(areaRngLbl)]
     fn area_rng_lbl_camel(&self) -> Vec<String> {
@@ -1050,7 +1050,7 @@ impl PyParams {
     }
     #[setter(areaRngLbl)]
     fn set_area_rng_lbl_camel(&mut self, val: Vec<String>) {
-        self.set_area_rng_lbl(val)
+        self.set_area_rng_lbl(val);
     }
     #[getter(useCats)]
     fn use_cats_camel(&self) -> bool {
@@ -1058,7 +1058,7 @@ impl PyParams {
     }
     #[setter(useCats)]
     fn set_use_cats_camel(&mut self, val: bool) {
-        self.set_use_cats(val)
+        self.set_use_cats(val);
     }
 }
 
@@ -1482,7 +1482,7 @@ Examples
 
     #[getter]
     fn stats(&self) -> Option<Vec<f64>> {
-        self.inner.stats().map(|s| s.to_vec())
+        self.inner.stats().map(<[f64]>::to_vec)
     }
 
     #[getter]
@@ -1692,8 +1692,7 @@ Example\n\
                 .inner
                 .coco_gt
                 .get_cat(cat_id)
-                .map(|c| c.name.clone())
-                .unwrap_or_else(|| format!("cat_{cat_id}"));
+                .map_or_else(|| format!("cat_{cat_id}"), |c| c.name.clone());
             per_cat.set_item(name, ece)?;
         }
 
@@ -1868,8 +1867,7 @@ Example\n\
                 .inner
                 .coco_gt
                 .get_cat(le.dt_category_id)
-                .map(|c| c.name.as_str())
-                .unwrap_or("?");
+                .map_or("?", |c| c.name.as_str());
             d.set_item("dt_category", dt_cat_name)?;
             d.set_item("dt_category_id", le.dt_category_id)?;
 
@@ -1879,8 +1877,7 @@ Example\n\
                     let gt_cat_name = le
                         .gt_category_id
                         .and_then(|cid| self.inner.coco_gt.get_cat(cid))
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("?");
+                        .map_or("?", |c| c.name.as_str());
                     d.set_item("gt_category", gt_cat_name)?;
                     d.set_item("gt_category_id", le.gt_category_id)?;
                 }

@@ -70,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Pre-commit hook clippy step changed from `-p hotcoco -p hotcoco-cli` to `--workspace`, matching CI; removed redundant `cargo check -p hotcoco-pyo3` step (now covered by workspace clippy); hook reduced from 4 steps to 3
 - Rust edition 2021 → 2024, MSRV 1.74 → 1.85, workspace resolver 2 → 3
 - PyO3 0.23 → 0.28, numpy crate 0.23 → 0.28 — `PyObject` → `Py<PyAny>`, `allow_threads` → `detach`, `downcast` → `cast`, `#[pyclass(from_py_object)]` for Clone types
 - `[workspace.lints]` — centralized clippy/rust lint configuration across all 3 crates; `unsafe_code = "forbid"`, `unwrap_used = "warn"`, `dbg_macro = "deny"`, `clippy::pedantic` with targeted allows
@@ -133,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `hotcoco-pyo3/src/lib.rs` — 13 clippy lints fixed: redundant closures replaced with method references (`String::as_str`, `str::to_lowercase`, `<[f64]>::to_vec`), `.map().unwrap_or()` → `.map_or()`, missing semicolons on unit-returning setter delegates
 - Browse UI: `mouseup` and `touchstart` event listeners in `overlay.js` accumulated on every lightbox open (memory leak); now stored in module-level refs and cleaned up before re-attaching in `initOverlay()`
 - Browse server: unhandled exceptions returned FastAPI's default JSON error instead of themed HTML; added `@app.exception_handler(Exception)` with styled error page and `logging.exception()` for 500s; `/detail/{id}` 404 now returns themed HTML instead of plain text
 - Browse server: broad `except Exception: pass` on slice metric computation replaced with `except (KeyError, ValueError, TypeError)` and `logger.warning()` to avoid silently hiding bugs
