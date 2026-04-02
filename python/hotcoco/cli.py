@@ -112,7 +112,9 @@ def _load_coco(path):
             coco = COCO(path)
         n_imgs = len(coco.dataset.get("images", []))
         n_anns = len(coco.dataset.get("annotations", []))
-        status("Loaded", f"{dim(os.path.basename(path))} ({n_imgs:,} images, {n_anns:,} annotations)", elapsed=t.elapsed)
+        status(
+            "Loaded", f"{dim(os.path.basename(path))} ({n_imgs:,} images, {n_anns:,} annotations)", elapsed=t.elapsed
+        )
         return coco
     except Exception as e:
         error(f"loading {path}: {e}")
@@ -169,12 +171,18 @@ def cmd_filter(args):
             "output": args.output,
         }
 
-    status("Filtered", f"{dim(os.path.basename(args.annotation_file))} → {dim(os.path.basename(args.output))}", elapsed=t.elapsed)
+    status(
+        "Filtered",
+        f"{dim(os.path.basename(args.annotation_file))} → {dim(os.path.basename(args.output))}",
+        elapsed=t.elapsed,
+    )
     print(f"  before: {n_imgs_before:,} images, {n_anns_before:,} annotations")
     print(f"  after:  {n_imgs_after:,} images, {n_anns_after:,} annotations")
 
 
 def cmd_merge(args):
+    from hotcoco import COCO
+
     cocos = [_load_coco(f) for f in args.files]
     n_imgs_total = sum(len(c.dataset["images"]) for c in cocos)
     n_anns_total = sum(len(c.dataset["annotations"]) for c in cocos)
@@ -192,7 +200,10 @@ def cmd_merge(args):
 
     if args.json:
         return {
-            "inputs": [{"file": f, "images": len(c.dataset["images"]), "annotations": len(c.dataset["annotations"])} for f, c in zip(args.files, cocos)],
+            "inputs": [
+                {"file": f, "images": len(c.dataset["images"]), "annotations": len(c.dataset["annotations"])}
+                for f, c in zip(args.files, cocos)
+            ],
             "output": {"file": args.output, "images": n_imgs_out, "annotations": n_anns_out},
         }
 
@@ -244,7 +255,11 @@ def cmd_eval(args):
         n_imgs = len(gt.dataset.get("images", []))
         n_anns = len(gt.dataset.get("annotations", []))
         if not args.json:
-            status("Loaded", f"ground truth {dim(os.path.basename(args.gt))} ({n_imgs:,} images, {n_anns:,} annotations)", elapsed=t.elapsed)
+            status(
+                "Loaded",
+                f"ground truth {dim(os.path.basename(args.gt))} ({n_imgs:,} images, {n_anns:,} annotations)",
+                elapsed=t.elapsed,
+            )
     except Exception as e:
         if args.json:
             raise
@@ -381,8 +396,7 @@ def cmd_eval(args):
             result["diagnostics"] = {
                 "label_errors": diag_result["label_errors"],
                 "worst_images": sorted(
-                    [{"image_id": k, **v} for k, v in diag_result["img_summary"].items()],
-                    key=lambda x: x["f1"],
+                    [{"image_id": k, **v} for k, v in diag_result["img_summary"].items()], key=lambda x: x["f1"]
                 )[:20],
                 "iou_thr": diag_result["iou_thr"],
             }
@@ -398,12 +412,11 @@ def _print_tide(te):
     )
     _table(
         [("Type", "<"), ("ΔAP", ">"), ("Count", ">")],
-        [[et, f"{delta.get(et, 0.0):.4f}", f"{counts.get(et, 0):,}"]
-         for et in ("Loc", "Cls", "Both", "Dupe", "Bkg", "Miss")],
-        footer=[
-            ["FP", f"{delta.get('FP', 0.0):.4f}", ""],
-            ["FN", f"{delta.get('FN', 0.0):.4f}", ""],
+        [
+            [et, f"{delta.get(et, 0.0):.4f}", f"{counts.get(et, 0):,}"]
+            for et in ("Loc", "Cls", "Both", "Dupe", "Bkg", "Miss")
         ],
+        footer=[["FP", f"{delta.get('FP', 0.0):.4f}", ""], ["FN", f"{delta.get('FN', 0.0):.4f}", ""]],
     )
 
 
@@ -457,6 +470,7 @@ def _print_diagnostics(diag):
         print(f"    wrong_label:        {len(wrong)}  (top: {top_wrong})")
     if missing:
         from collections import Counter
+
         cat_counts = Counter(le["dt_category"] for le in missing)
         top_cats = ", ".join(f"{cat} {n}" for cat, n in cat_counts.most_common(5))
         print(f"    missing_annotation: {len(missing):,}  (top categories: {top_cats})")
@@ -511,7 +525,13 @@ def cmd_convert(args):
         n_anns = len(coco.dataset["annotations"])
 
         if args.json:
-            return {"direction": "yolo_to_coco", "input": args.input, "output": args.output, "images": n_imgs, "annotations": n_anns}
+            return {
+                "direction": "yolo_to_coco",
+                "input": args.input,
+                "output": args.output,
+                "images": n_imgs,
+                "annotations": n_anns,
+            }
 
         status("Converted", f"YOLO → COCO ({n_imgs:,} images, {n_anns:,} annotations)", elapsed=t.elapsed)
 
@@ -556,7 +576,13 @@ def cmd_convert(args):
         n_anns = len(coco.dataset["annotations"])
 
         if args.json:
-            return {"direction": "voc_to_coco", "input": args.input, "output": args.output, "images": n_imgs, "annotations": n_anns}
+            return {
+                "direction": "voc_to_coco",
+                "input": args.input,
+                "output": args.output,
+                "images": n_imgs,
+                "annotations": n_anns,
+            }
 
         status("Converted", f"VOC → COCO ({n_imgs:,} images, {n_anns:,} annotations)", elapsed=t.elapsed)
 
@@ -572,7 +598,9 @@ def cmd_convert(args):
         if args.json:
             return {"direction": "coco_to_cvat", "input": args.input, "output": args.output, **stats}
 
-        status("Converted", f"COCO → CVAT ({stats['boxes']:,} boxes, {stats['polygons']:,} polygons)", elapsed=t.elapsed)
+        status(
+            "Converted", f"COCO → CVAT ({stats['boxes']:,} boxes, {stats['polygons']:,} polygons)", elapsed=t.elapsed
+        )
         if stats["skipped_no_geometry"] > 0:
             print(f"  skipped (no geometry): {stats['skipped_no_geometry']:,}")
 
@@ -597,7 +625,13 @@ def cmd_convert(args):
         n_anns = len(coco.dataset["annotations"])
 
         if args.json:
-            return {"direction": "cvat_to_coco", "input": args.input, "output": args.output, "images": n_imgs, "annotations": n_anns}
+            return {
+                "direction": "cvat_to_coco",
+                "input": args.input,
+                "output": args.output,
+                "images": n_imgs,
+                "annotations": n_anns,
+            }
 
         status("Converted", f"CVAT → COCO ({n_imgs:,} images, {n_anns:,} annotations)", elapsed=t.elapsed)
 
@@ -643,7 +677,9 @@ def cmd_healthcheck(args):
     if len(cats) >= 2:
         top_name, top_count = cats[0]
         bot_name, bot_count = cats[-1]
-        print(f"  Cat imbalance: {s['imbalance_ratio']:>8.1f}x  ({top_name}: {top_count:,} / {bot_name}: {bot_count:,})")
+        print(
+            f"  Cat imbalance: {s['imbalance_ratio']:>8.1f}x  ({top_name}: {top_count:,} / {bot_name}: {bot_count:,})"
+        )
     else:
         print(f"  Cat imbalance: {s['imbalance_ratio']:>8.1f}x")
 
@@ -654,6 +690,7 @@ def cmd_healthcheck(args):
 def cmd_explore(args):
     try:
         from hotcoco.browse import _require_browse_deps
+
         _require_browse_deps()
     except ImportError:
         error("browse dependencies required. Install with: pip install hotcoco[browse]")
@@ -673,6 +710,7 @@ def cmd_explore(args):
     if dt_coco is not None and not args.no_eval:
         try:
             from hotcoco import COCOeval
+
             ev = COCOeval(coco, dt_coco, args.iou_type)
             with Spinner(f"Evaluating {args.iou_type}..."), Timer() as t:
                 ev.evaluate()
@@ -683,7 +721,11 @@ def cmd_explore(args):
             for s in eval_index["img_summary"].values():
                 for k in ("tp", "fp", "fn"):
                     summary[k] = summary.get(k, 0) + s[k]
-            status("Evaluated", f"{args.iou_type}  TP={summary.get('tp', 0):,}  FP={summary.get('fp', 0):,}  FN={summary.get('fn', 0):,}", elapsed=t.elapsed)
+            status(
+                "Evaluated",
+                f"{args.iou_type}  TP={summary.get('tp', 0):,}  FP={summary.get('fp', 0):,}  FN={summary.get('fn', 0):,}",
+                elapsed=t.elapsed,
+            )
         except Exception as e:
             warning(f"eval failed ({e}), launching without eval coloring")
 
@@ -750,13 +792,7 @@ def cmd_compare(args):
     status("Evaluated", f"both models ({args.iou_type})", elapsed=t.elapsed)
 
     with Spinner("Comparing models..."), Timer() as t:
-        result = compare(
-            ev_a,
-            ev_b,
-            n_bootstrap=args.bootstrap,
-            seed=args.seed,
-            confidence=args.confidence,
-        )
+        result = compare(ev_a, ev_b, n_bootstrap=args.bootstrap, seed=args.seed, confidence=args.confidence)
     bootstrap_note = f", {args.bootstrap:,} bootstrap samples" if args.bootstrap else ""
     status("Compared", f"{args.name_a} vs {args.name_b}{bootstrap_note}", elapsed=t.elapsed)
 
@@ -852,9 +888,7 @@ def main():
     # Shared parent parser that adds --json to every subcommand
     _json_parent = argparse.ArgumentParser(add_help=False)
     _json_parent.add_argument(
-        "--json",
-        action="store_true",
-        help="output results as JSON to stdout (for CI/CD pipelines)",
+        "--json", action="store_true", help="output results as JSON to stdout (for CI/CD pipelines)"
     )
 
     eval_parser = subparsers.add_parser(
@@ -909,7 +943,9 @@ def main():
         "--calibration", action="store_true", help="compute confidence calibration (ECE/MCE) after standard metrics"
     )
     eval_parser.add_argument(
-        "--diagnostics", action="store_true", help="per-image diagnostics: worst images by F1/AP, label error candidates"
+        "--diagnostics",
+        action="store_true",
+        help="per-image diagnostics: worst images by F1/AP, label error candidates",
     )
     eval_parser.add_argument(
         "--diag-iou-thr",
@@ -962,7 +998,8 @@ def main():
         help='JSON file mapping slice names to image ID lists, e.g. {"daytime": [1,2,3]}',
     )
     eval_parser.add_argument(
-        "--healthcheck", action="store_true",
+        "--healthcheck",
+        action="store_true",
         help="run dataset healthcheck before evaluation (warnings printed to stderr)",
     )
 
@@ -982,11 +1019,15 @@ def main():
     healthcheck_parser.add_argument("annotation_file", help="path to COCO annotation JSON")
     healthcheck_parser.add_argument("--dt", help="path to detection results JSON (enables GT/DT checks)")
 
-    stats_parser = subparsers.add_parser("stats", parents=[_json_parent], help="show dataset statistics (counts, dimensions, areas)")
+    stats_parser = subparsers.add_parser(
+        "stats", parents=[_json_parent], help="show dataset statistics (counts, dimensions, areas)"
+    )
     stats_parser.add_argument("annotation_file", help="path to COCO annotation JSON file")
     stats_parser.add_argument("--all-cats", action="store_true", help="show all categories instead of top 20")
 
-    filter_parser = subparsers.add_parser("filter", parents=[_json_parent], help="filter a dataset by category, image, or area")
+    filter_parser = subparsers.add_parser(
+        "filter", parents=[_json_parent], help="filter a dataset by category, image, or area"
+    )
     filter_parser.add_argument("annotation_file", help="input COCO JSON file")
     filter_parser.add_argument("-o", "--output", required=True, help="output JSON file")
     filter_parser.add_argument("--cat-ids", metavar="1,2,3", help="comma-separated category IDs to keep")
@@ -1000,7 +1041,9 @@ def main():
     merge_parser.add_argument("files", nargs="+", help="input COCO JSON files")
     merge_parser.add_argument("-o", "--output", required=True, help="output JSON file")
 
-    split_parser = subparsers.add_parser("split", parents=[_json_parent], help="split a dataset into train/val[/test] subsets")
+    split_parser = subparsers.add_parser(
+        "split", parents=[_json_parent], help="split a dataset into train/val[/test] subsets"
+    )
     split_parser.add_argument("annotation_file", help="input COCO JSON file")
     split_parser.add_argument(
         "-o",
@@ -1024,13 +1067,21 @@ def main():
     sample_parser.add_argument("--frac", type=float, default=None, help="fraction of images to sample")
     sample_parser.add_argument("--seed", type=int, default=42, help="random seed (default 42)")
 
-    convert_parser = subparsers.add_parser("convert", parents=[_json_parent], help="convert between annotation formats (COCO ↔ YOLO/VOC/CVAT)")
+    convert_parser = subparsers.add_parser(
+        "convert", parents=[_json_parent], help="convert between annotation formats (COCO ↔ YOLO/VOC/CVAT)"
+    )
     convert_parser.add_argument(
         "--from", dest="from_fmt", required=True, choices=["coco", "yolo", "voc", "cvat"], help="source format"
     )
-    convert_parser.add_argument("--to", dest="to_fmt", required=True, choices=["coco", "yolo", "voc", "cvat"], help="target format")
-    convert_parser.add_argument("--input", required=True, help="input file (COCO JSON) or directory (YOLO labels / VOC Annotations)")
-    convert_parser.add_argument("--output", required=True, help="output file (COCO JSON) or directory (YOLO labels / VOC Annotations)")
+    convert_parser.add_argument(
+        "--to", dest="to_fmt", required=True, choices=["coco", "yolo", "voc", "cvat"], help="target format"
+    )
+    convert_parser.add_argument(
+        "--input", required=True, help="input file (COCO JSON) or directory (YOLO labels / VOC Annotations)"
+    )
+    convert_parser.add_argument(
+        "--output", required=True, help="output file (COCO JSON) or directory (YOLO labels / VOC Annotations)"
+    )
     convert_parser.add_argument(
         "--images-dir",
         dest="images_dir",
@@ -1038,27 +1089,44 @@ def main():
         help="directory of images (YOLO → COCO only; used to read image dimensions via Pillow)",
     )
 
-    explore_parser = subparsers.add_parser("explore", help="browse a COCO dataset interactively (requires hotcoco[browse])")
+    explore_parser = subparsers.add_parser(
+        "explore", help="browse a COCO dataset interactively (requires hotcoco[browse])"
+    )
     explore_parser.add_argument("--gt", required=True, metavar="PATH", help="path to COCO annotation JSON")
     explore_parser.add_argument("--images", required=True, metavar="DIR", help="directory containing images")
-    explore_parser.add_argument("--dt", metavar="PATH", default=None, help="detection results JSON (enables detection overlay)")
     explore_parser.add_argument(
-        "--iou-type", dest="iou_type", default="bbox", choices=["bbox", "segm", "keypoints"],
+        "--dt", metavar="PATH", default=None, help="detection results JSON (enables detection overlay)"
+    )
+    explore_parser.add_argument(
+        "--iou-type",
+        dest="iou_type",
+        default="bbox",
+        choices=["bbox", "segm", "keypoints"],
         help="evaluation type for TP/FP/FN coloring (default: bbox)",
     )
     explore_parser.add_argument(
-        "--iou-thr", dest="iou_thr", type=float, default=0.5, metavar="THR",
+        "--iou-thr",
+        dest="iou_thr",
+        type=float,
+        default=0.5,
+        metavar="THR",
         help="IoU threshold for TP/FP classification (default: 0.5)",
     )
     explore_parser.add_argument(
-        "--no-eval", dest="no_eval", action="store_true",
+        "--no-eval",
+        dest="no_eval",
+        action="store_true",
         help="disable automatic evaluation (show detections without TP/FP/FN coloring)",
     )
     explore_parser.add_argument(
-        "--slices", metavar="slices.json", default=None,
+        "--slices",
+        metavar="slices.json",
+        default=None,
         help='JSON file mapping slice names to image ID lists, e.g. {"daytime": [1,2,3]}',
     )
-    explore_parser.add_argument("--batch-size", dest="batch_size", type=int, default=12, metavar="N", help="images per batch (default 12)")
+    explore_parser.add_argument(
+        "--batch-size", dest="batch_size", type=int, default=12, metavar="N", help="images per batch (default 12)"
+    )
     explore_parser.add_argument("--port", type=int, default=7860, help="local server port (default 7860)")
 
     compare_parser = subparsers.add_parser(
@@ -1078,15 +1146,38 @@ def main():
     compare_parser.add_argument("--dt-a", dest="dt_a", required=True, help="detections from model A (COCO JSON)")
     compare_parser.add_argument("--dt-b", dest="dt_b", required=True, help="detections from model B (COCO JSON)")
     compare_parser.add_argument(
-        "--iou-type", dest="iou_type", default="bbox", choices=["bbox", "segm", "keypoints"],
+        "--iou-type",
+        dest="iou_type",
+        default="bbox",
+        choices=["bbox", "segm", "keypoints"],
         help="evaluation type (default: bbox)",
     )
     compare_parser.add_argument("--lvis", action="store_true", help="use LVIS-style federated evaluation")
-    compare_parser.add_argument("--bootstrap", type=int, default=0, metavar="N", help="number of bootstrap samples for confidence intervals (0 = disabled)")
+    compare_parser.add_argument(
+        "--bootstrap",
+        type=int,
+        default=0,
+        metavar="N",
+        help="number of bootstrap samples for confidence intervals (0 = disabled)",
+    )
     compare_parser.add_argument("--seed", type=int, default=42, help="random seed for bootstrap (default: 42)")
-    compare_parser.add_argument("--confidence", type=float, default=0.95, help="confidence level for bootstrap CIs (default: 0.95)")
-    compare_parser.add_argument("--name-a", dest="name_a", default="Model A", metavar="NAME", help="display name for model A (default: 'Model A')")
-    compare_parser.add_argument("--name-b", dest="name_b", default="Model B", metavar="NAME", help="display name for model B (default: 'Model B')")
+    compare_parser.add_argument(
+        "--confidence", type=float, default=0.95, help="confidence level for bootstrap CIs (default: 0.95)"
+    )
+    compare_parser.add_argument(
+        "--name-a",
+        dest="name_a",
+        default="Model A",
+        metavar="NAME",
+        help="display name for model A (default: 'Model A')",
+    )
+    compare_parser.add_argument(
+        "--name-b",
+        dest="name_b",
+        default="Model B",
+        metavar="NAME",
+        help="display name for model B (default: 'Model B')",
+    )
     try:
         import argcomplete
 

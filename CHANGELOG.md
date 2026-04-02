@@ -127,6 +127,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Browse UI: `overlay.js` restructured — scattered module-level variables consolidated into `_cache`/`_ui` namespaces; all `var` replaced with `const`/`let`; magic numbers extracted into named constants (`DASH_SEGMENT`, `MIN_FONT_SIZE`, `BASE_KPT_RADIUS`, etc.); JSDoc added to `drawOverlays()` documenting the 4-pass rendering pipeline
 - Browse UI: checkbox styling DRYed — shared base selector for all 3 variants (category filter, overlay toggles, tree group) with per-variant size/position overrides; reduces ~90 lines of duplicated CSS
 - Browse UI: `metric_fmt` Jinja2 filter added for consistent metric formatting across templates; replaces scattered `"%.3f" | format()` patterns in dashboard and gallery
+- `ConvertError` — replaced manual `Display`/`Error`/`From<io::Error>` impls with `thiserror` derive macros, matching the crate's `Error` enum pattern
+- `mask.rs` — `transpose_mask` doc comment clarified: now specifies `(h, w)` for row→column and `(w, h)` for the reverse, instead of claiming the operation is its own inverse
+- CI — added `cargo-deny` dependency audit step (ubuntu-only); test step scoped to `-p hotcoco -p hotcoco-cli` (excludes cdylib)
+- Pre-commit hook step numbering corrected from `[1/4]` to `[1/3]` (matches actual 3-step hook)
+- `_typos.toml` — new typos-cli configuration: `en-us` locale, domain abbreviations allow-listed (`nd`, `obb`, `oks`, etc.), data/fixture dirs excluded
+- `STYLE.md` — new style guide covering product names, domain glossary, abstraction layers, Python API naming, Rust conventions, CLI output, documentation voice, and anti-patterns
+- `python/hotcoco/cli.py` — reformatted with ruff (line length compliance); `cmd_merge` import moved to function scope
+- Docs — American English spelling throughout (`behaviour` → `behavior`, `normalised` → `normalized`, `maximises` → `maximizes`, `summarisation` → `summarization`, `Randomise` → `Randomize`); benchmark versions updated to 0.3.0
 - Browse UI: `nav_query | safe` in `detail.html` replaced with JSON-encoded `<script type="application/json">` data element parsed in `overlay.js`, eliminating a potential XSS surface from string interpolation
 - Browse UI: canvas `getBoundingClientRect()` result cached in `_cache.canvasRect` (updated on resize), avoiding forced layout reflow on every mousemove during hover hit-testing
 - Browse UI: redundant `syncCatViews()` calls removed from per-checkbox handlers (`onCatChange`, `onTreeChildChange`, `toggleGroupCheck`); cross-view sync now runs only on view switch via `setCatView()`
@@ -134,6 +142,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `accumulate.rs` — recall initialization moved into early-return path when `nd == 0` (GT exists but no detections); previously recall was written unconditionally then overwritten, now it's set once at the correct point
+- `tide.rs` — replaced hardcoded `/ 101.0` with `/ rec_thrs.len() as f64` so TIDE ΔAP computation adapts if recall threshold count ever changes
+- `mask.rs` — `iou()` and `bbox_iou()` now validate that `iscrowd` length matches `gt` length, raising `ValueError` with a clear message instead of panicking on out-of-bounds access
+- `lib.rs` — browse `slice_by` callable that returns `None` now skips the image instead of raising a type error on extract
 - `hotcoco-pyo3/src/lib.rs` — 13 clippy lints fixed: redundant closures replaced with method references (`String::as_str`, `str::to_lowercase`, `<[f64]>::to_vec`), `.map().unwrap_or()` → `.map_or()`, missing semicolons on unit-returning setter delegates
 - Browse UI: `mouseup` and `touchstart` event listeners in `overlay.js` accumulated on every lightbox open (memory leak); now stored in module-level refs and cleaned up before re-attaching in `initOverlay()`
 - Browse server: unhandled exceptions returned FastAPI's default JSON error instead of themed HTML; added `@app.exception_handler(Exception)` with styled error page and `logging.exception()` for 500s; `/detail/{id}` 404 now returns themed HTML instead of plain text

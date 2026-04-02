@@ -15,40 +15,23 @@ use std::path::Path;
 use crate::types::{Annotation, Dataset};
 
 /// Errors that can occur during format conversion.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ConvertError {
     /// An I/O error occurred while reading or writing files.
-    Io(io::Error),
+    #[error("I/O error: {0}")]
+    Io(#[from] io::Error),
     /// An image has `width == 0` or `height == 0`, preventing normalization.
+    #[error("image id={0} has zero width or height")]
     MissingImageDimensions(u64),
     /// No `data.yaml` found in the YOLO directory.
+    #[error("data.yaml not found in YOLO directory")]
     MissingDataYaml,
     /// A label file or `data.yaml` could not be parsed.
+    #[error("parse error: {0}")]
     ParseError(String),
     /// An XML parsing or writing error occurred.
+    #[error("XML error: {0}")]
     XmlError(String),
-}
-
-impl std::fmt::Display for ConvertError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConvertError::Io(e) => write!(f, "I/O error: {e}"),
-            ConvertError::MissingImageDimensions(id) => {
-                write!(f, "image id={id} has zero width or height")
-            }
-            ConvertError::MissingDataYaml => write!(f, "data.yaml not found in YOLO directory"),
-            ConvertError::ParseError(s) => write!(f, "parse error: {s}"),
-            ConvertError::XmlError(s) => write!(f, "XML error: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for ConvertError {}
-
-impl From<io::Error> for ConvertError {
-    fn from(e: io::Error) -> Self {
-        ConvertError::Io(e)
-    }
 }
 
 impl From<quick_xml::Error> for ConvertError {

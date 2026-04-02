@@ -64,7 +64,7 @@ pub(super) fn precision_recall_curve(
 /// Accumulate per-image eval results into precision/recall arrays.
 ///
 /// When `img_filter` is `Some`, only eval_imgs whose `image_id` is in the set
-/// are included. Pass `None` to include all images (standard behaviour).
+/// are included. Pass `None` to include all images (standard behavior).
 pub(super) fn accumulate_impl(
     eval_imgs: &[Option<EvalImg>],
     params: &Params,
@@ -178,12 +178,11 @@ pub(super) fn accumulate_impl(
                 };
             }
 
-            // Initialize precision and recall to 0.0 (distinct from -1.0 which means
-            // "no data"). This ensures categories with GT but no matches show 0 AP,
-            // not "missing".
+            // Initialize precision, recall, and scores to 0.0 (distinct from -1.0 which
+            // means "no data"). This ensures categories with GT but no matches show 0 AP,
+            // not "missing". Only recall thresholds reached by actual detections get
+            // overwritten — unreachable thresholds stay at 0.0.
             for t_idx in 0..t {
-                let recall_idx = shape.recall_idx(t_idx, k_idx, a_idx, m_idx);
-                recall_writes.push((recall_idx, 0.0));
                 for r_idx in 0..r {
                     let p_idx = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
                     precision_writes.push((p_idx, 0.0));
@@ -200,6 +199,19 @@ pub(super) fn accumulate_impl(
             });
 
             let nd = inds.len();
+
+            if nd == 0 {
+                // GT exists but no detections — recall is 0.0 (not -1.0 "missing").
+                for t_idx in 0..t {
+                    let recall_idx = shape.recall_idx(t_idx, k_idx, a_idx, m_idx);
+                    recall_writes.push((recall_idx, 0.0));
+                }
+                return AccResult {
+                    precision_writes,
+                    recall_writes,
+                    scores_writes,
+                };
+            }
 
             // Hoist sorted_scores outside the threshold loop (identical across thresholds)
             let sorted_scores: Vec<f64> = inds.iter().map(|&i| all_dt_scores[i]).collect();
@@ -234,9 +246,7 @@ pub(super) fn accumulate_impl(
                     precision_recall_curve(&tp, &fp, num_gt, &params.rec_thrs);
 
                 let recall_idx = shape.recall_idx(t_idx, k_idx, a_idx, m_idx);
-                if nd > 0 {
-                    recall_writes.push((recall_idx, final_recall));
-                }
+                recall_writes.push((recall_idx, final_recall));
 
                 for (r_idx, pr_val, rc_ptr) in curve {
                     let p_idx = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);

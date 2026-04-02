@@ -357,6 +357,8 @@ impl COCO {
                 }
             } else if has_seg && !has_kpts {
                 // segmentation results: area from mask RLE.
+                // Only CompressedRle is handled here, matching pycocotools' loadRes behavior.
+                // Polygon and UncompressedRle results are not expected in detection output files.
                 // Use the GT COCO (self) for image lookups — detection results
                 // share the same images, so self.get_img finds the right dims.
                 for ann in &mut dataset.annotations {

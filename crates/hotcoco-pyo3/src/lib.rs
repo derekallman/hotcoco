@@ -1728,6 +1728,9 @@ Example\n\
                 img_dict.set_item("height", img.height)?;
                 img_dict.set_item("width", img.width)?;
                 let result = slices.call1((img_dict,))?;
+                if result.is_none() {
+                    continue;
+                }
                 let name: String = result.extract()?;
                 groups.entry(name).or_default().push(img.id);
             }

@@ -7,8 +7,8 @@ use crate::convert::{py_to_rle, rle_to_coco_py};
 
 /// Transpose between row-major (numpy) and column-major (hotcoco) mask layouts.
 ///
-/// Row-major index `y * w + x` ↔ column-major index `y + h * x`.
-/// Works in both directions (the operation is its own inverse).
+/// With `(h, w)`: reads row-major `src[y * w + x]` → writes column-major `dst[y + h * x]`.
+/// For the reverse direction (column-major → row-major), swap the arguments: call with `(w, h)`.
 pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
     debug_assert_eq!(src.len(), h * w);
     let mut dst = vec![0u8; h * w];
@@ -248,6 +248,15 @@ pub fn merge(py: Python<'_>, rles: &Bound<'_, PyAny>, intersect: bool) -> PyResu
     rle_to_coco_py(py, &result)
 }
 
+fn check_iscrowd_len(iscrowd_len: usize, gt_len: usize) -> PyResult<()> {
+    if iscrowd_len != gt_len {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "iscrowd length ({iscrowd_len}) must equal gt length ({gt_len})"
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // iou
 // ---------------------------------------------------------------------------
@@ -262,6 +271,7 @@ pub fn iou(
 ) -> PyResult<Py<PyAny>> {
     let dt_rles = extract_rle_list(dt)?;
     let gt_rles = extract_rle_list(gt)?;
+    check_iscrowd_len(iscrowd.len(), gt_rles.len())?;
     let result = rmask::iou(&dt_rles, &gt_rles, &iscrowd);
     let d = dt_rles.len();
     let g = gt_rles.len();
@@ -282,6 +292,7 @@ pub fn bbox_iou(
     gt: Vec<[f64; 4]>,
     iscrowd: Vec<bool>,
 ) -> PyResult<Py<PyAny>> {
+    check_iscrowd_len(iscrowd.len(), gt.len())?;
     let result = rmask::bbox_iou(&dt, &gt, &iscrowd);
     let d = dt.len();
     let g = gt.len();

@@ -50,7 +50,7 @@ impl COCOeval {
         }
 
         let (_, curve) = super::accumulate::precision_recall_curve(&tp, &fp, num_gt, rec_thrs);
-        curve.iter().map(|(_, pr, _)| pr).sum::<f64>() / 101.0
+        curve.iter().map(|(_, pr, _)| pr).sum::<f64>() / rec_thrs.len() as f64
     }
 
     /// Decompose detection errors into TIDE error types.
@@ -408,7 +408,7 @@ impl COCOeval {
             // Fix a set of FP error types.
             // Cls and Loc: flip FP → TP (the DT would have been correct if the error were fixed).
             // Bkg, Both, Dupe: suppress the DT (set ignored=true), matching tidecv's fix()→None
-            // behaviour where these errors produce no corrected TP.
+            // behavior where these errors produce no corrected TP.
             let fix_fp = |fix_types: &[ErrType]| -> f64 {
                 let mut fixed_matched = data.matched.clone();
                 let mut fixed_ignored = data.ignored.clone();
