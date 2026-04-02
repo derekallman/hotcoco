@@ -395,7 +395,7 @@ This method is **standalone** — no `evaluate()` call is needed first.
 | Key | Type | Description |
 |-----|------|-------------|
 | `"matrix"` | `np.ndarray[int64]` shape `(K+1, K+1)` | Raw confusion counts. Rows = GT category, cols = predicted. Index `K` is background. |
-| `"normalized"` | `np.ndarray[float64]` shape `(K+1, K+1)` | Row-normalised version (rows sum to 1.0; zero rows stay zero). |
+| `"normalized"` | `np.ndarray[float64]` shape `(K+1, K+1)` | Row-normalized version (rows sum to 1.0; zero rows stay zero). |
 | `"cat_ids"` | `list[int]` | Category IDs for rows/cols `0..K-1`. |
 | `"cat_names"` | `list[str]` | Category names for rows/cols `0..K-1`, in the same order as `cat_ids`. |
 | `"num_cats"` | `int` | Number of categories `K`. |
@@ -423,7 +423,7 @@ fn = matrix[:-1, -1]
 # False positives per category
 fp = matrix[-1, :-1]
 
-# Normalised view
+# Normalized view
 print(cm["normalized"])
 ```
 
@@ -532,7 +532,7 @@ f_scores(beta: float = 1.0) -> dict[str, float]
 
 Compute F-beta scores after `accumulate()` (or `run()`).
 
-For each (IoU threshold, category), finds the confidence operating point that maximises F-beta, then averages across categories — analogous to how mAP averages precision. Returns three metrics mirroring AP/AP50/AP75.
+For each (IoU threshold, category), finds the confidence operating point that maximizes F-beta, then averages across categories — analogous to how mAP averages precision. Returns three metrics mirroring AP/AP50/AP75.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

@@ -89,7 +89,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test
 ```
 
-Parity with pycocotools is a hard requirement — if your change touches evaluation logic, verify metrics haven't shifted with `just parity` (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+Parity with pycocotools is a hard requirement — if your change touches evaluation logic, verify metrics haven't shifted with `just parity`.
 
 ## License
 

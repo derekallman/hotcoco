@@ -132,7 +132,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - CI — added `cargo-deny` dependency audit step (ubuntu-only); test step scoped to `-p hotcoco -p hotcoco-cli` (excludes cdylib)
 - Pre-commit hook step numbering corrected from `[1/4]` to `[1/3]` (matches actual 3-step hook)
 - `_typos.toml` — new typos-cli configuration: `en-us` locale, domain abbreviations allow-listed (`nd`, `obb`, `oks`, etc.), data/fixture dirs excluded
-- `STYLE.md` — new style guide covering product names, domain glossary, abstraction layers, Python API naming, Rust conventions, CLI output, documentation voice, and anti-patterns
 - `python/hotcoco/cli.py` — reformatted with ruff (line length compliance); `cmd_merge` import moved to function scope
 - Docs — American English spelling throughout (`behaviour` → `behavior`, `normalised` → `normalized`, `maximises` → `maximizes`, `summarisation` → `summarization`, `Randomise` → `Randomize`); benchmark versions updated to 0.3.0
 - Browse UI: `nav_query | safe` in `detail.html` replaced with JSON-encoded `<script type="application/json">` data element parsed in `overlay.js`, eliminating a potential XSS surface from string interpolation

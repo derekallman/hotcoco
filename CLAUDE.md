@@ -6,7 +6,7 @@ Read CLAUDE.md carefully before starting any task. If you're about to write docu
 
 ## Project Overview
 
-hotcoco is a pure Rust port of [pycocotools](https://github.com/ppwwyyxx/cocoapi) with PyO3 Python bindings. It provides 11-26x speedups over pycocotools for bbox, segmentation, and keypoint evaluation.
+hotcoco is a pure Rust port of [pycocotools](https://github.com/ppwwyyxx/cocoapi) with PyO3 Python bindings. It provides 13-23x speedups over pycocotools for bbox, segmentation, and keypoint evaluation.
 
 - **Primary language:** Rust. All core logic lives in `hotcoco`.
 - **Python bindings:** PyO3/maturin in `hotcoco-pyo3`, exposed as the `hotcoco` Python package.
@@ -75,8 +75,31 @@ Custom skills for this project (invoke with `/skill-name`):
 - `/adversarial-parity` — attacker/fixer loop to find parity bugs
 - `/voice` — audit tone and style in a single doc file
 - `/plot` — guide design and implementation of matplotlib plots
+- `/infographic` — create publication-quality charts and figures
+- `/review` — pre-commit quality sweep (fmt, clippy, typos, tests)
 
 Generic skills (from plugins): `/commit`, `/simplify`, `/review-pr`, and others — see plugin list.
+
+## Agents
+
+Nine specialized agents for quality gates (see `.claude/agents/`):
+- **docs-consistency-checker** — validates README.md and docs/ stay in sync
+- **parity-validator** — runs `just parity` and reports pass/fail with tolerances
+- **changelog-drafter** — drafts CHANGELOG.md entries from git diff
+- **pyo3-api-reviewer** — reviews PyO3 binding changes for convention violations
+- **benchmark-formatter** — formats raw benchmark output as README tables
+- **pre-commit-validator** — simulates the pre-commit hook before committing
+- **stub-coverage-checker** — validates `__init__.pyi` covers all PyO3 bindings
+- **type-cascade-detector** — maps affected modules when core types change
+- **release-preflight** — comprehensive pre-release validation gate
+
+## Hooks
+
+Four Claude Code hooks in `.claude/hooks/` enforce conventions automatically:
+- **Pre-edit:** blocks lock file edits, warns on commits without CHANGELOG staged, blocks bare `python`
+- **Post-edit:** single dispatcher formats code (cargo fmt / ruff), runs cargo check on the right crate, warns when eval.rs changes
+
+These run on every tool use — no manual invocation needed.
 
 ## Tool Preferences
 
@@ -124,7 +147,7 @@ When updating documentation (`docs/`) or `README.md`, always ensure both reflect
 
 ## Pre-Commit Checks
 
-A git pre-commit hook in `.github/hooks/pre-commit` runs four checks automatically. All must pass or the commit is rejected.
+A git pre-commit hook in `.github/hooks/pre-commit` runs three checks automatically. All must pass or the commit is rejected.
 
 ```bash
 cargo fmt --all -- --check                                              # 1. Formatting
@@ -149,6 +172,7 @@ If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fai
 - Keep commits clean: never include build artifacts, compiled files, or `__pycache__` directories. Review staged files carefully before committing. If unsure, ask before committing.
 - Commit message body: use bullet points, not prose paragraphs.
 - Main branch: `main`.
+- **Standard pre-commit sequence:** `/simplify` → `/review` → `/ship` → `/commit`. Run all four in order when a feature is done.
 
 ### Before every commit — communication surfaces
 

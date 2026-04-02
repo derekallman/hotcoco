@@ -442,7 +442,7 @@ fn_per_cat = matrix[:-1, -1]
 # False positives per category (background row)
 fp_per_cat = matrix[-1, :-1]
 
-# Row-normalised version (each row sums to 1.0)
+# Row-normalized version (each row sums to 1.0)
 norm = cm["normalized"]
 ```
 
@@ -639,7 +639,7 @@ See [`calibration`](../api/cocoeval.md#calibration) in the API reference for ful
 
 ## F-scores
 
-`f_scores()` computes F-beta scores from the precision/recall curves built by `accumulate()`. It finds the confidence threshold that maximises F-beta for each (IoU, category) combination, then averages — the same summarisation strategy as mAP.
+`f_scores()` computes F-beta scores from the precision/recall curves built by `accumulate()`. It finds the confidence threshold that maximizes F-beta for each (IoU, category) combination, then averages — the same summarization strategy as mAP.
 
 ```python
 ev = COCOeval(coco_gt, coco_dt, "bbox")

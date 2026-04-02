@@ -1,0 +1,40 @@
+[files]
+extend-exclude = [
+    "data/",
+    "*.json",
+    "scripts/fixtures/",
+]
+
+[default]
+locale = "en-us"
+
+[default.extend-words]
+coco = "coco"
+hotcoco = "hotcoco"
+pycocotools = "pycocotools"
+pyo = "pyo"
+maturin = "maturin"
+cdylib = "cdylib"
+bbox = "bbox"
+bboxes = "bboxes"
+segm = "segm"
+iou = "iou"
+ious = "ious"
+rle = "rle"
+rles = "rles"
+lvis = "lvis"
+kpt = "kpt"
+kpts = "kpts"
+obb = "obb"
+obbs = "obbs"
+oks = "oks"
+dts = "dts"
+anns = "anns"
+imgs = "imgs"
+thr = "thr"
+thrs = "thrs"
+nms = "nms"
+iscrowd = "iscrowd"
+dota = "dota"
+ded = "ded"
+nd = "nd"

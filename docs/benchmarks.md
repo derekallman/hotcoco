@@ -27,7 +27,7 @@
 **Dataset:** COCO val2017 — 5,000 images
 **Detections:** 36,781 synthetic (seed=42; AP scores are not meaningful)
 **Timing:** Wall clock time, single run
-**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.2.0
+**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.3.0
 
 ### Results (1x detections)
 
@@ -57,7 +57,7 @@ hotcoco scales better at higher detection counts due to multi-threaded evaluatio
 **Dataset:** Objects365 val — 80,000 images, 1.2M annotations, 365 categories
 **Detections:** ~1.2M synthetic bbox (capped at 100/image, seed=42)
 **Timing:** Wall clock time, single run
-**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.2.0
+**Versions:** pycocotools 2.0.11, faster-coco-eval 1.7.2, hotcoco 0.3.0
 
 | Library | Time | Peak RAM | Committed | Speedup |
 |---------|------|----------|-----------|---------|

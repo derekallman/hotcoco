@@ -71,7 +71,7 @@ coco explore \
 |---------|-------------|
 | Category dropdown | Filter to images containing the selected categories (multi-select) |
 | Min Score slider | Filter detections below a confidence threshold (when DT loaded) |
-| Shuffle | Randomise the display order |
+| Shuffle | Randomize the display order |
 | N of M images | Live image count for the current filter |
 
 **Thumbnail grid:**

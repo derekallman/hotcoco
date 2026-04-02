@@ -33,8 +33,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Dependency audit
+        if: matrix.os == 'ubuntu-latest'
+        uses: EmbarkStudios/cargo-deny-action@v2
+
       - name: Tests
-        run: cargo test
+        run: cargo test -p hotcoco -p hotcoco-cli
 
   python:
     name: Python smoke test
