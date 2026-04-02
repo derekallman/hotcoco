@@ -15,7 +15,7 @@ All functions share these common parameters:
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `theme` | `str` | Visual theme: `"warm-slate"` (default), `"scientific-blue"`, or `"ember"`. |
+| `theme` | `str` | Visual theme: `"cold-brew"` (default), `"warm-slate"`, `"scientific-blue"`, or `"ember"`. |
 | `paper_mode` | `bool` | Set both figure and axes background to white. Useful for LaTeX / PowerPoint. Default `False`. |
 | `ax` | <code>Axes &#124; None</code> | Draw on an existing axes. If `None`, creates a new figure. |
 | `save_path` | <code>str &#124; Path &#124; None</code> | Save figure to this path (150 DPI). |
@@ -30,7 +30,7 @@ All functions return `(Figure, Axes)`.
 pr_curve_iou_sweep(
     coco_eval, *,
     iou_thrs=None, area_rng="all", max_det=None,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -51,7 +51,7 @@ Plot one precision-recall curve per IoU threshold, with precision averaged acros
 pr_curve_by_category(
     coco_eval, cat_id, *,
     iou_thr=0.5, area_rng="all", max_det=None,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -73,7 +73,7 @@ Plot the precision-recall curve for a single category at a fixed IoU threshold, 
 pr_curve_top_n(
     coco_eval, *,
     cat_ids=None, top_n=10, iou_thr=0.5, area_rng="all", max_det=None,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -97,7 +97,7 @@ pr_curve(
     coco_eval, *,
     iou_thrs=None, cat_id=None, cat_ids=None,
     iou_thr=None, top_n=10, area_rng="all", max_det=None,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -127,7 +127,7 @@ confusion_matrix(
     cm_dict, *,
     normalize=True, top_n=None,
     group_by=None, cat_groups=None,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -149,7 +149,7 @@ Plot a confusion matrix heatmap.
 top_confusions(
     cm_dict, *,
     top_n=20,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -168,7 +168,7 @@ Plot the top N misclassifications as horizontal bars. Shows "ground truth → pr
 per_category_ap(
     results_dict, *,
     top_n=20, bottom_n=5,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -187,7 +187,7 @@ Plot per-category AP as horizontal bars with a mean AP reference line.
 ```python
 tide_errors(
     tide_dict, *,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -205,7 +205,7 @@ Plot TIDE error breakdown as horizontal bars.
 reliability_diagram(
     cal_or_eval, *,
     n_bins=10, iou_threshold=0.5,
-    theme="warm-slate", paper_mode=False, ax=None, save_path=None,
+    theme="cold-brew", paper_mode=False, ax=None, save_path=None,
 )
 ```
 
@@ -236,7 +236,7 @@ fig, ax = reliability_diagram(ev, n_bins=15)
 ```python
 comparison_bar(
     compare_result: dict, *,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -261,7 +261,7 @@ fig, ax = comparison_bar(result, save_path="comparison.png")
 category_deltas(
     compare_result: dict, *,
     top_k: int = 20,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -323,11 +323,12 @@ Returns `None`. Raises on I/O error or if `run()` was not called first.
 
 ## Themes
 
-Three built-in themes:
+Four built-in themes:
 
 | Theme | Character |
 |-------|-----------|
-| `"warm-slate"` | Default. Warm off-white background, terracotta + slate series colors. |
+| `"cold-brew"` | Default. Warm off-white background, 10-color infographic palette (alternating warm/cool). |
+| `"warm-slate"` | Warm off-white background, terracotta + slate series colors. |
 | `"scientific-blue"` | Cool/academic. Light blue-grey background, navy + red anchor colors. |
 | `"ember"` | Warm/editorial. Parchment background, rust + copper + amber palette. |
 
@@ -354,12 +355,12 @@ with style(theme="scientific-blue", paper_mode=True):
 
 ## Color palette
 
-The `warm-slate` theme constants are available for custom plots:
+The `cold-brew` theme constants are available for custom plots:
 
 ```python
 from hotcoco.plot import SERIES_COLORS, CHROME, SEQUENTIAL
 ```
 
-- `SERIES_COLORS` — 8 data series colors (warm slate, terracotta, teal, gold, plum, sage, ocean, copper)
+- `SERIES_COLORS` — 10 infographic-optimized data series colors (fjord, kiln, fern, maize, plum, patina, rose, moss, slate, sienna)
 - `CHROME` — non-data element colors (text, label, tick, grid, spine, background)
-- `SEQUENTIAL` — 4-stop colormap for heatmaps (off-white → steel-blue → slate → deep slate)
+- `SEQUENTIAL` — 3-stop colormap for heatmaps (stone cream → fjord blue → deep navy)

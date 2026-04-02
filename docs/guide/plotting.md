@@ -157,7 +157,8 @@ Every plot function accepts a `theme` argument:
 
 | Theme | Description |
 |-------|-------------|
-| `"warm-slate"` | Default. Warm off-white background, terracotta + slate palette. |
+| `"cold-brew"` | Default. Warm off-white background, 10-color infographic palette. |
+| `"warm-slate"` | Warm off-white background, terracotta + slate palette. |
 | `"scientific-blue"` | Cool/academic. Blue-grey background, navy + red anchor colors. |
 | `"ember"` | Warm/editorial. Parchment background, rust + copper + amber palette. |
 
@@ -178,7 +179,7 @@ To apply a theme to your own matplotlib code, use the `style()` context manager:
 from hotcoco.plot import style
 import matplotlib.pyplot as plt
 
-with style(theme="warm-slate", paper_mode=True):
+with style(theme="cold-brew", paper_mode=True):
     fig, ax = plt.subplots()
     ax.plot(recall, precision)
     fig.savefig("custom.pdf")

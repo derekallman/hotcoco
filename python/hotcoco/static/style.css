@@ -1,31 +1,31 @@
-/* hotcoco dataset browser — Warm Dark Precision */
+/* hotcoco dataset browser — Cold Brew */
 
 /* ── Tokens ── */
 :root {
-    --bg-base: #141210;
-    --bg-surface: #1c1916;
-    --bg-elevated: #252119;
-    --bg-hover: #2e2820;
-    --bg-active: #3a3228;
+    --bg-base: #1e1914;
+    --bg-surface: #28221a;
+    --bg-elevated: #332a20;
+    --bg-hover: #3a3228;
+    --bg-active: #4a3e30;
 
-    --border-subtle: #2a2520;
-    --border-default: #3a3228;
-    --border-strong: #4d443a;
+    --border-subtle: #3a3228;
+    --border-default: #4a3e30;
+    --border-strong: #5a5040;
 
     --text-primary: #ede8e3;
     --text-secondary: #9a918a;
     --text-tertiary: #6b6259;
-    --text-inverse: #141210;
+    --text-inverse: #1e1914;
 
-    --accent: #d4a574;
-    --accent-hover: #e0b88a;
-    --accent-muted: rgba(212, 165, 116, 0.15);
-    --accent-subtle: rgba(212, 165, 116, 0.08);
+    --accent: #8694A8;
+    --accent-hover: #96a4b8;
+    --accent-muted: rgba(134, 148, 168, 0.15);
+    --accent-subtle: rgba(134, 148, 168, 0.08);
 
-    --gt-badge-bg: rgba(212, 165, 116, 0.12);
-    --gt-badge-text: #d4a574;
-    --dt-badge-bg: rgba(120, 180, 255, 0.12);
-    --dt-badge-text: #78b4ff;
+    --gt-badge-bg: rgba(168, 128, 110, 0.12);
+    --gt-badge-text: #A8806E;
+    --dt-badge-bg: rgba(134, 148, 168, 0.12);
+    --dt-badge-text: #8694A8;
 
     --radius-sm: 6px;
     --radius-md: 10px;
@@ -38,7 +38,7 @@
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
     --shadow-md: 0 4px 16px rgba(0,0,0,0.4);
     --shadow-lg: 0 12px 48px rgba(0,0,0,0.6);
-    --shadow-glow: 0 0 0 1px rgba(212,165,116,0.15), 0 4px 20px rgba(212,165,116,0.08);
+    --shadow-glow: 0 0 0 1px rgba(134,148,168,0.15), 0 4px 20px rgba(134,148,168,0.08);
 }
 
 /* ── Reset ── */
@@ -453,7 +453,7 @@ main {
     opacity: 0;
     transition: opacity 0.2s;
     pointer-events: none;
-    background: linear-gradient(to top, rgba(20,18,16,0.6) 0%, transparent 50%);
+    background: linear-gradient(to top, rgba(30,25,20,0.6) 0%, transparent 50%);
 }
 
 .thumb-card:hover {
@@ -1757,7 +1757,7 @@ main {
     margin-bottom: 8px;
     border-radius: var(--radius-sm);
     background: var(--accent-subtle);
-    border: 1px solid rgba(212, 165, 116, 0.1);
+    border: 1px solid rgba(134, 148, 168, 0.1);
 }
 
 .cat-mean-label {

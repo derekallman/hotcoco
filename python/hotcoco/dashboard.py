@@ -6,22 +6,22 @@ import numpy as np
 
 from .plot.data import PlotData
 
-# ── Theme constants matching browse CSS tokens ───────────────────────
-_BG_SURFACE = "#1c1916"
-_BG_ELEVATED = "#252119"
+# ── Theme constants matching browse CSS tokens (Cold Brew) ───────────
+_BG_SURFACE = "#28221a"
+_BG_ELEVATED = "#332a20"
 _TEXT_PRIMARY = "#ede8e3"
 _TEXT_SECONDARY = "#9a918a"
 _TEXT_TERTIARY = "#6b6259"
-_BORDER_SUBTLE = "#2a2520"
-_ACCENT = "#d4a574"
+_BORDER_SUBTLE = "#3a3228"
+_ACCENT = "#8694A8"
 
 _EVAL_TP = "#22c55e"
 _EVAL_FP = "#ef4444"
 _EVAL_FN = "#3b82f6"
 
 _COLORWAY = [
-    _ACCENT, "#78b4ff", _EVAL_TP, _EVAL_FP, "#a78bfa",
-    "#f59e0b", "#ec4899", "#14b8a6", "#f97316", "#6366f1",
+    "#5E81AC", "#C47A52", "#5A9E78", "#D4A03E", "#9673A6",
+    "#3D9B96", "#C46070", "#7B8C42", "#6E6EAA", "#B5694A",
 ]
 
 _FONT_BODY = "DM Sans, -apple-system, BlinkMacSystemFont, sans-serif"
@@ -280,7 +280,7 @@ def chart_confusion_matrix(coco_eval, iou_thr=0.5) -> str:
         customdata=customdata,
         hovertext=hover_text,
         hoverinfo="text",
-        colorscale=[[0, _BG_ELEVATED], [0.5, "#8B6914"], [1, _ACCENT]],
+        colorscale=[[0, _BG_ELEVATED], [0.5, "#6A7A90"], [1, _ACCENT]],
         colorbar=dict(title="Rate", tickfont=dict(color=_TEXT_SECONDARY)),
         zmin=0,
         zmax=1,

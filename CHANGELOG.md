@@ -67,9 +67,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `scripts/test_stubs.py` — stub coverage test verifying every public name in the runtime module has a corresponding stub entry; wired into `just test`
 - `text_signature` on all mask functions and `compare()` — `help()` and IPython `?` now show real parameter names instead of `(*args, **kwargs)`
 - `deny.toml` — cargo-deny configuration for dependency auditing (security advisories, license compliance, duplicate crate detection)
+- Cold Brew design system — unified visual theme across all surfaces: browse UI (`style.css`), docs site (`extra.css`, `zensical.toml`), matplotlib plots (`theme.py`), Plotly dashboard (`dashboard.py`); canonical spec at `.claude/skills/theme-factory/themes/cold-brew.md`
+- `"cold-brew"` matplotlib theme — 10-color infographic-optimized chart palette (warm/cool alternation), espresso-cream chrome, DM Sans bundled font family; added as default for all `hotcoco.plot` functions
+- `python/hotcoco/_fonts/` — bundled DM Sans static font instances (Regular 400, Medium 500, Bold 700) extracted from variable font; auto-registered by matplotlib on import
+- `hotcoco.plot.reliability_diagram()` — gap bars now render in both directions: solid fill for overconfident bins (accuracy < confidence), diagonal hatching for underconfident bins (accuracy > confidence)
+- Title/subtitle positioning — `_place_title_and_subtitle()` helper computes dynamic figure-fraction spacing from actual figure height; reserves layout rect so titles never overlap axes on any figure size
 
 ### Changed
 
+- Default matplotlib theme changed from `"warm-slate"` to `"cold-brew"` in all `hotcoco.plot` functions and `style()` context manager
+- Browse UI accent shifted from warm caramel (`#d4a574`) to Dusty Steel (`#8694A8`); background surfaces updated to espresso tones; GT badge uses Dusty Clay (`#A8806E`), DT badge uses Dusty Steel
+- Dashboard Plotly colorway updated to 10-color infographic palette; confusion matrix midpoint shifted from gold to steel
+- Docs site fonts changed to DM Sans (body) and JetBrains Mono (code); accent colors updated to Dusty Steel / Deep Steel
+- `zensical.toml` font stack updated: `text = "DM Sans"`, `code = "JetBrains Mono"`
 - Pre-commit hook clippy step changed from `-p hotcoco -p hotcoco-cli` to `--workspace`, matching CI; removed redundant `cargo check -p hotcoco-pyo3` step (now covered by workspace clippy); hook reduced from 4 steps to 3
 - Rust edition 2021 → 2024, MSRV 1.74 → 1.85, workspace resolver 2 → 3
 - PyO3 0.23 → 0.28, numpy crate 0.23 → 0.28 — `PyObject` → `Py<PyAny>`, `allow_threads` → `detach`, `downcast` → `cast`, `#[pyclass(from_py_object)]` for Clone types

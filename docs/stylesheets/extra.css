@@ -1,17 +1,17 @@
 /* ============================================================
-   hotcoco — warm cocoa theme
-   Light: cream parchment · cocoa nav · toffee accents
-   Dark:  espresso depths · dusty cocoa · caramel accents
+   hotcoco — Cold Brew theme
+   Light: stone cream · warm brown nav · steel blue accents
+   Dark:  espresso depths · roast surfaces · dusty steel accents
    ============================================================ */
 
 /* --- Light mode palette --- */
 [data-md-color-scheme="default"] {
-  /* Brand — desaturated warm gray-brown, less red */
+  /* Brand — desaturated warm gray-brown */
   --md-primary-fg-color:            #4A4540;
   --md-primary-fg-color--light:     #7A706A;
   --md-primary-fg-color--dark:      #28231F;
-  --md-accent-fg-color:             #6B7E9A;   /* dusty slate blue */
-  --md-accent-fg-color--transparent: rgba(107, 126, 154, 0.12);
+  --md-accent-fg-color:             #566272;   /* Deep Steel */
+  --md-accent-fg-color--transparent: rgba(86, 98, 114, 0.12);
 
   /* Surfaces — stone-cream, less yellow */
   --md-default-bg-color:            #F4F1EE;
@@ -26,10 +26,10 @@
   --md-code-bg-color:               #EBE6DF;
   --md-code-fg-color:               #28231F;
 
-  /* Syntax tokens — same editorial palette, reads well on stone */
-  --md-code-hl-color:               rgba(107, 126, 154, 0.14);
-  --md-code-hl-color--light:        rgba(107, 126, 154, 0.08);
-  --md-code-hl-keyword-color:       #5B7FA6;
+  /* Syntax tokens — Cold Brew palette */
+  --md-code-hl-color:               rgba(86, 98, 114, 0.14);
+  --md-code-hl-color--light:        rgba(86, 98, 114, 0.08);
+  --md-code-hl-keyword-color:       #566272;
   --md-code-hl-string-color:        #5D8455;
   --md-code-hl-comment-color:       #9A8E84;
   --md-code-hl-number-color:        #A85A35;
@@ -60,26 +60,26 @@
   --md-primary-fg-color:            #948880;
   --md-primary-fg-color--light:     #B0A89E;
   --md-primary-fg-color--dark:      #7A706A;
-  --md-accent-fg-color:             #8AA0C0;   /* dusty slate blue on dark */
-  --md-accent-fg-color--transparent: rgba(138, 160, 192, 0.15);
+  --md-accent-fg-color:             #8694A8;   /* Dusty Steel */
+  --md-accent-fg-color--transparent: rgba(134, 148, 168, 0.15);
 
-  /* Surfaces — cooler near-black, less red-espresso */
-  --md-default-bg-color:            #1A1715;
-  --md-default-bg-color--light:     #252120;
-  --md-default-bg-color--lighter:   #201D1B;
+  /* Surfaces — espresso browns */
+  --md-default-bg-color:            #1e1914;
+  --md-default-bg-color--light:     #28221a;
+  --md-default-bg-color--lighter:   #221c16;
   --md-default-fg-color:            #E0D8D0;
   --md-default-fg-color--light:     #BDB5AC;
   --md-default-fg-color--lighter:   #857870;
   --md-default-fg-color--lightest:  #433C38;
 
   /* Code */
-  --md-code-bg-color:               #221E1C;
+  --md-code-bg-color:               #28221a;
   --md-code-fg-color:               #E0D8D0;
 
-  /* Syntax tokens */
-  --md-code-hl-color:               rgba(138, 160, 192, 0.18);
-  --md-code-hl-color--light:        rgba(138, 160, 192, 0.10);
-  --md-code-hl-keyword-color:       #88B4D4;
+  /* Syntax tokens — Cold Brew dark */
+  --md-code-hl-color:               rgba(134, 148, 168, 0.18);
+  --md-code-hl-color--light:        rgba(134, 148, 168, 0.10);
+  --md-code-hl-keyword-color:       #8694A8;
   --md-code-hl-string-color:        #90B880;
   --md-code-hl-comment-color:       #756A62;
   --md-code-hl-number-color:        #D89070;
@@ -93,8 +93,8 @@
   --md-code-hl-generic-color:       #887E78;
 
   /* Footer */
-  --md-footer-bg-color:             #120F0E;
-  --md-footer-bg-color--dark:       #0D0B0A;
+  --md-footer-bg-color:             #16120e;
+  --md-footer-bg-color--dark:       #100d0a;
   --md-footer-fg-color:             #D0C8C0;
   --md-footer-fg-color--light:      #857870;
 
@@ -249,22 +249,22 @@
 [data-md-color-scheme="slate"] .md-typeset .admonition.note > .admonition-title::before,
 [data-md-color-scheme="slate"] .md-typeset details.note > summary::before { background-color: #C4A882; }
 
-/* Info: dusty steel blue */
+/* Info: steel blue */
 .md-typeset .admonition.info,
 .md-typeset details.info {
-  border-color: #5B7FA6;
-  background-color: rgba(91, 127, 166, 0.09) !important;
+  border-color: #566272;
+  background-color: rgba(86, 98, 114, 0.09) !important;
 }
 .md-typeset .admonition.info > .admonition-title::before,
-.md-typeset details.info > summary::before { background-color: #5B7FA6; }
+.md-typeset details.info > summary::before { background-color: #566272; }
 
 [data-md-color-scheme="slate"] .md-typeset .admonition.info,
 [data-md-color-scheme="slate"] .md-typeset details.info {
-  border-color: #88B4D4;
-  background-color: rgba(136, 180, 212, 0.10) !important;
+  border-color: #8694A8;
+  background-color: rgba(134, 148, 168, 0.10) !important;
 }
 [data-md-color-scheme="slate"] .md-typeset .admonition.info > .admonition-title::before,
-[data-md-color-scheme="slate"] .md-typeset details.info > summary::before { background-color: #88B4D4; }
+[data-md-color-scheme="slate"] .md-typeset details.info > summary::before { background-color: #8694A8; }
 
 /* Warning: warm clay */
 .md-typeset .admonition.warning,

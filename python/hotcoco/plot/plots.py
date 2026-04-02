@@ -23,7 +23,7 @@ def pr_curve_iou_sweep(
     iou_thrs: list[float] | None = None,
     area_rng: str = "all",
     max_det: int | None = None,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -44,7 +44,7 @@ def pr_curve_iou_sweep(
     max_det : int, optional
         Max detections. Default: last entry in ``params.max_dets``.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -90,7 +90,7 @@ def pr_curve_by_category(
     iou_thr: float = 0.5,
     area_rng: str = "all",
     max_det: int | None = None,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -110,7 +110,7 @@ def pr_curve_by_category(
     max_det : int, optional
         Max detections. Default: last entry in ``params.max_dets``.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -153,7 +153,7 @@ def pr_curve_top_n(
     iou_thr: float = 0.5,
     area_rng: str = "all",
     max_det: int | None = None,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -175,7 +175,7 @@ def pr_curve_top_n(
     max_det : int, optional
         Max detections. Default: last entry in ``params.max_dets``.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -230,7 +230,7 @@ def pr_curve(
     top_n=10,
     area_rng="all",
     max_det=None,
-    theme="warm-slate",
+    theme="cold-brew",
     paper_mode=False,
     ax=None,
     save_path=None,
@@ -284,7 +284,7 @@ def confusion_matrix(
     top_n: int | None = None,
     group_by: str | None = None,
     cat_groups: dict[str, list[str]] | None = None,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -306,7 +306,7 @@ def confusion_matrix(
     cat_groups : dict[str, list[str]], optional
         Mapping of group name to list of category names for ``group_by``.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -423,7 +423,7 @@ def top_confusions(
     cm_dict: dict[str, Any],
     *,
     top_n: int = 20,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -441,7 +441,7 @@ def top_confusions(
     top_n : int
         Number of top confusions to show. Default 20.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -503,7 +503,7 @@ def per_category_ap(
     *,
     top_n: int = 20,
     bottom_n: int = 5,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -519,7 +519,7 @@ def per_category_ap(
     bottom_n : int
         Number of bottom categories to show.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -574,7 +574,7 @@ def per_category_ap(
 def tide_errors(
     tide_dict: dict[str, Any],
     *,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -586,7 +586,7 @@ def tide_errors(
     tide_dict : dict
         Output of ``coco_eval.tide_errors()``.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -625,7 +625,7 @@ def reliability_diagram(
     *,
     n_bins: int = 10,
     iou_threshold: float = 0.5,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -643,7 +643,7 @@ def reliability_diagram(
     iou_threshold : float
         IoU threshold (only used when ``cal_or_eval`` is a COCOeval).
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -694,21 +694,35 @@ def reliability_diagram(
             zorder=2,
         )
 
-        # Gap bars (overconfidence shown as lighter overlay)
-        gaps = confidences[nonempty] - accuracies[nonempty]
+        # Gap bars -- calibration error in both directions.
+        # Overconfident (accuracy < confidence): solid gap above the bar.
+        # Underconfident (accuracy > confidence): hatched gap inside the bar.
+        mid = midpoints[nonempty]
+        acc = accuracies[nonempty]
+        conf = confidences[nonempty]
+        gaps = conf - acc
+        bar_w = bin_width * 0.85
+        gap_color = "firebrick"
+        has_gap_label = False
+
         overconfident = gaps > 0
         if overconfident.any():
-            gap_midpoints = midpoints[nonempty][overconfident]
-            gap_bases = accuracies[nonempty][overconfident]
-            gap_heights = gaps[overconfident]
             ax.bar(
-                gap_midpoints,
-                gap_heights,
-                bottom=gap_bases,
-                width=bin_width * 0.85,
-                alpha=0.35,
-                color="firebrick",
-                label="Gap",
+                mid[overconfident], gaps[overconfident],
+                bottom=acc[overconfident],
+                width=bar_w, alpha=0.35, color=gap_color,
+                label="Gap", zorder=3,
+            )
+            has_gap_label = True
+
+        underconfident = gaps < 0
+        if underconfident.any():
+            ax.bar(
+                mid[underconfident], -gaps[underconfident],
+                bottom=conf[underconfident],
+                width=bar_w, facecolor="none", edgecolor=gap_color,
+                hatch="///", alpha=0.5, linewidth=0,
+                label="_nolegend_" if has_gap_label else "Gap",
                 zorder=3,
             )
 
@@ -740,7 +754,7 @@ def reliability_diagram(
 def comparison_bar(
     compare_result: dict[str, Any],
     *,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -752,7 +766,7 @@ def comparison_bar(
     compare_result : dict
         Output of ``hotcoco.compare(eval_a, eval_b)``.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional
@@ -820,7 +834,7 @@ def category_deltas(
     compare_result: dict[str, Any],
     *,
     top_k: int = 20,
-    theme: str = "warm-slate",
+    theme: str = "cold-brew",
     paper_mode: bool = False,
     ax=None,
     save_path: str | Path | None = None,
@@ -835,7 +849,7 @@ def category_deltas(
         Number of categories to show from each end (top improvements + top
         regressions). Default 20.
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure and axes background for PDF/LaTeX inclusion.
     ax : matplotlib.axes.Axes, optional

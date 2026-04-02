@@ -7,6 +7,17 @@ from contextlib import contextmanager
 from .core import _import_mpl, _resolve_font_family
 
 _THEMES: dict[str, dict] = {
+    "cold-brew": {
+        "series": [
+            "#5E81AC", "#C47A52", "#5A9E78", "#D4A03E", "#9673A6",
+            "#3D9B96", "#C46070", "#7B8C42", "#6E6EAA", "#B5694A",
+        ],
+        "chrome": {"text": "#28231F", "label": "#4A3F38", "tick": "#7A6E64", "grid": "#E8E2DA", "spine": "#D4CCC2"},
+        "background": "#FAF7F4",
+        "plot_bg": "#ffffff",
+        "sequential": ["#F4F1EE", "#5E81AC", "#2A4060"],
+        "cmap": "hotcoco_coldbrew",
+    },
     "warm-slate": {
         "series": ["#5C7080", "#C46B50", "#2B7A8C", "#C9943E", "#8A5A90", "#5B7F63", "#3A7CA5", "#B07650"],
         "chrome": {"text": "#2C2420", "label": "#4A3F38", "tick": "#7A6E64", "grid": "#E8E2DA", "spine": "#D4CCC2"},
@@ -56,7 +67,7 @@ def _ensure_cmap(theme: dict) -> None:
         _CMAPS_REGISTERED.add(cmap_name)
 
 
-def _build_rc(theme_name: str = "warm-slate", paper_mode: bool = False) -> dict:
+def _build_rc(theme_name: str = "cold-brew", paper_mode: bool = False) -> dict:
     from cycler import cycler
 
     t = _get_theme(theme_name)
@@ -97,16 +108,18 @@ def _build_rc(theme_name: str = "warm-slate", paper_mode: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Public palette constants (warm-slate defaults, kept for backwards compat)
+# Public palette constants (cold-brew defaults, kept for backwards compat)
 # ---------------------------------------------------------------------------
 
-SERIES_COLORS: list[str] = _THEMES["warm-slate"]["series"]
+_DEFAULT_THEME = _THEMES["cold-brew"]
+
+SERIES_COLORS: list[str] = _DEFAULT_THEME["series"]
 CHROME: dict[str, str] = {
-    **_THEMES["warm-slate"]["chrome"],
-    "background": _THEMES["warm-slate"]["background"],
-    "plot_bg": _THEMES["warm-slate"]["plot_bg"],
+    **_DEFAULT_THEME["chrome"],
+    "background": _DEFAULT_THEME["background"],
+    "plot_bg": _DEFAULT_THEME["plot_bg"],
 }
-SEQUENTIAL: list[str] = _THEMES["warm-slate"]["sequential"]
+SEQUENTIAL: list[str] = _DEFAULT_THEME["sequential"]
 
 
 # ---------------------------------------------------------------------------
@@ -115,13 +128,13 @@ SEQUENTIAL: list[str] = _THEMES["warm-slate"]["sequential"]
 
 
 @contextmanager
-def style(theme: str = "warm-slate", paper_mode: bool = False):
+def style(theme: str = "cold-brew", paper_mode: bool = False):
     """Context manager that applies a hotcoco matplotlib theme.
 
     Parameters
     ----------
     theme : str
-        ``"warm-slate"`` (default), ``"scientific-blue"``, or ``"ember"``.
+        ``"cold-brew"`` (default), ``"warm-slate"``, ``"scientific-blue"``, or ``"ember"``.
     paper_mode : bool
         White figure background with the theme tint on axes. Useful for
         LaTeX inclusion or PowerPoint embedding.

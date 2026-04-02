@@ -38,7 +38,7 @@ def _resolve_font_family() -> list[str]:
         except Exception:
             pass
 
-    _FONT_FAMILY = ["Inter", "Helvetica Neue", "DejaVu Sans"]
+    _FONT_FAMILY = ["DM Sans", "Helvetica Neue", "DejaVu Sans"]
     return _FONT_FAMILY
 
 
@@ -55,6 +55,42 @@ def _new_figure(figsize: tuple[float, float], ax=None, layout: str | None = "con
     return fig, ax
 
 
+def _place_title_and_subtitle(ax, title: str, subtitle: str) -> None:
+    """Position a suptitle + subtitle above the axes, reserving space so they never overlap."""
+    import matplotlib as _mpl
+
+    fig = ax.figure
+    title_size = 12
+    sub_size = 9
+    h = fig.get_figheight()
+
+    # Convert font sizes from points (1/72 in) to figure-fraction
+    # so spacing adapts to any figure height.
+    title_frac = title_size / 72 / h
+    sub_frac = sub_size / 72 / h
+    inter_gap = 0.005
+    bottom_pad = 0.008
+
+    subtitle_y = 0.98 - title_frac - inter_gap
+    axes_top = subtitle_y - sub_frac - bottom_pad
+
+    # Both constrained and compressed layout engines support the rect
+    # parameter; for other layouts we fall back to subplots_adjust.
+    engine = fig.get_layout_engine()
+    if engine is not None and hasattr(engine, "set"):
+        engine.set(rect=[0, 0, 1, axes_top])
+    else:
+        fig.subplots_adjust(top=axes_top - 0.02)
+
+    fig.suptitle(title, fontsize=title_size, fontweight=700, y=0.98)
+    fig.text(
+        0.5, subtitle_y, subtitle,
+        ha="center", va="top",
+        fontsize=sub_size, fontweight=400,
+        color=_mpl.rcParams.get("axes.labelcolor", "#666"),
+    )
+
+
 def _configure_axes(ax, title: str | None = None, subtitle: str | None = None, value_axis: str = "y"):
     """Set grid direction, title, and subtitle. Colors come from active rcParams."""
     if value_axis == "y":
@@ -69,8 +105,10 @@ def _configure_axes(ax, title: str | None = None, subtitle: str | None = None, v
         ax.grid(False)
 
     if title:
-        full_title = f"{title}\n{subtitle}" if subtitle else title
-        ax.set_title(full_title, fontsize=11, fontweight=500, pad=10)
+        if subtitle:
+            _place_title_and_subtitle(ax, title, subtitle)
+        else:
+            ax.set_title(title, fontsize=11, fontweight=500, pad=10)
 
 
 def _save_and_return(fig, ax, save_path):

@@ -145,6 +145,26 @@ Docs are built with Zensical (config: `zensical.toml`). Preview locally with `ze
 
 When updating documentation (`docs/`) or `README.md`, always ensure both reflect the same information. Any change to one must be checked against the other — benchmark numbers, API examples, CLI flags, installation instructions, and feature descriptions must stay consistent across both.
 
+## Design System ("Cold Brew")
+
+All visual surfaces share the **Cold Brew** theme. The canonical spec lives at `.claude/skills/theme-factory/themes/cold-brew.md` — consult it before changing any colors, fonts, or chart palettes.
+
+**Surfaces and their token files:**
+
+| Surface | Token file | Notes |
+|---------|-----------|-------|
+| Browse UI | `python/hotcoco/static/style.css` | CSS custom properties in `:root` |
+| Docs site | `docs/stylesheets/extra.css` + `zensical.toml` | Zensical (MkDocs Material) variables |
+| Matplotlib | `python/hotcoco/plot/theme.py` | `"cold-brew"` is the default theme |
+| Dashboard | `python/hotcoco/dashboard.py` | Plotly colorway + surface constants |
+| Bundled fonts | `python/hotcoco/_fonts/` | DM Sans TTF for matplotlib |
+
+**Key rules:**
+- Accent is Dusty Steel (`#8694A8` dark / `#566272` light), not warm caramel.
+- Chart series use the 10-color infographic palette (defined in the spec), not the UI accent colors.
+- Fonts are DM Serif Display (display), DM Sans (body), JetBrains Mono (code) on all surfaces.
+- When adding a new visual surface, pull colors from the spec — do not eyeball new values.
+
 ## Pre-Commit Checks
 
 A git pre-commit hook in `.github/hooks/pre-commit` runs three checks automatically. All must pass or the commit is rejected.
