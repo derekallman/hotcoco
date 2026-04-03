@@ -177,10 +177,10 @@ cargo test -p hotcoco -p hotcoco-cli                                    # 3. Tes
 
 The hook excludes `hotcoco-pyo3` from tests (it's a cdylib with no Rust tests). Clippy runs on the full workspace to match CI.
 
-To install the hook (one-time setup):
+To install the hook (one-time setup — works in both main repo and worktrees):
 
 ```bash
-ln -sf ../../.github/hooks/pre-commit .git/hooks/pre-commit
+git config core.hooksPath .github/hooks
 ```
 
 If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fails, fix the warning before committing. Never suppress clippy warnings with allows. Never skip the hook with `--no-verify`.
@@ -193,6 +193,16 @@ If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fai
 - Commit message body: use bullet points, not prose paragraphs.
 - Main branch: `main`.
 - **Standard pre-commit sequence:** `/simplify` → `/review` → `/ship` → `/commit`. Run all four in order when a feature is done.
+
+### Worktrees
+
+Sessions may run in a git worktree (e.g. `.claude/worktrees/<name>/`). Worktrees share the same `.git` history but have their own branch and working directory.
+
+- **Commits land on the worktree branch**, not `main`. When the user says "push", they likely mean push to `main`. Use `git -C <main-repo> cherry-pick <hash>` then push from the main repo, or ask to confirm.
+- **`data/` is gitignored** and won't exist in a fresh worktree. Scripts that need COCO data (`parity.py`, `bench.py`) require a symlink: `ln -s /Users/derek/coco-rust/data data`
+- **`.venv`** is created per-worktree by `just setup`. Run it once in a new worktree.
+- **Pre-commit hook** uses `git config core.hooksPath` (not a symlink), so it works in both the main repo and worktrees.
+- **All paths in skills and scripts must be relative** — never hardcode the main repo path.
 
 ### Before every commit — communication surfaces
 
