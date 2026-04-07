@@ -71,6 +71,7 @@ coco = "hotcoco.cli:main"
 features = ["pyo3/extension-module"]
 python-source = "python"
 manifest-path = "crates/hotcoco-pyo3/Cargo.toml"
+include = [{ path = "LICENSE", format = "sdist" }]
 
 [tool.ruff]
 line-length = 120
