@@ -190,3 +190,16 @@ pub struct Rle {
     /// Run counts: alternating runs of 0s and 1s, starting with 0s.
     pub counts: Vec<u32>,
 }
+
+impl Rle {
+    /// Create a new RLE with a debug assertion that counts sum to `h * w`.
+    pub fn new(h: u32, w: u32, counts: Vec<u32>) -> Self {
+        let sum: u64 = counts.iter().map(|&c| c as u64).sum();
+        let expected = h as u64 * w as u64;
+        debug_assert_eq!(
+            sum, expected,
+            "RLE counts must sum to h*w ({h} * {w} = {expected}), got {sum}",
+        );
+        Self { h, w, counts }
+    }
+}

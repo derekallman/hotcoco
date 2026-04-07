@@ -72,6 +72,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `python/hotcoco/_fonts/` — bundled DM Sans static font instances (Regular 400, Medium 500, Bold 700) extracted from variable font; auto-registered by matplotlib on import
 - `hotcoco.plot.reliability_diagram()` — gap bars now render in both directions: solid fill for overconfident bins (accuracy < confidence), diagonal hatching for underconfident bins (accuracy > confidence)
 - Title/subtitle positioning — `_place_title_and_subtitle()` helper computes dynamic figure-fraction spacing from actual figure height; reserves layout rect so titles never overlap axes on any figure size
+- `Rle::new(h, w, counts)` constructor — validates that counts sum to `h * w` via `debug_assert` (zero overhead in release builds); provides a safe construction path for external callers
 
 ### Changed
 
@@ -148,6 +149,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Browse UI: canvas `getBoundingClientRect()` result cached in `_cache.canvasRect` (updated on resize), avoiding forced layout reflow on every mousemove during hover hit-testing
 - Browse UI: redundant `syncCatViews()` calls removed from per-checkbox handlers (`onCatChange`, `onTreeChildChange`, `toggleGroupCheck`); cross-view sync now runs only on view switch via `setCatView()`
 - Browse server: inline HTML error strings in `server.py` replaced with `partials/error.html` template; `image_id` no longer duplicated inside `annotation_json` (dead `nav` key removed)
+- `rand` 0.8 → 0.9 — `gen_range` → `random_range`, `small_rng` feature dropped (default in 0.9); `SmallRng::seed_from_u64` produces different sequences for the same seed (affects `split()`, `sample()`, bootstrap — dataset utilities only, no parity impact)
+- `quick-xml` 0.37 → 0.39 — `BytesText::unescape()` → `decode()` in CVAT and VOC converters; no functional change for ASCII label names
+- Internal: `img_cat_to_anns` HashMap pre-allocated with `reserve(n_anns)` in `create_index()`, eliminating rehashes during annotation indexing
 
 ### Fixed
 

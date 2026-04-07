@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use rand::prelude::*;
+use rand::Rng;
+use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -262,7 +263,7 @@ fn bootstrap_compare(
         .map(|i| {
             let mut rng = SmallRng::seed_from_u64(opts.seed.wrapping_add(i as u64));
             let sample: HashSet<u64> = (0..n)
-                .map(|_| shared_img_ids[rng.gen_range(0..n)])
+                .map(|_| shared_img_ids[rng.random_range(0..n)])
                 .collect();
 
             let acc_a = accumulate_impl(&eval_a.eval_imgs, &eval_a.params, Some(&sample));

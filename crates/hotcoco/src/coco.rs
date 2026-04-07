@@ -69,6 +69,7 @@ impl COCO {
         self.cat_to_imgs.clear();
         self.cat_to_imgs.reserve(n_cats);
         self.img_cat_to_anns.clear();
+        self.img_cat_to_anns.reserve(n_anns);
 
         // Single pass over annotations: build all annotation-derived indices at once
         for (i, ann) in self.dataset.annotations.iter().enumerate() {

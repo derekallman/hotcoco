@@ -239,7 +239,7 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
             Ok(Event::Text(ref e)) => {
                 if in_label && current_tag == b"name" {
                     let text = e
-                        .unescape()
+                        .decode()
                         .map_err(|err| ConvertError::XmlError(format!("invalid text: {err}")))?;
                     label_name = text.trim().to_string();
                 }

@@ -389,7 +389,7 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
             }
             Ok(Event::Text(ref e)) => {
                 let text = e
-                    .unescape()
+                    .decode()
                     .map_err(|err| ConvertError::XmlError(format!("invalid XML text: {err}")))?;
                 let text = text.trim();
 
