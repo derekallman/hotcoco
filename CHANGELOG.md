@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.4.0] - 2026-04-06
+
+### Added
+
 - CVAT for Images 1.1 format conversion — `COCO.to_cvat(output_path)` exports to a single CVAT XML file with `<box>` and `<polygon>` elements; `COCO.from_cvat(cvat_path)` imports CVAT XML back to COCO format with polygon segmentation support (shoelace area, bbox from vertex extents); `coco convert --from coco --to cvat` and `--from cvat --to coco` CLI support; `<polyline>`, `<points>`, `<cuboid>` elements skipped
 - Pascal VOC format conversion — `COCO.to_voc(output_dir)` exports to VOC XML annotations (`Annotations/*.xml` + `labels.txt`); `COCO.from_voc(voc_dir)` imports VOC XML back to COCO format; `coco convert --from coco --to voc` and `--from voc --to coco` CLI support; COCO `iscrowd` maps to VOC `<difficult>`, VOC `<difficult>` dropped on import; integer-pixel round-trip within ≤1px
 - Confidence calibration analysis — `COCOeval.calibration(n_bins=10, iou_threshold=0.5)` computes Expected Calibration Error (ECE), Maximum Calibration Error (MCE), per-bin accuracy vs confidence breakdown, and per-category ECE; measures how well predicted confidence scores align with actual detection accuracy
