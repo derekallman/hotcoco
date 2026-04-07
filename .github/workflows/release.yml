@@ -22,7 +22,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Publish hotcoco
-        run: cargo publish -p hotcoco
+        run: cargo publish -p hotcoco || echo "::warning::hotcoco already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -30,7 +30,7 @@ jobs:
         run: sleep 30
 
       - name: Publish hotcoco-cli
-        run: cargo publish -p hotcoco-cli
+        run: cargo publish -p hotcoco-cli || echo "::warning::hotcoco-cli already published, skipping"
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -111,12 +111,15 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
-          skip_existing: true
+          skip-existing: true
+          attestations: false
+          verbose: true
 
   # ── GitHub Release ─────────────────────────────────────────────────────
   github-release:
     name: Create GitHub Release
-    needs: [publish-crates, publish-pypi]
+    needs: [build-wheels, build-sdist]
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write
