@@ -13,6 +13,12 @@ pub struct Dataset {
     pub categories: Vec<Category>,
     #[serde(default)]
     pub licenses: Vec<License>,
+    /// TAO-style: video sequences in the dataset.
+    #[serde(default)]
+    pub videos: Vec<Video>,
+    /// TAO-style: object tracks spanning multiple frames.
+    #[serde(default)]
+    pub tracks: Vec<Track>,
 }
 
 /// Dataset metadata (version, description, date, etc.).
@@ -54,6 +60,12 @@ pub struct Image {
     /// LVIS: categories not exhaustively checked in this image (unmatched DTs are ignored).
     #[serde(default)]
     pub not_exhaustive_category_ids: Vec<u64>,
+    /// TAO-style: which video this image belongs to.
+    #[serde(default)]
+    pub video_id: Option<u64>,
+    /// TAO-style: frame position within its video (0-indexed).
+    #[serde(default)]
+    pub frame_index: Option<u32>,
 }
 
 /// A single object annotation (ground truth or detection result).
@@ -86,6 +98,12 @@ pub struct Annotation {
     /// rather than a single instance. Distinct from `iscrowd` — different matching semantics.
     #[serde(default)]
     pub is_group_of: Option<bool>,
+    /// TAO-style: object track ID for multi-object tracking evaluation.
+    #[serde(default)]
+    pub track_id: Option<u64>,
+    /// TAO-style: which video this annotation belongs to.
+    #[serde(default)]
+    pub video_id: Option<u64>,
 }
 
 /// Deserialize `iscrowd` from either a boolean or an integer (0/1).
@@ -135,6 +153,27 @@ pub struct Category {
     /// LVIS frequency bucket: "r" (rare), "c" (common), "f" (frequent).
     #[serde(default)]
     pub frequency: Option<String>,
+}
+
+/// A video sequence (TAO-style tracking extension).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Video {
+    pub id: u64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+/// An object track spanning multiple frames (TAO-style tracking extension).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Track {
+    pub id: u64,
+    pub category_id: u64,
+    #[serde(default)]
+    pub video_id: Option<u64>,
 }
 
 /// Image license information.

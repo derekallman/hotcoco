@@ -259,6 +259,8 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         });
 
         for obj in &parsed.objects {
@@ -285,6 +287,8 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
                 obb: None,
                 score: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             });
             ann_id += 1;
         }
@@ -297,6 +301,8 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
         annotations,
         categories,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     })
 }
 

@@ -310,6 +310,8 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         });
 
         for shape in &parsed.shapes {
@@ -335,6 +337,8 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
                         obb: None,
                         score: None,
                         is_group_of: None,
+                        track_id: None,
+                        video_id: None,
                     });
                     ann_id += 1;
                 }
@@ -355,6 +359,8 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
                         obb: None,
                         score: None,
                         is_group_of: None,
+                        track_id: None,
+                        video_id: None,
                     });
                     ann_id += 1;
                 }
@@ -369,6 +375,8 @@ pub fn cvat_to_coco(cvat_path: &std::path::Path) -> Result<Dataset, ConvertError
         annotations,
         categories,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     })
 }
 

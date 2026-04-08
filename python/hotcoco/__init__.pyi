@@ -410,3 +410,68 @@ class mask:
     def rle_from_string(s: str, h: int, w: int) -> dict[str, Any]:
         """Decode compact string to RLE."""
         ...
+
+# ---------------------------------------------------------------------------
+# TrackingEval
+# ---------------------------------------------------------------------------
+
+class TrackingEval:
+    """Multi-object tracking evaluator — HOTA, CLEAR/MOTA, Identity/IDF1.
+
+    Evaluates tracking results using TAO-style COCO JSON with ``video_id``,
+    ``track_id``, and ``frame_index`` fields on annotations and images.
+    """
+
+    def __init__(
+        self,
+        coco_gt: COCO,
+        coco_dt: COCO,
+        iou_type: str = "bbox",
+    ) -> None: ...
+    def evaluate(self) -> None:
+        """Run per-sequence matching and metric computation."""
+        ...
+    def accumulate(self) -> None:
+        """Aggregate per-sequence results into dataset-level metrics."""
+        ...
+    def summarize(self) -> None:
+        """Print a formatted summary of the tracking metrics."""
+        ...
+    def run(self) -> None:
+        """Convenience: evaluate + accumulate + summarize."""
+        ...
+    def get_results(self, prefix: str | None = None) -> dict[str, float]:
+        """Return results as a flat metric-name to value dict."""
+        ...
+
+# ---------------------------------------------------------------------------
+# Module-level functions
+# ---------------------------------------------------------------------------
+
+def init_as_pycocotools() -> None:
+    """Patch ``sys.modules`` so pycocotools imports resolve to hotcoco."""
+    ...
+
+def init_as_lvis() -> None:
+    """Patch ``sys.modules`` so lvis imports resolve to hotcoco."""
+    ...
+
+def init_as_trackeval() -> None:
+    """Patch ``sys.modules`` so trackeval imports resolve to hotcoco."""
+    ...
+
+def compare(
+    eval_a: COCOeval,
+    eval_b: COCOeval,
+    *,
+    n_bootstrap: int = 0,
+    confidence: float = 0.95,
+    seed: int = 42,
+    per_class: bool = True,
+) -> dict[str, Any]:
+    """Compare two model evaluations on the same dataset."""
+    ...
+
+def mot_to_coco(path: str) -> dict[str, Any]:
+    """Convert a MOTChallenge gt.txt file to a COCO tracking dataset dict."""
+    ...

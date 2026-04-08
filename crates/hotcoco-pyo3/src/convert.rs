@@ -51,6 +51,12 @@ pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<Py<PyAny>>
     if let Some(is_group_of) = ann.is_group_of {
         dict.set_item("is_group_of", is_group_of)?;
     }
+    if let Some(track_id) = ann.track_id {
+        dict.set_item("track_id", track_id)?;
+    }
+    if let Some(video_id) = ann.video_id {
+        dict.set_item("video_id", video_id)?;
+    }
     Ok(dict.into_any().unbind())
 }
 
@@ -102,6 +108,8 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
     let obb: Option<[f64; 5]> = opt!(dict, "obb");
     let score: Option<f64> = opt!(dict, "score");
     let is_group_of: Option<bool> = opt!(dict, "is_group_of");
+    let track_id: Option<u64> = opt!(dict, "track_id");
+    let video_id: Option<u64> = opt!(dict, "video_id");
 
     Ok(Annotation {
         id,
@@ -116,6 +124,8 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         obb,
         score,
         is_group_of,
+        track_id,
+        video_id,
     })
 }
 
@@ -163,6 +173,12 @@ pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<Py<PyAny>> {
             "not_exhaustive_category_ids",
             img.not_exhaustive_category_ids.clone(),
         )?;
+    }
+    if let Some(video_id) = img.video_id {
+        dict.set_item("video_id", video_id)?;
+    }
+    if let Some(frame_index) = img.frame_index {
+        dict.set_item("frame_index", frame_index)?;
     }
     Ok(dict.into_any().unbind())
 }
@@ -304,6 +320,8 @@ pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
     let neg_category_ids: Vec<u64> = opt!(dict, "neg_category_ids").unwrap_or_default();
     let not_exhaustive_category_ids: Vec<u64> =
         opt!(dict, "not_exhaustive_category_ids").unwrap_or_default();
+    let video_id: Option<u64> = opt!(dict, "video_id");
+    let frame_index: Option<u32> = opt!(dict, "frame_index");
 
     Ok(Image {
         id,
@@ -316,6 +334,8 @@ pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
         date_captured,
         neg_category_ids,
         not_exhaustive_category_ids,
+        video_id,
+        frame_index,
     })
 }
 
@@ -364,10 +384,110 @@ fn extract_dict_list<'py, T>(
     }
 }
 
+fn video_to_py(py: Python<'_>, v: &hotcoco_core::Video) -> PyResult<Py<PyAny>> {
+    let dict = PyDict::new(py);
+    dict.set_item("id", v.id)?;
+    if let Some(ref name) = v.name {
+        dict.set_item("name", name)?;
+    }
+    if let Some(w) = v.width {
+        dict.set_item("width", w)?;
+    }
+    if let Some(h) = v.height {
+        dict.set_item("height", h)?;
+    }
+    Ok(dict.into_any().unbind())
+}
+
+fn track_to_py(py: Python<'_>, t: &hotcoco_core::Track) -> PyResult<Py<PyAny>> {
+    let dict = PyDict::new(py);
+    dict.set_item("id", t.id)?;
+    dict.set_item("category_id", t.category_id)?;
+    if let Some(vid) = t.video_id {
+        dict.set_item("video_id", vid)?;
+    }
+    Ok(dict.into_any().unbind())
+}
+
+pub fn dataset_to_py(py: Python<'_>, ds: &Dataset) -> PyResult<Py<PyAny>> {
+    let dict = PyDict::new(py);
+    let images = PyList::new(
+        py,
+        ds.images
+            .iter()
+            .map(|img| image_to_py(py, img))
+            .collect::<PyResult<Vec<_>>>()?,
+    )?;
+    let annotations = PyList::new(
+        py,
+        ds.annotations
+            .iter()
+            .map(|ann| annotation_to_py(py, ann))
+            .collect::<PyResult<Vec<_>>>()?,
+    )?;
+    let categories = PyList::new(
+        py,
+        ds.categories
+            .iter()
+            .map(|cat| category_to_py(py, cat))
+            .collect::<PyResult<Vec<_>>>()?,
+    )?;
+    dict.set_item("images", images)?;
+    dict.set_item("annotations", annotations)?;
+    dict.set_item("categories", categories)?;
+    if !ds.videos.is_empty() {
+        let videos = PyList::new(
+            py,
+            ds.videos
+                .iter()
+                .map(|v| video_to_py(py, v))
+                .collect::<PyResult<Vec<_>>>()?,
+        )?;
+        dict.set_item("videos", videos)?;
+    }
+    if !ds.tracks.is_empty() {
+        let tracks = PyList::new(
+            py,
+            ds.tracks
+                .iter()
+                .map(|t| track_to_py(py, t))
+                .collect::<PyResult<Vec<_>>>()?,
+        )?;
+        dict.set_item("tracks", tracks)?;
+    }
+    Ok(dict.into_any().unbind())
+}
+
+fn py_to_video(dict: &Bound<'_, PyDict>) -> PyResult<hotcoco_core::Video> {
+    let id: u64 = req!(dict, "id");
+    let name: Option<String> = opt!(dict, "name");
+    let width: Option<u32> = opt!(dict, "width");
+    let height: Option<u32> = opt!(dict, "height");
+    Ok(hotcoco_core::Video {
+        id,
+        name,
+        width,
+        height,
+    })
+}
+
+fn py_to_track(dict: &Bound<'_, PyDict>) -> PyResult<hotcoco_core::Track> {
+    let id: u64 = req!(dict, "id");
+    let category_id: u64 = req!(dict, "category_id");
+    let video_id: Option<u64> = opt!(dict, "video_id");
+    Ok(hotcoco_core::Track {
+        id,
+        category_id,
+        video_id,
+    })
+}
+
 pub fn py_to_dataset(dict: &Bound<'_, PyDict>) -> PyResult<Dataset> {
     let images = extract_dict_list(dict, "images", py_to_image)?;
     let annotations = extract_dict_list(dict, "annotations", py_to_annotation)?;
     let categories = extract_dict_list(dict, "categories", py_to_category)?;
+    let videos = extract_dict_list(dict, "videos", py_to_video)?;
+    let tracks = extract_dict_list(dict, "tracks", py_to_track)?;
 
     Ok(Dataset {
         info: None,
@@ -375,5 +495,7 @@ pub fn py_to_dataset(dict: &Bound<'_, PyDict>) -> PyResult<Dataset> {
         annotations,
         categories,
         licenses: vec![],
+        videos,
+        tracks,
     })
 }

@@ -133,7 +133,7 @@ All implemented in Rust core, exposed via Python CLI and Python API.
 
 ### Format Conversion
 
-**Shipped (COCO ↔ YOLO, COCO ↔ Pascal VOC, COCO ↔ CVAT).**
+**Shipped (COCO ↔ YOLO, COCO ↔ Pascal VOC, COCO ↔ CVAT, COCO ↔ MOT).**
 
 ~~COCO ↔ YOLO first (most requested). Everyone has a slightly broken converter script — a correct, well-tested one has real value.~~
 
@@ -222,9 +222,11 @@ Keypoint dataset for crowded scenes. Uses a modified OKS matching algorithm with
 
 ### Multi-Object Tracking Metrics (HOTA/MOTA/IDF1)
 
-Full tracking evaluation — HOTA (Higher Order Tracking Accuracy), MOTA, IDF1. TrackEval (the de-facto standard) is pure Python, effectively unmaintained, and the Ultralytics community is actively requesting tracking metrics. A fast Rust implementation would be a strong differentiator. HOTA decomposes into DetA × AssA, evaluated across IoU thresholds; requires cross-frame global alignment. Track AP (TAO) is the most natural entry point since it reuses the AP accumulation pipeline.
+**Shipped.**
 
-This is a significant scope expansion — commit fully or not at all. A partial MOT implementation has no value.
+~~Full tracking evaluation — HOTA (Higher Order Tracking Accuracy), MOTA, IDF1. TrackEval (the de-facto standard) is pure Python, effectively unmaintained, and the Ultralytics community is actively requesting tracking metrics. A fast Rust implementation would be a strong differentiator. HOTA decomposes into DetA × AssA, evaluated across IoU thresholds; requires cross-frame global alignment. Track AP (TAO) is the most natural entry point since it reuses the AP accumulation pipeline.~~
+
+~~This is a significant scope expansion — commit fully or not at all. A partial MOT implementation has no value.~~
 
 ### Video Sequence Analysis
 
@@ -234,7 +236,7 @@ Lightweight per-sequence metric breakdowns for video object detection, surfacing
 
 Custom evaluation backend for [FiftyOne](https://github.com/voxel51/fiftyone) (Voxel51). FiftyOne's built-in COCO eval is slow and surfaces only the 12 standard metrics. A hotcoco backend would bring the speed advantage and expose TIDE error breakdowns and confusion matrices directly in the FiftyOne UI — metrics that don't exist in any other FiftyOne backend today. `init_as_pycocotools()` may already work as a zero-code path; the full backend adds discoverability and UI integration.
 
-Longer term, full multi-object tracking metrics — MOTA, HOTA, IDF1 — are worth exploring as a Phase 2 effort. TrackEval (the de-facto standard) is effectively unmaintained and slow; there's a real opening for a fast Rust alternative. This would be a meaningful scope expansion and is not planned for the near term, but the direction is intentional.
+~~Longer term, full multi-object tracking metrics — MOTA, HOTA, IDF1 — are worth exploring as a Phase 2 effort. TrackEval (the de-facto standard) is effectively unmaintained and slow; there's a real opening for a fast Rust alternative. This would be a meaningful scope expansion and is not planned for the near term, but the direction is intentional.~~ **Shipped — see Multi-Object Tracking Metrics above.**
 
 ### torchmetrics Backend
 

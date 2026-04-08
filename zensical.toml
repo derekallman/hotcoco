@@ -22,10 +22,12 @@ nav = [
     { "Plotting" = "guide/plotting.md" },
     { "Dataset Browser" = "guide/browse.md" },
     { "Framework Integrations" = "guide/frameworks.md" },
+    { "Tracking Evaluation" = "guide/tracking.md" },
   ] },
   { "API Reference" = [
     { "COCO" = "api/coco.md" },
     { "COCOeval" = "api/cocoeval.md" },
+    { "TrackingEval" = "api/tracking.md" },
     { "Params" = "api/params.md" },
     { "mask" = "api/mask.md" },
     { "plot" = "api/plot.md" },

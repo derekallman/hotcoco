@@ -146,6 +146,8 @@ pub fn dota_to_coco(
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         });
 
         let file = fs::File::open(&path)?;
@@ -167,7 +169,7 @@ pub fn dota_to_coco(
             let coords: Result<Vec<f64>, _> = parts[..8].iter().map(|s| s.parse::<f64>()).collect();
             let coords = match coords {
                 Ok(c) => c,
-                Err(_) => continue, // Skip unparseable lines
+                Err(_) => continue, // Skip unparsable lines
             };
 
             let cat_name = parts[8].to_string();
@@ -205,6 +207,8 @@ pub fn dota_to_coco(
                 obb: Some(obb),
                 score: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             });
             ann_id += 1;
         }
@@ -217,6 +221,8 @@ pub fn dota_to_coco(
         annotations,
         categories: cat_list,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     })
 }
 
@@ -255,6 +261,8 @@ mod tests {
                 date_captured: None,
                 neg_category_ids: vec![],
                 not_exhaustive_category_ids: vec![],
+                video_id: None,
+                frame_index: None,
             }],
             annotations: vec![Annotation {
                 id: 1,
@@ -269,6 +277,8 @@ mod tests {
                 obb: Some([30.0, 20.0, 40.0, 20.0, 0.0]),
                 score: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             }],
             categories: vec![Category {
                 id: 1,
@@ -279,6 +289,8 @@ mod tests {
                 frequency: None,
             }],
             licenses: vec![],
+            videos: vec![],
+            tracks: vec![],
         };
 
         let tmp = TempDir::new().unwrap();

@@ -139,6 +139,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -154,6 +156,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -168,6 +172,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -179,6 +185,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     // DT1: matches GT_A exactly, area=400 (small), score=0.9
@@ -208,6 +216,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 102,
@@ -222,6 +232,8 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 103,
@@ -236,10 +248,14 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -362,6 +378,8 @@ fn test_crowd_rematching() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![Annotation {
             id: 1,
@@ -376,6 +394,8 @@ fn test_crowd_rematching() {
             score: None,
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![Category {
             id: 1,
@@ -386,6 +406,8 @@ fn test_crowd_rematching() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     // 3 detections all overlapping the crowd GT
@@ -406,6 +428,8 @@ fn test_crowd_rematching() {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 102,
@@ -420,6 +444,8 @@ fn test_crowd_rematching() {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 103,
@@ -434,10 +460,14 @@ fn test_crowd_rematching() {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -842,6 +872,8 @@ fn make_lvis_dataset(
         annotations,
         categories,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     }
 }
 
@@ -857,6 +889,8 @@ fn lvis_image(id: u64, neg_category_ids: Vec<u64>, not_exhaustive_category_ids: 
         date_captured: None,
         neg_category_ids,
         not_exhaustive_category_ids,
+        video_id: None,
+        frame_index: None,
     }
 }
 
@@ -874,6 +908,8 @@ fn lvis_gt_ann(id: u64, image_id: u64, category_id: u64, area: f64) -> Annotatio
         score: None,
         obb: None,
         is_group_of: None,
+        track_id: None,
+        video_id: None,
     }
 }
 
@@ -891,6 +927,8 @@ fn lvis_dt_ann(id: u64, image_id: u64, category_id: u64, area: f64, score: f64) 
         score: Some(score),
         obb: None,
         is_group_of: None,
+        track_id: None,
+        video_id: None,
     }
 }
 
@@ -1048,6 +1086,8 @@ fn cm_image(id: u64) -> Image {
         date_captured: None,
         neg_category_ids: vec![],
         not_exhaustive_category_ids: vec![],
+        video_id: None,
+        frame_index: None,
     }
 }
 
@@ -1076,6 +1116,8 @@ fn cm_gt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4]) -> Annotation {
         score: None,
         obb: None,
         is_group_of: None,
+        track_id: None,
+        video_id: None,
     }
 }
 
@@ -1093,6 +1135,8 @@ fn cm_dt_ann(id: u64, img_id: u64, cat_id: u64, bbox: [f64; 4], score: f64) -> A
         score: Some(score),
         obb: None,
         is_group_of: None,
+        track_id: None,
+        video_id: None,
     }
 }
 
@@ -1103,6 +1147,8 @@ fn cm_coco(images: Vec<Image>, anns: Vec<Annotation>, cats: Vec<Category>) -> CO
         annotations: anns,
         categories: cats,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     })
 }
 
@@ -1726,6 +1772,8 @@ fn make_test_dataset_basic() -> Dataset {
                 date_captured: None,
                 neg_category_ids: vec![],
                 not_exhaustive_category_ids: vec![],
+                video_id: None,
+                frame_index: None,
             },
             Image {
                 id: 2,
@@ -1738,6 +1786,8 @@ fn make_test_dataset_basic() -> Dataset {
                 date_captured: None,
                 neg_category_ids: vec![],
                 not_exhaustive_category_ids: vec![],
+                video_id: None,
+                frame_index: None,
             },
         ],
         annotations: vec![
@@ -1754,6 +1804,8 @@ fn make_test_dataset_basic() -> Dataset {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -1768,6 +1820,8 @@ fn make_test_dataset_basic() -> Dataset {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 3,
@@ -1782,6 +1836,8 @@ fn make_test_dataset_basic() -> Dataset {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![
@@ -1803,6 +1859,8 @@ fn make_test_dataset_basic() -> Dataset {
             },
         ],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     }
 }
 
@@ -1862,6 +1920,8 @@ fn test_coco_to_yolo_category_remapping() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -1877,6 +1937,8 @@ fn test_coco_to_yolo_category_remapping() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -1891,6 +1953,8 @@ fn test_coco_to_yolo_category_remapping() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         // Unsorted in dataset; coco_to_yolo must sort by ID
@@ -1921,6 +1985,8 @@ fn test_coco_to_yolo_category_remapping() {
             },
         ],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1964,6 +2030,8 @@ fn test_coco_to_yolo_crowd_skipped() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -1979,6 +2047,8 @@ fn test_coco_to_yolo_crowd_skipped() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -1993,6 +2063,8 @@ fn test_coco_to_yolo_crowd_skipped() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -2004,6 +2076,8 @@ fn test_coco_to_yolo_crowd_skipped() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2031,6 +2105,8 @@ fn test_coco_to_yolo_missing_bbox() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -2046,6 +2122,8 @@ fn test_coco_to_yolo_missing_bbox() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -2060,6 +2138,8 @@ fn test_coco_to_yolo_missing_bbox() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -2071,6 +2151,8 @@ fn test_coco_to_yolo_missing_bbox() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2096,6 +2178,8 @@ fn test_coco_to_yolo_empty_image() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![],
         categories: vec![Category {
@@ -2107,6 +2191,8 @@ fn test_coco_to_yolo_empty_image() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2519,6 +2605,8 @@ fn test_coco_to_voc_crowd_as_difficult() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -2534,6 +2622,8 @@ fn test_coco_to_voc_crowd_as_difficult() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -2548,6 +2638,8 @@ fn test_coco_to_voc_crowd_as_difficult() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -2559,6 +2651,8 @@ fn test_coco_to_voc_crowd_as_difficult() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3365,10 +3459,10 @@ fn test_hierarchy_from_categories_supercategory() {
     assert_eq!(h.parent(2), None);
 
     // Dog ancestors: [Dog, Animal]
-    let dog_anc = h.ancestors(1);
-    assert_eq!(dog_anc.len(), 2);
-    assert_eq!(dog_anc[0], 1);
-    assert_eq!(dog_anc[1], 2);
+    let dog_ancestors = h.ancestors(1);
+    assert_eq!(dog_ancestors.len(), 2);
+    assert_eq!(dog_ancestors[0], 1);
+    assert_eq!(dog_ancestors[1], 2);
 }
 
 #[test]
@@ -3437,11 +3531,11 @@ fn test_hierarchy_from_oid_json() {
     assert_eq!(h.parent(200), Some(100));
     assert_eq!(h.parent(100), None);
 
-    let dog_anc = h.ancestors(300);
-    assert_eq!(dog_anc.len(), 3);
-    assert_eq!(dog_anc[0], 300);
-    assert_eq!(dog_anc[1], 200);
-    assert_eq!(dog_anc[2], 100);
+    let dog_ancestors = h.ancestors(300);
+    assert_eq!(dog_ancestors.len(), 3);
+    assert_eq!(dog_ancestors[0], 300);
+    assert_eq!(dog_ancestors[1], 200);
+    assert_eq!(dog_ancestors[2], 100);
 }
 
 #[test]
@@ -3487,6 +3581,8 @@ fn test_gt_expansion_basic() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![Annotation {
             id: 1,
@@ -3501,6 +3597,8 @@ fn test_gt_expansion_basic() {
             score: None,
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![
             Category {
@@ -3521,6 +3619,8 @@ fn test_gt_expansion_basic() {
             },
         ],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco = COCO::from_dataset(gt_dataset);
@@ -3570,6 +3670,8 @@ fn test_gt_expansion_idempotent() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -3585,6 +3687,8 @@ fn test_gt_expansion_idempotent() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -3599,6 +3703,8 @@ fn test_gt_expansion_idempotent() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![
@@ -3620,6 +3726,8 @@ fn test_gt_expansion_idempotent() {
             },
         ],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco = COCO::from_dataset(gt_dataset);
@@ -3655,6 +3763,8 @@ fn test_oid_group_of_multi_match() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -3670,6 +3780,8 @@ fn test_oid_group_of_multi_match() {
                 score: None,
                 obb: None,
                 is_group_of: None, // NOT group-of — provides recall denominator
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -3684,6 +3796,8 @@ fn test_oid_group_of_multi_match() {
                 score: None,
                 obb: None,
                 is_group_of: Some(true), // Group-of GT
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -3695,6 +3809,8 @@ fn test_oid_group_of_multi_match() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -3714,6 +3830,8 @@ fn test_oid_group_of_multi_match() {
                 score: Some(0.9),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -3728,6 +3846,8 @@ fn test_oid_group_of_multi_match() {
                 score: Some(0.8),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 3,
@@ -3742,10 +3862,14 @@ fn test_oid_group_of_multi_match() {
                 score: Some(0.7),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -3781,6 +3905,8 @@ fn test_oid_group_of_no_fn_penalty() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -3796,6 +3922,8 @@ fn test_oid_group_of_no_fn_penalty() {
                 score: None,
                 obb: None,
                 is_group_of: None, // NOT group-of
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -3810,6 +3938,8 @@ fn test_oid_group_of_no_fn_penalty() {
                 score: None,
                 obb: None,
                 is_group_of: Some(true), // Group-of, no detection nearby
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -3821,6 +3951,8 @@ fn test_oid_group_of_no_fn_penalty() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -3839,9 +3971,13 @@ fn test_oid_group_of_no_fn_penalty() {
             score: Some(0.9),
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -3884,6 +4020,8 @@ fn test_oid_hierarchy_evaluation() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![Annotation {
             id: 1,
@@ -3898,6 +4036,8 @@ fn test_oid_hierarchy_evaluation() {
             score: None,
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![
             Category {
@@ -3926,6 +4066,8 @@ fn test_oid_hierarchy_evaluation() {
             },
         ],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -3944,9 +4086,13 @@ fn test_oid_hierarchy_evaluation() {
             score: Some(0.9),
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -3992,6 +4138,8 @@ fn test_oid_dt_expansion() {
         date_captured: None,
         neg_category_ids: vec![],
         not_exhaustive_category_ids: vec![],
+        video_id: None,
+        frame_index: None,
     };
     let cats = vec![
         Category {
@@ -4028,9 +4176,13 @@ fn test_oid_dt_expansion() {
             score: None,
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: cats.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -4049,9 +4201,13 @@ fn test_oid_dt_expansion() {
             score: Some(0.9),
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: cats,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     // Without DT expansion
@@ -4100,6 +4256,8 @@ fn test_oid_auto_derive_hierarchy() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![Annotation {
             id: 1,
@@ -4114,6 +4272,8 @@ fn test_oid_auto_derive_hierarchy() {
             score: None,
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![
             Category {
@@ -4134,6 +4294,8 @@ fn test_oid_auto_derive_hierarchy() {
             },
         ],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -4152,9 +4314,13 @@ fn test_oid_auto_derive_hierarchy() {
             score: Some(0.9),
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -4255,6 +4421,8 @@ fn test_calibration_known_values() {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         }],
         annotations: vec![
             Annotation {
@@ -4270,6 +4438,8 @@ fn test_calibration_known_values() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             Annotation {
                 id: 2,
@@ -4284,6 +4454,8 @@ fn test_calibration_known_values() {
                 score: None,
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![Category {
@@ -4295,6 +4467,8 @@ fn test_calibration_known_values() {
             frequency: None,
         }],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -4315,6 +4489,8 @@ fn test_calibration_known_values() {
                 score: Some(0.9),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             // TP: matches GT 2
             Annotation {
@@ -4330,6 +4506,8 @@ fn test_calibration_known_values() {
                 score: Some(0.9),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             // FP: no matching GT
             Annotation {
@@ -4345,6 +4523,8 @@ fn test_calibration_known_values() {
                 score: Some(0.2),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
             // FP: no matching GT
             Annotation {
@@ -4360,10 +4540,14 @@ fn test_calibration_known_values() {
                 score: Some(0.2),
                 obb: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             },
         ],
         categories: vec![],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -4435,6 +4619,8 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         })
         .collect();
 
@@ -4452,6 +4638,8 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
             score: None,
             obb: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         })
         .collect();
 
@@ -4468,6 +4656,8 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
         score: Some(score),
         obb: None,
         is_group_of: None,
+        track_id: None,
+        video_id: None,
     };
 
     // Good model: perfect TP on every image
@@ -4496,6 +4686,8 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
         annotations: dt_good_anns,
         categories: vec![cat.clone()],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
     let dt_weak = Dataset {
         info: None,
@@ -4503,6 +4695,8 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
         annotations: dt_weak_anns,
         categories: vec![cat.clone()],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let gt = Dataset {
@@ -4511,6 +4705,8 @@ fn make_compare_fixtures(n: usize) -> (Dataset, Dataset, Dataset) {
         annotations: gt_anns,
         categories: vec![cat],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     (gt, dt_good, dt_weak)
@@ -4661,6 +4857,8 @@ fn obb_test_image() -> Image {
         date_captured: None,
         neg_category_ids: vec![],
         not_exhaustive_category_ids: vec![],
+        video_id: None,
+        frame_index: None,
     }
 }
 
@@ -4694,9 +4892,13 @@ fn test_obb_eval_basic() {
             obb: Some([200.0, 150.0, 200.0, 100.0, 0.3]),
             score: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![obb_test_category()],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -4715,9 +4917,13 @@ fn test_obb_eval_basic() {
             obb: Some([200.0, 150.0, 200.0, 100.0, 0.3]),
             score: Some(0.99),
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -4757,9 +4963,13 @@ fn test_obb_eval_no_overlap() {
             obb: Some([25.0, 25.0, 50.0, 50.0, 0.0]),
             score: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![obb_test_category()],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let dt_dataset = Dataset {
@@ -4778,9 +4988,13 @@ fn test_obb_eval_no_overlap() {
             obb: Some([725.0, 525.0, 50.0, 50.0, 0.0]),
             score: Some(0.9),
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: gt_dataset.categories.clone(),
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let coco_gt = COCO::from_dataset(gt_dataset);
@@ -4818,9 +5032,13 @@ fn test_dota_round_trip_integration() {
             obb: Some([200.0, 150.0, 200.0, 100.0, 0.0]),
             score: None,
             is_group_of: None,
+            track_id: None,
+            video_id: None,
         }],
         categories: vec![obb_test_category()],
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     };
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -4862,4 +5080,173 @@ fn test_empty_max_dets_panics() {
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     coco_eval.params.max_dets = vec![];
     coco_eval.evaluate(); // should panic with a clear message
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Tracking evaluation tests
+// ─────────────────────────────────────────────────────────────────────
+
+use hotcoco::eval::tracking::TrackingEval;
+
+#[test]
+fn test_tracking_eval_runs() {
+    let gt_path = fixtures_dir().join("tracking_gt.json");
+    let dt_path = fixtures_dir().join("tracking_dt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load tracking GT");
+    let coco_dt = coco_gt
+        .load_res(&dt_path)
+        .expect("Failed to load tracking DT");
+
+    let mut ev = TrackingEval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+    ev.accumulate();
+
+    let results = ev.get_results(None);
+    // All three metric families should produce values.
+    assert!(results.contains_key("HOTA"), "missing HOTA");
+    assert!(results.contains_key("MOTA"), "missing MOTA");
+    assert!(results.contains_key("IDF1"), "missing IDF1");
+
+    // Sanity: HOTA should be between 0 and 1.
+    let hota = results["HOTA"];
+    assert!((0.0..=1.0).contains(&hota), "HOTA out of range: {hota}");
+
+    // There are ID switches in the fixture (seq1 frame 3), so IDSW > 0.
+    let idsw = results["IDSW"];
+    assert!(idsw > 0.0, "expected ID switches, got {idsw}");
+
+    // There's a false positive in seq1 frame 3, so CLR_FP > 0.
+    let fp = results["CLR_FP"];
+    assert!(fp > 0.0, "expected false positives, got {fp}");
+}
+
+#[test]
+fn test_tracking_perfect_match() {
+    // Use GT as both GT and DT — should give perfect scores.
+    let gt_path = fixtures_dir().join("tracking_gt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load tracking GT");
+    let coco_dt = coco_gt
+        .load_res(&gt_path)
+        .expect("Failed to load tracking DT");
+
+    let mut ev = TrackingEval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.run();
+
+    let results = ev.get_results(None);
+    let hota = results["HOTA"];
+    let mota = results["MOTA"];
+    let idf1 = results["IDF1"];
+
+    assert!(
+        (hota - 1.0).abs() < 1e-9,
+        "perfect match should give HOTA=1.0, got {hota}"
+    );
+    assert!(
+        (mota - 1.0).abs() < 1e-9,
+        "perfect match should give MOTA=1.0, got {mota}"
+    );
+    assert!(
+        (idf1 - 1.0).abs() < 1e-9,
+        "perfect match should give IDF1=1.0, got {idf1}"
+    );
+
+    // No ID switches with perfect tracking.
+    assert_eq!(results["IDSW"], 0.0);
+}
+
+#[test]
+fn test_tracking_no_detections() {
+    let gt_path = fixtures_dir().join("tracking_gt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load tracking GT");
+    // Create empty DT dataset.
+    let empty_dt = COCO::from_dataset(Dataset {
+        info: None,
+        images: coco_gt.dataset.images.clone(),
+        annotations: vec![],
+        categories: coco_gt.dataset.categories.clone(),
+        licenses: vec![],
+        videos: coco_gt.dataset.videos.clone(),
+        tracks: vec![],
+    });
+
+    let mut ev = TrackingEval::new(coco_gt, empty_dt, IouType::Bbox);
+    ev.run();
+
+    let results = ev.get_results(None);
+    assert_eq!(results["HOTA"], 0.0, "no dets should give HOTA=0");
+    assert_eq!(results["IDF1"], 0.0, "no dets should give IDF1=0");
+    // MOTA with all FN: MOTA = 1 - (FN + FP + IDSW) / num_gt = 1 - 1 = 0.
+    assert!(results["MOTA"] <= 0.0, "MOTA should be <= 0 with no dets");
+}
+
+#[test]
+fn test_tracking_types_serde() {
+    // Verify that existing COCO JSON (without tracking fields) still deserializes.
+    let gt_path = fixtures_dir().join("gt.json");
+    let coco = COCO::new(&gt_path).expect("Failed to load standard GT");
+    // Tracking fields should be None/empty.
+    assert!(coco.dataset.videos.is_empty());
+    assert!(coco.dataset.tracks.is_empty());
+    for img in &coco.dataset.images {
+        assert!(img.video_id.is_none());
+        assert!(img.frame_index.is_none());
+    }
+    for ann in &coco.dataset.annotations {
+        assert!(ann.track_id.is_none());
+        assert!(ann.video_id.is_none());
+    }
+}
+
+#[test]
+fn test_tracking_get_results_with_prefix() {
+    let gt_path = fixtures_dir().join("tracking_gt.json");
+    let coco_gt = COCO::new(&gt_path).expect("Failed to load tracking GT");
+    let coco_dt = coco_gt
+        .load_res(&gt_path)
+        .expect("Failed to load tracking DT");
+
+    let mut ev = TrackingEval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.run();
+
+    let results = ev.get_results(Some("val/track"));
+    assert!(results.contains_key("val/track/HOTA"));
+    assert!(results.contains_key("val/track/MOTA"));
+    assert!(results.contains_key("val/track/IDF1"));
+}
+
+#[test]
+fn test_mot_to_coco() {
+    use hotcoco::convert::mot_to_coco;
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    std::io::Write::write_all(
+        &mut std::fs::File::create(tmp.path()).unwrap(),
+        b"1,1,100,100,50,50,1,1,1.0\n\
+          1,2,200,200,60,40,1,1,1.0\n\
+          2,1,110,100,50,50,1,1,1.0\n\
+          2,2,210,200,60,40,1,1,1.0\n\
+          3,1,120,100,50,50,1,1,1.0\n",
+    )
+    .unwrap();
+
+    let (dataset, stats) = mot_to_coco(tmp.path()).unwrap();
+
+    assert_eq!(stats.frames, 3);
+    assert_eq!(stats.annotations, 5);
+    assert_eq!(stats.tracks, 2);
+    assert_eq!(dataset.images.len(), 3);
+    assert_eq!(dataset.annotations.len(), 5);
+    assert_eq!(dataset.tracks.len(), 2);
+    assert_eq!(dataset.videos.len(), 1);
+
+    // All annotations should have track_id set.
+    for ann in &dataset.annotations {
+        assert!(ann.track_id.is_some());
+        assert!(ann.video_id.is_some());
+    }
+    // All images should have video_id and frame_index.
+    for img in &dataset.images {
+        assert!(img.video_id.is_some());
+        assert!(img.frame_index.is_some());
+    }
 }

@@ -9,9 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Multi-object tracking evaluation — `TrackingEval` computes HOTA, CLEAR/MOTA, and Identity/IDF1 metrics for multi-object tracking using TAO-style COCO JSON with `video_id`, `track_id`, and `frame_index` fields; same `evaluate()` → `accumulate()` → `summarize()` pipeline as `COCOeval`; parallel per-sequence evaluation via rayon; `get_results(prefix=)` for experiment tracker integration
+- `Video` and `Track` types for TAO-style tracking datasets; `video_id`/`frame_index` fields on `Image`; `track_id`/`video_id` fields on `Annotation`; all fields are optional and backward-compatible with standard COCO JSON
+- MOTChallenge format conversion — `mot_to_coco(path)` converts MOT `gt.txt` files to COCO tracking format; `mot_seq_to_coco(seq_dir)` parses full MOT sequence directories with `seqinfo.ini` metadata
+- `init_as_trackeval()` — drop-in `sys.modules` patch so existing `from trackeval import ...` code resolves to hotcoco
+- `dataset_to_py()` helper in PyO3 layer for converting Rust `Dataset` structs to Python dicts; `video_to_py()` and `track_to_py()` conversion helpers
+- Tracking evaluation guide (`docs/guide/tracking.md`) and API reference (`docs/api/tracking.md`)
+
 ### Changed
 
 ### Fixed
+
+- Fixed broken intra-doc link `summarize_lines` → `Self::summarize_lines` in `summarize.rs`
 
 ## [0.4.0] - 2026-04-06
 

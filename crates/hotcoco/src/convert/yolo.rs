@@ -195,6 +195,8 @@ pub fn yolo_to_coco(
             date_captured: None,
             neg_category_ids: vec![],
             not_exhaustive_category_ids: vec![],
+            video_id: None,
+            frame_index: None,
         });
 
         let content = fs::read_to_string(txt_path)?;
@@ -255,6 +257,8 @@ pub fn yolo_to_coco(
                 obb: None,
                 score: None,
                 is_group_of: None,
+                track_id: None,
+                video_id: None,
             });
             ann_id += 1;
         }
@@ -267,6 +271,8 @@ pub fn yolo_to_coco(
         annotations,
         categories,
         licenses: vec![],
+        videos: vec![],
+        tracks: vec![],
     })
 }
 

@@ -331,6 +331,8 @@ impl COCO {
             annotations: anns,
             categories: self.dataset.categories.clone(),
             licenses: self.dataset.licenses.clone(),
+            videos: vec![],
+            tracks: vec![],
         };
 
         // Determine result type from first annotation (matching pycocotools loadRes logic)
@@ -525,6 +527,8 @@ impl COCO {
             annotations: filtered_anns,
             categories: filtered_cats,
             licenses: self.dataset.licenses.clone(),
+            videos: vec![],
+            tracks: vec![],
         }
     }
 
@@ -540,6 +544,8 @@ impl COCO {
                 annotations: vec![],
                 categories: vec![],
                 licenses: vec![],
+                videos: vec![],
+                tracks: vec![],
             });
         }
 
@@ -620,6 +626,8 @@ impl COCO {
             annotations: all_anns,
             categories: canonical_cats.clone(),
             licenses: datasets[0].licenses.clone(),
+            videos: vec![],
+            tracks: vec![],
         })
     }
 
@@ -646,6 +654,8 @@ impl COCO {
             annotations,
             categories: self.dataset.categories.clone(),
             licenses: self.dataset.licenses.clone(),
+            videos: vec![],
+            tracks: vec![],
         }
     }
 
@@ -821,6 +831,8 @@ mod tests {
                     date_captured: None,
                     neg_category_ids: vec![],
                     not_exhaustive_category_ids: vec![],
+                    video_id: None,
+                    frame_index: None,
                 },
                 Image {
                     id: 2,
@@ -833,6 +845,8 @@ mod tests {
                     date_captured: None,
                     neg_category_ids: vec![],
                     not_exhaustive_category_ids: vec![],
+                    video_id: None,
+                    frame_index: None,
                 },
             ],
             annotations: vec![
@@ -849,6 +863,8 @@ mod tests {
                     obb: None,
                     score: None,
                     is_group_of: None,
+                    track_id: None,
+                    video_id: None,
                 },
                 Annotation {
                     id: 2,
@@ -863,6 +879,8 @@ mod tests {
                     obb: None,
                     score: None,
                     is_group_of: None,
+                    track_id: None,
+                    video_id: None,
                 },
                 Annotation {
                     id: 3,
@@ -877,6 +895,8 @@ mod tests {
                     obb: None,
                     score: None,
                     is_group_of: None,
+                    track_id: None,
+                    video_id: None,
                 },
             ],
             categories: vec![
@@ -898,6 +918,8 @@ mod tests {
                 },
             ],
             licenses: vec![],
+            videos: vec![],
+            tracks: vec![],
         }
     }
 

@@ -1,0 +1,15 @@
+{
+  "annotations": [
+    {"id": 1, "image_id": 1, "category_id": 1, "track_id": 101, "video_id": 1, "bbox": [102, 101, 50, 50], "area": 2500, "score": 0.95},
+    {"id": 2, "image_id": 1, "category_id": 1, "track_id": 102, "video_id": 1, "bbox": [202, 201, 60, 40], "area": 2400, "score": 0.90},
+    {"id": 3, "image_id": 2, "category_id": 1, "track_id": 101, "video_id": 1, "bbox": [112, 101, 50, 50], "area": 2500, "score": 0.93},
+    {"id": 4, "image_id": 2, "category_id": 1, "track_id": 102, "video_id": 1, "bbox": [212, 201, 60, 40], "area": 2400, "score": 0.88},
+    {"id": 5, "image_id": 3, "category_id": 1, "track_id": 102, "video_id": 1, "bbox": [122, 101, 50, 50], "area": 2500, "score": 0.91},
+    {"id": 6, "image_id": 3, "category_id": 1, "track_id": 101, "video_id": 1, "bbox": [222, 201, 60, 40], "area": 2400, "score": 0.85},
+    {"id": 7, "image_id": 4, "category_id": 1, "track_id": 103, "video_id": 2, "bbox": [52, 51, 40, 40], "area": 1600, "score": 0.92},
+    {"id": 8, "image_id": 5, "category_id": 1, "track_id": 103, "video_id": 2, "bbox": [62, 51, 40, 40], "area": 1600, "score": 0.89},
+    {"id": 9, "image_id": 6, "category_id": 1, "track_id": 103, "video_id": 2, "bbox": [72, 51, 40, 40], "area": 1600, "score": 0.87},
+    {"id": 10, "image_id": 6, "category_id": 1, "track_id": 104, "video_id": 2, "bbox": [312, 301, 30, 30], "area": 900, "score": 0.80},
+    {"id": 11, "image_id": 3, "category_id": 1, "track_id": 105, "video_id": 1, "bbox": [400, 400, 20, 20], "area": 400, "score": 0.60}
+  ]
+}

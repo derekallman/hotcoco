@@ -16,6 +16,7 @@ mod results;
 pub mod slice;
 mod summarize;
 mod tide;
+pub mod tracking;
 
 pub use calibration::{CalibrationBin, CalibrationResult};
 pub use compare::{BootstrapCI, CategoryDelta, CompareOpts, ComparisonResult, compare};
@@ -122,7 +123,7 @@ impl COCOeval {
     /// federated filtering so unmatched detections on unlabeled or unchecked categories
     /// are not penalized as false positives.
     ///
-    /// Behaviour controlled by per-image GT fields:
+    /// Behavior controlled by per-image GT fields:
     /// - `neg_category_ids`: categories confirmed absent → unmatched DTs count as FP.
     /// - `not_exhaustive_category_ids`: categories not fully checked → unmatched DTs ignored.
     ///

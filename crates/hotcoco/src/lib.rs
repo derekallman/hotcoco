@@ -10,18 +10,19 @@ pub mod params;
 pub mod types;
 
 pub use coco::COCO;
-pub use convert::{ConvertError, CvatStats, DotaStats, VocStats, YoloStats};
+pub use convert::{ConvertError, CvatStats, DotaStats, MotStats, VocStats, YoloStats};
 pub use error::Error;
 pub use eval::{
     AccumulatedEval, AnnotationIndex, BootstrapCI, COCOeval, CalibrationBin, CalibrationResult,
     CategoryDelta, CompareOpts, ComparisonResult, ConfusionMatrix, DtStatus, ErrorProfile, EvalImg,
     EvalMode, EvalResults, EvalShape, GtStatus, ImageDiagnostics, ImageSummary, LabelError,
     LabelErrorType, SliceResult, SlicedResults, TideErrors, compare,
+    tracking::{TrackingEval, TrackingMetric, TrackingParams},
 };
 pub use healthcheck::{DatasetSummary, Finding, HealthReport, Layer};
 pub use hierarchy::Hierarchy;
 pub use params::{AreaRange, IouType, Params};
 pub use types::{
     Annotation, Category, CategoryStats, Dataset, DatasetStats, Image, Rle, Segmentation,
-    SummaryStats,
+    SummaryStats, Track, Video,
 };

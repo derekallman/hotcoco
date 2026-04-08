@@ -265,6 +265,8 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hotcoco"
 version = "0.4.0"
 dependencies = [
+ "lapjv",
+ "ndarray",
  "quick-xml",
  "rand",
  "rayon",
@@ -347,6 +349,17 @@ checksum = "b49715b7073f385ba4bc528e5747d02e66cb39c6146efb66b781f131f0fb399c"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "lapjv"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f66c977eaa63543f7d7bae335c66c46657ca973091340aff72ff141a50c0bfb3"
+dependencies = [
+ "log",
+ "ndarray",
+ "num-traits",
 ]
 
 [[package]]

@@ -584,7 +584,7 @@ impl COCOeval {
 
     /// Print the standard COCO evaluation summary.
     ///
-    /// Calls [`summarize_lines`] and prints each line to stdout.
+    /// Calls [`Self::summarize_lines`] and prints each line to stdout.
     pub fn summarize(&mut self) {
         for line in self.summarize_lines() {
             println!("{}", line);

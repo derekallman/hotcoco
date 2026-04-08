@@ -3,10 +3,13 @@ from .hotcoco import (  # noqa: F401
     COCOeval,
     Hierarchy,
     Params,
+    TrackingEval,
     compare,
     init_as_lvis,
     init_as_pycocotools,
+    init_as_trackeval,
     mask,
+    mot_to_coco,
 )
 
 
@@ -82,14 +85,23 @@ class COCO(_RustCOCO):
         resolved_slices = slices
         if isinstance(slices, str):
             import json
+
             with open(slices) as f:
                 resolved_slices = json.load(f)
 
-        app = create_app(self, image_dir=image_dir, batch_size=batch_size, dt_coco=dt_coco, coco_eval=coco_eval, slices=resolved_slices)
+        app = create_app(
+            self,
+            image_dir=image_dir,
+            batch_size=batch_size,
+            dt_coco=dt_coco,
+            coco_eval=coco_eval,
+            slices=resolved_slices,
+        )
 
         if _browse._is_jupyter():
             actual_port = start_server_background(app, port=port)
             from IPython.display import IFrame, display
+
             display(IFrame(f"http://127.0.0.1:{actual_port}", width="100%", height=700))
         else:
             run_server(app, port=port, open_browser=True)
@@ -144,8 +156,11 @@ __all__ = [
     "LVISResults",
     "LVISeval",
     "Params",
+    "TrackingEval",
     "compare",
     "init_as_lvis",
     "init_as_pycocotools",
+    "init_as_trackeval",
     "mask",
+    "mot_to_coco",
 ]

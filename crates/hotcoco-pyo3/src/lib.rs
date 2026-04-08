@@ -83,6 +83,8 @@ impl PyCOCO {
                 annotations: vec![],
                 categories: vec![],
                 licenses: vec![],
+                videos: vec![],
+                tracks: vec![],
             }),
         };
         Ok(PyCOCO { inner, image_dir })
@@ -231,6 +233,8 @@ impl PyCOCO {
                     num_keypoints: None,
                     obb: None,
                     is_group_of: None,
+                    track_id: None,
+                    video_id: None,
                 })
                 .collect::<Vec<_>>();
             return self
@@ -2001,6 +2005,100 @@ fn accumulated_eval_to_py(
 }
 
 // ---------------------------------------------------------------------------
+// TrackingEval
+// ---------------------------------------------------------------------------
+
+/// Multi-object tracking evaluator — HOTA, CLEAR/MOTA, Identity/IDF1.
+///
+/// Evaluates tracking results using TAO-style COCO JSON with ``video_id``,
+/// ``track_id``, and ``frame_index`` fields on annotations and images.
+///
+/// Follows the same ``evaluate()`` → ``accumulate()`` → ``summarize()``
+/// pipeline as ``COCOeval``, but computes tracking-specific metrics.
+///
+/// Parameters
+/// ----------
+/// coco_gt : COCO
+///     Ground truth dataset with tracking annotations.
+/// coco_dt : COCO
+///     Detection/tracking results (from ``load_res()``).
+/// iou_type : str
+///     ``"bbox"`` (default) or ``"segm"``.
+///
+/// Example
+/// -------
+/// ::
+///
+///     from hotcoco import COCO, TrackingEval
+///
+///     coco_gt = COCO("tracking_gt.json")
+///     coco_dt = coco_gt.load_res("tracking_dt.json")
+///
+///     ev = TrackingEval(coco_gt, coco_dt)
+///     ev.run()  # evaluate + accumulate + summarize
+///     results = ev.get_results()
+///     print(f"HOTA={results['HOTA']:.4f}")
+#[pyclass(name = "TrackingEval")]
+struct PyTrackingEval {
+    inner: hotcoco_core::eval::tracking::TrackingEval,
+}
+
+#[pymethods]
+impl PyTrackingEval {
+    #[new]
+    #[pyo3(signature = (coco_gt, coco_dt, iou_type = "bbox"))]
+    fn new(coco_gt: &PyCOCO, coco_dt: &PyCOCO, iou_type: &str) -> PyResult<Self> {
+        let iou = parse_iou_type(iou_type)?;
+        let gt = hotcoco_core::COCO::from_dataset(coco_gt.inner.dataset.clone());
+        let dt = hotcoco_core::COCO::from_dataset(coco_dt.inner.dataset.clone());
+        let inner = hotcoco_core::eval::tracking::TrackingEval::new(gt, dt, iou);
+        Ok(Self { inner })
+    }
+
+    /// Run per-sequence matching and metric computation.
+    fn evaluate(&mut self) {
+        self.inner.evaluate();
+    }
+
+    /// Aggregate per-sequence results into dataset-level metrics.
+    fn accumulate(&mut self) {
+        self.inner.accumulate();
+    }
+
+    /// Print a formatted summary of the tracking metrics.
+    fn summarize(&self) {
+        self.inner.summarize();
+    }
+
+    /// Convenience: ``evaluate()`` + ``accumulate()`` + ``summarize()``.
+    fn run(&mut self) {
+        self.inner.run();
+    }
+
+    /// Return results as a flat ``dict[str, float]``.
+    ///
+    /// Parameters
+    /// ----------
+    /// prefix : str, optional
+    ///     Prefix for metric keys (e.g. ``"val/track"`` → ``"val/track/HOTA"``).
+    ///
+    /// Returns
+    /// -------
+    /// dict[str, float]
+    ///     Metric names → values. Includes HOTA, DetA, AssA, LocA, MOTA,
+    ///     MOTP, IDSW, IDF1, IDP, IDR, and more.
+    #[pyo3(signature = (prefix = None))]
+    fn get_results(&self, py: Python<'_>, prefix: Option<&str>) -> PyResult<Py<PyAny>> {
+        let results = self.inner.get_results(prefix);
+        let dict = PyDict::new(py);
+        for (k, v) in &results {
+            dict.set_item(k, v)?;
+        }
+        Ok(dict.into_any().unbind())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
 
@@ -2146,15 +2244,36 @@ fn compare(
     Ok(dict.into_any().unbind())
 }
 
+/// Patch `sys.modules` so that `from trackeval import ...` resolves to hotcoco.
+#[pyfunction]
+fn init_as_trackeval(py: Python<'_>) -> PyResult<()> {
+    let sys = py.import("sys")?;
+    let modules = sys.getattr("modules")?;
+    let hotcoco = py.import("hotcoco")?;
+    modules.set_item("trackeval", &hotcoco)?;
+    Ok(())
+}
+
+/// Convert a MOTChallenge gt.txt file to a COCO tracking dataset dict.
+#[pyfunction]
+fn mot_to_coco(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let (dataset, _stats) = hotcoco_core::convert::mot_to_coco(Path::new(path))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    convert::dataset_to_py(py, &dataset)
+}
+
 #[pymodule]
 fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCOCO>()?;
     m.add_class::<PyCOCOeval>()?;
+    m.add_class::<PyTrackingEval>()?;
     m.add_class::<PyParams>()?;
     m.add_class::<PyHierarchy>()?;
     m.add_function(wrap_pyfunction!(init_as_pycocotools, m)?)?;
     m.add_function(wrap_pyfunction!(init_as_lvis, m)?)?;
+    m.add_function(wrap_pyfunction!(init_as_trackeval, m)?)?;
     m.add_function(wrap_pyfunction!(compare, m)?)?;
+    m.add_function(wrap_pyfunction!(mot_to_coco, m)?)?;
 
     // mask submodule
     let mask_mod = PyModule::new(py, "mask")?;

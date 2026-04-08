@@ -92,6 +92,8 @@ fn expand_annotations(coco: &COCO, hierarchy: &Hierarchy) -> COCO {
         annotations: expanded_anns,
         categories,
         licenses: coco.dataset.licenses.clone(),
+        videos: vec![],
+        tracks: vec![],
     };
 
     COCO::from_dataset(dataset)
