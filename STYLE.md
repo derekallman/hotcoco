@@ -129,7 +129,7 @@ monospace. This is the house style; do not "fix" it.
 fit — `bytes vs string`. Use `versus` in prose.
 
 **British spellings survive in shipped CHANGELOG entries.** `_typos.toml` sets
-`locale = "en-us"`, but `typos` runs only under `/review`. Fix the spellings your change
+`locale = "en-us"`, and `typos` runs through pre-commit. Fix the spellings your change
 introduces; leave released CHANGELOG text alone.
 
 ## Checking
@@ -139,7 +139,7 @@ single-contributor repo. The checks that do run:
 
 ```bash
 just docs-links                      # internal links, heading anchors, nav coverage
-typos                                # spelling (runs under /review only)
+pre-commit run typos --all-files      # spelling
 cargo doc --no-deps 2>&1 | grep warning
 ```
 

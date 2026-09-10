@@ -6,31 +6,36 @@ set -e
 
 echo "Running pre-commit checks..."
 
-echo "[1/3] cargo fmt --all -- --check"
+echo "[1/4] cargo fmt --all -- --check"
 cargo fmt --all -- --check
 
-echo "[2/3] cargo clippy --workspace --all-targets -- -D warnings"
+echo "[2/4] cargo clippy --workspace --all-targets -- -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings
 
-echo "[3/3] cargo test -p hotcoco -p hotcoco-cli"
+echo "[3/4] cargo test -p hotcoco -p hotcoco-cli"
 cargo test -p hotcoco -p hotcoco-cli
 
-# Python checks run only when Python files are staged, so Rust-only commits stay
-# fast. They must never skip silently when they are relevant — that is how the
-# tree drifted to 48 ruff errors while `just py-lint` existed but gated nothing.
+# Python changes trigger the whole-tree pre-commit pass so the configured Ruff
+# hooks and file-hygiene checks share one source of truth. `pre-commit install`
+# cannot manage this file because core.hooksPath points here.
+#
+# Hooks that rewrite a file (whitespace, end-of-file) exit nonzero when they do,
+# so a commit is rejected rather than silently amended: re-stage and re-commit.
 PY_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.pyi?$' || true)
 if [ -n "$PY_STAGED" ]; then
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "Python files are staged but 'uv' was not found on PATH." >&2
-        echo "Run 'just setup' first (see CLAUDE.md), or unstage the Python files." >&2
+    if command -v pre-commit >/dev/null 2>&1; then
+        PRE_COMMIT="pre-commit"
+    elif command -v uvx >/dev/null 2>&1; then
+        # uvx fetches and caches pre-commit; first run costs a download.
+        PRE_COMMIT="uvx pre-commit"
+    else
+        echo "Neither 'pre-commit' nor 'uvx' was found on PATH." >&2
+        echo "Install one: 'uv tool install pre-commit' (see CONTRIBUTING.md)." >&2
         exit 1
     fi
 
-    echo "[4/5] uv run ruff format --check python/ scripts/"
-    uv run ruff format --check python/ scripts/
-
-    echo "[5/5] uv run ruff check python/ scripts/"
-    uv run ruff check python/ scripts/
+    echo "[4/4] ${PRE_COMMIT} run --all-files"
+    ${PRE_COMMIT} run --all-files
 fi
 
 # Disk guard. Both checks warn and never block — a full disk is not a reason to

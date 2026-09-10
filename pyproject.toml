@@ -38,10 +38,6 @@ dev = [
     "lvis>=0.5.3",
     "psutil",
     "pytest",
-    # Narrow range so local, pre-commit, and CI agree on lint results. A ruff
-    # minor bump can add or change rules, which would otherwise turn a green PR
-    # red without a code change. Bump this and the pin in ci.yml together.
-    "ruff>=0.15,<0.16",
     # Reference implementation for the OBB IoU fuzz harness
     # (scripts/fuzz_obb_parity.py), which could not run without it.
     "shapely>=2.0",

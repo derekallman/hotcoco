@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Python formatting and lint recipes use the configured pre-commit Ruff hooks.
+  Python lint CI selects the same Ruff hooks for linting and formatting checks.
+  The Ruff version is pinned only in `.pre-commit-config.yaml`; the separate
+  development dependency is removed.
+
 ### Fixed
 
 - **`mask.encode` accepts `bool` masks.** Any one-byte integer or boolean dtype

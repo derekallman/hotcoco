@@ -59,7 +59,7 @@ jobs:
       - name: Tests
         run: cargo test -p hotcoco -p hotcoco-cli
 
-      # The 1.0 reorganisation moves nearly every type between modules while
+      # The 1.0 reorganization moves nearly every type between modules while
       # promising the crate-root paths keep resolving. Reading lib.rs is not
       # enough to verify that — during the `quality/` move, the crate-root
       # re-exports all still resolved while `hotcoco::types::SummaryStats` had
@@ -93,14 +93,12 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      # Pinned so a new ruff release cannot turn a green PR red on its own.
-      # Keep in step with the `ruff` pin in pyproject.toml's [dev] extra; these
-      # are the same checks as `just py-fmt-check` and `just py-lint`.
+      # Hook versions and file scopes are defined in .pre-commit-config.yaml.
       - name: Ruff format check
-        run: uvx ruff@0.15.6 format --check python/ scripts/
+        run: uvx pre-commit run ruff-format --all-files
 
       - name: Ruff lint
-        run: uvx ruff@0.15.6 check python/ scripts/
+        run: uvx pre-commit run ruff-check --all-files
 
   python:
     name: Python smoke test (${{ matrix.python-version }})

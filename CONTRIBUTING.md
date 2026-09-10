@@ -76,9 +76,13 @@ The hook runs:
 1. `cargo fmt --all -- --check` — formatting
 2. `cargo clippy --workspace --all-targets -- -D warnings` — lint (warnings are errors)
 3. `cargo test` — all tests
-4. `ruff format --check` and `ruff check` on `python/` and `scripts/` — when Python files are staged
+4. `pre-commit run --all-files` — when Python files are staged; runs the configured checks across the whole tree
 
-If formatting fails, run `cargo fmt --all` (Rust) or `uv run ruff format python/ scripts/` (Python) and re-commit. Fix all clippy warnings before committing — never suppress them with `#[allow(...)]`.
+Step 4 needs `pre-commit` on `PATH`; the hook falls back to `uvx pre-commit` and fails if neither is available. Install it with `uv tool install pre-commit`. Don't run `pre-commit install` — `core.hooksPath` points at `.github/hooks`, and pre-commit refuses to install over it. The hook runs `pre-commit run --all-files` when Python files are staged.
+
+Some of those hooks rewrite the file they fix (trailing whitespace, missing final newline). They exit nonzero when they do, so the commit is rejected rather than silently amended — re-stage the file and commit again.
+
+If formatting fails, run `cargo fmt --all` (Rust) or `pre-commit run --all-files`, re-stage modified files, and re-commit. Fix all clippy warnings before committing — never suppress them with `#[allow(...)]`.
 
 ### After changing evaluation logic
 
@@ -120,7 +124,8 @@ the documented `fr_py_objects` did not exist.
 ## Code style
 
 - **Rust:** `cargo fmt --all`. No clippy warnings.
-- **Python:** `ruff format` and `ruff check` — enforced by the pre-commit hook and CI (`just py-fmt-check`, `just py-lint`).
+- **Python:** `pre-commit run ruff-format --all-files` and `pre-commit run ruff-check --all-files` — enforced by the pre-commit hook and CI. `just py-fmt` and `just py-fmt-check` run the formatting hook, which fixes files and fails when changes are needed. Use `just py-lint` for Python linting.
+- **Ruff version:** pinned only in `.pre-commit-config.yaml`. Update that revision to change the version for local commands and CI; keep rule settings in `pyproject.toml`.
 - Don't add comments where the logic is self-evident. Comments should explain *why*, not *what* — and "why" means a constraint or invariant the code can't show, not the history of how the code got here. Never narrate a change ("used to", "previously", "the old version...") or justify it against alternatives the reader can't see; that rationale belongs in the commit message.
 
 ## Documentation style
