@@ -93,6 +93,17 @@ coco.dataset = d                    # replaces contents and rebuilds the index
 coco.createIndex()                  # supported, but a formality after assignment
 ```
 
+Editing annotations that are already there does not need the whole dataset:
+
+```python
+coco.set_ann_field("area", {ann_id: mask_area})   # one field, many annotations
+coco.update_anns([edited_ann, ...])               # whole annotations, by id
+```
+
+See [`set_ann_field`](../api/coco.md#set_ann_field) and
+[`update_anns`](../api/coco.md#update_anns) for what each one raises and when it
+re-indexes.
+
 ## Known differences
 
 | Behavior | pycocotools | hotcoco |

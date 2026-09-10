@@ -73,6 +73,8 @@ The full dataset with `images`, `annotations`, and `categories`. Writable in
 Python: assigning a dataset dict replaces the contents and rebuilds the index.
 Reading it returns a copy, so edit the dict and assign it back — see
 [Getters return copies — assign back to apply](../getting-started/migration.md#getters-return-copies-assign-back-to-apply).
+To edit annotations that are already there, [`set_ann_field`](#set_ann_field) and
+[`update_anns`](#update_anns) do it without a full rebuild.
 
 Keys outside the COCO schema (custom metadata on images, annotations, or
 categories) are preserved through load, dataset ops, and `save` — see
@@ -384,6 +386,98 @@ type:
 
 !!! tip
     A result carrying both `segmentation` and `keypoints` is treated as a segmentation result, matching pycocotools precedence.
+
+---
+
+### `set_ann_field`
+
+Set one field on the named annotations, keeping the indices current. Every other
+field of each annotation is carried over, so a partial edit cannot drop the rest
+of the record.
+
+A field outside the COCO schema is a custom key. Setting one the annotations
+already carry works like any other field; adding a new one needs `create=True`,
+so a misspelled schema field — `"Area"`, `"iscrowed"` — raises instead of quietly
+landing beside the field you meant to change.
+
+This is what evaluating one dataset under several IoU types needs: each
+annotation's active `area` follows the box for `bbox` and the mask for `segm`.
+
+=== "Python"
+
+    ```python
+    set_ann_field(field: str, values: dict[int, Any], *, create: bool = False) -> None
+    ```
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `field` | `str` | Annotation key to set, for example `"area"`. Cannot be `"id"`. |
+    | `values` | `dict[int, Any]` | Annotation ID to new value. |
+    | `create` | `bool` | Allow `field` to be a custom key the annotations do not have yet. Default `False`. |
+
+    ```python
+    mask_areas = {ann["id"]: mask.area(coco.ann_to_rle(ann)) for ann in coco.dataset["annotations"]}
+    coco.set_ann_field("area", mask_areas)
+    ```
+
+=== "Rust"
+
+    Python only. In Rust, edit `coco.dataset.annotations` and call
+    `create_index()`, or use `update_anns` below.
+
+Raises `KeyError` if an annotation ID is not in the dataset, or if `field` is
+neither a COCO field nor a custom key already on the annotation while `create` is
+`False`; `TypeError` if a value does not fit the field, as `{1: "big"}` does not
+fit `"area"`; and `ValueError` for `field="id"`. Nothing is written in any of
+those cases.
+
+---
+
+### `update_anns`
+
+Replace whole annotations, matched by `id`, keeping the indices current. The
+targeted counterpart to assigning [`dataset`](#dataset): it edits the annotations
+you name instead of rebuilding everything. Ids do not move, so only a
+replacement that changes an `image_id` or a `category_id` costs a re-index.
+
+Each dict **replaces** its annotation rather than merging into it — keys you
+leave out come back as their defaults. Use `set_ann_field` to change one field
+and keep the rest.
+
+=== "Python"
+
+    ```python
+    update_anns(anns: list[dict]) -> None
+    ```
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `anns` | `list[dict]` | Annotation dicts, each with an `id` already in the dataset. |
+
+    ```python
+    anns = coco.dataset["annotations"]
+    for ann in anns:
+        ann["area"] = ann["bbox"][2] * ann["bbox"][3]
+    coco.update_anns(anns)
+    ```
+
+=== "Rust"
+
+    ```rust
+    fn update_anns(&mut self, anns: Vec<Annotation>) -> Result<(), UnknownAnnIds>
+    ```
+
+Raises `KeyError` if a dict has no `id`, or names an `id` the dataset does not
+have; `TypeError` if the argument is not a list or an element is not a dict; and
+`ValueError` if a dict is missing a required field or holds a value that does not
+fit it, the same errors assigning `dataset` raises. Nothing is written in any of
+those cases. In a dataset with duplicate annotation IDs, the last occurrence is
+the one replaced — the record the ID lookup holds.
+
+!!! tip
+    A `COCOeval` copies both datasets when it is constructed, so an evaluator
+    built before the mutation keeps evaluating the old annotations. Mutate
+    first, then construct the evaluator.
 
 ---
 

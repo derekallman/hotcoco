@@ -835,3 +835,165 @@ def test_encode_rejects_wide_dtypes_with_a_readable_message():
 
     with pytest.raises(TypeError, match=r"mask must be a numpy array"):
         mask.encode([[0, 1], [1, 0]])
+
+
+# ---------------------------------------------------------------------------
+# Annotation mutators: update_anns / set_ann_field
+# ---------------------------------------------------------------------------
+
+
+def _size_bucket_fixture():
+    """One GT box of 400 px² (small) with a detection on top of it."""
+    gt = _make_minimal_gt("bbox", annotations=[_make_bbox_ann(1, bbox=[10.0, 10.0, 20.0, 20.0])])
+    coco_gt = COCO(gt)
+    coco_dt = coco_gt.load_res([_make_bbox_det(bbox=[10.0, 10.0, 20.0, 20.0], score=0.9)])
+    return coco_gt, coco_dt
+
+
+def _bbox_stats(coco_gt, coco_dt):
+    ev = COCOeval(coco_gt, coco_dt, "bbox")
+    with suppress_output(stderr=False):
+        ev.run()
+    return ev.stats
+
+
+def test_set_ann_field_area_moves_the_size_bucket_metrics():
+    # The multi-IoU-type case: an annotation's active `area` has to follow the
+    # box for bbox and the mask for segm. Reading `coco.dataset`, editing the
+    # copy, and evaluating changes nothing — the mutator is what makes it land.
+    coco_gt, coco_dt = _size_bucket_fixture()
+    before = _bbox_stats(coco_gt, coco_dt)
+    assert before[3] == pytest.approx(1.0), "400 px² starts in the small bucket"
+    assert before[4] == -1.0, "and nothing is medium yet"
+
+    # In-place mutation of the copy stays a no-op, as documented.
+    coco_gt.dataset["annotations"][0]["area"] = 5000.0
+    unchanged = _bbox_stats(coco_gt, coco_dt)
+    assert unchanged[3] == pytest.approx(1.0)
+    assert unchanged[4] == -1.0
+
+    coco_gt.set_ann_field("area", {1: 5000.0})
+    after = _bbox_stats(coco_gt, coco_dt)
+    assert after[3] == -1.0, "no small ground truth is left"
+    assert after[4] == pytest.approx(1.0), "5000 px² is a medium annotation"
+
+
+def test_set_ann_field_keeps_the_other_fields():
+    gt = _make_minimal_gt("bbox", annotations=[_make_bbox_ann(1, iscrowd=1, note="keep me")])
+    coco = COCO(gt)
+
+    coco.set_ann_field("area", {1: 7.0})
+
+    ann = coco.dataset["annotations"][0]
+    assert ann["area"] == 7.0
+    assert ann["bbox"] == [10.0, 10.0, 100.0, 100.0]
+    assert ann["iscrowd"] == 1
+    assert ann["note"] == "keep me", "custom keys survive the round-trip"
+
+
+def test_update_anns_replaces_whole_annotations():
+    gt = _make_minimal_gt(
+        "bbox",
+        images=[{"id": 1, "width": 640, "height": 480}, {"id": 2, "width": 640, "height": 480}],
+        annotations=[_make_bbox_ann(1), _make_bbox_ann(2)],
+    )
+    coco = COCO(gt)
+
+    anns = coco.dataset["annotations"]
+    anns[1]["image_id"] = 2
+    coco.update_anns([anns[1]])
+
+    assert coco.get_ann_ids(img_ids=[1]) == [1]
+    assert coco.get_ann_ids(img_ids=[2]) == [2], "the index followed the moved annotation"
+
+
+def test_mutators_reject_unknown_annotation_ids():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(KeyError):
+        coco.set_ann_field("area", {99: 1.0})
+    with pytest.raises(KeyError):
+        coco.update_anns([_make_bbox_ann(99)])
+    with pytest.raises(KeyError):
+        coco.update_anns([{"image_id": 1, "category_id": 1, "area": 1.0}])
+
+    # Nothing was written by any of the three.
+    assert coco.dataset["annotations"][0]["area"] == 10000.0
+    assert len(coco.dataset["annotations"]) == 1
+
+
+def test_set_ann_field_refuses_to_rekey():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(ValueError, match="cannot change 'id'"):
+        coco.set_ann_field("id", {1: 2})
+
+
+def test_set_ann_field_handles_scalar_and_shaped_fields_alike():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    coco.set_ann_field("iscrowd", {1: True})
+    assert coco.dataset["annotations"][0]["iscrowd"] == 1
+    coco.set_ann_field("iscrowd", {1: 0})
+    assert coco.dataset["annotations"][0]["iscrowd"] == 0
+
+    # Shaped fields and custom keys take the dict round-trip instead.
+    coco.set_ann_field("bbox", {1: [1.0, 2.0, 3.0, 4.0]})
+    assert coco.dataset["annotations"][0]["bbox"] == [1.0, 2.0, 3.0, 4.0]
+    coco.set_ann_field("provenance", {1: "hand-drawn"}, create=True)
+    assert coco.dataset["annotations"][0]["provenance"] == "hand-drawn"
+    # Already on the record now, so no flag needed to change it again.
+    coco.set_ann_field("provenance", {1: "traced"})
+    assert coco.dataset["annotations"][0]["provenance"] == "traced"
+
+
+def test_set_ann_field_rejects_a_value_that_does_not_fit():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises((TypeError, ValueError)):
+        coco.set_ann_field("area", {1: "big"})
+    assert coco.dataset["annotations"][0]["area"] == 10000.0
+
+
+def test_update_anns_input_shape():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(0)]))
+
+    with pytest.raises(TypeError):
+        coco.update_anns(["not a dict"])
+
+    # Annotation id 0 is a real id, told apart from an absent "id" key.
+    edited = coco.dataset["annotations"][0]
+    edited["area"] = 5.0
+    coco.update_anns([edited])
+    assert coco.dataset["annotations"][0]["area"] == 5.0
+
+
+def test_set_ann_field_catches_a_misspelled_field():
+    # A typo used to land as a custom key, leaving the intended edit undone with
+    # nothing raised — the silent no-op these methods exist to remove.
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(KeyError, match="Area"):
+        coco.set_ann_field("Area", {1: 5000.0})
+
+    ann = coco.dataset["annotations"][0]
+    assert ann["area"] == 10000.0
+    assert "Area" not in ann
+
+
+def test_set_ann_field_reports_a_negative_id_as_a_lookup_failure():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(KeyError):
+        coco.set_ann_field("area", {-1: 5.0})
+    with pytest.raises(TypeError):
+        coco.set_ann_field("area", {"1": 5.0})
+
+
+def test_update_anns_reports_the_missing_id_first():
+    # The dict is missing `image_id` too; the absent `id` is the more useful
+    # diagnostic, so it must not be pre-empted by the conversion.
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(KeyError, match="id"):
+        coco.update_anns([{"area": 1.0}])

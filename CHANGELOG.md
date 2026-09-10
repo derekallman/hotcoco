@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **`coco --version`** prints the installed hotcoco version. `coco-eval --version`
   already did.
+- **`COCO.set_ann_field` and `COCO.update_anns`** edit annotations that are
+  already loaded, without rebuilding the dataset. `coco.dataset` returns a copy,
+  so an in-place edit through it is a silent no-op, and the only documented way
+  to apply one was to assign the whole dataset back — too coarse for evaluating
+  one dataset under several IoU types, where each annotation's active `area` has
+  to follow the box for `bbox` and the mask for `segm`.
+  `set_ann_field("area", {ann_id: value})` sets one field and keeps every other
+  field of each record — a field outside the COCO schema is a custom key, and
+  adding one the annotations do not carry yet needs `create=True`, so a
+  misspelled schema field raises instead of landing quietly beside the field you
+  meant to change; `update_anns([ann, ...])` replaces whole annotations,
+  matched by `id`. Both keep the indices current, the way assigning `dataset`
+  does, and both raise `KeyError` on an id the dataset does not have rather than
+  skipping it — a silent skip is the failure they exist to remove. Editing a
+  field the indices do not key on costs one pass over the annotations you pass,
+  not one over the dataset. Re-indexing from a mutator no longer re-reports
+  duplicate annotation ids: that report is a load-time event, so a loop of edits
+  on a dataset with duplicate ids no longer grows `load_warnings` or reprints to
+  stderr once per edit. An explicit `createIndex()` still reports, as before. `update_anns` is also on the Rust `COCO`, alongside
+  a new `UnknownAnnIds` error type. A `COCOeval` copies both datasets at construction,
+  so mutate first and build the evaluator afterwards.
 
 ### Changed
 

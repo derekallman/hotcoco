@@ -28,6 +28,22 @@ pub enum Error {
     Other(String),
 }
 
+/// Annotation ids handed to [`COCO::update_anns`](crate::COCO::update_anns)
+/// that the dataset does not have.
+///
+/// Its own type rather than an [`Error`] variant so a binding can map exactly
+/// this failure to a lookup error — Python's `KeyError` — without matching on a
+/// message string, and without a new variant on the public `Error` enum.
+#[derive(Debug, thiserror::Error)]
+#[error("annotation id(s) not in this dataset: {0:?}")]
+pub struct UnknownAnnIds(pub Vec<u64>);
+
+impl From<UnknownAnnIds> for Error {
+    fn from(e: UnknownAnnIds) -> Self {
+        Error::Other(e.to_string())
+    }
+}
+
 impl From<String> for Error {
     fn from(s: String) -> Self {
         Error::Other(s)

@@ -25,7 +25,7 @@ macro_rules! req {
 /// The dict keys each record type owns. Any other key on an incoming dict is a
 /// custom key, preserved through the `extra` map (serde-flattened in the core
 /// types) so `load → filter → save` keeps user metadata the way pycocotools does.
-const ANNOTATION_KEYS: &[&str] = &[
+pub(crate) const ANNOTATION_KEYS: &[&str] = &[
     "id",
     "image_id",
     "category_id",
@@ -213,6 +213,43 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
         is_group_of,
         extra,
     })
+}
+
+/// Set one scalar COCO field on a copy of `ann`, without a dict round-trip.
+///
+/// The fast path behind [`PyCOCO::set_ann_field`](crate::PyCOCO): only the
+/// fields whose Python form is a single number or flag are handled here.
+/// Anything else — a shaped field (`bbox`, `segmentation`, `keypoints`, `obb`),
+/// a custom key, or a value that does not extract — returns `None`, and the
+/// caller falls back to rebuilding the annotation through
+/// [`annotation_to_py`] and [`py_to_annotation`].
+///
+/// Falling back on a failed extraction rather than raising here is what keeps
+/// the two paths indistinguishable: a wrong value type is reported by
+/// `py_to_annotation`, the way it was before this fast path existed.
+pub fn set_scalar_ann_field(
+    ann: &Annotation,
+    field: &str,
+    value: &Bound<'_, PyAny>,
+) -> Option<Annotation> {
+    let mut out = ann.clone();
+    match field {
+        "area" => out.area = Some(value.extract().ok()?),
+        "score" => out.score = Some(value.extract().ok()?),
+        "image_id" => out.image_id = value.extract().ok()?,
+        "category_id" => out.category_id = value.extract().ok()?,
+        "num_keypoints" => out.num_keypoints = Some(value.extract().ok()?),
+        "is_group_of" => out.is_group_of = Some(value.extract().ok()?),
+        // Same bool-or-int leniency `py_to_annotation` applies.
+        "iscrowd" => {
+            out.iscrowd = value
+                .extract::<bool>()
+                .or_else(|_| value.extract::<u8>().map(|i| i != 0))
+                .ok()?;
+        }
+        _ => return None,
+    }
+    Some(out)
 }
 
 fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {

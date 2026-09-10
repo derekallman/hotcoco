@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::error::UnknownAnnIds;
 use crate::mask;
 use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
 
@@ -294,7 +295,8 @@ impl COCO {
         coco
     }
 
-    /// Rebuild the internal query indices from `dataset`.
+    /// Rebuild the internal query indices from `dataset`, and report duplicate
+    /// annotation ids.
     ///
     /// Call this after mutating [`dataset`](Self::dataset) directly (the
     /// pycocotools `createIndex()` idiom) — the indices are snapshots, not
@@ -304,6 +306,28 @@ impl COCO {
     /// last-write-wins in the id lookup, while per-image lists keep every
     /// occurrence — and reported via [`load_warnings`](Self::load_warnings).
     pub fn create_index(&mut self) {
+        if let Some((count, first)) = self.rebuild_index() {
+            // pycocotools parity: the id lookup keeps the last annotation with
+            // a given id, while imgToAnns keeps every occurrence — both are
+            // preserved here, and the condition is surfaced instead of silent.
+            self.warn(format!(
+                "{count} duplicate annotation id(s) found (first: {first}). Lookups by id \
+                 see only the last occurrence; per-image annotation lists keep every \
+                 occurrence, so duplicates are double-counted there (pycocotools behaves \
+                 the same way). Deduplicate ids to make this dataset unambiguous."
+            ));
+        }
+    }
+
+    /// The index rebuild alone, returning `(duplicate count, first duplicate
+    /// id)` instead of reporting it.
+    ///
+    /// Split out because reporting is a *load-time* event: it prints to stderr
+    /// and appends to [`load_warnings`](Self::load_warnings), which is right
+    /// once per dataset and wrong once per edit. [`update_anns`](Self::update_anns)
+    /// re-indexes as often as a caller edits, so it rebuilds through here and
+    /// leaves the warning to the load and to explicit `create_index()` calls.
+    fn rebuild_index(&mut self) -> Option<(usize, u64)> {
         let n_anns = self.dataset.annotations.len();
         let n_imgs = self.dataset.images.len();
         let n_cats = self.dataset.categories.len();
@@ -342,17 +366,6 @@ impl COCO {
                 .or_default()
                 .push(ann.image_id);
         }
-        if let Some(id) = first_dup {
-            // pycocotools parity: the id lookup keeps the last annotation with
-            // a given id, while imgToAnns keeps every occurrence — both are
-            // preserved here, and the condition is surfaced instead of silent.
-            self.warn(format!(
-                "{dup_ann_ids} duplicate annotation id(s) found (first: {id}). Lookups by id \
-                 see only the last occurrence; per-image annotation lists keep every \
-                 occurrence, so duplicates are double-counted there (pycocotools behaves \
-                 the same way). Deduplicate ids to make this dataset unambiguous."
-            ));
-        }
 
         for (i, img) in self.dataset.images.iter().enumerate() {
             self.imgs.insert(img.id, i);
@@ -368,6 +381,52 @@ impl COCO {
             ids.dedup();
         }
         // img_cat_to_anns stays in JSON array order — see the field doc.
+
+        first_dup.map(|id| (dup_ann_ids, id))
+    }
+
+    /// Replace annotations by id, re-indexing only when the replacement moves
+    /// one.
+    ///
+    /// The targeted counterpart to replacing the whole
+    /// [`dataset`](Self::dataset): each annotation in `anns` overwrites the one
+    /// that carries the same `id`. Ids do not move, so the id lookup survives
+    /// untouched; the per-image and per-category indices are rebuilt only if a
+    /// replacement changes an `image_id` or a `category_id`, which is what they
+    /// key on. Editing `area` across a whole dataset — the multi-IoU-type case —
+    /// therefore costs one pass over `anns`, not one over the dataset.
+    ///
+    /// Every id is checked before anything is written: an id that is not in the
+    /// dataset returns [`UnknownAnnIds`] and leaves the dataset untouched, so a
+    /// partial update never happens. Silently skipping unknown ids would
+    /// reproduce the no-op that this method exists to remove.
+    ///
+    /// In a dataset with duplicate annotation ids, the id lookup holds the
+    /// *last* occurrence (pycocotools parity — see
+    /// [`create_index`](Self::create_index)), so that is the one replaced.
+    pub fn update_anns(&mut self, anns: Vec<Annotation>) -> std::result::Result<(), UnknownAnnIds> {
+        let mut targets = Vec::with_capacity(anns.len());
+        let mut missing = Vec::new();
+        for ann in &anns {
+            match self.anns.get(&ann.id) {
+                Some(&i) => targets.push(i),
+                None => missing.push(ann.id),
+            }
+        }
+        if !missing.is_empty() {
+            return Err(UnknownAnnIds(missing));
+        }
+
+        let mut moved = false;
+        for (i, ann) in targets.into_iter().zip(anns) {
+            let old = &self.dataset.annotations[i];
+            moved |= old.image_id != ann.image_id || old.category_id != ann.category_id;
+            self.dataset.annotations[i] = ann;
+        }
+        if moved {
+            self.rebuild_index();
+        }
+        Ok(())
     }
 
     /// Get annotation IDs matching the given filters.

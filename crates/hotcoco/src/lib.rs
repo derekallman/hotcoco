@@ -83,7 +83,7 @@ pub use detection::{
     EvalResults, EvalShape, FreqGroup, GtStatus, ImageDiagnostics, ImageSummary, LabelError,
     LabelErrorType, MetricDef, SliceResult, SlicedResults, TideErrors, compare,
 };
-pub use error::Error;
+pub use error::{Error, UnknownAnnIds};
 // Re-exported at the root because it is the shape of `EvalImg`'s per-threshold
 // fields — a consumer holding an `EvalImg` needs the type nameable.
 pub use primitives::greedy::ThreshMatrix;

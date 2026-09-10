@@ -6552,3 +6552,116 @@ fn test_keypoints_eval_end_to_end() {
     ];
     assert_stats(stats, &expected, &keys);
 }
+
+// --- update_anns: targeted annotation edits without a dataset rebuild -------
+
+#[test]
+fn update_anns_replaces_by_id_and_reindexes() {
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1), img(2)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0]), ann(2, [0.0, 0.0, 4.0, 4.0])],
+    ));
+
+    // Move annotation 2 to image 2 and give it a new area — the move is what
+    // forces the re-index, and a stale index would show up here.
+    let moved = ann(2, [0.0, 0.0, 4.0, 4.0]).in_img(2).with_area(999.0);
+    coco.update_anns(vec![moved]).unwrap();
+
+    assert_eq!(coco.get_ann(2).unwrap().area, Some(999.0));
+    assert_eq!(coco.get_ann_ids_for_img(1), &[1]);
+    assert_eq!(coco.get_ann_ids_for_img(2), &[2]);
+    assert_eq!(coco.get_ann_ids_for_img_cat(2, 1), &[2]);
+    // The area filter answers from the replaced record, not the loaded one.
+    assert_eq!(
+        coco.get_ann_ids(&[], &[], Some([500.0, 2000.0]), None),
+        vec![2]
+    );
+}
+
+#[test]
+fn update_anns_edit_in_place_keeps_the_indices_current() {
+    // An edit that moves nothing skips the re-index — the lookups must still
+    // answer from the replaced record.
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0])],
+    ));
+
+    coco.update_anns(vec![ann(1, [0.0, 0.0, 10.0, 10.0]).with_area(7.0)])
+        .unwrap();
+
+    assert_eq!(coco.get_ann(1).unwrap().area, Some(7.0));
+    assert_eq!(coco.get_ann_ids_for_img(1), &[1]);
+    assert_eq!(coco.get_ann_ids_for_img_cat(1, 1), &[1]);
+    assert_eq!(coco.load_anns(&[1])[0].area, Some(7.0));
+}
+
+#[test]
+fn update_anns_unknown_id_errors_and_writes_nothing() {
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0])],
+    ));
+
+    let edit = ann(1, [0.0, 0.0, 10.0, 10.0]).with_area(1.0);
+    let bogus = ann(7, [0.0, 0.0, 10.0, 10.0]).with_area(2.0);
+    let err = coco.update_anns(vec![edit, bogus]).unwrap_err();
+
+    assert_eq!(err.0, vec![7]);
+    // The valid edit in the same call must not have landed either.
+    assert_eq!(coco.get_ann(1).unwrap().area, Some(100.0));
+    assert_eq!(coco.dataset.annotations.len(), 1);
+}
+
+#[test]
+fn update_anns_keeps_the_last_of_duplicate_ids() {
+    // pycocotools parity: the id lookup holds the last occurrence, so that is
+    // the record `update_anns` replaces.
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![
+            ann(1, [0.0, 0.0, 1.0, 1.0]).with_area(1.0),
+            ann(1, [0.0, 0.0, 2.0, 2.0]).with_area(2.0),
+        ],
+    ));
+
+    coco.update_anns(vec![ann(1, [0.0, 0.0, 2.0, 2.0]).with_area(42.0)])
+        .unwrap();
+
+    assert_eq!(coco.dataset.annotations[0].area, Some(1.0));
+    assert_eq!(coco.dataset.annotations[1].area, Some(42.0));
+}
+
+#[test]
+fn update_anns_does_not_re_report_duplicate_ids() {
+    // Reporting duplicate ids is a load-time event: `create_index` prints it and
+    // appends it to `load_warnings`. A mutator re-indexes as often as a caller
+    // edits, so it must not grow that list per edit.
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1), img(2)],
+        vec![cat(1, "thing")],
+        vec![
+            ann(1, [0.0, 0.0, 1.0, 1.0]),
+            ann(1, [0.0, 0.0, 2.0, 2.0]),
+            ann(2, [0.0, 0.0, 3.0, 3.0]),
+        ],
+    ));
+    assert_eq!(coco.load_warnings().len(), 1, "the load reports them once");
+
+    for _ in 0..3 {
+        // A move, so the re-index actually runs.
+        coco.update_anns(vec![ann(2, [0.0, 0.0, 3.0, 3.0]).in_img(2)])
+            .unwrap();
+        coco.update_anns(vec![ann(2, [0.0, 0.0, 3.0, 3.0]).in_img(1)])
+            .unwrap();
+    }
+    assert_eq!(coco.load_warnings().len(), 1, "and the edits stay quiet");
+
+    // An explicit `create_index()` still reports, the pycocotools idiom intact.
+    coco.create_index();
+    assert_eq!(coco.load_warnings().len(), 2);
+}
