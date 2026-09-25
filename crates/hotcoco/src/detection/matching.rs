@@ -464,6 +464,21 @@ pub(super) fn evaluate_cell(
     let gt = partition_gt(pair, area_rng, is_kp, is_oid);
     let dt = area_filter_dt(pair, area_rng);
 
+    // Nothing non-ignored on either side means this cell contributes nothing —
+    // but only skip it when there were no ground-truth ids at all, matching the
+    // original condition. The two tests read different counts: `has_content`
+    // reads the *resolved* views (non-ignored GTs, in-range detections after
+    // the score sort and `max_det` cap), while the final gate is the *raw* GT
+    // id count — the ids returned before annotation lookup, `gt_raw_count`.
+    //
+    // Both legs come from `partition_gt`/`area_filter_dt` alone, so the gate
+    // runs before `match_cell`'s five `ThreshMatrix` allocations and the
+    // greedy match — a discarded cell never pays for either.
+    let has_content = gt.num_not_ignored > 0 || dt.area_ignore.iter().any(|&ignored| !ignored);
+    if !has_content && pair.gt_raw_count == 0 {
+        return None;
+    }
+
     let mut outcome = match_cell(ctx, &gt, &dt, pair.iou_matrix, is_oid);
 
     // LVIS: on a not-exhaustively-labeled category, unmatched detections are
@@ -476,17 +491,6 @@ pub(super) fn evaluate_cell(
                 }
             }
         }
-    }
-
-    // Nothing non-ignored on either side means this cell contributes nothing —
-    // but only skip it when there were no ground-truth ids at all, matching the
-    // original condition. The two tests read different counts: `has_content`
-    // reads the *resolved* views (non-ignored GTs, in-range detections after
-    // the score sort and `max_det` cap), while the final gate is the *raw* GT
-    // id count — the ids returned before annotation lookup, `gt_raw_count`.
-    let has_content = gt.num_not_ignored > 0 || dt.area_ignore.iter().any(|&ignored| !ignored);
-    if !has_content && pair.gt_raw_count == 0 {
-        return None;
     }
 
     Some(EvalImg {

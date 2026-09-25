@@ -5900,6 +5900,84 @@ fn test_max_dets_order_is_irrelevant() {
     );
 }
 
+/// `evaluate_cell`'s omission gate must read `partition_gt`/`area_filter_dt`'s
+/// output alone, before `match_cell` runs — never anything `match_cell`
+/// computes. Three categories under the "small" area range isolate the gate's
+/// two legs: `has_content` (resolved, ignore-aware) and `gt_raw_count` (raw,
+/// pre-lookup) are not the same count, and collapsing them would either drop a
+/// cell that must survive or keep one that must not.
+#[test]
+fn test_evaluate_cell_gate_reads_pre_match_state() {
+    // Category 1: no GT at all, one DT sized out of the "small" bucket (area
+    // 5000 > 1024). Under "small", every DT is area-ignored and `gt_raw_count
+    // == 0` -> the cell must not exist at all.
+    //
+    // Category 2: one non-crowd GT, also area 5000, no detections. Under
+    // "small" the GT is area-ignored too, so `has_content == false` exactly as
+    // category 1 -- but `gt_raw_count == 1` must still keep the cell alive.
+    //
+    // Category 3: an ordinary small (area 400) GT/DT pair, to confirm the
+    // reorder does not disturb a real match.
+    let categories = vec![cat(1, "none"), cat(2, "ignored-gt"), cat(3, "match")];
+    let gt_ds = dataset(
+        vec![img(1)],
+        categories.clone(),
+        vec![
+            ann(1, [0.0, 0.0, 50.0, 100.0]).in_cat(2),
+            ann(2, [0.0, 0.0, 20.0, 20.0]).in_cat(3),
+        ],
+    );
+    let dt_ds = dataset(
+        vec![img(1)],
+        categories,
+        vec![
+            det(1, [0.0, 0.0, 50.0, 100.0], 0.9).in_cat(1),
+            det(2, [0.0, 0.0, 20.0, 20.0], 0.9).in_cat(3),
+        ],
+    );
+
+    let coco_gt = COCO::from_dataset(gt_ds);
+    let coco_dt = COCO::from_dataset(dt_ds);
+    let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
+    ev.evaluate();
+
+    let small_idx = ev
+        .params
+        .area_range_idx("small")
+        .expect("bbox params define a small range");
+    let small = ev.params.area_ranges[small_idx].range;
+    let all = ev.params.all_area_range();
+
+    let cells: Vec<&hotcoco::EvalImg> = ev.eval_imgs().iter().flatten().collect();
+
+    assert!(
+        !cells
+            .iter()
+            .any(|e| e.category_id == 1 && e.area_rng == small),
+        "GT-less cell with every DT area-ignored must be omitted, not merely empty"
+    );
+
+    let cat2_small = cells
+        .iter()
+        .find(|e| e.category_id == 2 && e.area_rng == small)
+        .expect("nonzero gt_raw_count must keep this cell alive despite has_content == false");
+    assert_eq!(cat2_small.gt_ids, vec![1]);
+    assert!(cat2_small.dt_ids.is_empty());
+    assert!(
+        cat2_small.gt_ignore[0],
+        "GT is area-ignored under \"small\""
+    );
+
+    let cat3_all = cells
+        .iter()
+        .find(|e| e.category_id == 3 && e.area_rng == all)
+        .expect("an ordinary matched cell must still evaluate");
+    assert!(
+        cat3_all.dt_matched[(0, 0)],
+        "matching cell must still match after the reorder"
+    );
+}
+
 /// One shared score order per `(category, area)` must reproduce every per-cap
 /// accumulation exactly.
 ///

@@ -69,6 +69,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `accumulate_arrays_are_independent_of_thread_count` checks every output
   array and a `slice_by` re-accumulation bitwise across 1 to 16 threads on a
   dataset with tied scores across images.
+- **`evaluate()` skips a discarded cell's match allocations instead of building
+  them first.** `evaluate_cell()`'s omission gate — a cell with nothing
+  non-ignored on either side and no raw ground-truth ids at all — ran after
+  `match_cell()` had already allocated its five `ThreshMatrix`es and run the
+  greedy matcher. The gate reads only `partition_gt`'s and `area_filter_dt`'s
+  output, never `match_cell`'s, so it now runs first and a discarded cell pays
+  for neither. `precision`, `recall`, `scores`, and `stats` are bit-identical
+  to before on the same ten configurations A1/A2/A3 were checked against.
+  `test_evaluate_cell_gate_reads_pre_match_state` pins the gate's two separate
+  legs — `has_content` (resolved, ignore-aware) and the raw ground-truth id
+  count — with a case for each: a category with detections but no ground
+  truth at all is omitted, while a category with one area-ignored ground
+  truth and no detections is kept even though it is equally "empty" by the
+  `has_content` reading.
 
 ### Fixed
 
@@ -315,7 +329,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   report, and `ev.results()` in Python - the artifacts users archive and come
   back to. Previously the marker existed only on `EvalReport`, which nothing that
   writes a file uses, so comparability died with the process.
-
 
 - **`hotcoco.metrics` and `hotcoco.primitives` — the functional layer.** Metric
   functions you can call on plain arrays, with no evaluator, no dataset, and no COCO
