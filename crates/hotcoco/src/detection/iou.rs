@@ -9,14 +9,29 @@ use crate::types::Rle;
 
 use super::{COCOeval, EvalMode};
 
-/// Every in-scope annotation's mask, converted to RLE once per `evaluate()`.
+/// Every annotation's mask that a both-non-empty `(img, cat)` cell will
+/// actually read, converted to RLE once per `evaluate()`.
 ///
-/// pycocotools converts in `_prepare`, before the IoU loop; converting inside
-/// the per-cell IoU computation instead put `fr_polys` — the 5×-upsampled
-/// polygon rasterizer — at ~48% of all samples in a val2017 segm profile, and
-/// re-paid it in every cross-category matrix `confusion_matrix` and `tide`
-/// build. Rebuilt on each `evaluate()` call, exactly like the `ious` cache, so
-/// it can never go stale relative to the datasets it was drawn from.
+/// pycocotools converts every in-scope mask in `_prepare`, before the IoU
+/// loop; converting inside the per-cell IoU computation instead put
+/// `fr_polys` — the 5×-upsampled polygon rasterizer — at ~48% of all samples
+/// in a val2017 segm profile. hotcoco's `_prepare` twin narrows that further:
+/// [`COCOeval::compute_iou_static`] never reads a mask from a cell with only
+/// GT or only DT, so this only converts the ids [`COCOeval::segm_cell_ann_ids`]
+/// finds in a cell with both — a DETR-shaped result set puts most detections
+/// in a cell with no matching GT. Rebuilt on each `evaluate()` call, exactly
+/// like the `ious` cache, so it can never go stale relative to the datasets
+/// it was drawn from.
+///
+/// A GT-less-cell DT id — excluded from this cache on purpose — still gets a
+/// correct answer from `confusion_matrix`/`tide`'s cross-category matrices:
+/// they fall back to converting it on the spot (see
+/// [`gt_rle_or_convert`](Self::gt_rle_or_convert)) once per image per call,
+/// the same per-id cost `_prepare` used to pay upfront for every id in scope.
+/// That fallback isn't itself cached, so calling `confusion_matrix()`/`tide()`
+/// more than once repeats it each time — a trade `_prepare`'s original
+/// "re-paid it in every … build" comment was written to avoid, now accepted
+/// for the ids this cache no longer holds.
 ///
 /// Annotations without a convertible mask (no segmentation *and* no bbox) are
 /// absent; readers fall back to [`COCO::ann_to_rle`].
@@ -47,30 +62,29 @@ impl SegmRles {
         coco_dt.ann_to_rle(coco_dt.get_ann(id)?)
     }
 
-    /// Convert every in-scope annotation, in parallel.
+    /// Convert exactly the annotations that [`COCOeval::compute_segm_iou_static`]
+    /// will actually read: the GT/DT ids living in `(img, cat)` cells where
+    /// *both* sides are non-empty.
     ///
-    /// Scope is delegated to [`COCO::get_ann_ids`] — the owner of "which
-    /// annotations do these params cover" — rather than a third spelling of
-    /// the img/cat filter, so a run filtered to a handful of images does not
-    /// rasterize the whole dataset and the filter cannot drift from the one
-    /// the evaluation itself uses.
-    pub(super) fn prepare(coco_gt: &COCO, coco_dt: &COCO, params: &Params) -> Self {
-        let cat_ids: &[u64] = if params.use_cats {
-            &params.cat_ids
-        } else {
-            &[]
-        };
-
-        let convert = |coco: &COCO| -> HashMap<u64, Rle> {
-            coco.get_ann_ids(&params.img_ids, cat_ids, None, None)
-                .into_par_iter()
-                .filter_map(|id| Some((id, coco.ann_to_rle(coco.get_ann(id)?)?)))
+    /// [`COCOeval::compute_iou_static`] returns early — no RLE ever read —
+    /// for a cell with only GT or only DT, so rasterizing that cell's masks
+    /// here bought nothing; `gt_ids`/`dt_ids` come from
+    /// [`COCOeval::segm_cell_ann_ids`], the one place that walks the
+    /// `(img, cat)` index to find the both-non-empty cells. A caller outside
+    /// that shape (`confusion_matrix`, `tide`, a cross-category read) still
+    /// gets a correct answer on a cache miss — see
+    /// [`gt_rle_or_convert`](Self::gt_rle_or_convert) — just paid for on the
+    /// spot instead of upfront.
+    pub(super) fn prepare(coco_gt: &COCO, coco_dt: &COCO, gt_ids: &[u64], dt_ids: &[u64]) -> Self {
+        let convert = |coco: &COCO, ids: &[u64]| -> HashMap<u64, Rle> {
+            ids.par_iter()
+                .filter_map(|&id| Some((id, coco.ann_to_rle(coco.get_ann(id)?)?)))
                 .collect()
         };
 
         SegmRles {
-            gt: convert(coco_gt),
-            dt: convert(coco_dt),
+            gt: convert(coco_gt, gt_ids),
+            dt: convert(coco_dt, dt_ids),
         }
     }
 }
@@ -332,9 +346,104 @@ impl COCOeval {
             dt_ids,
             gt_ids,
             eval_mode,
-            |id| coco_dt.get_ann(id)?.obb,
-            |ann, _id| ann.obb,
+            |id| coco_dt.get_ann(id)?.obb.as_deref().copied(),
+            |ann, _id| ann.obb.as_deref().copied(),
             sim::obb_iou,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::coco::COCO;
+    use crate::params::IouType;
+    use crate::types::{Annotation, Category, Dataset, Image, Segmentation};
+
+    use super::COCOeval;
+
+    /// A whole-image, all-background RLE — pixel content is irrelevant here,
+    /// only that `ann_to_rle` succeeds.
+    fn blank_rle(h: u32, w: u32) -> Segmentation {
+        Segmentation::UncompressedRle {
+            size: [h, w],
+            counts: vec![h * w],
+        }
+    }
+
+    fn segm_ann(id: u64, category_id: u64, score: Option<f64>) -> Annotation {
+        Annotation {
+            id,
+            image_id: 1,
+            category_id,
+            bbox: Some([0.0, 0.0, 4.0, 4.0]),
+            area: Some(16.0),
+            segmentation: Some(blank_rle(10, 10)),
+            score,
+            ..Default::default()
+        }
+    }
+
+    /// Regression for candidate F: the segm RLE cache must hold ids from
+    /// `(img, cat)` cells with both a GT and a DT, and skip ids from a
+    /// DT-only cell — `compute_iou_static` never reads that cell's mask, so
+    /// converting it was pure waste. Reverting `SegmRles::prepare` to convert
+    /// every in-scope id regardless of pairing makes `cat 2`'s DT id 102
+    /// reappear in the cache, and this test catches it.
+    #[test]
+    fn segm_rle_cache_skips_dt_only_cells() {
+        let img = Image {
+            id: 1,
+            height: 10,
+            width: 10,
+            ..Default::default()
+        };
+        let gt = Dataset {
+            images: vec![img.clone()],
+            categories: vec![
+                Category {
+                    id: 1,
+                    name: "matched".into(),
+                    ..Default::default()
+                },
+                Category {
+                    id: 2,
+                    name: "dt_only".into(),
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![segm_ann(1, 1, None)],
+            ..Default::default()
+        };
+        let dt = Dataset {
+            images: vec![img],
+            categories: gt.categories.clone(),
+            annotations: vec![
+                segm_ann(101, 1, Some(0.9)), // cat 1: GT and DT both present
+                segm_ann(102, 2, Some(0.8)), // cat 2: DT only, no GT
+            ],
+            ..Default::default()
+        };
+
+        let mut ev = COCOeval::new(
+            COCO::from_dataset(gt),
+            COCO::from_dataset(dt),
+            IouType::Segm,
+        );
+        ev.evaluate();
+
+        let cache = ev.segm_rles.expect("segm run always builds the RLE cache");
+        assert!(
+            cache.gt.contains_key(&1),
+            "GT id in a both-non-empty cell must be cached"
+        );
+        assert!(
+            cache.dt.contains_key(&101),
+            "DT id in a both-non-empty cell must be cached"
+        );
+        assert!(
+            !cache.dt.contains_key(&102),
+            "DT id in a DT-only cell (cat 2 has no GT) must not be cached — \
+             compute_iou_static never reads it"
+        );
     }
 }

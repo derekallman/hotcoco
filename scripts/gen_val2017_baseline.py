@@ -20,13 +20,10 @@ from __future__ import annotations
 import importlib.metadata as md
 import json
 import sys
-from pathlib import Path
 
-from helpers import VAL2017, suppress_output
-from pycocotools.coco import COCO as PyCOCO
-from pycocotools.cocoeval import COCOeval as PyCOCOeval
+from helpers import FIXTURES_DIR, VAL2017, reference_stats
 
-OUT = Path(__file__).parent / "fixtures" / "val2017_expected.json"
+OUT = FIXTURES_DIR / "val2017_expected.json"
 
 COMMENT = (
     "Expected COCO val2017 metrics, produced by PYCOCOTOOLS (not hotcoco) on the "
@@ -51,15 +48,9 @@ def main() -> int:
         if not gt.exists() or not dt.exists():
             missing.append(name)
             continue
-        with suppress_output(stderr=False):
-            coco_gt = PyCOCO(str(gt))
-            coco_dt = coco_gt.loadRes(str(dt))
-            ev = PyCOCOeval(coco_gt, coco_dt, name)
-            ev.evaluate()
-            ev.accumulate()
-            ev.summarize()
-        out["metrics"][name] = [float(v) for v in ev.stats]
-        print(f"  {name:<10} {len(ev.stats)} metrics")
+        stats = reference_stats(gt, dt, name)
+        out["metrics"][name] = stats
+        print(f"  {name:<10} {len(stats)} metrics")
 
     if missing:
         print(f"\nMissing data for: {', '.join(missing)}. Run `just download-coco` first.")

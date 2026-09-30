@@ -71,7 +71,7 @@ impl COCOeval {
         n_bins: usize,
         iou_threshold: f64,
     ) -> crate::error::Result<CalibrationResult> {
-        if self.eval_imgs.is_empty() {
+        if !self.evaluated() {
             return Err("calibration() requires evaluate() to be called first".into());
         }
 

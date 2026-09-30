@@ -1,7 +1,6 @@
-"""
-LVIS evaluation parity test: lvis-api LVISEval vs hotcoco LVISeval.
+"""LVIS parity: lvis-api LVISEval vs hotcoco LVISeval.
 
-Runs both implementations on a synthetic LVIS dataset covering:
+Runs both implementations on synthetic LVIS datasets covering:
   - neg_category_ids  (DT on confirmed-absent category → FP)
   - not_exhaustive_category_ids  (unmatched DT → ignored)
   - frequency field  (APr / APc / APf grouping)
@@ -9,31 +8,32 @@ Runs both implementations on a synthetic LVIS dataset covering:
   - Mixed scenarios: some images have GT, some don't
 
 Compares all 13 LVIS metrics between the two implementations.
-Tolerance: 1e-4 (same as our COCO parity tests).
+Tolerance: 1e-4 (same as the COCO parity tests).
+
+    uv run pytest tests/test_parity_lvis.py -v
 """
 
-import sys
-
 import numpy as np
-from helpers import written_json
+import pytest
+from helpers import compare_metrics, written_json
 
-# Compatibility shim: lvis-api uses np.float which was removed in numpy 1.24.
-# Only patch what lvis actually needs; do NOT patch np.bool (breaks numpy.ma).
+# Compatibility shim: lvis-api 0.5.3 uses np.float, removed in numpy 1.24. Only
+# patch what lvis actually needs; do NOT patch np.bool (breaks numpy.ma).
 np.float = float  # type: ignore[attr-defined]
-np.int = int  # type: ignore[attr-defined]
 
-# ── imports ──────────────────────────────────────────────────────────────────
 from hotcoco import COCO, LVISeval  # noqa: E402
 from lvis import LVIS, LVISEval  # noqa: E402
 from lvis import LVISResults as LVISResultsRef  # noqa: E402
 
-EXPECTED_METRIC_COUNT = 13  # LVIS: 12 COCO-style + AR@300, APr/APc/APf
 TOL = 1e-4
 
 # Every scenario below builds bbox data, so this is the only iou_type these
-# comparisons ever exercise. LVIS segm parity is *not* covered by this script;
-# `_build_three_freq` used to claim it did.
+# comparisons ever exercise. LVIS segm parity is *not* covered here.
 IOU_TYPE = "bbox"
+
+# The 13 LVIS metric names (12 COCO-style + AR@300, APr/APc/APf), from the
+# evaluator rather than restated, so a new metric cannot silently go uncompared.
+METRIC_NAMES = LVISeval(COCO(), COCO(), IOU_TYPE).metric_keys()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -59,53 +59,20 @@ def run_lvis_ref(gt_path, dt_list):
     lvis_dt = LVISResultsRef(lvis_gt, dt_list)
     ev = LVISEval(lvis_gt, lvis_dt, IOU_TYPE)
     ev.run()
-    ev.print_results()
     return ev.results
 
 
-def run_hotcoco(gt_path, dt_path):
+def run_hotcoco(gt_path, dt_list):
     """Run hotcoco LVISeval and return get_results() dict."""
     gt = COCO(gt_path)
-    dt = gt.load_res(dt_path)
+    dt = gt.load_res(dt_list)
     ev = LVISeval(gt, dt, IOU_TYPE)
     ev.run()
-    ev.print_results()
     return ev.get_results()
 
 
-def compare(ref, got):
-    """Compare two result dicts. Return number of failures."""
-    # lvis-api uses "AR@300" etc.; hotcoco uses the same keys
-    # lvis-api omits keys that are -1 (undefined)
-    failures = 0
-    all_keys = set(ref) | set(got)
-    # A metric missing from *both* dicts never enters the union, so it is silently
-    # never compared and the script still prints "ALL LVIS PARITY TESTS PASSED".
-    # Assert the count, the way scripts/test_parity.py does.
-    if len(all_keys) != EXPECTED_METRIC_COUNT:
-        print(
-            f"  ERROR: compared {len(all_keys)} metrics, expected {EXPECTED_METRIC_COUNT}. "
-            f"Missing from both sides: nothing can be verified about them."
-        )
-        failures += 1
-    for key in sorted(all_keys):
-        ref_v = ref.get(key, None)
-        got_v = got.get(key, None)
-        if ref_v is None and got_v is None:
-            continue
-        ref_v = -1.0 if ref_v is None else ref_v
-        got_v = -1.0 if got_v is None else got_v
-        diff = abs(ref_v - got_v)
-        status = "OK" if diff <= TOL else "FAIL"
-        if diff > TOL:
-            failures += 1
-        print(f"  {key:>10}  ref={ref_v:+.6f}  got={got_v:+.6f}  diff={diff:.2e}  {status}")
-    return failures
-
-
 # ── dataset builders ─────────────────────────────────────────────────────────
-# Each returns (gt_dataset, detections). `main` pairs them with their names; a
-# name-to-builder dispatcher sat here with one caller and an unreachable `else`.
+# Each returns (gt_dataset, detections).
 
 
 def _build_basic():
@@ -232,11 +199,9 @@ def _build_three_freq():
     5 images with various GT/DT patterns; tests that APr/APc/APf are computed
     correctly across groups.
 
-    The docstring used to say "segm". It never built masks — every annotation
-    here carries an empty `segmentation` — so LVIS *segmentation* parity is
-    unverified by this script, not merely untested by this scenario. Adding it
-    means giving these annotations real polygons and running with
-    `IOU_TYPE = "segm"`.
+    Every annotation here carries an empty `segmentation`, so this does not
+    cover LVIS *segmentation* parity. Adding it means giving these annotations
+    real polygons and running with `IOU_TYPE = "segm"`.
     """
     categories = (
         [{"id": i, "name": f"rare_{i}", "frequency": "r", "supercategory": "x"} for i in range(1, 4)]
@@ -346,9 +311,6 @@ def _build_three_freq():
     return make_lvis_gt(images, gt_anns, categories), dts
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
-
-
 def _build_edge_cases():
     """
     Edge cases:
@@ -444,38 +406,21 @@ def _build_edge_cases():
 SCENARIOS = [("basic", _build_basic), ("three_freq", _build_three_freq), ("edge_cases", _build_edge_cases)]
 
 
-def run_scenario(name, build):
-    print(f"\n{'=' * 70}")
-    print(f"Scenario: {name}")
-    print(f"{'=' * 70}")
-
+@pytest.mark.parametrize(("name", "build"), SCENARIOS, ids=[s[0] for s in SCENARIOS])
+def test_all_13_metrics_match_lvis_api(name, build):
     gt_data, dts = build()
+    with written_json(gt_data, quiet=True) as (gt_path,):
+        ref = run_lvis_ref(gt_path, dts)
+        got = run_hotcoco(gt_path, dts)
 
-    with written_json(gt_data, dts) as (gt_path, dt_path):
-        print("\n--- lvis-api (reference) ---")
-        ref_results = run_lvis_ref(gt_path, dts)
-
-        print("\n--- hotcoco ---")
-        got_results = run_hotcoco(gt_path, dt_path)
-
-        print(f"\n--- Comparison (tol={TOL}) ---")
-        failures = compare(ref_results, got_results)
-
-        if failures == 0:
-            print(f"  ✓ All metrics match for scenario '{name}'")
-        else:
-            print(f"  ✗ {failures} metric(s) FAILED for scenario '{name}'")
-        return failures
-
-
-if __name__ == "__main__":
-    total_failures = 0
-    for name, build in SCENARIOS:
-        total_failures += run_scenario(name, build)
-
-    print(f"\n{'=' * 70}")
-    if total_failures == 0:
-        print("ALL LVIS PARITY TESTS PASSED")
-    else:
-        print(f"FAILED: {total_failures} metric(s) did not match lvis-api")
-        sys.exit(1)
+    # lvis-api omits keys whose value is -1 (undefined); hotcoco reports -1.0.
+    # Both are read against the evaluator's own key list, so a key missing from
+    # both sides is a -1/-1 pair the comparison sees, not a metric it never meets.
+    unknown = (set(ref) | set(got)) - set(METRIC_NAMES)
+    assert not unknown, f"{name}: keys outside the LVIS metric list: {sorted(unknown)}"
+    ref_v = [ref.get(k, -1.0) for k in METRIC_NAMES]
+    got_v = [got.get(k, -1.0) for k in METRIC_NAMES]
+    mismatches = compare_metrics(ref_v, got_v, METRIC_NAMES, tolerance=TOL)
+    assert not mismatches, f"{name}: {len(mismatches)} metric(s) differ from lvis-api\n" + "\n".join(
+        m.line() for m in mismatches
+    )

@@ -6,6 +6,8 @@ raise rather than silently misbehave once `finalize()` has consumed it. None
 of these need the gitignored data/ directory.
 """
 
+import warnings
+
 import hotcoco
 import pytest
 from hotcoco import COCO, COCOeval, StreamingEval
@@ -82,9 +84,12 @@ class TestStreamingMatchesBatch:
         se = StreamingEval(categories(), iou_type="bbox")
         se.add_image({"id": 99, "width": 10, "height": 10}, [], [])
         ev = se.finalize()
-        # No cells were ever populated: the same "accumulate before evaluate"
-        # warning a batch COCOeval gives for a dataset with zero annotations.
-        with pytest.warns(UserWarning, match="accumulate"):
+        # No cells were ever populated, but `finalize()` still ran — the same
+        # as a batch `COCOeval.evaluate()` on a zero-annotation dataset, which
+        # does not warn on `accumulate()` either: `evaluated()` tracks whether
+        # evaluation ran, not whether it found anything.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             ev.accumulate()
         ev.summarize()
         assert all(v == -1.0 for v in ev.stats.tolist())
@@ -95,11 +100,7 @@ class TestStreamingLvisFederatedCategories:
         cats = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
         image = {"id": 1, "width": 100, "height": 100, "neg_category_ids": [2]}
         se = StreamingEval(cats, iou_type="bbox", lvis_style=True)
-        se.add_image(
-            image,
-            [],
-            [{"id": 101, "image_id": 1, "category_id": 2, "bbox": [0, 0, 10, 10], "score": 0.9}],
-        )
+        se.add_image(image, [], [{"id": 101, "image_id": 1, "category_id": 2, "bbox": [0, 0, 10, 10], "score": 0.9}])
         ev = se.finalize()
         # A confirmed-negative category is not dropped: the cell exists, and
         # the unmatched detection is not ignored (dtIgnore False) — it scores

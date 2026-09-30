@@ -40,7 +40,7 @@ impl COCOeval {
         &self,
         slices: HashMap<String, Vec<u64>>,
     ) -> crate::error::Result<SlicedResults> {
-        if self.eval_imgs.is_empty() {
+        if !self.evaluated() {
             return Err("evaluate() must be called before slice_by()".into());
         }
 

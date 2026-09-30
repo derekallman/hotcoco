@@ -111,6 +111,111 @@ class TestCustomKeysRoundTrip:
 
 
 # ---------------------------------------------------------------------------
+# Every known dict key survives decode (candidate G: interned get_item keys)
+#
+# convert.rs's decode macros (opt!/req!/opt_with!/req_with!) and the standalone
+# get_item calls in py_to_annotation/py_to_segmentation/py_to_rle now fetch
+# each key through pyo3::intern! instead of a bare `&str` literal, to avoid
+# allocating a fresh PyString per key per record. A typo in one of those
+# literals breaks silently: a required key (id, image_id) raises "dict missing
+# '<real name>'" because the interned typo never matches, and an optional key
+# (score, is_group_of, ...) just vanishes instead of raising. This round-trips
+# every field of every record type through COCO to catch either failure mode.
+# ---------------------------------------------------------------------------
+
+
+class TestKnownKeysRoundTrip:
+    def test_every_annotation_field_survives(self):
+        ds = tiny_dataset()
+        ds["annotations"] = [
+            {
+                "id": 7,
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [1.0, 2.0, 3.0, 4.0],
+                "area": 12.5,
+                "segmentation": {"size": [10, 10], "counts": [100]},
+                "iscrowd": 1,
+                "keypoints": [1.0, 2.0, 2.0],
+                "num_keypoints": 1,
+                "obb": [5.0, 5.0, 2.0, 2.0, 0.3],
+                "score": 0.75,
+                "is_group_of": 1,
+            }
+        ]
+        coco = COCO(ds)
+
+        ann = coco.dataset["annotations"][0]
+
+        assert ann["id"] == 7
+        assert ann["image_id"] == 1
+        assert ann["category_id"] == 1
+        assert ann["bbox"] == [1.0, 2.0, 3.0, 4.0]
+        assert ann["area"] == 12.5
+        assert ann["segmentation"] == {"size": [10, 10], "counts": [100]}
+        assert ann["iscrowd"] == 1
+        assert ann["keypoints"] == [1.0, 2.0, 2.0]
+        assert ann["num_keypoints"] == 1
+        assert ann["obb"] == [5.0, 5.0, 2.0, 2.0, 0.3]
+        assert ann["score"] == 0.75
+        assert ann["is_group_of"] is True
+
+    def test_every_image_field_survives(self):
+        ds = tiny_dataset()
+        ds["images"] = [
+            {
+                "id": 9,
+                "file_name": "x.jpg",
+                "height": 100,
+                "width": 100,
+                "license": 3,
+                "coco_url": "http://a",
+                "flickr_url": "http://b",
+                "date_captured": "2020-01-01",
+                "neg_category_ids": [5, 6],
+                "not_exhaustive_category_ids": [7],
+            }
+        ]
+        ds["annotations"] = [ds["annotations"][0] | {"image_id": 9}]
+        coco = COCO(ds)
+
+        img = next(i for i in coco.dataset["images"] if i["id"] == 9)
+
+        assert img["file_name"] == "x.jpg"
+        assert img["height"] == 100
+        assert img["width"] == 100
+        assert img["license"] == 3
+        assert img["coco_url"] == "http://a"
+        assert img["flickr_url"] == "http://b"
+        assert img["date_captured"] == "2020-01-01"
+        assert img["neg_category_ids"] == [5, 6]
+        assert img["not_exhaustive_category_ids"] == [7]
+
+    def test_every_category_field_survives(self):
+        ds = tiny_dataset()
+        ds["categories"] = [
+            {
+                "id": 1,
+                "name": "person",
+                "supercategory": "animal",
+                "skeleton": [[0, 1], [1, 2]],
+                "keypoints": ["nose", "eye"],
+                "frequency": "f",
+            },
+            ds["categories"][1],
+        ]
+        coco = COCO(ds)
+
+        cat = next(c for c in coco.dataset["categories"] if c["id"] == 1)
+
+        assert cat["name"] == "person"
+        assert cat["supercategory"] == "animal"
+        assert cat["skeleton"] == [[0, 1], [1, 2]]
+        assert cat["keypoints"] == ["nose", "eye"]
+        assert cat["frequency"] == "f"
+
+
+# ---------------------------------------------------------------------------
 # annToRLE returns pycocotools format
 # ---------------------------------------------------------------------------
 
@@ -310,7 +415,7 @@ def _square_mask(dtype=np.uint8):
 class TestIssue5BytesCounts:
     """The reported symptom: identical masks scoring segm AP 0.0 when `counts` is bytes.
 
-    The round-trip itself is pinned by `scripts/test_parity.py`; this is the
+    The round-trip itself is pinned by `tests/test_parity.py`; this is the
     evaluation-level check that nothing else covers.
     """
 
@@ -324,11 +429,15 @@ class TestIssue5BytesCounts:
         ev.evaluate()
         ev.accumulate()
         ev.summarize()
-        assert ev.stats[0] == 1.0
+        # A lone true positive's AP is what ``metrics.average_precision`` says
+        # it is (pycocotools' guard term puts it an ulp under 1.0), to within
+        # the summary mean's rounding.
+        lone_tp = hotcoco.metrics.average_precision([1.0], [True], 1)
+        assert ev.stats[0] == pytest.approx(lone_tp, abs=np.finfo(float).eps)
 
 
 class TestIssue5MaskEncodeDtype:
-    """What `scripts/test_parity.py` does not pin: sliced views and `int8`."""
+    """What `tests/test_parity.py` does not pin: sliced views and `int8`."""
 
     def test_sliced_view_matches_contiguous(self):
         f_order = _square_mask()
@@ -382,7 +491,7 @@ class TestIssue5SummarizeOutput:
 
 
 # ---------------------------------------------------------------------------
-# Found by scripts/fuzz_dropin.py: spellings pycocotools accepts
+# Found by tests/fuzz_dropin.py: spellings pycocotools accepts
 # ---------------------------------------------------------------------------
 
 

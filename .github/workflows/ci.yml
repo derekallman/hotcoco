@@ -93,14 +93,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@v5
 
-      # Pinned so a new ruff release cannot turn a green PR red on its own.
-      # Keep in step with the `ruff` pin in pyproject.toml's [dev] extra; these
-      # are the same checks as `just py-fmt-check` and `just py-lint`.
-      - name: Ruff format check
-        run: uvx ruff@0.15.6 format --check python/ scripts/
-
-      - name: Ruff lint
-        run: uvx ruff@0.15.6 check python/ scripts/
+      # Every hook over the whole tree. The local git hook checks only staged
+      # files, so this is what catches drift that entered some other way.
+      # Hook versions and file scopes are defined in .pre-commit-config.yaml.
+      - name: pre-commit (hygiene, Ruff, typos)
+        run: uvx pre-commit run --all-files --show-diff-on-failure
 
   python:
     name: Python smoke test (${{ matrix.python-version }})
@@ -131,9 +128,9 @@ jobs:
           source .venv/bin/activate
           # pycocotools and lvis are the references the differential suites compare
           # against. Without them, CI's only correctness check was a length
-          # assertion, which cannot catch a wrong number. matplotlib is the `plot`
-          # extra: the provenance and theme tests import `hotcoco.plot`.
-          pip install maturin numpy pytest pycocotools lvis matplotlib
+          # assertion, which cannot catch a wrong number. The `plot` and `browse`
+          # extras the suite imports come from the wheel itself, below.
+          pip install maturin numpy pytest pycocotools lvis
 
       # Built from the repo root, where pyproject.toml's `python-source` pulls in
       # the pure-Python package. Building inside crates/hotcoco-pyo3 produces a
@@ -144,7 +141,9 @@ jobs:
         run: |
           source .venv/bin/activate
           maturin build --release --out dist
-          pip install dist/*.whl
+          # With the extras the tests import, so pyproject.toml stays the one
+          # owner of what `hotcoco.plot` and `hotcoco.browse` need.
+          pip install "$(ls dist/*.whl)[plot,browse]"
 
       - name: Smoke test
         run: |
@@ -171,54 +170,12 @@ jobs:
           print('Smoke test passed!')
           "
 
-      # The differential suites. Both are fully synthetic — they build datasets in
-      # tempfiles — so they need no `data/` and run anywhere. Real-data parity
-      # (`just parity`) still cannot run here because `data/` is gitignored, but
-      # these compare hotcoco against pycocotools and lvis-api metric by metric,
-      # which is the thing CI previously did not do at all.
-      - name: Differential parity vs pycocotools
+      # The whole Python suite: `testpaths` in pyproject.toml points bare `pytest`
+      # at tests/, the same set `just test` runs. Synthetic data and checked-in
+      # fixtures only, so it needs no `data/`; real-data parity (`just parity`)
+      # still cannot run here because `data/` is gitignored. What each file
+      # compares against is listed in CONTRIBUTING.md under "Tests".
+      - name: Python suite
         run: |
           source .venv/bin/activate
-          pytest scripts/test_parity.py crates/hotcoco-pyo3/tests -q
-
-      - name: Differential parity vs lvis-api
-        run: |
-          source .venv/bin/activate
-          .venv/bin/python scripts/parity_lvis.py
-
-      - name: Mask operations vs pycocotools.mask
-        run: |
-          source .venv/bin/activate
-          .venv/bin/python scripts/parity_mask.py --cases 200
-
-      # Frozen fixtures from the TensorFlow Object Detection API, the reference the
-      # official Open Images protocol page points at. Checked in, so this needs
-      # neither network nor TensorFlow — regenerate with `just gen-oid-fixtures`.
-      - name: Open Images vs TensorFlow Object Detection API
-        run: |
-          source .venv/bin/activate
-          .venv/bin/python scripts/parity_oid.py
-
-      # Compares per-(image, category) matching *decisions* against pycocotools,
-      # annotation by annotation, over a tracked corpus of 18 curated edge cases.
-      # Metrics cannot replace this: two detections swapped between images can
-      # leave AP identical to fifteen decimal places.
-      - name: Matching decisions vs pycocotools
-        run: |
-          source .venv/bin/activate
-          pytest scripts/test_adversarial.py -q
-
-      - name: Type stubs track the extension module
-        run: |
-          source .venv/bin/activate
-          pytest scripts/test_stubs.py -q
-
-      - name: CLI surface
-        run: |
-          source .venv/bin/activate
-          pytest scripts/test_cli.py -q
-
-      - name: Plot theme contract
-        run: |
-          source .venv/bin/activate
-          pytest scripts/test_theme.py -q
+          pytest -q

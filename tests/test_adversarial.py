@@ -1,9 +1,10 @@
 """Run the whole adversarial corpus through the two-level harness.
 
-`adversarial_harness.py` is the sharpest check in the repo: level 1 compares the
-12 metrics, and level 2 compares the *per-match decisions* — `dtIds`, `gtIds`,
-`dtMatches`, `gtIgnore` — annotation by annotation against pycocotools. Nothing
-ran it. Eighteen curated fixtures sat beside it and nothing iterated them.
+`scripts/adversarial_harness.py` is the sharpest check in the repo: level 1
+compares the 12 metrics, and level 2 compares the *per-match decisions* —
+`dtIds`, `gtIds`, `dtMatches`, `gtIgnore` — annotation by annotation against
+pycocotools. This runs both levels over every fixture in the corpus, in process;
+`just adversarial <fixture>` is the same two calls with a printed report.
 
 Both halves matter, and level 2 is the one metrics cannot replace: two detections
 swapped between images, or a crowd flag on the wrong annotation, can leave AP
@@ -11,26 +12,25 @@ identical to fifteen decimal places while every decision underneath is wrong.
 
 Each fixture's iou_type is read from its contents — see `_iou_type`.
 
-    uv run pytest scripts/test_adversarial.py
+    uv run pytest tests/test_adversarial.py
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
+from adversarial_harness import compare_eval_imgs, load_fixture, run_hotcoco, run_pycocotools
+from helpers import FIXTURES_DIR, compare_metrics, suppress_output, written_json
 
-HARNESS = Path(__file__).parent / "adversarial_harness.py"
-CORPUS = Path(__file__).parent / "fixtures" / "adversarial"
+CORPUS = FIXTURES_DIR / "adversarial"
 
 # Level-1 metric tolerance per iou_type. These are the *harness's* documented
 # thresholds for flagging a metric difference on small synthetic fixtures, and are
 # deliberately not `parity.py`'s 1e-12 real-data gate — different question, different
 # inputs. Kept in one place so the two do not drift into four spellings.
-METRIC_TOLERANCE = {"bbox": "1e-4", "segm": "2e-4", "keypoints": "1e-4"}
+METRIC_TOLERANCE = {"bbox": 1e-4, "segm": 2e-4, "keypoints": 1e-4}
 
 
 def _iou_type(path: Path) -> str:
@@ -80,15 +80,15 @@ def test_corpus_is_present():
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.stem)
 def test_matches_pycocotools_decision_for_decision(fixture: Path):
     iou_type = _iou_type(fixture)
-    thr = METRIC_TOLERANCE[iou_type]
+    gt_data, detections = load_fixture(fixture)
+    with written_json(gt_data) as (gt_path,), suppress_output():
+        hc_ev = run_hotcoco(gt_path, detections, iou_type)
+        py_ev = run_pycocotools(gt_path, detections, iou_type)
 
-    proc = subprocess.run(
-        [sys.executable, str(HARNESS), str(fixture), "--iou-type", iou_type, "--metric-thr", thr],
-        capture_output=True,
-        text=True,
-    )
-
-    if proc.returncode != 0:
-        pytest.fail(
-            f"{fixture.name} ({iou_type}) diverges from pycocotools:\n{proc.stdout[-4000:]}\n{proc.stderr[-2000:]}"
-        )
+    mismatches = compare_metrics(py_ev.stats, hc_ev.stats, hc_ev.metric_keys(), tolerance=METRIC_TOLERANCE[iou_type])
+    divergences = compare_eval_imgs(hc_ev, py_ev)
+    problems = [m.line() for m in mismatches] + [
+        f"image_id={d['image_id']} category_id={d['category_id']} aRng={d['aRng']}:\n" + "\n".join(d["issues"])
+        for d in divergences
+    ]
+    assert not problems, f"{fixture.name} ({iou_type}) diverges from pycocotools:\n" + "\n".join(problems)

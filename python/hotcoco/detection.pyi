@@ -2,7 +2,7 @@
 
 Every name here is re-exported from the top level, so the signatures live in
 ``__init__.pyi`` and this file only restates the identity of each one. Keep the
-two in sync — `scripts/test_stubs.py` checks the names, not the signatures.
+two in sync — `tests/test_stubs.py` checks the names, not the signatures.
 """
 
 from . import COCOeval as COCOeval

@@ -82,7 +82,7 @@ pub fn coco_match_floor(iou_thr: f64) -> f64 {
 /// regions ties by construction rather than by coincidence.
 ///
 /// The tie-break is observable public contract through `evalImgs`, so it lives
-/// in one function rather than at each call site. `parity_oid.py` catches the
+/// in one function rather than at each call site. `tests/test_parity_oid.py` catches the
 /// failure: picking the later of two tied group-of boxes leaves the earlier one
 /// permanently unmatched, turning a true positive into a miss.
 ///

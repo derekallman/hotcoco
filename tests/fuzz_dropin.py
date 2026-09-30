@@ -24,7 +24,7 @@ tolerates — and evaluates the transformed dataset through hotcoco. Each
 A bug-hunting tool, not a CI gate.
 
 Usage:
-    uv run pytest scripts/fuzz_dropin.py -x -q -p no:cacheprovider
+    uv run pytest tests/fuzz_dropin.py -x -q -p no:cacheprovider
 """
 
 from __future__ import annotations
@@ -34,19 +34,16 @@ import random
 import sys
 import warnings
 from collections import Counter, defaultdict
-from pathlib import Path
 
+import hotcoco
 import hypothesis.strategies as st
 import numpy as np
+import pycocotools.mask as pm
 import pytest
+from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, compare_metrics, metric_names_for, suppress_output
 from hypothesis import HealthCheck, given, settings
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import hotcoco  # noqa: E402
-import pycocotools.mask as pm  # noqa: E402
-from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, compare_metrics, metric_names_for, suppress_output  # noqa: E402
-from pycocotools.coco import COCO as PyCOCO  # noqa: E402
-from pycocotools.cocoeval import COCOeval as PyCOCOeval  # noqa: E402
+from pycocotools.coco import COCO as PyCOCO
+from pycocotools.cocoeval import COCOeval as PyCOCOeval
 
 TOL = 1e-9  # for the eval-dict arrays; stats go through helpers.compare_metrics
 IOU_TYPES = ("bbox", "segm", "keypoints")

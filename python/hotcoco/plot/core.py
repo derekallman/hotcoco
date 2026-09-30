@@ -52,7 +52,7 @@ def _resolve_font_family() -> list[str]:
     # Only name families matplotlib can actually resolve. Listing a missing one
     # emits a `findfont` warning per text object — hundreds per figure — so the
     # preference order is filtered against what is installed or vendored rather
-    # than asserted. scripts/test_theme.py checks which face actually wins.
+    # than asserted. tests/test_theme.py checks which face actually wins.
     preferred = ["IBM Plex Sans", "Helvetica Neue", "DejaVu Sans"]
     try:
         available = {f.name for f in font_manager.fontManager.ttflist}

@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`COCO.update_anns`** edits annotations that are already loaded, without
+  rebuilding the dataset: each dict is merged into the annotation with the
+  same `id`, so `{"id": 1, "area": 5000.0}` is a one-field edit, and an unknown
+  id raises `KeyError` instead of being skipped. `coco.dataset` returns a copy,
+  so an edit through it never landed, and assigning the whole dataset back was
+  the only way — too coarse for evaluating one dataset under several IoU
+  types, where each annotation's `area` follows the box or the mask. The API
+  reference has the contract. *Rust API:* `COCO::update_anns` and
+  `Error::UnknownAnnIds`. Based on
+  [#8](https://github.com/derekallman/hotcoco/pull/8) by Jirka Borovec.
+
 - **`metrics::counts::precision_recall_curve_of_order_into`** — the interpolated
   precision-recall curve straight from ranked match flags, without the
   cumulative TP/FP arrays `precision_recall_curve_into` reads. Same values, same
@@ -37,6 +48,204 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cover the same LVIS filtering and the spent-evaluator error paths.
 
 ### Changed
+
+- **`evaluate()` keeps its per-pair records in flat arenas.** Each (image,
+  category) pair `evaluate()` visited was one record with two heap vectors —
+  its scores and one 32-byte entry per area range — built as one object per
+  pair. The pairs now live in one arena: a 24-byte header each, then every
+  pair's scores, ground-truth counts, and matched and ignore bits packed back
+  to back, sized exactly from a pass over the index before any pair is
+  matched and written in parallel runs into disjoint windows, so nothing is
+  copied afterwards. The grouping `accumulate()` builds holds a 4-byte pair
+  index and area position instead of a pointer and a `usize`, which halves
+  its entries. On ten times val2017's detections (246,000 pairs)
+  `evaluate()` keeps 23 MB instead of 55 MB with no peak above that, and the
+  smaller grouping takes `accumulate()`'s peak from 56 MB to 31 MB over it;
+  segm keeps 30 MB less as well. Values are unchanged.
+
+- **The loader reads a file in blocks instead of whole.** `COCO()` and
+  `load_res()` read the entire file into memory and parsed it from there, so
+  the peak while loading was the file's bytes plus its records — and a
+  keypoints results file, which spells out 17 keypoints per detection in
+  text, outweighs its own records. The file is now read 4 MB at a time: the
+  annotations in each block are parsed in parallel while the next block is
+  read, moved into the output vector as the block finishes, and the record a
+  block ends inside waits for the next. The output vector is reserved from
+  the first block's record density, grown only if that falls short, and
+  shrunk to what it holds; `images` and `categories` stream the same way,
+  record by record, and come out exactly sized too. Peak heap over the live
+  records while loading the benchmark's 10× results (367,810 detections)
+  falls from 56 MB to 4 MB for bbox, 175 MB to 4 MB for segm, and 316 MB to
+  3 MB for keypoints — a 325 MB keypoints file loads with 237 MB — and from
+  17 MB to 8 MB for val2017's ground truth; the results load is also 5–10%
+  faster, since the
+  read overlaps the parse and a buffer reused across blocks is not faulted in
+  page by page like a fresh one. A block whose records carry `},{` inside
+  them — a nested list of objects, as panoptic `segments_info` is — parses
+  serially instead of in parallel runs, still a block at a time. A file with
+  `NaN` or `Infinity` tokens is read whole and sanitized, then streamed
+  from memory, so its peak is its bytes plus its records; a malformed file
+  is read whole so that serde can report where it fails. Values are
+  unchanged.
+
+- **Unknown keys cost a small vector, not a B-tree.** `Annotation`, `Image`,
+  and `Category` keep keys outside the COCO schema in `extra`, which was a
+  `serde_json::Map`: a B-tree whose first entry allocates a node of about
+  600 bytes, three times the record itself, and detector outputs often carry
+  one unknown key on every detection. `extra` is now `hotcoco::Extra`, a
+  small map over a boxed slice in file order with the same `get`, `insert`,
+  `remove`, `iter`, and `is_empty` calls and conversions to and from
+  `serde_json::Map`. Ten times val2017's bbox results with one unknown key
+  per detection keep 156 MB instead of 448 MB; a clean file keeps 4 MB less
+  from the smaller record, now 200 bytes. Saved files list unknown keys in
+  the order they were read, not sorted. Values are unchanged.
+
+- **The file's bytes are gone before its annotations are joined.** The
+  parallel parse produces one vector of records per run and then joins them
+  into one; the file bytes stayed alive through the join, and each run's
+  vector kept the slack it grew by. Runs now shrink to what they hold as they
+  finish and are joined only after the bytes are dropped, so the bytes, the
+  runs, and the joined vector are never alive together. Peak heap while
+  loading ten times val2017's bbox results falls from 292 MB to 208 MB, segm
+  from 486 MB to 378 MB, and the ground truth itself from 59 MB to 47 MB.
+  Values are unchanged.
+
+- **Loaded vectors are sized to what they hold.** serde cannot size a JSON
+  array before reading it, so every `Vec` grew by doubling and kept the
+  slack: a 51-value keypoint list held 64 slots, val2017's polygons carried
+  8 MB of slack on 14 MB of coordinates plus a four-slot list around nearly
+  every single polygon, and the annotations vector itself, assembled from the
+  parallel parse runs, kept up to a run's worth of slack per doubling. Polygons
+  and keypoints are now read through a per-thread buffer and stored at exact
+  size, and the annotations vector is sized from the runs before they are
+  joined. `COCO()` on val2017 keeps 30 MB instead of 46 MB and parses faster
+  with fewer reallocations; `load_res` keeps 13 MB instead of 22 MB on
+  val2017's bbox results, 125 MB instead of 229 MB at ten times that, and
+  224 MB instead of 307 MB on ten times the segm results. Values are
+  unchanged.
+
+- **`accumulate()` writes its output arrays in place.** Each (category, area
+  range) work item staged its writes as index-value lists sized for the whole
+  M × T × R slab, about 96 KB per item, and a serial merge copied them into
+  the arrays afterwards: on COCO's 320 items that peaked at 48 MB for 16 MB
+  of output. Items now stage on a per-thread buffer and apply their slab under
+  a lock taken once per item. The peak is 19 MB, the phase is a few
+  milliseconds faster, and every bootstrap resample in `compare()` and every
+  `slice_by()` call pays the smaller cost too. Values are unchanged.
+
+- **A box result's segmentation is the box.** `load_res` gives every box
+  result that came without a segmentation the four-corner polygon pycocotools'
+  `loadRes` builds; it was stored as two heap vectors per detection. The new
+  `Segmentation::Rect([x, y, w, h])` holds it inline and reads as that polygon
+  everywhere: JSON, Python dicts, CVAT export, and rasterization, where the RLE
+  is identical. `mask::fr_polys` now rasterizes a single polygon directly
+  instead of through a one-element merge that copied the result, which every
+  single-polygon ground truth paid. `Annotation::obb` is boxed (`Option<Box<[f64; 5]>>`), which
+  takes the record from 248 to 208 bytes. Beyond the ground truth, `load_res`
+  keeps 22 MB instead of 29 MB on val2017's bbox results and 229 MB instead
+  of 313 MB at ten times that count. *Rust API:* `Segmentation` is
+  `#[non_exhaustive]`, so a `match` on it needs a `_` arm; later families add
+  formats without another break. Code matching `Segmentation::Polygon` to
+  read a result's polygon should call `Segmentation::polygons()`, which
+  returns the list for either variant.
+
+- **The annotation index is flat.** `COCO` answered "which annotations does
+  this image, or this (image, category) pair, hold" from hash maps holding
+  one heap vector per key — about 285k vectors for a 500k-detection results
+  file, allocated one by one. The index is now two flat id lists with small
+  range tables: the per-image grouping is built in two counting passes and
+  the per-pair grouping by sorting each image's slice by category in
+  parallel; a lookup is one hash probe on the image plus a binary search
+  over its categories. Results files, whose ids are always `1..=n`, also
+  skip the id-to-position map entirely. Building the index for 500k
+  detections takes about 17 ms instead of 35 ms, and `load_res` keeps about
+  60 MB instead of 103 MB beyond the records themselves. Query results and
+  their order are unchanged.
+
+- **Ground-truth files load without a pass to find the annotations array.**
+  The loader walks a dataset object by hand and parses the annotations array in
+  place, in parallel, with the run that reaches the closing bracket reporting
+  where the array ends; before, serde_json tokenized the whole array once to
+  find that end before any parallel work began, about 40% of `COCO()` time.
+  `COCO()` on val2017 takes 0.02s instead of 0.06s and on val2014 0.18s
+  instead of 0.42s (M1 Air, best of seven). Results files in object form
+  benefit the same way. A shape the walk does not expect — a duplicate key,
+  `"annotations": null` — falls back to the serde derive, which also reports
+  the error for a malformed file.
+
+- **`COCOeval` shares its datasets instead of copying them.** The constructor
+  cloned both `COCO` objects (about 250 MB and 0.1s on 500k detections). Both
+  now sit behind an `Arc` that the Python `COCO` object and the evaluator
+  share, so constructing an evaluator or reading `ev.coco_gt` costs nothing.
+  Python behavior is unchanged. Together with the loader change below, the
+  peak resident memory of a full run is about half of 1.0.1's (320/363/355 MB
+  for bbox/segm/keypoints on val2017, 856/1184/2092 MB at 10× detections);
+  `docs/benchmarks.md` carries the current tables. *Rust API:* `COCOeval::coco_gt` and `coco_dt`
+  are accessors returning `&Arc<COCO>` rather than public fields, and the
+  constructors take `impl Into<Arc<COCO>>`, so existing calls compile
+  unchanged. A Rust-visible break shipped in a minor on purpose: the crate has
+  no dependents outside this repository.
+
+- **JSON loading streams into the records and parses annotations on all
+  cores; peak memory is the file plus the records.** `COCO()` and `load_res()`
+  read with serde_json (its `float_roundtrip` parser) in place of simd-json,
+  whose tape peaked at about twelve times the file size before a single record
+  existed: +940 MB for a 79 MB bbox results file (500k detections, 134 MB of
+  records), +1.3 GB for a 115 MB keypoint results file, +389 MB for the 19 MB
+  val2017 ground truth. The annotations array is cut at record boundaries and
+  the pieces parsed in parallel, with one serial pass as the fallback when a
+  cut lands inside a string. Every field parses bit-identically to before —
+  checked on val2017 ground truth (polygons) and on bbox, segm (RLE), and
+  keypoint results — and the precision, recall, and score arrays stay
+  bit-identical to pycocotools on all six parity datasets. `load_res()` also
+  derives each result's area and box in parallel, which for segm results is
+  an RLE decode per mask (0.91s → 0.40s on 500k masks). On the 500k-detection
+  bbox file `load_res()` takes 0.14s instead of 0.33s, and `COCO()` on val2017
+  0.06s instead of 0.08s (M1 Air), and the peak resident memory of a full run
+  fell by about a third before the shared-dataset change above took it further.
+  Parse failures are `Error::Json`.
+
+- **Python tests live in `tests/`.** Every pytest file — the regression suites
+  from `scripts/`, the drop-in and mask suites from `crates/hotcoco-pyo3/tests/`,
+  and the three fuzzers — now sits in one root `tests/` directory, and
+  `pyproject.toml` points bare `pytest` at it. `scripts/` keeps only tools you
+  run by hand: real-data parity, benchmarks, downloads, fixture generators.
+  The LVIS, Open Images, and mask parity scripts became pytest files
+  (`test_parity_lvis.py`, `test_parity_oid.py`, and a 200-case randomized
+  section in `test_mask_parity.py`, which replaces the separate mask script),
+  so `just test` and CI run one `pytest` and the same set. The `parity-lvis`,
+  `parity-oid`, `parity-mask`, and `adversarial-all` recipes are gone: each was
+  one pytest file, so run the file. The browse tests, which no runner had
+  listed, run again, and `test_adversarial.py` calls the harness in process
+  instead of spawning it once per fixture.
+
+- **`scripts/bench.py` benchmarks five libraries, one process per cell.**
+  ultrafast-pycocotools and vernier join pycocotools and faster-coco-eval as
+  baselines (both are dev extras now; a missing one leaves its column blank).
+  Every (library, eval type) cell runs in a fresh subprocess and reports its own
+  wall-clock load/eval times and peak resident memory, with the table showing
+  the median of `--reps` runs (default 3). `docs/benchmarks.md` carries the
+  memory table beside each timing table and a five-column feature comparison.
+
+- **`evaluate()` keeps a lean record per cell; `evalImgs` are built on first
+  access.** `accumulate()` reads exactly three things per detection — its
+  score, and a matched bit and an ignore bit per IoU threshold — so that is
+  what `evaluate()` now stores: one score list per (image, category) pair and
+  two bit-packed matrices per area range, about 20 bytes per detection. The
+  full per-image records (`evalImgs`: every id, both sides of the match, one
+  copy of the scores per area range, about 460 bytes per detection) are no
+  longer built during `evaluate()`. They are materialized, once, the first
+  time something reads them — the `evalImgs` attribute, `tide_errors()`,
+  `calibration()`, `image_diagnostics()` — from a snapshot of the inputs that
+  `evaluate()` saw, so they describe that run whatever `params` was set to
+  afterwards. Nothing in the API changes and no flag is needed; the cost moves
+  to a second matching pass paid only by callers that read the records, and
+  the in-crate analyses (`tide_errors()`, `calibration()`,
+  `image_diagnostics()`) materialize only the `"all"` range they read. On a
+  500,000-detection val2017 bbox run, `evaluate()` goes from 0.37 s to
+  0.15 s and `accumulate()` from 0.13 s to 0.08 s; peak resident memory for
+  load + evaluate + accumulate + summarize drops from 1.1 GB to 0.9 GB. Every
+  `precision`, `recall`, and `scores` value is bit-identical to before.
 
 - **`accumulate()` sorts each (category, area range) once, not once per
   `maxDets` entry.** pycocotools concatenates every image's `dtScores[0:maxDet]`
@@ -91,8 +300,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `accumulate_arrays_are_independent_of_thread_count` checks every output
   array and a `slice_by` re-accumulation bitwise across 1 to 16 threads on a
   dataset with tied scores across images.
+- **`COCO::create_index` reserves its (image, category) index for the number of
+  distinct pairs it will hold, not the number of annotations, and derives the
+  category-to-images index from those pairs instead of pushing once per
+  annotation.** `img_cat_to_anns` holds one entry per distinct `(img, cat)`
+  pair — on a 1.5M-annotation, 300-per-image RF-DETR-shaped workload that is
+  ~400K pairs, so reserving for the annotation count left most of the table's
+  capacity unused. `cat_to_imgs` is now built from those already-unique pair
+  keys after the annotation loop (~400K pushes) instead of once per annotation
+  (~1.5M), then sorted into the same shape as before. All six index maps
+  (`anns`, `imgs`, `cats`, `img_to_anns`, `cat_to_imgs`, `img_cat_to_anns`) —
+  all private — also switched from the standard library's `HashMap` (SipHash)
+  to `rustc_hash::FxHashMap`, which is faster on the integer and integer-pair
+  keys these indices use throughout. `rustc-hash` was already in the dependency
+  graph transitively (via `numpy`); this makes it a direct dependency of
+  `hotcoco` (MIT/Apache-2.0). FxHash is not resistant to adversarially chosen
+  keys, an accepted trade-off for a local library indexing ids the caller
+  already chose to load — map iteration order was confirmed to never reach any
+  observable output before making the swap (every iteration site feeds a sort).
+  On the same RF-DETR-shaped workload, `gt.loadRes(ndarray)` is 34% faster and
+  the `COCOeval` constructor 49% faster (both call `create_index`); end-to-end
+  20% faster. `precision`, `recall`, `scores`, and `stats` are bit-identical to
+  before across ten configurations, including `maxDets` reassigned between
+  `evaluate()` and `accumulate()`. `coco::tests::test_cat_to_imgs_derived_from_pair_keys`
+  pins `cat_to_imgs`'s membership and deduplication and `get_ann_ids_for_img_cat`'s
+  dataset-order contract, and fails if the two index maps are conflated or the
+  order guarantee is dropped.
+- **`COCOeval`'s constructor copies an already-indexed `COCO` instead of rebuilding the index
+  from scratch, for both the ground-truth and detection side.** `PyCOCOeval::new` used to clone
+  only the raw dataset and call `COCO::from_dataset`, which rehashes every annotation, image, and
+  category id into fresh index maps — even though the `COCO` object passed in already carries a
+  built index that is always kept in sync with its dataset (every write path — the `dataset`
+  setter, dataset-derived constructors — rebuilds the whole object, so the cached index can never
+  go stale). `COCO` now derives `Clone`, and the constructor copies it directly. On a
+  1.5M-annotation RF-DETR-shaped workload the `COCOeval` constructor is 74% faster and the
+  evaluator's whole `compute()`-shaped call sequence 11% faster end-to-end; peak RSS is unchanged
+  — the copy is still a full one, so nothing is saved on memory, only on the redundant rehash.
+  One side effect: `create_index()` prints non-fatal warnings (duplicate annotation ids, unnamed
+  categories) to stderr as it runs, so the previous rebuild-per-constructor re-printed a source
+  dataset's warnings on every `COCOeval()` call; the copy carries the already-collected warnings
+  instead of regenerating them, so the reprint is gone. `precision`, `recall`, `scores`, and
+  `stats` are bit-identical to before across ten configurations, including `maxDets` reassigned
+  between `evaluate()` and `accumulate()`. `coco::tests::test_clone_is_a_faithful_reindex` pins
+  that the clone's six index maps and warnings match a fresh rebuild and that the copy is an
+  independent snapshot, and fails if a future hand-written `Clone` impl drops a field.
+- **`load_res_anns` validates, derives geometry, and assigns ids in one pass
+  over the detections instead of five, and checks GT membership against the
+  index this `COCO` already built instead of rebuilding a `HashSet` of GT ids
+  on every call.** The image-id and category-id mismatch checks used to scan
+  the whole detection list independently of the NaN-score check and the
+  geometry/id loops that follow; they now run together, still warning at most
+  once per mismatch kind (naming the first offender) and still rejecting a NaN
+  score outright. `derive_from_bbox`'s rectangular polygon, the unconditional
+  detection ids, and the mismatch warnings are all unchanged in content — only
+  how many times the detection list is walked to produce them. Both the
+  in-memory dict path and the numpy `loadRes(ndarray)` fast path share this
+  function, so both benefit from one fix. On a 1.5M-detection RF-DETR-shaped
+  workload `loadRes` itself is 16–19% faster, a reproducible win (the two
+  builds' measured ranges across five repeats don't overlap); the end-to-end
+  effect is not distinguishable from run-to-run noise on this workload, since
+  `loadRes` is a smaller share of the total than the constructor and evaluation
+  phases. `precision`, `recall`, `scores`, and `stats` are bit-identical to
+  before across ten configurations. One behavior note for direct Rust callers
+  only (the Python binding is unaffected): the mismatch checks now read the
+  same index that every other query method already depends on being current,
+  rather than the raw dataset — a caller that mutates `.dataset` in place
+  without calling `create_index()` was already getting a stale index from
+  every other method, and now gets it here too, which brings this method in
+  line with the rest of the type. Two new tests,
+  `load_res_anns_warns_once_per_mismatch_kind` and
+  `load_res_anns_skips_category_check_when_gt_has_no_categories`, pin the
+  once-per-kind warning behavior and the no-categories edge case, and fail if
+  either guard is dropped.
+- **Segmentation `evaluate()` converts masks to RLE only for detections and
+  ground truth that share a category with something on the other side.**
+  `SegmRles::prepare` used to rasterize every mask in scope up front, mirroring
+  pycocotools' `_prepare`; `evaluate()` already skips computing an IoU matrix
+  for an `(image, category)` cell with only ground truth or only detections
+  (that cell's IoU is empty by construction), so those masks were converted for
+  nothing. A DETR-shaped result set spreads detections across every category
+  per image while each image's ground truth covers only a handful, so most of
+  that conversion was waste: on a 1.5M-detection, 80-category RF-DETR-shaped
+  workload, 90.7% of detections sit in a category with no matching ground truth
+  in their image. `evaluate()` on a segmentation run is 58–60% faster at both 2
+  and 16 threads (peak RSS during that phase down ~2.5 GB), with
+  `precision`/`recall`/`scores`/`stats` bit-identical to before on 4
+  configurations spanning two workload sizes and `maxDets` settings, and the
+  existing 10-configuration bbox baseline unaffected (bbox never builds this
+  cache). `confusion_matrix()`/`tide()` still read the same cache after
+  `evaluate()`; a detection this change excludes from it now falls back to
+  converting its mask on the spot instead of hitting a pre-built entry — a cost
+  that moves from `evaluate()` to whichever of those calls needs it, computed
+  at most once per image per call, and repeated on a second such call, since
+  neither extends the cache. Bounding-box evaluation is untouched — this cache
+  is built only for `iouType="segm"`. A new test,
+  `segm_rle_cache_skips_dt_only_cells`, pins that a detection with no matching
+  ground-truth category is excluded from the cache and fails if that gate is
+  dropped.
+- **Decoding a Python dict into a dataset interns its field-name keys instead of
+  allocating a new string per key per record.** `COCO(dict)`, `loadRes(list of
+  dicts)`, and the RLE/segmentation decoders looked up each field with a bare
+  string literal, and `PyDict.get_item` allocates a fresh `PyString` for that on
+  every call; decoding an RF-DETR-shaped annotation list calls this once per
+  field per detection — millions of throwaway strings for a fixed set of ~10
+  field names. Those lookups now go through `pyo3::intern!`, which builds each
+  literal's `PyString` once per process and reuses it. `COCO(dict)` construction
+  is 18–20% faster across three shapes (a small dict, a 1.5M-annotation
+  segmentation dict, and a bounding-box-only dict), with no numeric or
+  structural change to the decoded dataset. A new test,
+  `TestKnownKeysRoundTrip`, round-trips every known field of an annotation,
+  image, and category through `COCO(dict)` and fails if any interned key
+  literal drifts from the field it names, whether the field is required
+  (raises instead of decoding) or optional (silently dropped instead of
+  decoding) — both failure shapes are pinned by injection. A separate
+  reprofile found that `extra`-field extraction, not covered by this change,
+  now costs roughly half of what remains of dict decoding on the same
+  workloads; that cost is unaddressed here.
 
 ### Fixed
+
+- **`hotcoco.browse` runs on Python 3.9 again.** The two FastAPI route handlers
+  in `server.py` spelled their optional query parameters `str | None`. Every
+  other annotation in the package is a string under `from __future__ import
+  annotations`, but FastAPI evaluates route signatures at runtime, and 3.9
+  cannot evaluate a PEP 604 union, so `create_app()` raised `TypeError` on the
+  floor interpreter the wheel is built for. They are `Optional[str]` now. CI
+  runs the browse tests on 3.9, which is how this surfaced.
+
+- **`eval["precision"]`, `eval["recall"]`, and `eval["scores"]` are bit-identical
+  to pycocotools' arrays.** They agreed to an ulp before; two small things kept
+  them from being the same bits, and neither ever moved a headline metric.
+  - `precision` carried `tp / (tp + fp)` where pycocotools computes
+    `tp / (fp + tp + np.spacing(1))`. The guard term only matters at
+    `tp + fp == 1`, where it puts a lone leading true positive at `1 - 2^-52`
+    instead of `1.0`; on COCO val2017 bbox that is ~7,600 cells of the
+    precision tensor, each one ulp off. `metrics::counts` now keeps the term,
+    so a single perfect match reports AP an ulp or two under 1.0 — the value
+    pycocotools reports for it.
+  - `evaluate()` dropped an (image, category, area range) cell that had
+    detections but no ground truth when the area range ignored every
+    detection. pycocotools keeps that cell: its `evaluateImg` skips only when
+    the raw ground-truth and detection lists are both empty. The dropped
+    detections match nothing and move no counter, but they still occupy ranks
+    in the score order `accumulate()` samples `scores` from, so the score
+    reported at a recall threshold could come from a later detection than the
+    reference's. The cell is now kept, `evalImgs` carries it, and
+    `test_rank_filler_and_epsilon_guard_match_pycocotools_bit_for_bit` pins
+    both fixes against pycocotools on a two-image dataset built to show them.
+
+  The three arrays are checked bit-for-bit against pycocotools on COCO
+  val2017 (bbox, segm, keypoints) and on a 500,000-detection synthetic run.
+  The summary `stats` still differ from pycocotools by up to 3.6e-14: numpy's
+  `mean` is a pairwise sum, and that reduction order is not reproduced yet.
+
+### Removed
+
+- **`Error::JsonParse` and the simd-json dependency.** The loader reports
+  every parse failure as `Error::Json`, so the variant could never be
+  constructed; dropping it also drops the ten crates that only simd-json
+  pulled in. Rust code that matched on `JsonParse` matches `Json` instead. A
+  Rust-visible break in a minor, under the same policy as the shared-dataset
+  change above.
+
+- **`scripts/fixture_builder.py` and `scripts/bench_fiftyone.py`.** The first
+  had no entry point and no importer; the adversarial corpus it described is
+  tracked in `tests/fixtures/adversarial/`. The second imported a package the
+  project never declared and had no recipe.
 
 ## [1.0.1] - 2026-09-12
 
@@ -113,6 +486,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Python formatting and lint recipes use the configured pre-commit Ruff hooks.
+  The git hook runs every pre-commit hook on the staged files of each commit, and
+  CI runs them over the whole tree. The Ruff version is pinned only in
+  `.pre-commit-config.yaml`; `pre-commit` replaces `ruff` in the dev extra.
+  `just py-fmt-check` is removed — it had become identical to `just py-fmt`.
 - **A category without `name` loads.** pycocotools tolerates the omission and
   TorchMetrics emits bare `{"id": i}` records. The record gets the display name
   `cat_<id>` — the same placeholder `COCO::cat_name` already used for an unknown

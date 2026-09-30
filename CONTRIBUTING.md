@@ -73,12 +73,16 @@ git config core.hooksPath .github/hooks
 
 The hook runs:
 
-1. `cargo fmt --all -- --check` — formatting
-2. `cargo clippy --workspace --all-targets -- -D warnings` — lint (warnings are errors)
-3. `cargo test` — all tests
-4. `ruff format --check` and `ruff check` on `python/` and `scripts/` — when Python files are staged
+1. `uv run pre-commit run` — file hygiene, Ruff, and `typos` on the staged files
+2. `cargo fmt --all -- --check` — formatting
+3. `cargo clippy --workspace --all-targets -- -D warnings` — lint (warnings are errors)
+4. `cargo test` — all tests
 
-If formatting fails, run `cargo fmt --all` (Rust) or `uv run ruff format python/ scripts/` (Python) and re-commit. Fix all clippy warnings before committing — never suppress them with `#[allow(...)]`.
+`just setup` installs `pre-commit` with the dev extra; a `pre-commit` already on your `PATH` (pipx, brew, conda) is used first. Don't run `pre-commit install` — `core.hooksPath` points at `.github/hooks`, and pre-commit refuses to install over it. Step 1 checks what you staged, not your working copy: pre-commit sets unstaged changes aside while it runs. CI runs every hook over the whole tree; `just hooks` does the same locally.
+
+Some of those hooks rewrite the file they fix (trailing whitespace, missing final newline, Ruff formatting). They exit nonzero when they do, so the commit is rejected rather than silently amended — review the change, re-stage the file, and commit again.
+
+If formatting fails, run `cargo fmt --all` (Rust) or `just py-fmt` (Python), re-stage modified files, and re-commit. Fix all clippy warnings before committing — never suppress them with `#[allow(...)]`.
 
 ### After changing evaluation logic
 
@@ -90,7 +94,7 @@ just parity
 
 Tolerance: 1e-12 for every iou_type — sized to floating-point noise and nothing else; the measured worst case is recorded in [Metric parity](docs/benchmarks.md#metric-parity).
 
-Specialized protocols have their own gates: `just parity-lvis`, `just parity-tide`, `just parity-mask`, and `just parity-oid` (Open Images vs the TF Object Detection API; `just gen-oid-fixtures` regenerates its fixtures). `just parity-all` runs everything.
+TIDE has its own real-data gate, `just parity-tide`. Every other reference comparison needs no `data/` and runs as part of `just test`; the list is under [Tests](#tests).
 
 ### After changing Python bindings
 
@@ -101,7 +105,7 @@ just build
 uv run python -c "import hotcoco"
 ```
 
-Then run `uv run pytest scripts/test_stubs.py`. The four hand-written `.pyi` files
+Then run `uv run pytest tests/test_stubs.py`. The four hand-written `.pyi` files
 don't update themselves, and the test compares them against the extension in **both**
 directions — a member the stub omits is invisible to autocomplete, and one the stub
 invents is worse, because an IDE offers it and the call fails at runtime.
@@ -120,7 +124,8 @@ the documented `fr_py_objects` did not exist.
 ## Code style
 
 - **Rust:** `cargo fmt --all`. No clippy warnings.
-- **Python:** `ruff format` and `ruff check` — enforced by the pre-commit hook and CI (`just py-fmt-check`, `just py-lint`).
+- **Python:** Ruff, run through pre-commit — `just py-fmt` formats and `just py-lint` lints. Both are enforced by the pre-commit hook and CI.
+- **Ruff version:** pinned only in `.pre-commit-config.yaml`. Update that revision to change the version for local commands and CI; keep rule settings in `pyproject.toml`.
 - Don't add comments where the logic is self-evident. Comments should explain *why*, not *what* — and "why" means a constraint or invariant the code can't show, not the history of how the code got here. Never narrate a change ("used to", "previously", "the old version...") or justify it against alternatives the reader can't see; that rationale belongs in the commit message.
 
 ## Documentation style
@@ -137,7 +142,7 @@ Run `just docs-links` after any page split, rename, or heading change.
 ```bash
 cargo test            # All Rust tests
 cargo test -p hotcoco # Library tests only
-just test             # Build + cargo test + pytest hypothesis suite
+just test             # Build + cargo test + the Python suite in tests/
 ```
 
 Test fixtures live in `crates/hotcoco/tests/fixtures/`. The Rust integration
@@ -147,8 +152,27 @@ pinning fixed defects in the converters, the core data layer, and detection),
 and `architecture.rs` (layering conformance — fails the build on duplicated
 kernels or layer violations). When adding a feature that touches evaluation, add
 a corresponding Rust integration test; when fixing a bug, pin it in the matching
-`*_fixes.rs` suite. Python-side regression tests live in `scripts/test_*.py`
-(`test_parity.py`, `test_stubs.py`, `test_browse.py`, `test_adversarial.py`).
+`*_fixes.rs` suite.
+
+Python-side tests live in `tests/`: if pytest collects it, it is there; if you run
+it with `python`, it is in `scripts/`. Bare `pytest` runs the whole directory, which
+is what `just test` and CI do. The `fuzz_*.py` files beside the tests are not
+collected by bare `pytest` and run only when named (`just fuzz`, `just fuzz-dropin`,
+`just fuzz-obb`). `tests/fixtures/` holds the tracked oracles; the `scripts/gen_*.py`
+scripts regenerate them. What each reference comparison checks:
+
+| File | Compares hotcoco against |
+|---|---|
+| `test_parity.py`, `test_dropin_gaps.py`, `test_integrations.py` | pycocotools, metric by metric, on synthetic datasets |
+| `test_adversarial.py` | pycocotools, per-(image, category) matching *decisions*, over 18 curated edge cases |
+| `test_mask_parity.py` | `pycocotools.mask`, every operation, bit for bit |
+| `test_parity_lvis.py` | lvis-api, all 13 metrics |
+| `test_parity_oid.py` | frozen output of the TensorFlow Object Detection API (`just gen-oid-fixtures` regenerates it) |
+| `fuzz_obb.py` | Shapely, for oriented-box IoU (not collected by default) |
+
+Oriented-box *evaluation* has no reference protocol, so `report()` marks it
+`Provenance::Extension`. Two checks need the gitignored `data/`: `just parity`
+(pycocotools on COCO val2017) and `just parity-tide` (tidecv).
 
 ## Submitting a pull request
 

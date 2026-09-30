@@ -1,7 +1,7 @@
 [project]
 site_name = "hotcoco"
 site_url = "https://derekallman.github.io/hotcoco/"
-site_description = "Perception evaluation in pure Rust — pycocotools-compatible detection metrics up to 36× faster, plus diagnostics and dataset tools."
+site_description = "Perception evaluation in pure Rust — pycocotools-compatible detection metrics up to 84× faster, plus diagnostics and dataset tools."
 repo_url = "https://github.com/derekallman/hotcoco"
 repo_name = "derekallman/hotcoco"
 copyright = "MIT licensed"

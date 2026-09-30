@@ -15,7 +15,7 @@ runs the reference, and freezes its output.
 
 Same pattern as `primitives/testdata/lsap_scipy.json` (scipy) and
 `obb_iou_shapely.json` (Shapely): the *oracle* runs here, the *fixtures* are
-checked in, and `parity_oid.py` needs no network and no TensorFlow.
+checked in, and `tests/test_parity_oid.py` needs no network and no TensorFlow.
 
     uv run python scripts/gen_oid_fixtures.py
 
@@ -45,12 +45,13 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
+from helpers import FIXTURES_DIR
 
-OUT = Path(__file__).parent / "fixtures" / "oid_tf_expected.json"
+OUT = FIXTURES_DIR / "oid_tf_expected.json"
 
 # Minimum share of cases that must score strictly between 0 and 1. A corpus of
 # saturated cases agrees with any implementation that always returns 0 or 1.
-# `parity_oid.py` imports this and asserts the same floor on the checked-in
+# `tests/test_parity_oid.py` imports this and asserts the same floor on the checked-in
 # corpus, so regenerating with a degenerate scenario set fails loudly at both
 # ends instead of quietly weakening the consumer.
 MIN_DISCRIMINATING = 0.3
@@ -345,7 +346,7 @@ def main() -> int:
             "Open Images detection AP produced by the TensorFlow Object Detection API "
             "(OpenImagesDetectionEvaluator, group_of_weight=1.0), NOT by hotcoco. This is "
             "the Challenge detection metric without the non-exhaustive image-level-label "
-            "filter, which hotcoco does not implement. Consumed by scripts/parity_oid.py. "
+            "filter, which hotcoco does not implement. Consumed by tests/test_parity_oid.py. "
             "Regenerate with scripts/gen_oid_fixtures.py (needs network access)."
         ),
         "reference": {

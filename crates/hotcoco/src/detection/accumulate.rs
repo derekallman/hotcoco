@@ -1,10 +1,18 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, PoisonError};
 
 use rayon::prelude::*;
 
 use super::COCOeval;
 use super::EvalMode;
-use super::matching::EvalImg;
+use super::matching::CellRef;
+
+/// The key two area ranges are compared on: bit equality of both bounds.
+/// `[0, 1e5**2]` and `[0, 1e10]` are the same range only if they are the same
+/// `f64`s — no tolerance, because `params.area_ranges` is copied, not computed.
+fn area_key(range: [f64; 2]) -> [u64; 2] {
+    [range[0].to_bits(), range[1].to_bits()]
+}
 
 /// `eval_imgs` bucketed by (category slot, area-range slot).
 ///
@@ -24,7 +32,7 @@ pub(super) struct EvalGrouping<'a> {
     /// Indexed `k_idx * a + a_idx`, each bucket in `eval_imgs` order. Each cell
     /// carries the dense image slot its `image_id` resolves to — see
     /// [`image_mask`](Self::image_mask).
-    grouped: Vec<Vec<(&'a EvalImg, u32)>>,
+    grouped: Vec<Vec<(CellRef, u32)>>,
     /// Number of area ranges — the stride of `grouped`.
     a: usize,
     /// Distinct `image_id` -> dense slot, over every cell in `grouped`.
@@ -34,15 +42,9 @@ pub(super) struct EvalGrouping<'a> {
 impl<'a> EvalGrouping<'a> {
     /// Bucket an evaluated `COCOeval`'s cells.
     pub(super) fn build(ev: &'a COCOeval) -> Self {
-        // A few runs per thread: enough to balance, few enough that allocating
-        // `k * a` buckets per run stays noise. Tests pass their own to put run
-        // boundaries where they want them.
-        let chunk_len = ev
-            .eval_imgs
-            .len()
-            .div_ceil(4 * rayon::current_num_threads())
-            .max(1);
-        Self::build_chunked(ev, chunk_len)
+        // Tests pass their own run length to put run boundaries where they
+        // want them.
+        Self::build_chunked(ev, super::run_len(ev.cells.len()))
     }
 
     /// [`build`](Self::build) with the cells walked in runs of `chunk_len`.
@@ -77,16 +79,26 @@ impl<'a> EvalGrouping<'a> {
         let area_keys: Vec<[u64; 2]> = params
             .area_ranges
             .iter()
-            .map(|ar| [ar.range[0].to_bits(), ar.range[1].to_bits()])
+            .map(|ar| area_key(ar.range))
             .collect();
+        // Where each evaluate-time area range now sits in `params.area_ranges`,
+        // by value: the same range listed twice fills its last slot only, and a
+        // range no longer listed is skipped. Every pair's `areas` is indexed by
+        // the evaluate-time position, so this resolves once, not per cell.
+        let remap: Vec<Option<usize>> = ev.eval_inputs.as_ref().map_or_else(Vec::new, |inputs| {
+            inputs
+                .params
+                .area_ranges
+                .iter()
+                .map(|ar| area_keys.iter().rposition(|key| *key == area_key(ar.range)))
+                .collect()
+        });
 
-        // Group eval_imgs by (k_idx, a_idx) — one pass over the cells, in parallel.
+        // Group the pairs by (k_idx, a_idx) — one pass over the cells, in parallel.
         //
-        // The walk is memory-bound: `Option<EvalImg>` is 360 bytes and COCO-scale
-        // runs have ~1.5M of them, so one core reads ~560 MB just to see three ids
-        // per cell. The cells are cut into a few contiguous runs per thread; each
-        // run keeps its own buckets, in cell order, and the runs are concatenated in
-        // order below — so every bucket ends up in `eval_imgs` order exactly as a
+        // The pairs are cut into a few contiguous runs per thread; each run keeps
+        // its own buckets, in pair order, and the runs are concatenated in order
+        // below — so every bucket ends up in `evaluate()` order exactly as a
         // sequential walk would leave it. That order feeds the stable score sort and
         // decides ties, so it is part of the output, not an implementation detail.
         // Explicit chunks rather than rayon's adaptive splitting: every run allocates
@@ -104,50 +116,55 @@ impl<'a> EvalGrouping<'a> {
         // remapped to global slots once the runs are back together. Slot numbers are
         // internal — `image_mask` is the only reader — so which run saw an image
         // first does not matter, only that every cell of one image shares a slot.
-        struct Run<'a> {
-            /// `k_idx * a + a_idx` → cells in this run, in cell order; the `u32` is an
+        struct Run {
+            /// `k_idx * a + a_idx` → cells in this run, in pair order; the `u32` is an
             /// index into `imgs`.
-            buckets: Vec<Vec<(&'a EvalImg, u32)>>,
+            buckets: Vec<Vec<(CellRef, u32)>>,
             /// Image ids in first-seen order. A repeat is only possible when an image's
             /// cells are not contiguous, and the remap below tolerates it.
             imgs: Vec<u64>,
         }
-        let runs: Vec<Run<'a>> = ev
-            .eval_imgs
-            .par_chunks(chunk_len)
-            .map(|cells| {
+        let cells = &ev.cells;
+        let runs: Vec<Run> = (0..cells.len().div_ceil(chunk_len))
+            .into_par_iter()
+            .map(|run| run * chunk_len)
+            .map(|start| {
                 let mut run = Run {
                     buckets: vec![Vec::new(); k * a],
                     imgs: Vec::new(),
                 };
                 let mut last_cat: Option<(u64, Option<usize>)> = None;
                 let mut last_img: Option<(u64, u32)> = None;
-                for eval in cells.iter().flatten() {
+                for pair in start..(start + chunk_len).min(cells.len()) {
+                    let (image_id, category_id) = cells.ids(pair);
                     let k_idx = match last_cat {
-                        Some((id, k_idx)) if id == eval.category_id => k_idx,
+                        Some((id, k_idx)) if id == category_id => k_idx,
                         _ => {
-                            let k_idx = cat_id_to_k_idx.get(&eval.category_id).copied();
-                            last_cat = Some((eval.category_id, k_idx));
+                            let k_idx = cat_id_to_k_idx.get(&category_id).copied();
+                            last_cat = Some((category_id, k_idx));
                             k_idx
                         }
                     };
                     let Some(k_idx) = k_idx else {
                         continue;
                     };
-                    let a_key = [eval.area_rng[0].to_bits(), eval.area_rng[1].to_bits()];
-                    let Some(a_idx) = area_keys.iter().rposition(|key| *key == a_key) else {
-                        continue; // skip eval results with area ranges not in current params
-                    };
-                    let local = match last_img {
-                        Some((id, local)) if id == eval.image_id => local,
-                        _ => {
-                            let local = run.imgs.len() as u32;
-                            run.imgs.push(eval.image_id);
-                            last_img = Some((eval.image_id, local));
-                            local
-                        }
-                    };
-                    run.buckets[k_idx * a + a_idx].push((eval, local));
+                    for (at_eval, &a_idx) in remap.iter().enumerate() {
+                        let Some(a_idx) = a_idx else {
+                            continue;
+                        };
+                        // An image gets a slot only once a cell of it lands in a
+                        // bucket, so a run with nothing in scope has no slots.
+                        let local = match last_img {
+                            Some((id, local)) if id == image_id => local,
+                            _ => {
+                                let local = run.imgs.len() as u32;
+                                run.imgs.push(image_id);
+                                last_img = Some((image_id, local));
+                                local
+                            }
+                        };
+                        run.buckets[k_idx * a + a_idx].push((CellRef::new(pair, at_eval), local));
+                    }
                 }
                 run
             })
@@ -169,7 +186,7 @@ impl<'a> EvalGrouping<'a> {
             .collect();
 
         // Concatenate the runs bucket by bucket, in run order.
-        let grouped: Vec<Vec<(&EvalImg, u32)>> = (0..k * a)
+        let grouped: Vec<Vec<(CellRef, u32)>> = (0..k * a)
             .into_par_iter()
             .map(|b| {
                 let total: usize = runs.iter().map(|run| run.buckets[b].len()).sum();
@@ -221,7 +238,7 @@ impl<'a> EvalGrouping<'a> {
         mask
     }
 
-    fn cell(&self, k_idx: usize, a_idx: usize) -> &[(&'a EvalImg, u32)] {
+    fn cell(&self, k_idx: usize, a_idx: usize) -> &[(CellRef, u32)] {
         &self.grouped[k_idx * self.a + a_idx]
     }
 }
@@ -242,6 +259,7 @@ pub(super) fn accumulate_impl(
     img_filter: Option<&HashSet<u64>>,
 ) -> AccumulatedEval {
     let params = &grouping.eval().params;
+    let cells = &grouping.eval().cells;
     let want_all_points = grouping.eval().eval_mode == EvalMode::OpenImages;
     let t = params.iou_thrs.len();
     let r = params.rec_thrs.len();
@@ -264,38 +282,43 @@ pub(super) fn accumulate_impl(
     // passes over the cell list collapsed into one, and the `num_gt == 0`
     // short-circuit now skips all three M slots together.
     //
-    // The output stays disjoint per `m`, so the merge below is unchanged and no
-    // floating-point sum is reassociated.
-    let work_items: Vec<(usize, usize)> = (0..k)
-        .flat_map(|k_idx| (0..a).map(move |a_idx| (k_idx, a_idx)))
-        .collect();
+    // Each item's output cells are disjoint from every other item's, so no
+    // floating-point sum is reassociated and the items can write the output
+    // arrays in place: each stages its writes on its thread, then takes the
+    // lock once to apply them.
 
-    /// Intermediate results from a single (category, area_range) work item.
-    /// Each field is a list of (flat_index, value) pairs to write into the output arrays.
+    /// One item's `(k, a)` slab of every output, staged on its thread until
+    /// the item is done.
     #[derive(Default)]
-    struct AccResult {
-        /// Whether this work item had ground truth, and therefore needs the 0.0
-        /// zero-fill applied across every M slot in the merge. The merge writes
-        /// the zeros before the real writes, which overwrite them — same
-        /// indices, same order. (Per-item, not per-slot: `num_gt` does not
-        /// depend on the max-det cap, so all M slots fill together.)
-        filled: bool,
-        precision_writes: Vec<(usize, f64)>,
-        /// `(flat_index, max_recall, all_points_ap)`. The AP rides along with the
-        /// recall it was computed from rather than in a parallel vector, so the two
-        /// cannot be written at different indices or one forgotten on an early
-        /// return. Carries `-1.0` when the mode does not want it.
-        recall_writes: Vec<(usize, f64, f64)>,
-        scores_writes: Vec<(usize, f64)>,
+    struct Staged {
+        /// `[M x T x R]`.
+        precision: Vec<f64>,
+        /// `[M x T x R]`.
+        scores: Vec<f64>,
+        /// `[M x T]` of `(max recall, all-points AP)`. The AP rides along with
+        /// the recall it was computed from, so the two cannot be written at
+        /// different indices or one forgotten on an early return.
+        recall: Vec<(f64, f64)>,
     }
 
     let shape = EvalShape { t, r, k, a, m };
+    let total = t * r * k * a * m;
+    let total_recall = t * k * a * m;
+    let outputs = Mutex::new(AccumulatedEval {
+        precision: vec![-1.0; total],
+        recall: vec![-1.0; total_recall],
+        ap_all_points: vec![-1.0; total_recall],
+        scores: vec![-1.0; total],
+        shape,
+    });
 
-    let results: Vec<AccResult> = work_items
-        .par_iter()
-        .map(|&(k_idx, a_idx)| {
+    // Items are indexed as `grouped` is: `k_idx * a + a_idx`.
+    (0..k * a)
+        .into_par_iter()
+        .for_each_init(Staged::default, |staged, item| {
+            let (k_idx, a_idx) = (item / a, item % a);
             // Materialized once for every `m`, rather than filtered per `m`.
-            let evals: Vec<&EvalImg> = grouping
+            let evals: Vec<CellRef> = grouping
                 .cell(k_idx, a_idx)
                 .iter()
                 .filter(|&&(_, slot)| img_mask[slot as usize])
@@ -304,17 +327,22 @@ pub(super) fn accumulate_impl(
 
             // Independent of `max_det` — the cap truncates detections, never
             // ground truth — so it is summed once for the whole M axis.
-            let num_gt: usize = evals.iter().map(|e| e.num_gt_in_denominator()).sum();
+            let num_gt: usize = evals.iter().map(|&e| cells.num_gt(e) as usize).sum();
             if num_gt == 0 {
-                return AccResult::default();
+                return;
             }
-
-            let mut out = AccResult {
-                filled: true,
-                precision_writes: Vec::with_capacity(m * t * r),
-                recall_writes: Vec::with_capacity(m * t),
-                scores_writes: Vec::with_capacity(m * t * r),
-            };
+            // Precision and scores start at 0.0 (distinct from -1.0, "no data")
+            // wherever ground truth exists, so a category with GT but no matches
+            // shows 0 AP rather than "missing" and dropping out of the mean. Only
+            // recall thresholds reached by detections are overwritten below;
+            // unreachable ones stay at 0.0. Per item, not per `m`: `num_gt` does
+            // not depend on the max-det cap.
+            staged.precision.clear();
+            staged.precision.resize(m * t * r, 0.0);
+            staged.scores.clear();
+            staged.scores.resize(m * t * r, 0.0);
+            staged.recall.clear();
+            staged.recall.resize(m * t, (-1.0, -1.0));
 
             // One gather and one sort per work item, shared by every `m`.
             //
@@ -343,13 +371,15 @@ pub(super) fn accumulate_impl(
             let mut rank_in_cell: Vec<usize> = Vec::new();
             let mut all_dt_matched: Vec<Vec<bool>> = vec![Vec::new(); t];
             let mut all_dt_ignore: Vec<Vec<bool>> = vec![Vec::new(); t];
-            for eval_img in &evals {
-                let nd = eval_img.dt_scores.len().min(cap);
-                all_dt_scores.extend_from_slice(&eval_img.dt_scores[..nd]);
+            for &cell in &evals {
+                let scores = cells.scores(cell.pair());
+                let nd = scores.len().min(cap);
+                all_dt_scores.extend_from_slice(&scores[..nd]);
                 rank_in_cell.extend(0..nd);
+                let block = cells.block(cell);
                 for t_idx in 0..t {
-                    all_dt_matched[t_idx].extend_from_slice(&eval_img.dt_matched.row(t_idx)[..nd]);
-                    all_dt_ignore[t_idx].extend_from_slice(&eval_img.dt_ignore.row(t_idx)[..nd]);
+                    all_dt_matched[t_idx].extend(block.matched(t_idx).take(nd));
+                    all_dt_ignore[t_idx].extend(block.ignore(t_idx).take(nd));
                 }
             }
 
@@ -386,10 +416,9 @@ pub(super) fn accumulate_impl(
                     // "missing". The metric *is* computable here and the answer is that
                     // nothing was found; reporting "not computed" would drop the
                     // category from the mean and quietly raise mAP.
+                    let ap = if want_all_points { 0.0 } else { -1.0 };
                     for t_idx in 0..t {
-                        let recall_idx = shape.recall_idx(t_idx, k_idx, a_idx, m_idx);
-                        let ap = if want_all_points { 0.0 } else { -1.0 };
-                        out.recall_writes.push((recall_idx, 0.0, ap));
+                        staged.recall[m_idx * t + t_idx] = (0.0, ap);
                     }
                     continue;
                 }
@@ -435,68 +464,38 @@ pub(super) fn accumulate_impl(
                             );
                         (final_recall, -1.0)
                     };
-                    let recall_idx = shape.recall_idx(t_idx, k_idx, a_idx, m_idx);
-                    out.recall_writes
-                        .push((recall_idx, final_recall, all_points_ap));
-
+                    staged.recall[m_idx * t + t_idx] = (final_recall, all_points_ap);
                     for &(r_idx, pr_val, rc_ptr) in &curve {
-                        let p_idx = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
-                        out.precision_writes.push((p_idx, pr_val));
-                        out.scores_writes.push((p_idx, all_dt_scores[inds[rc_ptr]]));
+                        let i = (m_idx * t + t_idx) * r + r_idx;
+                        staged.precision[i] = pr_val;
+                        staged.scores[i] = all_dt_scores[inds[rc_ptr]];
                     }
                 }
             }
 
-            out
-        })
-        .collect();
-
-    // Merge results into output arrays
-    let total = t * r * k * a * m;
-    let mut precision = vec![-1.0f64; total];
-    let mut scores = vec![-1.0f64; total];
-    let total_recall = t * k * a * m;
-    let mut recall = vec![-1.0f64; total_recall];
-    let mut ap_all_points = vec![-1.0f64; total_recall];
-
-    // `work_items` and `results` are index-parallel: rayon's indexed `collect`
-    // preserves order, which is what lets the zero-fill recover each result's
-    // (k, a) coordinates without carrying them in the struct.
-    for (&(k_idx, a_idx), result) in work_items.iter().zip(results) {
-        // Initialize precision and scores to 0.0 (distinct from -1.0, which means
-        // "no data"). This ensures categories with GT but no matches show 0 AP,
-        // not "missing". Only recall thresholds reached by actual detections get
-        // overwritten below — unreachable thresholds stay at 0.0.
-        if result.filled {
-            for m_idx in 0..m {
-                for t_idx in 0..t {
-                    for r_idx in 0..r {
-                        let p_idx = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, m_idx);
-                        precision[p_idx] = 0.0;
-                        scores[p_idx] = 0.0;
+            // The M slots of an output cell are contiguous, so the slab lands
+            // as `m`-runs of each `(t, r)`.
+            // A poisoned lock means another item panicked, which rayon propagates.
+            let mut out = outputs.lock().unwrap_or_else(PoisonError::into_inner);
+            for t_idx in 0..t {
+                for r_idx in 0..r {
+                    let base = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, 0);
+                    for m_idx in 0..m {
+                        let i = (m_idx * t + t_idx) * r + r_idx;
+                        out.precision[base + m_idx] = staged.precision[i];
+                        out.scores[base + m_idx] = staged.scores[i];
                     }
                 }
+                let base = shape.recall_idx(t_idx, k_idx, a_idx, 0);
+                for m_idx in 0..m {
+                    let (recall, ap) = staged.recall[m_idx * t + t_idx];
+                    out.recall[base + m_idx] = recall;
+                    out.ap_all_points[base + m_idx] = ap;
+                }
             }
-        }
-        for (idx, val) in result.precision_writes {
-            precision[idx] = val;
-        }
-        for (idx, rec, ap) in result.recall_writes {
-            recall[idx] = rec;
-            ap_all_points[idx] = ap;
-        }
-        for (idx, val) in result.scores_writes {
-            scores[idx] = val;
-        }
-    }
+        });
 
-    AccumulatedEval {
-        precision,
-        recall,
-        ap_all_points,
-        scores,
-        shape,
-    }
+    outputs.into_inner().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl COCOeval {
@@ -589,9 +588,10 @@ mod tests {
     /// concatenated out of order shows up as a difference.
     ///
     /// Returns, per `k_idx * a + a_idx` bucket, the cells in order as
-    /// `(cell address, image_id)`; slot numbers are not compared (they are
-    /// internal), only that they are consistent — see `assert_slots_consistent`.
-    fn reference_grouping(ev: &COCOeval) -> Vec<Vec<(*const EvalImg, u64)>> {
+    /// `(pair index, evaluate-time area index, image_id)`; slot numbers are not
+    /// compared (they are internal), only that they are consistent — see
+    /// `assert_slots_consistent`.
+    fn reference_grouping(ev: &COCOeval) -> Vec<Vec<(usize, usize, u64)>> {
         let params = &ev.params;
         let k = if params.use_cats {
             params.cat_ids.len()
@@ -613,18 +613,25 @@ mod tests {
             .area_ranges
             .iter()
             .enumerate()
-            .map(|(i, ar)| ([ar.range[0].to_bits(), ar.range[1].to_bits()], i))
+            .map(|(i, ar)| (area_key(ar.range), i))
             .collect();
+        let evaluated_ranges = &ev
+            .eval_inputs
+            .as_ref()
+            .expect("fixture has been evaluated")
+            .params
+            .area_ranges;
         let mut grouped = vec![Vec::new(); k * a];
-        for eval in ev.eval_imgs.iter().flatten() {
-            let Some(&k_idx) = cat_id_to_k_idx.get(&eval.category_id) else {
+        for pair in 0..ev.cells.len() {
+            let Some(&k_idx) = cat_id_to_k_idx.get(&ev.cells.ids(pair).1) else {
                 continue;
             };
-            let a_key = [eval.area_rng[0].to_bits(), eval.area_rng[1].to_bits()];
-            let Some(&a_idx) = area_rng_to_idx.get(&a_key) else {
-                continue;
-            };
-            grouped[k_idx * a + a_idx].push((std::ptr::from_ref(eval), eval.image_id));
+            for (at_eval, ar) in evaluated_ranges.iter().enumerate() {
+                let Some(&a_idx) = area_rng_to_idx.get(&area_key(ar.range)) else {
+                    continue;
+                };
+                grouped[k_idx * a + a_idx].push((pair, at_eval, ev.cells.ids(pair).0));
+            }
         }
         grouped
     }
@@ -634,6 +641,20 @@ mod tests {
             label: label.into(),
             range: [lo, hi],
         }
+    }
+
+    /// Every visited pair has a ground truth or a detection, so the fixture
+    /// fills one cell per pair.
+    fn assert_fixture_filled(ev: &COCOeval) {
+        assert_eq!(
+            ev.cells.len(),
+            ev.eval_inputs
+                .as_ref()
+                .expect("evaluated")
+                .sparse_pairs
+                .len(),
+            "fixture must fill every pair"
+        );
     }
 
     /// Six images × three categories. Most (image, category) pairs carry both a
@@ -724,9 +745,9 @@ mod tests {
         let got = EvalGrouping::build_chunked(ev, chunk_len);
         assert_eq!(got.grouped.len(), expected.len(), "{label}: bucket count");
         for (b, (got_bucket, want_bucket)) in got.grouped.iter().zip(&expected).enumerate() {
-            let got_cells: Vec<(*const EvalImg, u64)> = got_bucket
+            let got_cells: Vec<(usize, usize, u64)> = got_bucket
                 .iter()
-                .map(|&(eval, _)| (std::ptr::from_ref(eval), eval.image_id))
+                .map(|&(cell, _)| (cell.pair(), cell.area(), ev.cells.ids(cell.pair()).0))
                 .collect();
             assert_eq!(
                 got_cells, *want_bucket,
@@ -741,27 +762,27 @@ mod tests {
     fn assert_slots_consistent(g: &EvalGrouping<'_>, label: &str) {
         let mut slot_of: HashMap<u64, u32> = HashMap::new();
         let mut img_of: HashMap<u32, u64> = HashMap::new();
-        for &(eval, slot) in g.grouped.iter().flatten() {
+        for &(cell, slot) in g.grouped.iter().flatten() {
+            let image_id = g.eval().cells.ids(cell.pair()).0;
             assert_eq!(
-                *slot_of.entry(eval.image_id).or_insert(slot),
+                *slot_of.entry(image_id).or_insert(slot),
                 slot,
-                "{label}: image {} carries two slots",
-                eval.image_id
+                "{label}: image {image_id} carries two slots"
             );
             assert_eq!(
-                *img_of.entry(slot).or_insert(eval.image_id),
-                eval.image_id,
+                *img_of.entry(slot).or_insert(image_id),
+                image_id,
                 "{label}: slot {slot} carries two images"
             );
         }
         let keep: HashSet<u64> = [2u64, 5].into_iter().collect();
         let mask = g.image_mask(Some(&keep));
-        for &(eval, slot) in g.grouped.iter().flatten() {
+        for &(cell, slot) in g.grouped.iter().flatten() {
+            let image_id = g.eval().cells.ids(cell.pair()).0;
             assert_eq!(
                 mask[slot as usize],
-                keep.contains(&eval.image_id),
-                "{label}: image_mask disagrees with the filter for image {}",
-                eval.image_id
+                keep.contains(&image_id),
+                "{label}: image_mask disagrees with the filter for image {image_id}"
             );
         }
     }
@@ -773,10 +794,10 @@ mod tests {
     #[test]
     fn grouping_matches_sequential_walk_under_reconfigured_params() {
         let mut ev = make_eval(true);
-        assert!(
-            ev.eval_imgs.iter().any(Option::is_none) && ev.eval_imgs.iter().any(Option::is_some),
-            "fixture must produce both empty and filled cells"
-        );
+        // `evaluate()` visits only (image, category) pairs that hold a ground
+        // truth or a detection, and since 1.1 keeps every one of them (as
+        // pycocotools does): one cell per visited pair, none empty.
+        assert_fixture_filled(&ev);
         for chunk_len in CHUNKS {
             assert_same_grouping(&ev, chunk_len, "as evaluated");
         }
@@ -820,7 +841,7 @@ mod tests {
     #[test]
     fn grouping_matches_sequential_walk_without_categories() {
         let ev = make_eval(false);
-        assert!(ev.eval_imgs.iter().any(Option::is_some));
+        assert_fixture_filled(&ev);
         for chunk_len in CHUNKS {
             assert_same_grouping(&ev, chunk_len, "use_cats = false");
         }

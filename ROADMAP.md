@@ -41,6 +41,12 @@ Promptable concept evaluation in the SAM 3 style: cgF1 for images, pHOTA for
 video. Gated on a feasibility spike — it ships only if a reference oracle solid
 enough to verify against exists, the same bar every other family clears.
 
+## Rust API cleanups
+
+Rust-visible breaks ship in minor releases while the crate has no dependents
+outside this repository; each one is named in the CHANGELOG. Nothing is queued
+at the moment.
+
 ## Not tied to a release
 
 - **Frozen primitives API** — the similarity kernels, matchers, and count

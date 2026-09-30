@@ -157,7 +157,7 @@ fn iou_of(a: [f64; 4], b: [f64; 4]) -> f64 {
 /// A fixed 64-bit linear congruential generator.
 ///
 /// Fixtures whose ties carry the test use this rather than `rand`: its output
-/// cannot move with a `rand` release, and `scripts/test_parity.py` runs the
+/// cannot move with a `rand` release, and `tests/test_parity.py` runs the
 /// same generator, so the Python and Rust copies of a fixture stay identical.
 struct Lcg(u64);
 
@@ -184,7 +184,7 @@ impl Lcg {
 /// 0.70. Category 3 has no ground truth, so the `-1.0` early return runs
 /// alongside the real curves. Every cell holds more detections than a `maxDets`
 /// cap of 10, so per-image truncation fires. Same data, same generator, and
-/// same seed as `_tie_heavy_dataset` in `scripts/test_parity.py`, which proves
+/// same seed as `_tie_heavy_dataset` in `tests/test_parity.py`, which proves
 /// the arrays it yields equal pycocotools'; the tests here add invariants on
 /// top of that.
 fn tie_heavy_datasets() -> (Dataset, Dataset) {
@@ -2032,7 +2032,7 @@ fn bbox_of(a: &Annotation) -> [f64; 4] {
 }
 
 fn obb_of(a: &Annotation) -> [f64; 5] {
-    a.obb.expect("annotation should carry an obb")
+    *a.obb.as_deref().expect("annotation should carry an obb")
 }
 
 #[test]
@@ -4699,7 +4699,7 @@ fn test_obb_eval_basic() {
             category_id: 1,
             bbox: Some([90.0, 90.0, 220.0, 120.0]),
             area: Some(20000.0),
-            obb: Some([200.0, 150.0, 200.0, 100.0, 0.3]),
+            obb: Some(Box::new([200.0, 150.0, 200.0, 100.0, 0.3])),
             ..Default::default()
         }],
         categories: vec![cat(1, "vehicle")],
@@ -4715,7 +4715,7 @@ fn test_obb_eval_basic() {
             category_id: 1,
             bbox: Some([90.0, 90.0, 220.0, 120.0]),
             area: Some(20000.0),
-            obb: Some([200.0, 150.0, 200.0, 100.0, 0.3]),
+            obb: Some(Box::new([200.0, 150.0, 200.0, 100.0, 0.3])),
             score: Some(0.99),
             ..Default::default()
         }],
@@ -4753,7 +4753,7 @@ fn test_obb_eval_no_overlap() {
             category_id: 1,
             bbox: Some([0.0, 0.0, 50.0, 50.0]),
             area: Some(2500.0),
-            obb: Some([25.0, 25.0, 50.0, 50.0, 0.0]),
+            obb: Some(Box::new([25.0, 25.0, 50.0, 50.0, 0.0])),
             ..Default::default()
         }],
         categories: vec![cat(1, "vehicle")],
@@ -4769,7 +4769,7 @@ fn test_obb_eval_no_overlap() {
             category_id: 1,
             bbox: Some([700.0, 500.0, 50.0, 50.0]),
             area: Some(2500.0),
-            obb: Some([725.0, 525.0, 50.0, 50.0, 0.0]),
+            obb: Some(Box::new([725.0, 525.0, 50.0, 50.0, 0.0])),
             score: Some(0.9),
             ..Default::default()
         }],
@@ -4808,7 +4808,7 @@ fn test_dota_round_trip_integration() {
             category_id: 1,
             bbox: Some([90.0, 90.0, 220.0, 120.0]),
             area: Some(20000.0),
-            obb: Some([200.0, 150.0, 200.0, 100.0, 0.0]),
+            obb: Some(Box::new([200.0, 150.0, 200.0, 100.0, 0.0])),
             ..Default::default()
         }],
         categories: vec![cat(1, "vehicle")],
@@ -5766,6 +5766,93 @@ fn nan_detection_score_is_rejected() {
     );
 }
 
+/// `load_res_anns` warns once per mismatch kind, not once per offending
+/// annotation.
+///
+/// Regression for the single-pass rewrite that probes the GT's own `imgs`/
+/// `cats` index maps directly instead of rebuilding a fresh `HashSet` of GT
+/// ids on every call: a fused loop that forgets to gate each check on
+/// "already warned" would push one warning per mismatched detection instead
+/// of one per kind, and would report the last offender instead of the first.
+#[test]
+fn load_res_anns_warns_once_per_mismatch_kind() {
+    let gt = dataset(
+        vec![img(1), img(2)],
+        vec![cat(1, "person"), cat(2, "car")],
+        vec![],
+    );
+    let coco_gt = COCO::from_dataset(gt);
+
+    let dets = vec![
+        det(1, [0.0, 0.0, 10.0, 10.0], 0.9).in_img(99).in_cat(1),
+        det(2, [0.0, 0.0, 10.0, 10.0], 0.8).in_img(98).in_cat(1),
+        det(3, [0.0, 0.0, 10.0, 10.0], 0.7).in_img(1).in_cat(77),
+        det(4, [0.0, 0.0, 10.0, 10.0], 0.6).in_img(1).in_cat(76),
+    ];
+
+    let coco_dt = coco_gt
+        .load_res_anns(dets)
+        .expect("mismatched ids should warn, not error");
+    let warnings = coco_dt.load_warnings();
+
+    let img_warnings: Vec<_> = warnings.iter().filter(|w| w.contains("image_id")).collect();
+    let cat_warnings: Vec<_> = warnings
+        .iter()
+        .filter(|w| w.contains("category_id"))
+        .collect();
+
+    assert_eq!(
+        img_warnings.len(),
+        1,
+        "expected exactly one image_id mismatch warning, got: {warnings:?}"
+    );
+    assert_eq!(
+        cat_warnings.len(),
+        1,
+        "expected exactly one category_id mismatch warning, got: {warnings:?}"
+    );
+    assert!(
+        img_warnings[0].contains("99"),
+        "should name the first mismatched image_id (99), got: {}",
+        img_warnings[0]
+    );
+    assert!(
+        cat_warnings[0].contains("77"),
+        "should name the first mismatched category_id (77), got: {}",
+        cat_warnings[0]
+    );
+}
+
+/// A GT with no categories at all must never emit a category_id mismatch
+/// warning, whatever `category_id` the results carry.
+///
+/// Regression for the `has_cats` gate on the fused validation loop: without
+/// it, an empty GT category list would warn on every detection, since every
+/// `category_id` is "not in the GT dataset" when the GT declares none.
+#[test]
+fn load_res_anns_skips_category_check_when_gt_has_no_categories() {
+    let gt = dataset(vec![img(1)], vec![], vec![]);
+    let coco_gt = COCO::from_dataset(gt);
+
+    let dets = vec![
+        det(1, [0.0, 0.0, 10.0, 10.0], 0.9).in_cat(1),
+        det(2, [0.0, 0.0, 10.0, 10.0], 0.8).in_cat(2),
+    ];
+
+    let coco_dt = coco_gt
+        .load_res_anns(dets)
+        .expect("no-category GT should still load results");
+    let cat_warnings: Vec<_> = coco_dt
+        .load_warnings()
+        .iter()
+        .filter(|w| w.contains("category_id"))
+        .collect();
+    assert!(
+        cat_warnings.is_empty(),
+        "GT with no categories must not warn about category_id, got: {cat_warnings:?}"
+    );
+}
+
 /// The five FP error types partition every unmatched, non-ignored detection.
 ///
 /// `classify_fp` is total — it returns one of Cls/Loc/Both/Dupe/Bkg for every
@@ -5845,6 +5932,66 @@ fn tide_fp_types_partition_the_false_positives() {
             "suppressing all FPs must dominate suppressing only {k}: {fp} < {per_type}"
         );
     }
+}
+
+/// pycocotools' `evaluateImg` skips a cell only when the raw ground-truth and
+/// detection lists are *both* empty. A cell with detections but no ground
+/// truth survives even when the area range ignores every detection: it has
+/// nothing to match, but its detections still occupy ranks in the score order
+/// `accumulate()` samples `scores` from. Two images, one category, the small
+/// range: image 2's lone large detection at 0.9 must sit at rank 0, so the
+/// score sampled at recall 0 is 0.9 — not image 1's 0.5 true positive.
+#[test]
+fn test_gt_less_all_ignored_cell_still_fills_score_ranks() {
+    let categories = vec![cat(1, "object")];
+    let gt_ds = dataset(
+        vec![img(1), img(2)],
+        categories.clone(),
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0])],
+    );
+    let dt_ds = dataset(
+        vec![img(1), img(2)],
+        categories,
+        vec![
+            det(1, [0.0, 0.0, 10.0, 10.0], 0.5),
+            det(2, [0.0, 0.0, 100.0, 100.0], 0.9).in_img(2),
+        ],
+    );
+    let mut ev = COCOeval::new(
+        COCO::from_dataset(gt_ds),
+        COCO::from_dataset(dt_ds),
+        IouType::Bbox,
+    );
+    ev.evaluate();
+
+    let small_idx = ev
+        .params
+        .area_range_idx("small")
+        .expect("bbox params define a small range");
+    let small = ev.params.area_ranges[small_idx].range;
+    let cell = ev
+        .eval_imgs()
+        .iter()
+        .flatten()
+        .find(|e| e.image_id == 2 && e.area_rng == small)
+        .expect(
+            "a GT-less cell with every detection area-ignored is kept, as pycocotools keeps it",
+        );
+    assert!(cell.gt_ids.is_empty());
+    assert_eq!(cell.dt_ids, vec![2]);
+    assert!(
+        cell.dt_ignore.row(0).iter().all(|&ignored| ignored),
+        "the large detection is area-ignored under small"
+    );
+
+    ev.accumulate();
+    let eval = ev.accumulated().unwrap();
+    let m_100 = ev.params.max_dets.iter().position(|&m| m == 100).unwrap();
+    let at_recall_zero = eval.precision_idx(0, 0, 0, small_idx, m_100);
+    assert_eq!(
+        eval.scores[at_recall_zero], 0.9,
+        "rank 0 belongs to the ignored detection, as in pycocotools"
+    );
 }
 
 /// `max_dets` order must not change any number.
@@ -7104,4 +7251,117 @@ fn streaming_rejects_open_images() {
             "expected an Open Images rejection message, got: {err}"
         ),
     }
+}
+
+// --- update_anns: targeted annotation edits without a dataset rebuild -------
+
+#[test]
+fn update_anns_replaces_by_id_and_reindexes() {
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1), img(2)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0]), ann(2, [0.0, 0.0, 4.0, 4.0])],
+    ));
+
+    // Move annotation 2 to image 2 and give it a new area — the move is what
+    // forces the re-index, and a stale index would show up here.
+    let moved = ann(2, [0.0, 0.0, 4.0, 4.0]).in_img(2).with_area(999.0);
+    coco.update_anns(vec![moved]).unwrap();
+
+    assert_eq!(coco.get_ann(2).unwrap().area, Some(999.0));
+    assert_eq!(coco.get_ann_ids_for_img(1), &[1]);
+    assert_eq!(coco.get_ann_ids_for_img(2), &[2]);
+    assert_eq!(coco.get_ann_ids_for_img_cat(2, 1), &[2]);
+    assert_eq!(coco.get_img_ids(&[], &[1]), vec![1, 2]);
+    // The area filter answers from the replaced record, not the loaded one.
+    assert_eq!(
+        coco.get_ann_ids(&[], &[], Some([500.0, 2000.0]), None),
+        vec![2]
+    );
+}
+
+#[test]
+fn update_anns_edit_in_place_keeps_the_indices_current() {
+    // An edit that moves nothing skips the re-index — the lookups must still
+    // answer from the replaced record.
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0])],
+    ));
+
+    coco.update_anns(vec![ann(1, [0.0, 0.0, 10.0, 10.0]).with_area(7.0)])
+        .unwrap();
+
+    assert_eq!(coco.get_ann(1).unwrap().area, Some(7.0));
+    assert_eq!(coco.get_ann_ids_for_img(1), &[1]);
+    assert_eq!(coco.get_ann_ids_for_img_cat(1, 1), &[1]);
+}
+
+#[test]
+fn update_anns_unknown_id_errors_and_writes_nothing() {
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0])],
+    ));
+
+    let edit = ann(1, [0.0, 0.0, 10.0, 10.0]).with_area(1.0);
+    let bogus = ann(7, [0.0, 0.0, 10.0, 10.0]).with_area(2.0);
+    let err = coco.update_anns(vec![edit, bogus]).unwrap_err();
+
+    assert!(matches!(err, hotcoco::Error::UnknownAnnIds(ref ids) if ids == &[7]));
+    // The valid edit in the same call must not have landed either.
+    assert_eq!(coco.get_ann(1).unwrap().area, Some(100.0));
+    assert_eq!(coco.dataset.annotations.len(), 1);
+}
+
+#[test]
+fn update_anns_keeps_the_last_of_duplicate_ids() {
+    // pycocotools parity: the id lookup holds the last occurrence, so that is
+    // the record `update_anns` replaces.
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![
+            ann(1, [0.0, 0.0, 1.0, 1.0]).with_area(1.0),
+            ann(1, [0.0, 0.0, 2.0, 2.0]).with_area(2.0),
+        ],
+    ));
+
+    coco.update_anns(vec![ann(1, [0.0, 0.0, 2.0, 2.0]).with_area(42.0)])
+        .unwrap();
+
+    assert_eq!(coco.dataset.annotations[0].area, Some(1.0));
+    assert_eq!(coco.dataset.annotations[1].area, Some(42.0));
+}
+
+#[test]
+fn update_anns_does_not_re_report_duplicate_ids() {
+    // Reporting duplicate ids is a load-time event: `create_index` prints it
+    // and appends it to `load_warnings`. A mutator re-indexes as often as a
+    // caller edits, so it must not grow that list per edit.
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1), img(2)],
+        vec![cat(1, "thing")],
+        vec![
+            ann(1, [0.0, 0.0, 1.0, 1.0]),
+            ann(1, [0.0, 0.0, 2.0, 2.0]),
+            ann(2, [0.0, 0.0, 3.0, 3.0]),
+        ],
+    ));
+    assert_eq!(coco.load_warnings().len(), 1, "the load reports them once");
+
+    for _ in 0..3 {
+        // A move, so the re-index actually runs.
+        coco.update_anns(vec![ann(2, [0.0, 0.0, 3.0, 3.0]).in_img(2)])
+            .unwrap();
+        coco.update_anns(vec![ann(2, [0.0, 0.0, 3.0, 3.0]).in_img(1)])
+            .unwrap();
+    }
+    assert_eq!(coco.load_warnings().len(), 1, "and the edits stay quiet");
+
+    // An explicit `create_index()` still reports, the pycocotools idiom intact.
+    coco.create_index();
+    assert_eq!(coco.load_warnings().len(), 2);
 }

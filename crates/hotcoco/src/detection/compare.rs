@@ -91,10 +91,10 @@ pub fn compare(
     opts: &CompareOpts,
 ) -> crate::error::Result<ComparisonResult> {
     // --- Validation ---
-    if eval_a.eval_imgs.is_empty() {
+    if !eval_a.evaluated() {
         return Err("evaluate() must be called on eval_a before compare()".into());
     }
-    if eval_b.eval_imgs.is_empty() {
+    if !eval_b.evaluated() {
         return Err("evaluate() must be called on eval_b before compare()".into());
     }
     if eval_a.eval_mode != eval_b.eval_mode {

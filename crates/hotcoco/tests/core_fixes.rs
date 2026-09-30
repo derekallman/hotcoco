@@ -361,7 +361,7 @@ fn missing_area_excluded_from_area_range() {
 
 /// Unknown JSON keys on images, annotations, and categories survive
 /// load → filter → save (pycocotools preserves them because it stores raw
-/// dicts). Exercises the simd-json path end to end.
+/// dicts). Exercises the JSON loader end to end.
 #[test]
 fn extra_keys_survive_load_and_filter() {
     let json = r#"{

@@ -50,11 +50,18 @@ pub use tide::TideErrors;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::coco::COCO;
 use crate::detection::hierarchy::Hierarchy;
 use crate::params::{IouType, Params};
 use mode::FreqGroups;
+
+/// How many of `n` items each parallel run takes, at least one.
+fn run_len(n: usize) -> usize {
+    n.div_ceil(crate::RUNS_PER_THREAD * rayon::current_num_threads())
+        .max(1)
+}
 
 /// COCO evaluation engine.
 ///
@@ -90,10 +97,21 @@ use mode::FreqGroups;
 /// # }
 /// ```
 pub struct COCOeval {
-    pub coco_gt: COCO,
-    pub coco_dt: COCO,
+    coco_gt: Arc<COCO>,
+    coco_dt: Arc<COCO>,
     pub params: Params,
-    pub(crate) eval_imgs: Vec<Option<EvalImg>>,
+    /// The full per-image records, built on first access — see
+    /// [`eval_imgs`](Self::eval_imgs). Reset by every `evaluate()`.
+    eval_imgs: std::sync::OnceLock<Vec<Option<EvalImg>>>,
+    /// The `"all"` area range's records alone, for the in-crate analyses that
+    /// read only that range (see [`default_cells`](Self::default_cells)) —
+    /// a quarter of [`eval_imgs`](Self::eval_imgs) on COCO's four ranges.
+    default_eval_imgs: std::sync::OnceLock<Vec<Option<EvalImg>>>,
+    /// Every gathered (image, category) pair, in the order `evaluate()` visits
+    /// them — what `accumulate()` reads. Empty until `evaluate()` runs.
+    cells: matching::Cells,
+    /// What the last `evaluate()` saw; `None` until it runs.
+    eval_inputs: Option<evaluate::EvalInputs>,
     ious: HashMap<(u64, u64), matching::IouMatrix>,
     /// Per-annotation RLEs for segm runs, rebuilt by each `evaluate()` (like
     /// `ious`) and `None` for every other geometry. See [`iou::SegmRles`].
@@ -114,17 +132,20 @@ impl COCOeval {
     /// differ in is a parameter here; everything else is the same empty
     /// pre-`evaluate()` state, so a field added later is initialized once.
     fn with_mode(
-        coco_gt: COCO,
-        coco_dt: COCO,
+        coco_gt: impl Into<Arc<COCO>>,
+        coco_dt: impl Into<Arc<COCO>>,
         params: Params,
         eval_mode: EvalMode,
         hierarchy: Option<Hierarchy>,
     ) -> Self {
         COCOeval {
-            coco_gt,
-            coco_dt,
+            coco_gt: coco_gt.into(),
+            coco_dt: coco_dt.into(),
             params,
-            eval_imgs: Vec::new(),
+            eval_imgs: std::sync::OnceLock::new(),
+            default_eval_imgs: std::sync::OnceLock::new(),
+            cells: matching::Cells::default(),
+            eval_inputs: None,
             ious: HashMap::new(),
             segm_rles: None,
             eval: None,
@@ -136,7 +157,11 @@ impl COCOeval {
     }
 
     /// Create a new COCOeval from ground truth and detection COCO objects.
-    pub fn new(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self {
+    pub fn new(
+        coco_gt: impl Into<Arc<COCO>>,
+        coco_dt: impl Into<Arc<COCO>>,
+        iou_type: IouType,
+    ) -> Self {
         Self::with_mode(
             coco_gt,
             coco_dt,
@@ -146,9 +171,40 @@ impl COCOeval {
         )
     }
 
+    /// The ground-truth dataset this evaluator reads. The evaluator never
+    /// writes through it; Open Images [`evaluate`](Self::evaluate) replaces it
+    /// with an expanded copy.
+    pub fn coco_gt(&self) -> &Arc<COCO> {
+        &self.coco_gt
+    }
+
+    /// The detection dataset this evaluator reads — see [`coco_gt`](Self::coco_gt).
+    pub fn coco_dt(&self) -> &Arc<COCO> {
+        &self.coco_dt
+    }
+
     /// Per-image evaluation results (sparse — indexed by image position).
+    ///
+    /// Empty until [`evaluate`](Self::evaluate) runs. Built on first access and
+    /// cached: `evaluate()` itself keeps only the lean per-cell bits that
+    /// `accumulate()` reads, about 20 bytes per detection, and these full
+    /// records — every id, both sides of the match, about 460 bytes per
+    /// detection — are materialized from the same inputs when something asks
+    /// for them. They describe what `evaluate()` produced, whatever `params`
+    /// has been set to since.
     pub fn eval_imgs(&self) -> &[Option<EvalImg>] {
-        &self.eval_imgs
+        match &self.eval_inputs {
+            None => &[],
+            Some(inputs) => self.eval_imgs.get_or_init(|| {
+                let every_range: Vec<usize> = (0..inputs.params.area_ranges.len()).collect();
+                self.evaluate_pairs_full(inputs, &every_range)
+            }),
+        }
+    }
+
+    /// Whether [`evaluate`](Self::evaluate) has run.
+    pub fn evaluated(&self) -> bool {
+        self.eval_inputs.is_some()
     }
 
     /// Accumulated precision/recall curves (set after `accumulate()`).
@@ -204,7 +260,16 @@ impl COCOeval {
     pub(in crate::detection) fn default_cells(&self) -> impl Iterator<Item = &EvalImg> {
         let area_rng = self.params.all_area_range();
         let max_det = self.params.max_det();
-        self.eval_imgs
+        // The full set if something already built it; otherwise only the
+        // `"all"` range, which is all these analyses read.
+        let cells: &[Option<EvalImg>] = match (&self.eval_inputs, self.eval_imgs.get()) {
+            (None, _) => &[],
+            (Some(_), Some(all)) => all,
+            (Some(inputs), None) => self
+                .default_eval_imgs
+                .get_or_init(|| self.evaluate_pairs_full(inputs, &[inputs.params.all_area_idx()])),
+        };
+        cells
             .iter()
             .flatten()
             .filter(move |e| e.area_rng == area_rng && e.max_det == max_det)
@@ -256,7 +321,11 @@ impl COCOeval {
     ///
     /// Produces 13 metrics: AP, AP50, AP75, APs, APm, APl, APr (rare), APc (common),
     /// APf (frequent), AR@300, ARs@300, ARm@300, ARl@300.
-    pub fn new_lvis(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self {
+    pub fn new_lvis(
+        coco_gt: impl Into<Arc<COCO>>,
+        coco_dt: impl Into<Arc<COCO>>,
+        iou_type: IouType,
+    ) -> Self {
         let mut params = Params::new(iou_type);
         params.max_dets = vec![300];
 
@@ -279,7 +348,11 @@ impl COCOeval {
     /// `max_dets=100`. If a [`Hierarchy`] is provided, GT annotations are expanded
     /// up the hierarchy during `evaluate()`. Set `params.expand_dt = true` to
     /// also expand detections.
-    pub fn new_oid(coco_gt: COCO, coco_dt: COCO, hierarchy: Option<Hierarchy>) -> Self {
+    pub fn new_oid(
+        coco_gt: impl Into<Arc<COCO>>,
+        coco_dt: impl Into<Arc<COCO>>,
+        hierarchy: Option<Hierarchy>,
+    ) -> Self {
         let mut params = Params::new(IouType::Bbox);
         params.iou_thrs = vec![0.5];
         params.area_ranges = vec![crate::AreaRange {

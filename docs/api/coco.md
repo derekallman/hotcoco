@@ -73,6 +73,8 @@ The full dataset with `images`, `annotations`, and `categories`. Writable in
 Python: assigning a dataset dict replaces the contents and rebuilds the index.
 Reading it returns a copy, so edit the dict and assign it back — see
 [Getters return copies — assign back to apply](../getting-started/migration.md#getters-return-copies-assign-back-to-apply).
+To edit annotations that are already there, [`update_anns`](#update_anns) does
+it without a full rebuild.
 
 Keys outside the COCO schema (custom metadata on images, annotations, or
 categories) are preserved through load, dataset ops, and `save` — see
@@ -384,6 +386,63 @@ type:
 
 !!! tip
     A result carrying both `segmentation` and `keypoints` is treated as a segmentation result, matching pycocotools precedence.
+
+---
+
+### `update_anns`
+
+Edit annotations that are already loaded, matched by `id`, keeping the indices
+current. In Python each dict is **merged** into the annotation with the same
+`id`: the keys you pass are set and every other field keeps its value, so a
+one-field edit is a two-key dict. A key outside the COCO schema is a custom key,
+added or replaced like any other. IDs do not move, so only an edit that changes
+an `image_id` or a `category_id` costs a re-index.
+
+This is what evaluating one dataset under several IoU types needs: each
+annotation's active `area` follows the box for `bbox` and the mask for `segm`.
+
+Adding or removing annotations, or dropping a key, is a change to the dataset's
+shape: assign [`dataset`](#dataset) for those.
+
+=== "Python"
+
+    ```python
+    update_anns(anns: list[dict]) -> None
+    ```
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `anns` | `list[dict]` | Partial or whole annotation dicts, each with an `id` already in the dataset. |
+
+    ```python
+    coco.update_anns([
+        {"id": ann["id"], "area": mask.area(coco.ann_to_rle(ann))}
+        for ann in coco.dataset["annotations"]
+    ])
+    ```
+
+=== "Rust"
+
+    ```rust
+    fn update_anns(&mut self, anns: Vec<Annotation>) -> Result<()>
+    ```
+
+    Replaces whole records by `id`; an unknown id is `Error::UnknownAnnIds`
+    and nothing is written. For a partial edit, change the record in
+    `coco.dataset.annotations` and call `create_index()`.
+
+Raises `KeyError` if a dict has no `id`, or for the ids the dataset does not
+have, all of them named; `TypeError` if the argument is not a list, an element
+is not a dict, or a value does not fit its field, as `"big"` does not fit
+`area`; and `ValueError` for a value of the right type and the wrong shape, the
+same errors assigning `dataset` raises. Nothing is written in any of those
+cases. In a dataset with duplicate annotation IDs, the last occurrence is the
+one edited — the record the ID lookup holds.
+
+!!! tip
+    An evaluator built before the edit keeps the annotations it was built
+    with — mutate first, then construct it. See
+    [Getters return copies](../getting-started/migration.md#getters-return-copies-assign-back-to-apply).
 
 ---
 

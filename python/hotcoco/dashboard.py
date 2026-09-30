@@ -11,7 +11,7 @@ from .plot.theme import CHROME_DARK, EVAL_COLORS_DARK, SEQUENTIAL_DARK, SERIES_C
 
 # ── Theme constants (Cyanotype dark) ──
 # Derived from plot/theme.py rather than copied, so a chrome change there cannot
-# leave the dashboard behind. scripts/test_theme.py asserts these against the
+# leave the dashboard behind. tests/test_theme.py asserts these against the
 # browse CSS tokens, which are the third copy and cannot import Python.
 _BG_SURFACE = CHROME_DARK["plot_bg"]
 _BG_ELEVATED = "#242427"

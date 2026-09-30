@@ -230,7 +230,7 @@ impl COCOeval {
         iou_thr: f64,
         score_thr: f64,
     ) -> crate::error::Result<ImageDiagnostics> {
-        if self.eval_imgs.is_empty() {
+        if !self.evaluated() {
             return Err("image_diagnostics() requires evaluate() to be called first".into());
         }
 
@@ -736,10 +736,12 @@ mod image_ap_tests {
         let rec_thrs = crate::params::default_rec_thrs();
         let n_thr = rec_thrs.len() as f64; // 101
 
-        // Perfect: one GT, one matching detection. Precision is 1.0 at every
-        // reachable threshold, and recall reaches 1.0, so every threshold is
-        // reachable.
-        assert_eq!(compute_image_ap(&[0.9], &[true], 1, &rec_thrs), 1.0);
+        // Perfect: one GT, one matching detection. Recall reaches 1.0, so every
+        // threshold is reachable, each at the lone-TP precision `coco_precision`
+        // owns; the 101-point mean lands within an ulp of it.
+        let lone_tp = crate::metrics::counts::coco_precision(1.0, 0.0);
+        let perfect = compute_image_ap(&[0.9], &[true], 1, &rec_thrs);
+        assert!((perfect - lone_tp).abs() <= f64::EPSILON, "{perfect}");
 
         // All false positives against one GT: recall never leaves 0, so only the
         // r=0 threshold is reachable and precision there is 0.
@@ -749,8 +751,8 @@ mod image_ap_tests {
         );
 
         // One TP out of two GT, listed first. Recall tops out at 0.5, so the
-        // reachable thresholds are r <= 0.5 — 51 of the 101 — each at precision
-        // 1.0. AP = 51/101.
+        // reachable thresholds are r <= 0.5 — 51 of the 101 — each at the
+        // lone-TP precision. AP = 51/101, to within the guard term.
         let ap = compute_image_ap(&[0.9, 0.8], &[true, false], 2, &rec_thrs);
         let reachable = rec_thrs.iter().filter(|&&t| t <= 0.5 + 1e-12).count() as f64;
         assert!(

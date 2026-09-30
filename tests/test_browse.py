@@ -6,11 +6,11 @@ The server tests drive the app through its ASGI interface directly (a
 test client requires ``httpx``, which is not a project dependency.
 
 Run with:
-    uv run pytest scripts/test_browse.py -v
+    uv run pytest tests/test_browse.py -v
 """
 
 import os
-import tempfile
+import sys
 
 import numpy as np
 import pytest
@@ -61,12 +61,8 @@ def _asgi_get(app, path: str, query: str = ""):
 # ---------------------------------------------------------------------------
 
 
-def _minimal_dataset(with_segm=False, with_kpts=False):
-    """Return (dataset_dict, tmpdir) with one 100x80 image on disk."""
-    tmpdir = tempfile.mkdtemp()
-    img = Image.new("RGB", (100, 80), color=(50, 100, 150))
-    img.save(os.path.join(tmpdir, "img001.jpg"))
-
+def _dataset(with_segm=False, with_kpts=False):
+    """One 100x80 image, one annotation, one category, as a dataset dict."""
     ann = {
         "id": 1,
         "image_id": 1,
@@ -88,12 +84,18 @@ def _minimal_dataset(with_segm=False, with_kpts=False):
         cat["keypoints"] = ["nose", "eye"]
         cat["skeleton"] = [[1, 2]]
 
-    dataset = {
+    return {
         "images": [{"id": 1, "file_name": "img001.jpg", "width": 100, "height": 80}],
         "annotations": [ann],
         "categories": [cat],
     }
-    return dataset, tmpdir
+
+
+def _minimal_dataset(tmp_path, with_segm=False, with_kpts=False):
+    """Return (dataset_dict, tmpdir) with the dataset's image written under `tmp_path`."""
+    tmpdir = str(tmp_path)
+    Image.new("RGB", (100, 80), color=(50, 100, 150)).save(os.path.join(tmpdir, "img001.jpg"))
+    return _dataset(with_segm=with_segm, with_kpts=with_kpts), tmpdir
 
 
 # ---------------------------------------------------------------------------
@@ -168,19 +170,19 @@ def test_load_image_missing_returns_placeholder(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_render_thumbnail_returns_pil_image():
+def test_render_thumbnail_returns_pil_image(tmp_path):
     from hotcoco.browse import render_thumbnail
 
-    dataset, tmpdir = _minimal_dataset()
+    dataset, tmpdir = _minimal_dataset(tmp_path)
     coco = COCO(dataset)
     result = render_thumbnail(coco, 1, tmpdir)
     assert isinstance(result, Image.Image)
 
 
-def test_render_thumbnail_respects_max_size():
+def test_render_thumbnail_respects_max_size(tmp_path):
     from hotcoco.browse import render_thumbnail
 
-    dataset, tmpdir = _minimal_dataset()
+    dataset, tmpdir = _minimal_dataset(tmp_path)
     coco = COCO(dataset)
     result = render_thumbnail(coco, 1, tmpdir, max_size=50)
     assert max(result.size) <= 50
@@ -195,7 +197,7 @@ def test_render_thumbnail_respects_max_size():
 def _payload(with_segm=False, with_kpts=False, **kwargs):
     from hotcoco.browse import _assign_cat_colors, prepare_annotation_data
 
-    dataset, _ = _minimal_dataset(with_segm=with_segm, with_kpts=with_kpts)
+    dataset = _dataset(with_segm=with_segm, with_kpts=with_kpts)
     coco = COCO(dataset)
     cat_colors = _assign_cat_colors([1])
     return prepare_annotation_data(coco, 1, cat_colors, **kwargs)
@@ -248,11 +250,11 @@ def test_prepare_annotation_data_keypoints_and_skeleton():
 # ---------------------------------------------------------------------------
 
 
-def test_create_app_returns_fastapi_and_serves_index():
+def test_create_app_returns_fastapi_and_serves_index(tmp_path):
     from fastapi import FastAPI
     from hotcoco.server import create_app
 
-    dataset, tmpdir = _minimal_dataset()
+    dataset, tmpdir = _minimal_dataset(tmp_path)
     coco = COCO(dataset)
     app = create_app(coco, image_dir=tmpdir)
     assert isinstance(app, FastAPI)
@@ -263,20 +265,20 @@ def test_create_app_returns_fastapi_and_serves_index():
     assert b"img001.jpg" in body or b"hotcoco" in body.lower()
 
 
-def test_create_app_raises_without_image_dir():
+def test_create_app_raises_without_image_dir(tmp_path):
     from hotcoco.server import create_app
 
-    dataset, _ = _minimal_dataset()
+    dataset, _ = _minimal_dataset(tmp_path)
     coco = COCO(dataset)
     with pytest.raises(ValueError, match="image_dir is required"):
         create_app(coco)
 
 
-def test_create_app_falls_back_to_coco_image_dir():
+def test_create_app_falls_back_to_coco_image_dir(tmp_path):
     from fastapi import FastAPI
     from hotcoco.server import create_app
 
-    dataset, tmpdir = _minimal_dataset()
+    dataset, tmpdir = _minimal_dataset(tmp_path)
     coco = COCO(dataset, image_dir=tmpdir)
     app = create_app(coco)  # no explicit image_dir
     assert isinstance(app, FastAPI)
@@ -293,8 +295,8 @@ def test_coco_has_image_dir_attribute():
     assert coco.image_dir is None
 
 
-def test_coco_image_dir_via_constructor():
-    dataset, tmpdir = _minimal_dataset()
+def test_coco_image_dir_via_constructor(tmp_path):
+    dataset, tmpdir = _minimal_dataset(tmp_path)
     coco = COCO(dataset, image_dir=tmpdir)
     assert coco.image_dir == tmpdir
 
@@ -305,19 +307,19 @@ def test_coco_image_dir_setter():
     assert coco.image_dir == "/tmp/images"
 
 
-def test_coco_browse_raises_without_image_dir():
-    dataset, _ = _minimal_dataset()
+def test_coco_browse_raises_without_image_dir(tmp_path):
+    dataset, _ = _minimal_dataset(tmp_path)
     coco = COCO(dataset)
     with pytest.raises(ValueError, match="image_dir is required"):
         coco.browse()
 
 
-def test_create_app_serves_gallery_and_thumbnail():
+def test_create_app_serves_gallery_and_thumbnail(tmp_path):
     # The request-level path COCO.browse() wires up: build the app (without
     # launching a server) and hit the endpoints the UI actually loads.
     from hotcoco.server import create_app
 
-    dataset, tmpdir = _minimal_dataset()
+    dataset, tmpdir = _minimal_dataset(tmp_path)
     coco = COCO(dataset, image_dir=tmpdir)
     app = create_app(coco)
 
@@ -336,14 +338,17 @@ def test_create_app_serves_gallery_and_thumbnail():
 # ---------------------------------------------------------------------------
 
 
-def test_explore_argparse_help():
+def test_explore_argparse_help(monkeypatch, capsys):
     """coco explore --help exits 0."""
-    import subprocess
+    from hotcoco import cli
 
-    result = subprocess.run(["uv", "run", "coco", "explore", "--help"], capture_output=True, text=True)
-    assert result.returncode == 0
-    assert "--gt" in result.stdout
-    assert "--images" in result.stdout
+    monkeypatch.setattr(sys, "argv", ["coco", "explore", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--gt" in out
+    assert "--images" in out
 
 
 def test_explore_missing_browse_deps_exits_1(tmp_path, monkeypatch, capsys):

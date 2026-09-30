@@ -7,7 +7,7 @@ Shapely (backed by GEOS, the same engine as PostGIS) is the reference implementa
 This is a bug-hunting tool, not a CI gate.
 
 Usage:
-    uv run pytest scripts/fuzz_obb_parity.py -v -x --tb=short
+    uv run pytest tests/fuzz_obb.py -v -x --tb=short
 """
 
 import math
@@ -116,9 +116,9 @@ def test_obb_eval_consistency_with_shapely(obb_a, obb_b):
     This test exists to catch the pipeline *around* it: area ranges, matching,
     accumulation.
 
-    The dead band used to be +/-0.02, wide enough that a systematic IoU error of
-    0.02 passed 200 examples. Measured kernel agreement with Shapely is 1.2e-14,
-    so the band only needs to absorb the boundary itself.
+    The dead band around 0.5 is 1e-6: measured kernel agreement with Shapely is
+    1.2e-14, so the band only needs to absorb the boundary itself, and a wider
+    one would let a systematic IoU error pass.
     """
     iou = shapely_obb_iou(obb_a, obb_b)
 
@@ -140,14 +140,6 @@ def test_obb_eval_consistency_with_shapely(obb_a, obb_b):
         assert ap50 <= 0.0, (
             f"Shapely IoU = {iou:.9f} < 0.5, but hotcoco AP@50 = {ap50:.4f}. OBBs: GT={obb_a}, DT={obb_b}"
         )
-
-
-# `test_obb_iou_known_values` used to live here. It asserted Shapely against
-# hand-derived constants and never called hotcoco, so it verified the oracle
-# rather than the subject and contributed no coverage. The cases it covered
-# (identical, non-overlapping, quarter-turn square, half overlap, pi rotation)
-# are all represented in the frozen fixture that
-# `primitives::sim::tests::obb_iou_matches_shapely` checks by value.
 
 
 @pytest.mark.parametrize(

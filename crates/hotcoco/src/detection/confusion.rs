@@ -139,8 +139,8 @@ impl COCOeval {
     /// cost `O(annotations in this image)` instead of `O(categories)` hash probes
     /// per image.
     ///
-    /// Order is contract — both callers are tie-order sensitive. `img_to_anns`
-    /// and `img_cat_to_anns` are filled in one pass over `dataset.annotations`
+    /// Order is contract — both callers are tie-order sensitive. The per-image
+    /// and per-pair id lists keep `dataset.annotations` order
     /// (`COCO::create_index`), so a **stable** sort by slot yields category-major
     /// order with JSON order within each category.
     pub(super) fn cross_category_pairs(

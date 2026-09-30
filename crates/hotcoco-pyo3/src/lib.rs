@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use numpy::{PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
@@ -75,8 +76,9 @@ pub(crate) fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
             pyo3::exceptions::PyIOError::new_err(e.to_string())
         }
         Error::Json(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
-        Error::JsonParse(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
         Error::Convert(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
+        // A lookup failure, so the exception a mapping lookup raises.
+        e @ Error::UnknownAnnIds(_) => pyo3::exceptions::PyKeyError::new_err(e.to_string()),
         Error::Other(msg) => pyo3::exceptions::PyRuntimeError::new_err(msg),
     }
 }
@@ -126,8 +128,8 @@ fn freq_group_name(group: hotcoco_core::FreqGroup) -> &'static str {
 
 use convert::{
     IdList, NameList, annotation_to_py, category_to_py, confusion_counts_to_py,
-    dataset_stats_to_py, f64_array, image_to_py, map_to_dict, py_to_annotation, py_to_category,
-    py_to_dataset, py_to_image, rle_to_coco_py,
+    dataset_stats_to_py, f64_array, image_to_py, map_to_dict, merge_ann_dict, py_to_annotation,
+    py_to_category, py_to_dataset, py_to_image, rle_to_coco_py,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,9 +142,12 @@ use convert::{
 /// this dataset. It is used by `browse()` and `coco explore` to locate
 /// image files. Propagated automatically through `filter`, `split`,
 /// `sample`, and `load_res`.
+// Clone shares the dataset: `COCO` is plain data with no interior mutability,
+// so wrappers over one `Arc` cannot observe each other by construction.
 #[pyclass(name = "COCO", subclass, from_py_object)]
+#[derive(Clone)]
 struct PyCOCO {
-    inner: hotcoco_core::COCO,
+    inner: Arc<hotcoco_core::COCO>,
     /// Root directory for image files. Used by `browse()` and `coco explore`.
     /// Set at construction time or assign directly: ``coco.image_dir = "/data/images"``.
     #[pyo3(get, set)]
@@ -151,15 +156,15 @@ struct PyCOCO {
 
 /// Constructors, kept out of `#[pymethods]` so they stay Rust-only.
 ///
-/// Every `PyCOCO` in this file comes from one of these three. The distinction
-/// they encode is whether the new object inherits `image_dir`: a dataset derived
+/// The distinction they encode is whether the new object inherits
+/// `image_dir`: a dataset derived
 /// from this one sits in the same image directory, while one built from a
 /// foreign format or merged from several sources does not.
 impl PyCOCO {
     /// A dataset derived from this one — same images, so same `image_dir`.
     fn derived(&self, inner: hotcoco_core::COCO) -> PyCOCO {
         PyCOCO {
-            inner,
+            inner: Arc::new(inner),
             image_dir: self.image_dir.clone(),
         }
     }
@@ -170,19 +175,18 @@ impl PyCOCO {
     }
 
     /// A dataset with no image directory to inherit: a conversion from a foreign
-    /// format, a merge whose inputs came from different directories, or a view
-    /// onto an evaluator's own copy.
+    /// format, or a merge whose inputs came from different directories.
     fn without_image_dir(dataset: hotcoco_core::Dataset) -> PyCOCO {
+        Self::shared(hotcoco_core::COCO::from_dataset(dataset))
+    }
+
+    /// No image directory either; takes a `COCO` to own or an `Arc` to share,
+    /// which is how the evaluator's datasets are handed out without a copy.
+    fn shared(inner: impl Into<Arc<hotcoco_core::COCO>>) -> PyCOCO {
         PyCOCO {
-            inner: hotcoco_core::COCO::from_dataset(dataset),
+            inner: inner.into(),
             image_dir: None,
         }
-    }
-}
-
-impl Clone for PyCOCO {
-    fn clone(&self) -> Self {
-        self.derived_from(self.inner.dataset.clone())
     }
 }
 
@@ -209,7 +213,10 @@ impl PyCOCO {
             }
             None => hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset::default()),
         };
-        Ok(PyCOCO { inner, image_dir })
+        Ok(PyCOCO {
+            inner: Arc::new(inner),
+            image_dir,
+        })
     }
 
     #[pyo3(signature = (img_ids=IdList::default(), cat_ids=IdList::default(), area_rng=None, iscrowd=None))]
@@ -1047,10 +1054,7 @@ impl PyCOCO {
 
         self.inner
             .load_res_anns(anns)
-            .map(|inner| PyCOCO {
-                inner,
-                image_dir: None,
-            })
+            .map(PyCOCO::shared)
             .map_err(to_pyerr)
     }
 
@@ -1061,21 +1065,78 @@ impl PyCOCO {
     /// makes the follow-up `createIndex()` a no-op.
     #[setter]
     fn set_dataset(&mut self, dataset: &Bound<'_, PyDict>) -> PyResult<()> {
-        self.inner = hotcoco_core::COCO::from_dataset(py_to_dataset(dataset)?);
+        self.inner = Arc::new(hotcoco_core::COCO::from_dataset(py_to_dataset(dataset)?));
         Ok(())
     }
 
-    /// Re-index the current dataset — pycocotools semantics. Under the
-    /// assignment flow the `dataset` setter has already indexed, so this is
-    /// a formality kept for the canonical `coco.dataset = d;
-    /// coco.createIndex()` sequence.
-    fn create_index(&mut self) {
-        self.inner.create_index();
-    }
+    /// A no-op — see the ``dataset`` setter, which indexes on assignment. Kept
+    /// for pycocotools' ``coco.dataset = d; coco.createIndex()`` sequence.
+    fn create_index(_slf: PyRef<'_, Self>) {}
 
     #[pyo3(name = "createIndex")]
-    fn create_index_camel(&mut self) {
-        self.create_index();
+    fn create_index_camel(_slf: PyRef<'_, Self>) {}
+
+    /// Edit annotations that are already loaded, matched by ``id``, keeping
+    /// the indices current.
+    ///
+    /// Each dict is merged into the annotation with the same ``id``: the keys
+    /// you pass are set, every other field keeps its value, and a key outside
+    /// the COCO schema is a custom key. The targeted counterpart to
+    /// ``coco.dataset = d``, which is still the way to add or remove
+    /// annotations or to drop a key. An evaluator built before the edit keeps
+    /// the annotations it was built with. The API reference for
+    /// ``update_anns`` has the full contract.
+    ///
+    /// Parameters
+    /// ----------
+    /// anns : list of dict
+    ///     Partial or whole annotation dicts, each with an ``id`` that is
+    ///     already in the dataset.
+    ///
+    /// Raises
+    /// ------
+    /// KeyError
+    ///     For a dict without an ``id``, or ids the dataset does not have;
+    ///     ``TypeError`` and ``ValueError`` as the ``dataset`` setter raises.
+    ///     Nothing is written in any of those cases.
+    ///
+    /// Examples
+    /// --------
+    /// >>> coco.update_anns([{"id": ann["id"], "area": mask.area(coco.ann_to_rle(ann))}
+    /// ...                   for ann in coco.dataset["annotations"]])
+    fn update_anns(&mut self, anns: &Bound<'_, PyList>) -> PyResult<()> {
+        let mut updated = Vec::with_capacity(anns.len());
+        let mut missing = Vec::new();
+        for item in anns {
+            let dict = item.cast::<PyDict>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err("update_anns: list elements must be dicts")
+            })?;
+            let Some(id) = dict.get_item(pyo3::intern!(dict.py(), "id"))? else {
+                return Err(pyo3::exceptions::PyKeyError::new_err(
+                    "every annotation passed to update_anns() needs an 'id'",
+                ));
+            };
+            let id: u64 = convert::extract_int(&id)?;
+            // Merged into a copy, so a bad value further down the list leaves
+            // the dataset untouched; every unknown id is reported at once, as
+            // the core reports them.
+            let Some(mut ann) = self.inner.get_ann(id).cloned() else {
+                missing.push(id);
+                continue;
+            };
+            merge_ann_dict(&mut ann, dict)?;
+            updated.push(ann);
+        }
+        if !missing.is_empty() {
+            return Err(to_pyerr(hotcoco_core::Error::UnknownAnnIds(missing)));
+        }
+        // A shared dataset is copied on its first edit; an empty edit is none.
+        if updated.is_empty() {
+            return Ok(());
+        }
+        Arc::make_mut(&mut self.inner)
+            .update_anns(updated)
+            .map_err(to_pyerr)
     }
 
     /// Warnings collected while loading and indexing this dataset.
@@ -1093,8 +1154,9 @@ impl PyCOCO {
     ///
     /// **Returns a fresh copy on every access.** Mutating it in place —
     /// ``coco.dataset["annotations"].append(...)`` — changes a temporary and is
-    /// a silent no-op. Take the copy, edit it, and assign it back
-    /// (``coco.dataset = d``), which re-indexes immediately.
+    /// a silent no-op. To edit annotations, pass the changed keys to
+    /// :meth:`update_anns`; for anything else, take the copy, edit it, and
+    /// assign it back (``coco.dataset = d``). Both keep the indices current.
     #[getter]
     fn dataset(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let ds = &self.inner.dataset;
@@ -1682,8 +1744,8 @@ impl PyCOCOeval {
         }
 
         let iou = parse_iou_type(&iou_type)?;
-        let gt = hotcoco_core::COCO::from_dataset(coco_gt.inner.dataset.clone());
-        let dt = hotcoco_core::COCO::from_dataset(coco_dt.inner.dataset.clone());
+        let gt = Arc::clone(&coco_gt.inner);
+        let dt = Arc::clone(&coco_dt.inner);
 
         let inner = if oid_style {
             if iou != hotcoco_core::IouType::Bbox {
@@ -1719,7 +1781,7 @@ impl PyCOCOeval {
     }
 
     fn accumulate(&mut self, py: Python<'_>) -> PyResult<()> {
-        if self.inner.eval_imgs().is_empty() {
+        if !self.inner.evaluated() {
             warn_user(
                 py,
                 "hotcoco: accumulate() called before evaluate(). \
@@ -2112,12 +2174,13 @@ Examples
 
     /// The ground-truth dataset this evaluator was built from.
     ///
-    /// **Each access returns a fresh copy** — two reads give two independent
-    /// objects, and mutating one never reaches the evaluator. To evaluate
-    /// against different ground truth, construct a new ``COCOeval``.
+    /// Each access returns a new object that shares the evaluator's data
+    /// without copying it. Assigning to its ``dataset`` or calling its
+    /// ``update_anns`` never reaches the evaluator; to evaluate against
+    /// different ground truth, construct a new ``COCOeval``.
     #[getter]
     fn coco_gt(&self) -> PyCOCO {
-        PyCOCO::without_image_dir(self.inner.coco_gt.dataset.clone())
+        PyCOCO::shared(Arc::clone(self.inner.coco_gt()))
     }
 
     #[getter(cocoGt)]
@@ -2127,10 +2190,11 @@ Examples
 
     /// The detection dataset this evaluator was built from.
     ///
-    /// **Each access returns a fresh copy** — see ``coco_gt``.
+    /// Each access returns a new object sharing the evaluator's data — see
+    /// ``coco_gt``.
     #[getter]
     fn coco_dt(&self) -> PyCOCO {
-        PyCOCO::without_image_dir(self.inner.coco_dt.dataset.clone())
+        PyCOCO::shared(Arc::clone(self.inner.coco_dt()))
     }
 
     #[getter(cocoDt)]
@@ -2405,7 +2469,7 @@ Example\n\
             py,
             cal.per_category
                 .iter()
-                .map(|(&cat_id, &ece)| (self.inner.coco_gt.cat_name(cat_id), ece)),
+                .map(|(&cat_id, &ece)| (self.inner.coco_gt().cat_name(cat_id), ece)),
         )?;
 
         let dict = PyDict::new(py);
@@ -2431,7 +2495,7 @@ Example\n\
 
         // If slices is callable, group images by return value
         let slice_map: HashMap<String, Vec<u64>> = if slices.is_callable() {
-            let gt_images = &self.inner.coco_gt.dataset.images;
+            let gt_images = &self.inner.coco_gt().dataset.images;
             let mut groups: HashMap<String, Vec<u64>> = HashMap::new();
             for img in gt_images {
                 // The callable sees the *full* image dict — every standard
@@ -2575,7 +2639,7 @@ Example\n\
             // unknown-id fallback so every surface spells it the same way.
             d.set_item(
                 "dt_category",
-                self.inner.coco_gt.cat_name(le.dt_category_id),
+                self.inner.coco_gt().cat_name(le.dt_category_id),
             )?;
             d.set_item("dt_category_id", le.dt_category_id)?;
 
@@ -2584,7 +2648,7 @@ Example\n\
                     d.set_item("gt_id", gt_id)?;
                     let gt_cat_name = le
                         .gt_category_id
-                        .map(|cid| self.inner.coco_gt.cat_name(cid));
+                        .map(|cid| self.inner.coco_gt().cat_name(cid));
                     d.set_item("gt_category", gt_cat_name)?;
                     d.set_item("gt_category_id", le.gt_category_id)?;
                 }

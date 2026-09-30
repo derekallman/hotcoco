@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use super::matching::{EvalImgContext, IouMatrix};
+use super::matching::{Cells, EvalImgContext, IouMatrix, lean_scores_len, push_pair_lean};
 use super::{COCOeval, EvalMode};
 
 impl COCOeval {
@@ -78,33 +79,57 @@ impl COCOeval {
         pairs
     }
 
+    /// Every GT/DT annotation id living in a `sparse_pairs` cell where *both*
+    /// sides are non-empty — the only cells that ever reach the segm kernel
+    /// inside [`Self::compute_iou_static`]; a cell with only GT or only DT
+    /// returns early there without reading a mask. `sparse_pairs` itself is
+    /// the union (GT-only ∪ DT-only ∪ both, with the LVIS `neg_cats`
+    /// carve-out for DT-only) — narrower than "every id in scope", but still
+    /// wider than what segm mask conversion needs, so this filters it once
+    /// more down to the both-non-empty subset for [`super::iou::SegmRles::prepare`].
+    fn segm_cell_ann_ids(&self, sparse_pairs: &[(u64, u64)]) -> (Vec<u64>, Vec<u64>) {
+        let mut gt_ids = Vec::new();
+        let mut dt_ids = Vec::new();
+        for &(img_id, cat_id) in sparse_pairs {
+            let gt = Self::get_anns_static(&self.coco_gt, &self.params, img_id, cat_id);
+            let dt = Self::get_anns_static(&self.coco_dt, &self.params, img_id, cat_id);
+            if !gt.is_empty() && !dt.is_empty() {
+                gt_ids.extend_from_slice(gt);
+                dt_ids.extend_from_slice(dt);
+            }
+        }
+        (gt_ids, dt_ids)
+    }
+
     /// Run per-image evaluation.
     ///
     /// # Open Images replaces `coco_gt` (and possibly `coco_dt`)
     ///
-    /// In [`EvalMode::OpenImages`], this method **overwrites the public
-    /// `coco_gt` field** — and, when `params.expand_dt` is set, `coco_dt` —
+    /// In [`EvalMode::OpenImages`], this method **overwrites the
+    /// `coco_gt` handle** — and, when `params.expand_dt` is set, `coco_dt` —
     /// with hierarchy-expanded copies: every annotation is duplicated at each
     /// ancestor category and virtual categories are added for hierarchy-only
-    /// nodes (see [`super::expand::expand_annotations`]). Any read of those
-    /// fields after `evaluate()` sees the expanded datasets, not the ones the
-    /// evaluator was constructed with. The expansion deduplicates, so calling
+    /// nodes (see [`super::expand::expand_annotations`]). Any read through
+    /// [`coco_gt`](Self::coco_gt) after `evaluate()` sees the expanded dataset,
+    /// not the one the evaluator was constructed with; the caller's own handle
+    /// to the original is untouched. The expansion deduplicates, so calling
     /// `evaluate()` again does not expand further. The eval paths must see the
-    /// expanded data through the same fields the analysis surfaces read (TIDE,
-    /// diagnostics, category names), which is why the originals are replaced
+    /// expanded data through the same handles the analysis surfaces read (TIDE,
+    /// diagnostics, category names), which is why the handles are replaced
     /// rather than shadowed by private copies.
     pub fn evaluate(&mut self) {
         // OID: expand GT (and optionally DT) using hierarchy — this replaces
-        // the public `coco_gt`/`coco_dt` fields; see the method docs above.
+        // the `coco_gt`/`coco_dt` handles; see the method docs above.
         if self.eval_mode == EvalMode::OpenImages {
             let hierarchy = self.hierarchy.clone().unwrap_or_else(|| {
                 crate::detection::hierarchy::Hierarchy::from_categories(
                     &self.coco_gt.dataset.categories,
                 )
             });
-            self.coco_gt = super::expand::expand_annotations(&self.coco_gt, &hierarchy);
+            self.coco_gt = Arc::new(super::expand::expand_annotations(&self.coco_gt, &hierarchy));
             if self.params.expand_dt {
-                self.coco_dt = super::expand::expand_annotations(&self.coco_dt, &hierarchy);
+                self.coco_dt =
+                    Arc::new(super::expand::expand_annotations(&self.coco_dt, &hierarchy));
             }
             self.hierarchy = Some(hierarchy);
         }
@@ -160,13 +185,18 @@ impl COCOeval {
 
         let sparse_pairs = self.collect_sparse_pairs(&cat_ids, &neg_cats);
 
-        // Segm only: convert every in-scope mask to RLE once, up front —
-        // pycocotools' `_prepare` step. The per-cell IoU computation below and
-        // the cross-category matrices in `confusion_matrix`/`tide` all read
-        // this instead of re-rasterizing polygons per call site.
+        // Segm only: convert every mask that a both-non-empty cell will
+        // actually read, once, up front — pycocotools' `_prepare` step,
+        // narrowed to the cells `evaluate()` itself will touch (see
+        // `segm_cell_ann_ids`). The cross-category matrices in
+        // `confusion_matrix`/`tide` still read through the same cache and
+        // fall back to converting on the spot on a miss — see
+        // `SegmRles::gt_rle_or_convert`/`dt_rle_or_convert`.
         use crate::primitives::sim::SimKind;
-        self.segm_rles = (SimKind::from(self.params.iou_type) == SimKind::Mask)
-            .then(|| super::iou::SegmRles::prepare(&self.coco_gt, &self.coco_dt, &self.params));
+        self.segm_rles = (SimKind::from(self.params.iou_type) == SimKind::Mask).then(|| {
+            let (gt_ids, dt_ids) = self.segm_cell_ann_ids(&sparse_pairs);
+            super::iou::SegmRles::prepare(&self.coco_gt, &self.coco_dt, &gt_ids, &dt_ids)
+        });
 
         // Compute IoUs only for pairs where both GT and DT are non-empty.
         // Pairs with only GT or only DT produce empty IoU matrices — skip storing them.
@@ -196,75 +226,142 @@ impl COCOeval {
 
         // Evaluate each (image, category, area_range) combination in parallel,
         // over sparse_pairs × area_ranges rather than the full
-        // cat_ids × area_ranges × img_ids product.
-        //
+        // cat_ids × area_ranges × img_ids product. The inputs are snapshotted so
+        // `eval_imgs()` can rebuild the full records later from exactly what
+        // this run saw, whatever `params` is set to in between.
+        let inputs = EvalInputs {
+            params: self.params.clone(),
+            sparse_pairs,
+            not_exhaustive,
+        };
+        self.cells = self.evaluate_pairs_lean(&inputs);
+        self.eval_imgs = std::sync::OnceLock::new();
+        self.default_eval_imgs = std::sync::OnceLock::new();
+        self.eval_inputs = Some(inputs);
+    }
+
+    /// Run `f` with the per-cell context for `params`, reading the IoU cache
+    /// `evaluate()` filled. The second argument is the detection cap.
+    fn with_cell_context<R>(
+        &self,
+        params: &crate::params::Params,
+        f: impl FnOnce(&EvalImgContext<'_>, usize) -> R,
+    ) -> R {
         // Empty `max_dets` is degraded, not panicked on: `Params::max_det()`
         // owns the fallback cap (100), matching how every other degenerate
         // configuration on this path (missing area label, absent threshold)
         // degrades to the `-1.0` sentinel downstream instead of aborting —
         // `evaluate()` has no `Result` channel, and its siblings do not panic.
-        let max_det = self.params.max_det();
+        let max_det = params.max_det();
 
         // pycocotools searches from `min(t, 1-1e-10)`, not from `t`. Inert below
         // 1.0, so the default 0.50:0.95 sweep is untouched; at t == 1.0 it admits
         // near-identical pairs, which is the drop-in behavior. Resolved once here
         // and shared — see `EvalImgContext::match_floors`.
-        let match_floors: Vec<f64> = self
-            .params
+        let match_floors: Vec<f64> = params
             .iou_thrs
             .iter()
             .map(|&t| crate::primitives::greedy::coco_match_floor(t))
             .collect();
 
-        // Build shared context (borrows self after self.ious is fully populated).
         let ctx = EvalImgContext {
             coco_gt: &self.coco_gt,
             coco_dt: &self.coco_dt,
-            params: &self.params,
+            params,
             ious: &self.ious,
             eval_mode: self.eval_mode,
             match_floors: &match_floors,
         };
+        f(&ctx, max_det)
+    }
 
-        // Fan out over pairs, not (pair, area range) cells: `gather_pair` resolves
-        // everything the ranges share once per pair. Cells are written in place,
-        // one `area_ranges.len()` chunk per pair — collect-then-flatten would move
-        // ~800 MB of `EvalImg`s single-threaded on Objects365 (measured 2.0 s vs
-        // 1.5 s). Every pair gets its full chunk, including empty gathers, so
-        // `eval_imgs` keeps exactly the length, order, and `None` positions that
-        // `accumulate`'s grouping walk and the public `eval_imgs()` accessor read.
-        let is_lvis = self.eval_mode == EvalMode::Lvis;
-        let area_ranges = &ctx.params.area_ranges;
+    /// LVIS: whether `cat_id` is not exhaustively annotated on `img_id`.
+    fn not_exhaustive_cat(&self, inputs: &EvalInputs, img_id: u64, cat_id: u64) -> bool {
+        self.eval_mode == EvalMode::Lvis
+            && inputs
+                .not_exhaustive
+                .get(&img_id)
+                .is_some_and(|s| s.contains(&cat_id))
+    }
 
-        // `par_iter().map(..).collect()`, not `resize_with`: rayon's indexed
-        // collect writes straight into the vector's uninitialized capacity across
-        // all threads, while a sequential fill single-threads the first touch of
-        // every page in that ~800 MB buffer. Measured at 270 ms on Objects365 —
-        // more than the fan-out below saves.
-        let mut eval_imgs: Vec<Option<super::matching::EvalImg>> = (0..sparse_pairs.len()
-            * area_ranges.len())
+    /// The per-pair walk of `evaluate()`: every gathered pair under every area
+    /// range, as the lean cells `accumulate()` reads, in `sparse_pairs` order.
+    /// Fans out over runs of pairs, not (pair, area range) cells, so
+    /// `gather_pair` resolves what the ranges share once, and each run writes
+    /// its window of arenas sized before the walk: the records never exist as
+    /// one object per pair, and nothing is copied afterwards.
+    fn evaluate_pairs_lean(&self, inputs: &EvalInputs) -> Cells {
+        self.with_cell_context(&inputs.params, |ctx, max_det| {
+            Cells::build(
+                &inputs.params,
+                &inputs.sparse_pairs,
+                super::run_len(inputs.sparse_pairs.len()),
+                |img_id, cat_id| lean_scores_len(ctx, img_id, cat_id, max_det),
+                |run, cells| {
+                    for &(img_id, cat_id) in run {
+                        push_pair_lean(
+                            ctx,
+                            img_id,
+                            cat_id,
+                            max_det,
+                            self.not_exhaustive_cat(inputs, img_id, cat_id),
+                            cells,
+                        );
+                    }
+                },
+            )
+        })
+    }
+
+    /// The same walk producing full [`EvalImg`](super::matching::EvalImg)s
+    /// for the area ranges at `area_idxs` (indices into
+    /// `inputs.params.area_ranges`): one `area_idxs.len()` chunk per pair,
+    /// empty gathers included, so length, order, and `None` positions never
+    /// depend on the data. Cells are written in place — collect-then-flatten
+    /// moved ~800 MB of `EvalImg`s single-threaded on Objects365 (measured
+    /// 2.0 s vs 1.5 s), and the parallel `None` fill spreads the first touch of
+    /// that buffer across threads (270 ms sequential).
+    pub(super) fn evaluate_pairs_full(
+        &self,
+        inputs: &EvalInputs,
+        area_idxs: &[usize],
+    ) -> Vec<Option<super::matching::EvalImg>> {
+        let n = area_idxs.len();
+        let mut out: Vec<Option<super::matching::EvalImg>> = (0..inputs.sparse_pairs.len() * n)
             .into_par_iter()
             .map(|_| None)
             .collect();
-
-        eval_imgs
-            .par_chunks_mut(area_ranges.len())
-            .zip(sparse_pairs.par_iter())
-            .for_each(|(chunk, &(img_id, cat_id))| {
-                let Some(pair) = super::matching::gather_pair(&ctx, img_id, cat_id, max_det) else {
-                    return;
-                };
-                let not_exhaustive_cat = is_lvis
-                    && not_exhaustive
-                        .get(&img_id)
-                        .is_some_and(|s| s.contains(&cat_id));
-
-                for (slot, ar) in chunk.iter_mut().zip(area_ranges) {
-                    *slot =
-                        super::matching::evaluate_cell(&ctx, &pair, ar.range, not_exhaustive_cat);
-                }
-            });
-
-        self.eval_imgs = eval_imgs;
+        if n == 0 {
+            return out;
+        }
+        self.with_cell_context(&inputs.params, |ctx, max_det| {
+            out.par_chunks_mut(n)
+                .zip(inputs.sparse_pairs.par_iter())
+                .for_each(|(chunk, &(img_id, cat_id))| {
+                    super::matching::evaluate_pair_full(
+                        ctx,
+                        img_id,
+                        cat_id,
+                        max_det,
+                        self.not_exhaustive_cat(inputs, img_id, cat_id),
+                        area_idxs,
+                        chunk,
+                    );
+                });
+        });
+        out
     }
+}
+
+/// What one `evaluate()` run saw, kept so [`COCOeval::eval_imgs`] can rebuild
+/// the full per-image records from the same inputs on demand.
+pub(super) struct EvalInputs {
+    /// `params` as resolved for the run — the copy `eval_imgs()` reads, so a
+    /// `max_dets` or `img_ids` edited afterwards for `accumulate()` cannot
+    /// change what the records describe.
+    pub(super) params: crate::params::Params,
+    /// The (image, category) pairs visited, in visit order.
+    pub(super) sparse_pairs: Vec<(u64, u64)>,
+    /// LVIS: image → categories not exhaustively annotated there.
+    pub(super) not_exhaustive: HashMap<u64, HashSet<u64>>,
 }

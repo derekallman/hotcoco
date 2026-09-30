@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/hotcoco)](https://crates.io/crates/hotcoco)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**hotcoco is a perception evaluation toolkit, written in Rust with Python bindings.** It's a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) — same numbers to double precision, up to 36× faster — plus the analysis that usually lives in separate tools: TIDE error analysis, confusion matrices, confidence calibration, model comparison, label-error detection, and a dataset browser.
+**hotcoco is a perception evaluation toolkit, written in Rust with Python bindings.** It's a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) — same numbers to double precision, up to 84× faster — plus the analysis that usually lives in separate tools: TIDE error analysis, confusion matrices, confidence calibration, model comparison, label-error detection, and a dataset browser.
 
 It covers detection today — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols. Panoptic and tracking are planned, on the same engine.
 
@@ -15,7 +15,7 @@ Pure Rust, available as a **Python package**, **CLI tool**, and **Rust library**
 
 ## Performance
 
-Bbox evaluation on COCO val2017 runs in **0.14s** against 5.11s for pycocotools; segm and keypoints see ~20×. Every COCO metric matches pycocotools to the limit of double precision, so your AP scores don't change.
+Bbox evaluation on COCO val2017 runs in **0.06s** against 4.91s for pycocotools; segm is ~81× faster and keypoints ~50×. Two other Rust evaluators, ultrafast-pycocotools and vernier, are in the same speed class; the benchmarks page compares all five on time and memory. The precision, recall, and scores arrays are bit-identical to pycocotools', and every summary metric matches to the limit of double precision, so your AP scores don't change.
 
 Full tables, hardware, the Objects365 scale run, phase breakdowns, and parity verification: [Benchmarks](https://derekallman.github.io/hotcoco/benchmarks/).
 

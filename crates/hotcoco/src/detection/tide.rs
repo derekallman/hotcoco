@@ -312,7 +312,7 @@ impl COCOeval {
     /// before it — in particular, Miss can only be narrowed once *every* category
     /// has been classified, since a dog detection can cover a cat ground truth.
     pub fn tide_errors(&self, pos_thr: f64, bg_thr: f64) -> crate::error::Result<TideErrors> {
-        if self.eval_imgs.is_empty() {
+        if !self.evaluated() {
             return Err("tide_errors() requires evaluate() to be called first".into());
         }
 

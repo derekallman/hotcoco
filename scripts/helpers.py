@@ -1,4 +1,8 @@
-"""Shared helpers for hotcoco dev scripts (parity, bench, test, fuzz)."""
+"""Shared helpers for the dev scripts here and the tests in `tests/`.
+
+`pythonpath` in `pyproject.toml` puts this directory on the path for pytest, so
+both import `helpers` by the same name and there is one copy of these.
+"""
 
 import contextlib
 import io
@@ -15,6 +19,9 @@ from typing import NamedTuple
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 DATA_DIR = WORKSPACE / "data"
+# Tracked test oracles: the adversarial corpus, `val2017_expected.json`,
+# `oid_tf_expected.json`. The `gen_*` scripts write here; the tests read here.
+FIXTURES_DIR = WORKSPACE / "tests" / "fixtures"
 
 # The val2017 ground-truth / result pairs every real-data script runs against,
 # keyed by iou_type. Absolute paths derived from DATA_DIR: a script that spells
@@ -91,7 +98,7 @@ def suppress_output(*, stderr: bool = True):
     `println!`. fd 1 alone is enough for pycocotools' chatter; it is not enough for
     hotcoco, whose `summarize()` writes comparability warnings to fd 2, deliberately
     bypassing `sys.stderr` so they survive redirection. A script that evaluates in a
-    loop — `parity_oid.py` runs 70 cases — otherwise buries its own result under one
+    loop — `tests/test_parity_oid.py` runs 70 cases — otherwise buries its own result under one
     warning per case.
     """
     fds = (1, 2) if stderr else (1,)
@@ -149,9 +156,9 @@ def written_json(*objects, quiet: bool = False):
 # Differential parity scaffold
 # ---------------------------------------------------------------------------
 
-# Floating-point noise only. Individual scripts pass a looser `tolerance` when
+# Floating-point noise only. Individual callers pass a looser `tolerance` when
 # they are comparing against a reference that genuinely diverges (see
-# parity_lvis.py and adversarial_harness.py) — that per-script sizing is
+# tests/test_parity_lvis.py and adversarial_harness.py) — that per-script sizing is
 # deliberate and lives at the call site.
 TOLERANCE = 1e-10
 
@@ -221,6 +228,25 @@ def assert_metrics_match(py_stats, rs_stats, iou_type, *, tolerance=TOLERANCE, o
         raise AssertionError(
             f"\n{iou_type} metric mismatch (tol={tolerance}):\n" + "\n".join(m.line() for m in mismatches)
         )
+
+
+def reference_stats(gt_file, dt_file, iou_type):
+    """pycocotools' 12 (or 10) summary numbers for a GT/DT file pair, quietly.
+
+    The one definition of "what the reference says" for val2017: `parity.py`
+    compares against it live and `gen_val2017_baseline.py` pins it.
+    """
+    from pycocotools.coco import COCO as PyCOCO
+    from pycocotools.cocoeval import COCOeval as PyCOCOeval
+
+    with suppress_output(stderr=False):
+        gt = PyCOCO(str(gt_file))
+        dt = gt.loadRes(str(dt_file))
+        ev = PyCOCOeval(gt, dt, iou_type)
+        ev.evaluate()
+        ev.accumulate()
+        ev.summarize()
+    return [float(v) for v in ev.stats]
 
 
 def run_both(gt_dataset, dt_results, iou_type):

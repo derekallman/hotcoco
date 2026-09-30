@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "hotcoco"
 version = "1.0.1"
-description = "Perception evaluation toolkit — pycocotools-compatible detection metrics in pure Rust, up to 36× faster"
+description = "Perception evaluation toolkit — pycocotools-compatible detection metrics in pure Rust, up to 84× faster"
 requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "Derek Allman", email = "derek.allman@yahoo.com" }]
@@ -34,16 +34,20 @@ dev = [
     "maturin>=1.12.6",
     "pycocotools",
     "faster-coco-eval",
+    # The two other Rust evaluators scripts/bench.py compares against. Both are
+    # optional there: a missing one leaves its column blank rather than failing
+    # the run. vernier ships abi3 wheels for 3.10+ only.
+    "ultrafast-pycocotools",
+    "vernier; python_version >= '3.10'",
     "hypothesis",
     "lvis>=0.5.3",
+    # Runs the hooks in .pre-commit-config.yaml, which pins the Ruff and typos
+    # versions; the git hook and the py-* recipes call it through `uv run`.
+    "pre-commit>=4",
     "psutil",
     "pytest",
-    # Narrow range so local, pre-commit, and CI agree on lint results. A ruff
-    # minor bump can add or change rules, which would otherwise turn a green PR
-    # red without a code change. Bump this and the pin in ci.yml together.
-    "ruff>=0.15,<0.16",
     # Reference implementation for the OBB IoU fuzz harness
-    # (scripts/fuzz_obb_parity.py), which could not run without it.
+    # (tests/fuzz_obb.py), which could not run without it.
     "shapely>=2.0",
     # Reference implementation for scripts/parity_tide.py. Listed because its
     # absence used to make that script exit 0 after comparing against nothing,
@@ -86,7 +90,9 @@ include = [{ path = "LICENSE", format = "sdist" }]
 [tool.ruff]
 line-length = 120
 target-version = "py39"
-extend-exclude = ["external/"]
+# The notebook is prose with cells, not code under lint; excluding it lets every
+# caller run ruff on `.` instead of naming the Python directories.
+extend-exclude = ["external/", "*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
@@ -98,17 +104,30 @@ split-on-trailing-comma = false
 quote-style = "double"
 skip-magic-trailing-comma = true
 
+[tool.pytest.ini_options]
+# Bare `pytest` collects the whole Python suite. The `fuzz_*.py` files beside it
+# are not matched by the default `test_*.py` pattern, so they run only when named
+# (`just fuzz`, `just fuzz-dropin`, `just fuzz-obb`): they take minutes and are
+# for hunting bugs, not gating commits.
+testpaths = ["tests"]
+# `scripts/helpers.py` owns the shared dev helpers (data paths, keypoint
+# constants, the metric comparison, `written_json`). The hand-run scripts import
+# it from their own directory; the tests reach it through this entry, so there is
+# one copy. Two tests also import the script whose oracle they check
+# (`gen_oid_fixtures`, `gen_obb_fixtures`).
+pythonpath = ["scripts"]
+
 [tool.pyright]
-# Scoped to the shipped package only. `scripts/` is untyped research/bench code
-# and `external/` is vendored — checking either produces noise, not signal.
+# Scoped to the shipped package only. `scripts/` and `tests/` are untyped dev
+# code and `external/` is vendored — checking any of them produces noise, not signal.
 include = ["python"]
-exclude = ["external", "scripts", ".venv", "target", "**/__pycache__"]
+exclude = ["external", "scripts", "tests", ".venv", "target", "**/__pycache__"]
 pythonVersion = "3.9"
 typeCheckingMode = "basic"
 # `hotcoco` is a compiled PyO3 extension; pyright resolves it through the venv
 # that `just build` installs into, and types it from the hand-written
 # python/hotcoco/__init__.pyi stub. This is what catches stub/API signature
-# drift that scripts/test_stubs.py can't see.
+# drift that tests/test_stubs.py can't see.
 venvPath = "."
 venv = ".venv"
 

@@ -31,6 +31,19 @@ pub struct PrPoint {
     pub detection_rank: usize,
 }
 
+/// Precision at one rank, as pycocotools computes it: `tp / (fp + tp + np.spacing(1))`.
+///
+/// **The one spelling of the guard term.** It changes the result only when
+/// `tp + fp == 1` — any larger integer absorbs `2^-52` — and there it puts a lone
+/// leading true positive at `1 - 2^-52` rather than `1.0`. Keeping it is what
+/// makes the `precision` arrays bit-equal to the reference; `average_precision_all_points`
+/// deliberately does not use it, because its reference (TensorFlow's
+/// `compute_precision_recall`) has no such term.
+#[inline]
+pub(crate) fn coco_precision(tp: f64, fp: f64) -> f64 {
+    tp / (tp + fp + f64::EPSILON)
+}
+
 /// Precision interpolated at fixed recall thresholds, from cumulative TP/FP.
 ///
 /// `tp_cum` and `fp_cum` must already be cumulative (prefix-summed) over
@@ -38,9 +51,9 @@ pub struct PrPoint {
 /// - the final recall achieved (`tp_cum[nd-1] / num_gt`);
 /// - one [`PrPoint`] for each recall threshold that is reached.
 ///
-/// Unreachable recall thresholds are omitted. Precision is made monotonically
-/// non-increasing right-to-left before sampling (PASCAL VOC interpolation),
-/// matching pycocotools.
+/// Unreachable recall thresholds are omitted. Precision is `coco_precision`
+/// made monotonically non-increasing right-to-left before sampling (PASCAL VOC
+/// interpolation), matching pycocotools.
 ///
 /// # Panics
 ///
@@ -136,8 +149,7 @@ pub fn precision_recall_curve_into(
     pr.reserve(nd);
     for d in 0..nd {
         rc.push(tp_cum[d] / num_gt_f);
-        let total = tp_cum[d] + fp_cum[d];
-        pr.push(if total > 0.0 { tp_cum[d] / total } else { 0.0 });
+        pr.push(coco_precision(tp_cum[d], fp_cum[d]));
     }
 
     let final_recall = rc[nd - 1];
@@ -285,7 +297,7 @@ pub fn precision_recall_curve_of_order_into(
             Tally::TruePositive => {
                 tp += 1;
                 rc = tp as f64 / num_gt_f;
-                pr.push(tp as f64 / (tp + fp) as f64);
+                pr.push(coco_precision(tp as f64, fp as f64));
                 true
             }
             Tally::FalsePositive => {
@@ -726,7 +738,7 @@ mod tests {
     /// All-points AP, derived by hand rather than recorded from this crate's output.
     ///
     /// Each case is small enough to integrate on paper, which is the point: the
-    /// end-to-end check against TensorFlow lives in `scripts/parity_oid.py`, and
+    /// end-to-end check against TensorFlow lives in `tests/test_parity_oid.py`, and
     /// this pins the arithmetic so a failure there localizes to the reference
     /// rather than to this function.
     #[test]
@@ -960,6 +972,35 @@ mod tests {
     #[should_panic(expected = "parallel arrays")]
     fn average_precision_ranked_rejects_mismatched_ignored() {
         average_precision_ranked(&[true, false], Some(&[false]), 1, &[0.5]);
+    }
+
+    /// A lone leading true positive reads [`coco_precision`]`(1, 0)`, one ulp
+    /// under 1.0, on both curve paths — the only place the guard term shows.
+    #[test]
+    fn both_curve_paths_carry_the_pycocotools_guard_term() {
+        let rec_thrs = [0.0, 0.5, 1.0];
+        let lone_tp = coco_precision(1.0, 0.0);
+        assert!(
+            lone_tp < 1.0 && lone_tp > 1.0 - 2.0 * f64::EPSILON,
+            "{lone_tp}"
+        );
+
+        // Rank 0 TP, rank 1 FP: the envelope has nothing above the lone TP.
+        let (_, curve) = precision_recall_curve(&[1.0, 1.0], &[0.0, 1.0], 2, &rec_thrs);
+        assert_eq!(curve[0].precision, lone_tp);
+
+        let mut scratch = PrCurveScratch::default();
+        let mut out = Vec::new();
+        precision_recall_curve_of_order_into(
+            [0, 1],
+            &[true, false],
+            None,
+            2,
+            &rec_thrs,
+            &mut scratch,
+            &mut out,
+        );
+        assert_eq!(out[0].1, lone_tp);
     }
 
     #[test]

@@ -782,6 +782,9 @@ pub fn fr_polys(polygons: &[Vec<f64>], h: u32, w: u32) -> crate::error::Result<R
             counts: vec![hw],
         });
     }
+    if let [poly] = polygons {
+        return fr_poly(poly, h, w);
+    }
     let rles: Vec<Rle> = polygons
         .iter()
         .map(|p| fr_poly(p, h, w))

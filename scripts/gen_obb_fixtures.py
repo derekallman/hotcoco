@@ -6,7 +6,7 @@ intersection is a solved problem, and Shapely/GEOS is an independent implementat
 of it. That makes it a real oracle for `primitives::sim::obb_iou`, even though
 nothing can validate the AP built on top.
 
-The existing check did not use it as one. `fuzz_obb_parity.py` only asserted which
+The existing check did not use it as one. `tests/fuzz_obb.py` only asserted which
 side of 0.5 hotcoco's AP@50 landed on, skipping a +/-0.02 dead band — so a
 systematic IoU error of 0.02 passed 200 examples — and its `test_obb_iou_known_values`
 compared Shapely against hand-derived constants *without calling hotcoco at all*,

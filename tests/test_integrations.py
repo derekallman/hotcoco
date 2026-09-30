@@ -6,11 +6,11 @@ import tempfile
 
 import numpy as np
 import pytest
+from helpers import VAL2017
 from hotcoco import COCO, CocoDetection, CocoEvaluator
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
-GT_FILE = os.path.join(DATA_DIR, "annotations", "instances_val2017.json")
-DT_FILE = os.path.join(DATA_DIR, "bbox_val2017_results.json")
+GT_FILE = str(VAL2017["bbox"]["gt"])
+DT_FILE = str(VAL2017["bbox"]["dt"])
 
 # `data/` is gitignored, so a fresh clone / CI has no val2017 files. Tests that
 # read them must *skip*, not error — apply this marker to every class that

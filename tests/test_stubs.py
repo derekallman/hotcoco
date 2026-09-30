@@ -1,16 +1,19 @@
 """Verify that __init__.pyi covers every public symbol in the hotcoco module.
 
-Run with: uv run pytest scripts/test_stubs.py -v
+Run with: uv run pytest tests/test_stubs.py -v
 """
 
 from __future__ import annotations
 
 import ast
 import functools
+import math
+import sys
 from pathlib import Path
 from types import ModuleType
 
 import hotcoco
+import numpy as np
 import pytest
 
 STUB_PATH = Path(__file__).resolve().parent.parent / "python" / "hotcoco" / "__init__.pyi"
@@ -166,7 +169,6 @@ def test_detection_namespace_importable_both_ways():
     `from x import y` works. That bit `hotcoco.mask`; this test keeps it from
     biting the family namespaces as panoptic, tracking, and concepts land.
     """
-    import sys
 
     import hotcoco.detection
     from hotcoco import detection
@@ -186,7 +188,6 @@ def test_mask_importable_both_ways():
 
 def test_detection_namespace_reexports_are_the_same_objects():
     """The namespace is additive sugar, not a parallel implementation."""
-    import hotcoco
     from hotcoco import detection
 
     for name in detection.__all__:
@@ -220,7 +221,6 @@ def _stub_function_names(filename: str) -> set[str]:
 
 def test_functional_layer_importable_both_ways():
     """`import hotcoco.metrics` must work, not only `from hotcoco import metrics`."""
-    import sys
 
     import hotcoco.metrics
     import hotcoco.primitives
@@ -286,7 +286,6 @@ def test_metric_functions_accept_numpy_arrays():
     views take the per-element fallback. All four must produce exactly the
     answer the list path produces.
     """
-    import numpy as np
     from hotcoco import metrics
 
     scores = [0.9, 0.8, 0.7, 0.3]
@@ -318,7 +317,6 @@ def test_metric_functions_accept_numpy_arrays():
     assert curve_list == curve_np
 
     # A 2-D array is not a flat argument list — it must raise, not flatten.
-    import pytest
 
     with pytest.raises(TypeError):
         metrics.average_precision(np.zeros((2, 2)), np_matched, num_gt=4)
@@ -326,7 +324,6 @@ def test_metric_functions_accept_numpy_arrays():
 
 def test_metric_functions_reject_mismatched_arrays():
     """Parallel arrays of different lengths are a caller bug, not a silent truncation."""
-    import pytest
     from hotcoco import metrics
 
     with pytest.raises(ValueError):
@@ -338,9 +335,7 @@ def test_metric_functions_reject_mismatched_arrays():
 
 
 def test_lsap_rejects_ragged_and_nan():
-    import math
 
-    import pytest
     from hotcoco import primitives
 
     with pytest.raises(ValueError):
@@ -357,7 +352,6 @@ def test_lvis_dropin_matches_lvis_api_spelling():
     import. Without the alias, `init_as_lvis()` registered a `lvis` module that
     the canonical import could not use.
     """
-    import hotcoco
 
     hotcoco.init_as_lvis()
     from lvis import LVIS, LVISEval, LVISResults
@@ -379,9 +373,6 @@ def test_dropin_supports_the_import_as_binding_form():
     installed in this venv, and the differential-parity tests in this same
     pytest process must keep importing the real one.
     """
-    import sys
-
-    import hotcoco
 
     saved = {name: sys.modules.get(name) for name in list(sys.modules) if name.split(".")[0] in ("pycocotools", "lvis")}
     try:
@@ -424,7 +415,6 @@ def test_query_methods_accept_scalar_ids_like_pycocotools():
     torchvision's ``CocoDetection`` calls exactly that; found by the 1.0
     third-party-consumer smoke test.
     """
-    import hotcoco
 
     coco = hotcoco.COCO(_tiny_dataset())
     assert coco.get_ann_ids(1) == coco.get_ann_ids([1]) == [1, 2]
@@ -449,7 +439,6 @@ def test_dataset_assignment_construction_flow():
     torchmetrics' pycocotools backend uses it verbatim, with image entries
     that carry only an ``id``. Found by the 1.0 smoke test.
     """
-    import hotcoco
 
     coco = hotcoco.COCO()
     ds = _tiny_dataset()
@@ -467,8 +456,6 @@ def test_cocoeval_accepts_pycocotools_constructor_keywords():
     ``iouType=``; found by the 1.0 smoke test. Mixing both spellings of one
     argument is an error, as is an unknown keyword.
     """
-    import hotcoco
-    import pytest
 
     gt = hotcoco.COCO(_tiny_dataset())
     dt = gt.load_res([{"image_id": 1, "category_id": 1, "bbox": [10, 10, 30, 30], "score": 0.9}])

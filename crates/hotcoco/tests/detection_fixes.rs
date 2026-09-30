@@ -335,7 +335,7 @@ fn eval_params_archive_is_self_explaining() {
 }
 
 // ---------------------------------------------------------------------------
-// Found by scripts/fuzz_dropin.py: a keypoint GT without `num_keypoints`
+// Found by tests/fuzz_dropin.py: a keypoint GT without `num_keypoints`
 // read the field as 0 and was ignored — every ground truth in a file that
 // omits the field, so keypoint AP scored a dataset with nothing to match.
 // ---------------------------------------------------------------------------
@@ -398,7 +398,20 @@ fn num_keypoints_is_derived_when_absent() {
     };
     let with = stats(true);
     let without = stats(false);
-    assert_eq!(with[0], 1.0, "identical keypoints must score AP 1.0");
+    // A lone true positive's AP is the mean of `coco_precision(1, 0)` over the
+    // grid, to within an ulp of the mean's rounding.
+    let lone_tp = hotcoco::metrics::counts::average_precision(
+        &[1.0],
+        &[true],
+        None,
+        1,
+        &hotcoco::params::default_rec_thrs(),
+    );
+    assert!(
+        (with[0] - lone_tp).abs() <= f64::EPSILON,
+        "identical keypoints must score a lone TP's AP: {} vs {lone_tp}",
+        with[0]
+    );
     assert_eq!(
         with, without,
         "omitting num_keypoints must not change a single metric"

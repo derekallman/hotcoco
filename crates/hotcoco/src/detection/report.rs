@@ -48,7 +48,7 @@ impl COCOeval {
             );
         }
         if self.eval_mode == EvalMode::OpenImages {
-            // `scripts/parity_oid.py` matches the TensorFlow reference on group-of
+            // `tests/test_parity_oid.py` matches the TensorFlow reference on group-of
             // handling, IoA containment and all-points AP. What remains unimplemented
             // is the Challenge's non-exhaustive image-level-label rule — detections
             // of an unverified class are ignored, and of a negatively-labeled class
@@ -63,7 +63,7 @@ impl COCOeval {
         }
 
         // Parameter deviations only mean something where there is a reference to
-        // deviate *from*: `scripts/parity.py` (pycocotools) and `parity_lvis.py`.
+        // deviate *from*: `scripts/parity.py` (pycocotools) and `tests/test_parity_lvis.py`.
         //
         // Exhaustive rather than an early return, so a fourth `EvalMode` cannot
         // inherit `parity_verified` for free — a mode with no checked reference

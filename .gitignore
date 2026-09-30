@@ -129,14 +129,14 @@ site/
 # Benchmark / annotation data (large files, not in repo)
 /data/
 
-# Scripts dir — generated artifacts only.
+# Test fixtures — generated artifacts only.
 #
-# `fixtures/adversarial/` is deliberately NOT here: it is a hand-curated
+# `tests/fixtures/adversarial/` is deliberately NOT here: it is a hand-curated
 # regression corpus (all-crowd, area boundaries, 1x1 images, boxes outside the
 # frame), and a corpus that exists on one machine verifies nothing anywhere else.
-scripts/__pycache__/
-scripts/fixtures/parity_failures/
-scripts/fixtures/.hypothesis/
+# The two `*_expected.json` oracles are tracked for the same reason.
+tests/fixtures/parity_failures/
+tests/fixtures/.hypothesis/
 
 # uv lock file (transient dev env)
 crates/hotcoco-pyo3/uv.lock

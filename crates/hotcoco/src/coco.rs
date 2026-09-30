@@ -2,14 +2,19 @@
 //!
 //! Faithful port of `pycocotools/coco.py`.
 
-use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
+use rayon::prelude::*;
+use rustc_hash::{FxBuildHasher, FxHashMap};
+
+use crate::ann_index::{AnnIndex, Duplicates, IdIndex};
+use crate::error::Error;
 use crate::mask;
 use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
 
 /// The COCO dataset API for loading, querying, and indexing annotations.
+#[derive(Clone)]
 pub struct COCO {
     /// The raw dataset. Public and mutable for pycocotools-style direct
     /// manipulation — but the query indices do **not** track it: after
@@ -20,25 +25,18 @@ pub struct COCO {
     /// [`load_warnings`](Self::load_warnings).
     warnings: Vec<String>,
     /// ann_id -> index into dataset.annotations
-    anns: HashMap<u64, usize>,
+    anns: IdIndex,
     /// img_id -> index into dataset.images
-    imgs: HashMap<u64, usize>,
+    imgs: FxHashMap<u64, usize>,
     /// cat_id -> index into dataset.categories
-    cats: HashMap<u64, usize>,
-    /// img_id -> [ann_id, ...]
-    img_to_anns: HashMap<u64, Vec<u64>>,
+    cats: FxHashMap<u64, usize>,
     /// cat_id -> [img_id, ...] (unique)
     /// `pub(crate)` so `quality::stats` can read it — `COCO::stats` lives there,
     /// since dataset statistics are introspection output rather than schema.
-    pub(crate) cat_to_imgs: HashMap<u64, Vec<u64>>,
-    /// (img_id, cat_id) -> [ann_id, ...] in JSON array order.
-    ///
-    /// Deliberately *not* sorted by id: pycocotools builds `_gts` by iterating
-    /// `dataset['annotations']` once, so array order is what feeds the matcher,
-    /// and the greedy tie-break (`>=`, later GT wins on equal IoU) makes that
-    /// order observable through `evalImgs`. Official COCO files are id-ordered
-    /// anyway; converted or merged files are where the two orders differ.
-    img_cat_to_anns: HashMap<(u64, u64), Vec<u64>>,
+    pub(crate) cat_to_imgs: FxHashMap<u64, Vec<u64>>,
+    /// Annotation ids by image and by (image, category), in JSON array
+    /// order — see [`AnnIndex`] for why that order is contract.
+    index: AnnIndex,
 }
 
 /// What kind of results a detection file holds, decided from its first
@@ -80,145 +78,6 @@ impl ResultKind {
     }
 }
 
-/// Normalize non-finite JSON float tokens (`NaN`, `Infinity`, `-Infinity`) to
-/// `null`, matching the leniency of Python's `json` module.
-///
-/// Python emits these bare tokens by default and reads them back, so files
-/// produced by pycocotools / numpy pipelines frequently contain them, even
-/// though they are not valid JSON. serde_json (correctly) rejects them. To load
-/// such files, each non-finite token is rewritten to `null` — which serde also
-/// uses when *serializing* a non-finite `f64` — but only when the token appears
-/// outside a JSON string, so string values that merely contain the substring
-/// `"NaN"`/`"Infinity"` — a file name, say — are left untouched. On `Option<f64>`
-/// fields (`area`, `score`) the `null` deserializes to `None`.
-///
-/// Returns the input unchanged and borrowed (no allocation) when it contains no
-/// such tokens, so the common case pays only a single linear scan. The second
-/// element is the number of tokens rewritten.
-fn sanitize_non_finite(input: &[u8]) -> (Cow<'_, [u8]>, usize) {
-    // Prefilter: if the tokens never occur as substrings *anywhere* — even
-    // inside strings, where they would not count — the scan below cannot
-    // rewrite anything. Two SIMD substring searches cost ~1ms on a 19 MB
-    // file; the byte-at-a-time state machine they skip cost ~24ms, paid on
-    // every load of a clean file, which is nearly every load. ("-Infinity"
-    // contains "Infinity", so two needles cover all three tokens.)
-    if memchr::memmem::find(input, b"NaN").is_none()
-        && memchr::memmem::find(input, b"Infinity").is_none()
-    {
-        return (Cow::Borrowed(input), 0);
-    }
-
-    let n = input.len();
-    let mut out: Option<Vec<u8>> = None;
-    let mut count = 0usize;
-    let mut in_string = false;
-    let mut i = 0;
-
-    while i < n {
-        let b = input[i];
-
-        if in_string {
-            if b == b'\\' {
-                // Copy the backslash and the escaped byte verbatim so an
-                // escaped quote (`\"`) does not toggle the string state.
-                if let Some(o) = out.as_mut() {
-                    o.push(b);
-                    if i + 1 < n {
-                        o.push(input[i + 1]);
-                    }
-                }
-                i += 2;
-                continue;
-            }
-            if b == b'"' {
-                in_string = false;
-            }
-            if let Some(o) = out.as_mut() {
-                o.push(b);
-            }
-            i += 1;
-            continue;
-        }
-
-        if b == b'"' {
-            in_string = true;
-            if let Some(o) = out.as_mut() {
-                o.push(b);
-            }
-            i += 1;
-            continue;
-        }
-
-        // Outside a string, the only bare identifier-like tokens are
-        // true/false/null and the non-finite floats we rewrite here. Gate the
-        // substring comparisons on the first byte so the common case (digits,
-        // punctuation, whitespace) skips them entirely.
-        let token_len = match b {
-            b'N' if input[i..].starts_with(b"NaN") => Some(3),
-            b'I' if input[i..].starts_with(b"Infinity") => Some(8),
-            b'-' if input[i..].starts_with(b"-Infinity") => Some(9),
-            _ => None,
-        };
-
-        if let Some(len) = token_len {
-            let o = out.get_or_insert_with(|| {
-                let mut v = Vec::with_capacity(n);
-                v.extend_from_slice(&input[..i]);
-                v
-            });
-            o.extend_from_slice(b"null");
-            count += 1;
-            i += len;
-            continue;
-        }
-
-        if let Some(o) = out.as_mut() {
-            o.push(b);
-        }
-        i += 1;
-    }
-
-    match out {
-        Some(v) => (Cow::Owned(v), count),
-        None => (Cow::Borrowed(input), count),
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used)]
-mod sanitize_tests {
-    use super::sanitize_non_finite;
-
-    fn run(s: &str) -> (String, usize) {
-        let (bytes, n) = sanitize_non_finite(s.as_bytes());
-        (String::from_utf8(bytes.into_owned()).unwrap(), n)
-    }
-
-    #[test]
-    fn clean_input_is_borrowed_unchanged() {
-        let input = br#"{"a": [1.0, -2.5], "b": null}"#;
-        let (bytes, n) = sanitize_non_finite(input);
-        assert_eq!(n, 0);
-        assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
-    }
-
-    #[test]
-    fn rewrites_the_non_finite_family() {
-        let (out, n) = run(r#"{"a": NaN, "b": Infinity, "c": -Infinity, "d": -3.5}"#);
-        assert_eq!(n, 3);
-        // -3.5 (a real negative number) must be preserved, not mangled.
-        assert_eq!(out, r#"{"a": null, "b": null, "c": null, "d": -3.5}"#);
-    }
-
-    #[test]
-    fn leaves_non_finite_substrings_inside_strings_alone() {
-        // Strings containing the tokens — including an escaped quote — untouched.
-        let (out, n) = run(r#"{"name": "NaN and \"Infinity\"", "v": NaN}"#);
-        assert_eq!(n, 1);
-        assert_eq!(out, r#"{"name": "NaN and \"Infinity\"", "v": null}"#);
-    }
-}
-
 /// Inclusive area-range predicate shared by [`COCO::get_ann_ids`] and
 /// [`COCO::filter`] — the one owner of the missing-`area` convention.
 ///
@@ -238,9 +97,7 @@ impl COCO {
     /// annotation ids) are printed to stderr and retained on the returned
     /// object — see [`load_warnings`](Self::load_warnings).
     pub fn new(annotation_file: &Path) -> crate::error::Result<Self> {
-        let raw = std::fs::read(annotation_file)?;
-        let (mut bytes, n_fixed) = Self::sanitize_owned(raw);
-        let dataset: Dataset = simd_json::serde::from_slice(&mut bytes)?;
+        let (dataset, n_fixed) = crate::json::read_dataset(annotation_file)?;
         let mut coco = Self::from_dataset(dataset);
         if n_fixed > 0 {
             coco.warn(format!(
@@ -268,27 +125,16 @@ impl COCO {
         self.warnings.push(msg);
     }
 
-    /// [`sanitize_non_finite`] over an owned buffer: hands the original buffer
-    /// back untouched when the input is clean, so the common case pays no copy.
-    /// Owned because `simd_json` parses in place and needs `&mut` bytes.
-    fn sanitize_owned(raw: Vec<u8>) -> (Vec<u8>, usize) {
-        match sanitize_non_finite(&raw) {
-            (Cow::Owned(fixed), n) => (fixed, n),
-            (Cow::Borrowed(_), n) => (raw, n),
-        }
-    }
-
     /// Build a COCO object from an already-loaded Dataset.
     pub fn from_dataset(dataset: Dataset) -> Self {
         let mut coco = COCO {
             dataset,
             warnings: Vec::new(),
-            anns: HashMap::new(),
-            imgs: HashMap::new(),
-            cats: HashMap::new(),
-            img_to_anns: HashMap::new(),
-            cat_to_imgs: HashMap::new(),
-            img_cat_to_anns: HashMap::new(),
+            anns: IdIndex::default(),
+            imgs: FxHashMap::default(),
+            cats: FxHashMap::default(),
+            cat_to_imgs: FxHashMap::default(),
+            index: AnnIndex::default(),
         };
         coco.create_index();
         coco
@@ -304,56 +150,22 @@ impl COCO {
     /// last-write-wins in the id lookup, while per-image lists keep every
     /// occurrence — and reported via [`load_warnings`](Self::load_warnings).
     pub fn create_index(&mut self) {
-        let n_anns = self.dataset.annotations.len();
-        let n_imgs = self.dataset.images.len();
-        let n_cats = self.dataset.categories.len();
-
-        self.anns.clear();
-        self.anns.reserve(n_anns);
-        self.imgs.clear();
-        self.imgs.reserve(n_imgs);
-        self.cats.clear();
-        self.cats.reserve(n_cats);
-        self.img_to_anns.clear();
-        self.img_to_anns.reserve(n_imgs);
-        self.cat_to_imgs.clear();
-        self.cat_to_imgs.reserve(n_cats);
-        self.img_cat_to_anns.clear();
-        self.img_cat_to_anns.reserve(n_anns);
-
-        // Single pass over annotations: build all annotation-derived indices at once
-        let mut dup_ann_ids = 0usize;
-        let mut first_dup: Option<u64> = None;
-        for (i, ann) in self.dataset.annotations.iter().enumerate() {
-            if self.anns.insert(ann.id, i).is_some() {
-                dup_ann_ids += 1;
-                first_dup.get_or_insert(ann.id);
-            }
-            self.img_to_anns
-                .entry(ann.image_id)
-                .or_default()
-                .push(ann.id);
-            self.img_cat_to_anns
-                .entry((ann.image_id, ann.category_id))
-                .or_default()
-                .push(ann.id);
-            self.cat_to_imgs
-                .entry(ann.category_id)
-                .or_default()
-                .push(ann.image_id);
-        }
-        if let Some(id) = first_dup {
+        let (anns, dups) = IdIndex::build(&self.dataset.annotations);
+        self.anns = anns;
+        if let Some(Duplicates { count, first }) = dups {
             // pycocotools parity: the id lookup keeps the last annotation with
             // a given id, while imgToAnns keeps every occurrence — both are
             // preserved here, and the condition is surfaced instead of silent.
             self.warn(format!(
-                "{dup_ann_ids} duplicate annotation id(s) found (first: {id}). Lookups by id \
+                "{count} duplicate annotation id(s) found (first: {first}). Lookups by id \
                  see only the last occurrence; per-image annotation lists keep every \
                  occurrence, so duplicates are double-counted there (pycocotools behaves \
                  the same way). Deduplicate ids to make this dataset unambiguous."
             ));
         }
+        self.index_annotations();
 
+        self.imgs = FxHashMap::with_capacity_and_hasher(self.dataset.images.len(), FxBuildHasher);
         for (i, img) in self.dataset.images.iter().enumerate() {
             self.imgs.insert(img.id, i);
         }
@@ -364,16 +176,68 @@ impl COCO {
                 "{unnamed} category record(s) without a name; using cat_<id> as the display name."
             ));
         }
+        self.cats =
+            FxHashMap::with_capacity_and_hasher(self.dataset.categories.len(), FxBuildHasher);
         for (i, cat) in self.dataset.categories.iter().enumerate() {
             self.cats.insert(cat.id, i);
         }
+    }
 
-        // Deduplicate cat_to_imgs (multiple annotations per image produce duplicates)
-        for ids in self.cat_to_imgs.values_mut() {
-            ids.sort_unstable();
-            ids.dedup();
+    /// The groupings that key on an annotation's `image_id` and
+    /// `category_id`: rebuilt by [`create_index`](Self::create_index) and by
+    /// an [`update_anns`](Self::update_anns) that moves one.
+    fn index_annotations(&mut self) {
+        self.index = AnnIndex::build(&self.dataset.annotations);
+        // One push per distinct (image, category) pair, so each image appears
+        // once in a category's list.
+        self.cat_to_imgs =
+            FxHashMap::with_capacity_and_hasher(self.dataset.categories.len(), FxBuildHasher);
+        for (img_id, cat_id) in self.index.pairs() {
+            self.cat_to_imgs.entry(cat_id).or_default().push(img_id);
         }
-        // img_cat_to_anns stays in JSON array order — see the field doc.
+    }
+
+    /// Replace annotations by id, re-indexing only when a replacement moves
+    /// one.
+    ///
+    /// The targeted counterpart to replacing the whole
+    /// [`dataset`](Self::dataset): each annotation in `anns` overwrites the one
+    /// that carries the same `id`. Ids do not move, so the id lookup survives
+    /// untouched; the per-image and per-category groupings are rebuilt only if
+    /// a replacement changes an `image_id` or a `category_id`, which is what
+    /// they key on. Editing `area` across a whole dataset — the multi-IoU-type
+    /// case — therefore costs one pass over `anns`, not one over the dataset.
+    ///
+    /// Every id is checked before anything is written: the ids that are not
+    /// in the dataset come back as [`Error::UnknownAnnIds`] and the dataset is
+    /// left untouched, so a partial update never happens.
+    ///
+    /// In a dataset with duplicate annotation ids, the id lookup holds the
+    /// *last* occurrence (pycocotools parity — see
+    /// [`create_index`](Self::create_index)), so that is the one replaced.
+    pub fn update_anns(&mut self, anns: Vec<Annotation>) -> crate::error::Result<()> {
+        let mut targets = Vec::with_capacity(anns.len());
+        let mut missing = Vec::new();
+        for ann in &anns {
+            match self.anns.position(ann.id) {
+                Some(i) => targets.push(i),
+                None => missing.push(ann.id),
+            }
+        }
+        if !missing.is_empty() {
+            return Err(Error::UnknownAnnIds(missing));
+        }
+
+        let mut moved = false;
+        for (i, ann) in targets.into_iter().zip(anns) {
+            let old = &self.dataset.annotations[i];
+            moved |= old.image_id != ann.image_id || old.category_id != ann.category_id;
+            self.dataset.annotations[i] = ann;
+        }
+        if moved {
+            self.index_annotations();
+        }
+        Ok(())
     }
 
     /// Get annotation IDs matching the given filters.
@@ -406,11 +270,8 @@ impl COCO {
         let mut result: Vec<u64> = if !img_ids.is_empty() {
             img_ids
                 .iter()
-                // Borrowed, not cloned: the index already holds one `Vec` per
-                // image, and cloning it per key allocated and dropped the whole
-                // list again just to walk it.
-                .flat_map(|id| self.img_to_anns.get(id).map_or(&[][..], Vec::as_slice))
-                .filter_map(|id| self.anns.get(id).map(|&i| &self.dataset.annotations[i]))
+                .flat_map(|&id| self.index.for_img(id))
+                .filter_map(|&id| self.get_ann(id))
                 .filter(filter)
                 .map(|ann| ann.id)
                 .collect()
@@ -478,9 +339,7 @@ impl COCO {
 
     /// Load annotations by IDs.
     pub fn load_anns(&self, ids: &[u64]) -> Vec<&Annotation> {
-        ids.iter()
-            .filter_map(|id| self.anns.get(id).map(|&i| &self.dataset.annotations[i]))
-            .collect()
+        ids.iter().filter_map(|&id| self.get_ann(id)).collect()
     }
 
     /// Load categories by IDs.
@@ -499,7 +358,7 @@ impl COCO {
 
     /// Get a single annotation by ID.
     pub fn get_ann(&self, id: u64) -> Option<&Annotation> {
-        self.anns.get(&id).map(|&i| &self.dataset.annotations[i])
+        self.anns.position(id).map(|i| &self.dataset.annotations[i])
     }
 
     /// Get a single image by ID.
@@ -558,18 +417,14 @@ impl COCO {
 
     /// Get annotation IDs for a specific (image, category) pair.
     ///
-    /// Single HashMap lookup — much faster than `get_ann_ids` with filtering.
+    /// One hash probe and a binary search — much faster than `get_ann_ids` with filtering.
     pub fn get_ann_ids_for_img_cat(&self, img_id: u64, cat_id: u64) -> &[u64] {
-        self.img_cat_to_anns
-            .get(&(img_id, cat_id))
-            .map_or(&[], std::vec::Vec::as_slice)
+        self.index.for_img_cat(img_id, cat_id)
     }
 
     /// Get annotation IDs for a specific image.
     pub fn get_ann_ids_for_img(&self, img_id: u64) -> &[u64] {
-        self.img_to_anns
-            .get(&img_id)
-            .map_or(&[], std::vec::Vec::as_slice)
+        self.index.for_img(img_id)
     }
 
     /// Returns (img_id, cat_id) pairs that have at least one annotation.
@@ -577,14 +432,14 @@ impl COCO {
     /// Used by COCOeval to enumerate only non-empty pairs instead of the full
     /// Cartesian product, which is critical for large-scale datasets.
     pub fn nonempty_img_cat_pairs(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
-        self.img_cat_to_anns.keys().copied()
+        self.index.pairs()
     }
 
     /// Returns image IDs that have at least one annotation (any category).
     ///
     /// Used by COCOeval when `use_cats = false` (all categories treated as one).
     pub fn nonempty_img_ids(&self) -> impl Iterator<Item = u64> + '_ {
-        self.img_to_anns.keys().copied()
+        self.index.img_ids()
     }
 
     /// Load detection/result annotations into a new COCO object.
@@ -593,24 +448,7 @@ impl COCO {
     /// with an `annotations` field. The result COCO object shares the images
     /// and categories from self.
     pub fn load_res(&self, res_file: &Path) -> crate::error::Result<COCO> {
-        let raw = std::fs::read(res_file)?;
-        let (mut bytes, n_fixed) = Self::sanitize_owned(raw);
-
-        // The shape is decided by the first non-whitespace byte rather than by
-        // try-parse-then-fallback: simd-json parses in place (it unescapes
-        // strings into the buffer as it goes), so a failed first attempt would
-        // leave the buffer unusable for a second one.
-        let is_array = bytes
-            .iter()
-            .find(|b| !b.is_ascii_whitespace())
-            .is_some_and(|&b| b == b'[');
-        let anns: Vec<Annotation> = if is_array {
-            simd_json::serde::from_slice(&mut bytes)?
-        } else {
-            let ds: Dataset = simd_json::serde::from_slice(&mut bytes)?;
-            ds.annotations
-        };
-
+        let (anns, n_fixed) = crate::json::read_results(res_file)?;
         let mut res = self.load_res_anns(anns)?;
         if n_fixed > 0 {
             res.warn(format!(
@@ -630,21 +468,66 @@ impl COCO {
     /// Prefer this over `load_res` when results are already in memory — it avoids
     /// a round-trip through the filesystem. The Python binding uses this internally
     /// when `load_res` is called with a list of dicts or a numpy array.
-    pub fn load_res_anns(&self, anns: Vec<Annotation>) -> crate::error::Result<COCO> {
-        let warnings = self.validate_results(&anns)?;
-
-        let mut dataset = Dataset {
-            info: self.dataset.info.clone(),
-            images: self.dataset.images.clone(),
-            annotations: anns,
-            categories: self.dataset.categories.clone(),
-            licenses: self.dataset.licenses.clone(),
-        };
-
+    pub fn load_res_anns(&self, mut anns: Vec<Annotation>) -> crate::error::Result<COCO> {
         // One kind for the whole file, from the first annotation, as pycocotools
         // does — then fill in whatever geometry that kind implies.
-        if let Some(kind) = dataset.annotations.first().and_then(ResultKind::of) {
-            for ann in &mut dataset.annotations {
+        let kind = anns.first().and_then(ResultKind::of);
+        let has_cats = !self.cats.is_empty();
+        let mut warnings = Vec::new();
+        let mut img_mismatch_warned = false;
+        let mut cat_mismatch_warned = false;
+
+        // Validate and assign ids in one pass, probing the index maps this
+        // `COCO` already built (`self.imgs`/`self.cats`) rather than building a
+        // `HashSet` of GT ids per call. `COCO::from_dataset` below walks `anns`
+        // again to build the result's own index; that walk is `create_index`'s.
+        for (i, ann) in anns.iter_mut().enumerate() {
+            // A NaN score is rejected rather than warned about: it corrupts the
+            // whole run, not one annotation. Every ranking path sorts with
+            // `partial_cmp(..).unwrap_or(Equal)`, which is not transitive once NaN
+            // is present — the sort silently produces an arbitrary order, so AP
+            // becomes a function of the sort implementation. (`healthcheck`
+            // reports the same condition as an error and points here.)
+            if ann.score.is_some_and(f64::is_nan) {
+                return Err(format!(
+                    "load_res(): annotation {} (id {}, image_id {}) has a NaN score. \
+                     Scores order the detection ranking, and NaN makes that order \
+                     undefined — every metric downstream would be meaningless. Filter \
+                     or repair these detections before evaluating.",
+                    i, ann.id, ann.image_id
+                )
+                .into());
+            }
+
+            // Warn on the first annotation whose image_id or category_id isn't in
+            // the GT — a common mistake that causes DTs to silently produce
+            // misleadingly low metrics.
+            if !img_mismatch_warned && !self.imgs.contains_key(&ann.image_id) {
+                warnings.push(format!(
+                    "load_res() warning — found annotation with image_id {} not in the \
+                     GT dataset. These DTs will never match. Check your results file matches the \
+                     correct GT split.",
+                    ann.image_id
+                ));
+                img_mismatch_warned = true;
+            }
+            if has_cats && !cat_mismatch_warned && !self.cats.contains_key(&ann.category_id) {
+                warnings.push(format!(
+                    "load_res() warning — found annotation with category_id {} not \
+                     in the GT dataset. These DTs will never match.",
+                    ann.category_id
+                ));
+                cat_mismatch_warned = true;
+            }
+
+            // Assign IDs to result annotations (1-indexed, unconditional like pycocotools)
+            ann.id = (i + 1) as u64;
+        }
+
+        if let Some(kind) = kind {
+            // Per annotation and, for masks, an RLE decode each: the one
+            // expensive step of loading results, so it runs in parallel.
+            anns.par_iter_mut().for_each(|ann| {
                 // Detection results are never crowd regions, whatever the input
                 // file claimed.
                 ann.iscrowd = false;
@@ -654,78 +537,22 @@ impl COCO {
                     ResultKind::Keypoints => Self::derive_from_keypoints(ann),
                     ResultKind::Obb => Self::derive_from_obb(ann),
                 }
-            }
+            });
         }
 
-        // Assign IDs to result annotations (1-indexed, unconditional like pycocotools)
-        for (i, ann) in dataset.annotations.iter_mut().enumerate() {
-            ann.id = (i + 1) as u64;
-        }
+        let dataset = Dataset {
+            info: self.dataset.info.clone(),
+            images: self.dataset.images.clone(),
+            annotations: anns,
+            categories: self.dataset.categories.clone(),
+            licenses: self.dataset.licenses.clone(),
+        };
 
         let mut res = COCO::from_dataset(dataset);
         for w in warnings {
             res.warn(w);
         }
         Ok(res)
-    }
-
-    /// Reject results that would make the run meaningless, and warn about ones
-    /// that merely make it wrong.
-    ///
-    /// The split is deliberate: a mismatched id yields misleadingly low metrics
-    /// that the user can still investigate, while a NaN score has no correct
-    /// interpretation at all.
-    ///
-    /// Returns the warnings so the caller can attach them to the result `COCO`
-    /// (they are emitted to stderr there, via [`warn`](Self::warn)).
-    fn validate_results(&self, anns: &[Annotation]) -> crate::error::Result<Vec<String>> {
-        let mut warnings = Vec::new();
-
-        // Warn on the first annotation whose image_id or category_id isn't in the GT —
-        // a common mistake that causes DTs to silently produce misleadingly low metrics.
-        let gt_img_ids: HashSet<u64> = self.dataset.images.iter().map(|i| i.id).collect();
-        if let Some(ann) = anns.iter().find(|a| !gt_img_ids.contains(&a.image_id)) {
-            warnings.push(format!(
-                "load_res() warning — found annotation with image_id {} not in the \
-                 GT dataset. These DTs will never match. Check your results file matches the \
-                 correct GT split.",
-                ann.image_id
-            ));
-        }
-
-        if !self.dataset.categories.is_empty() {
-            let gt_cat_ids: HashSet<u64> = self.dataset.categories.iter().map(|c| c.id).collect();
-            if let Some(ann) = anns.iter().find(|a| !gt_cat_ids.contains(&a.category_id)) {
-                warnings.push(format!(
-                    "load_res() warning — found annotation with category_id {} not \
-                     in the GT dataset. These DTs will never match.",
-                    ann.category_id
-                ));
-            }
-        }
-
-        // A NaN score is rejected rather than warned about: it corrupts the whole
-        // run, not one annotation. Every ranking path sorts with
-        // `partial_cmp(..).unwrap_or(Equal)`, which is not transitive once NaN is
-        // present — the sort silently produces an arbitrary order, so AP becomes
-        // a function of the sort implementation. (`healthcheck` reports the same
-        // condition as an error and points here.)
-        if let Some((i, ann)) = anns
-            .iter()
-            .enumerate()
-            .find(|(_, a)| a.score.is_some_and(f64::is_nan))
-        {
-            return Err(format!(
-                "load_res(): annotation {} (id {}, image_id {}) has a NaN score. \
-                 Scores order the detection ranking, and NaN makes that order \
-                 undefined — every metric downstream would be meaningless. Filter \
-                 or repair these detections before evaluating.",
-                i, ann.id, ann.image_id
-            )
-            .into());
-        }
-
-        Ok(warnings)
     }
 
     /// Area from the box, and a rectangular segmentation when none was given.
@@ -735,11 +562,7 @@ impl COCO {
         };
         ann.area = Some(bbox[2] * bbox[3]);
         if ann.segmentation.is_none() {
-            let (x1, y1, bw, bh) = (bbox[0], bbox[1], bbox[2], bbox[3]);
-            let (x2, y2) = (x1 + bw, y1 + bh);
-            ann.segmentation = Some(Segmentation::Polygon(vec![vec![
-                x1, y1, x1, y2, x2, y2, x2, y1,
-            ]]));
+            ann.segmentation = Some(Segmentation::Rect(bbox));
         }
     }
 
@@ -794,11 +617,11 @@ impl COCO {
 
     /// Area from the rotated box, and its axis-aligned envelope as the bbox.
     fn derive_from_obb(ann: &mut Annotation) {
-        let Some(obb) = ann.obb else {
+        let Some(obb) = ann.obb.as_deref() else {
             return;
         };
         ann.area = Some(obb[2] * obb[3]);
-        ann.bbox = Some(crate::geometry::obb_to_aabb(&obb));
+        ann.bbox = Some(crate::geometry::obb_to_aabb(obb));
     }
 
     /// Convert an annotation's segmentation to RLE.
@@ -809,6 +632,9 @@ impl COCO {
 
         match &ann.segmentation {
             Some(Segmentation::Polygon(polys)) => mask::fr_polys(polys, h, w).ok(),
+            Some(Segmentation::Rect(bbox)) => {
+                mask::fr_poly(&Segmentation::rect_corners(bbox), h, w).ok()
+            }
             Some(Segmentation::CompressedRle { size, counts }) => {
                 mask::rle_from_string(counts, size[0], size[1]).ok()
             }
@@ -1208,9 +1034,186 @@ mod tests {
     #[test]
     fn test_create_index() {
         let coco = COCO::from_dataset(make_test_dataset());
-        assert_eq!(coco.anns.len(), 3);
+        assert!((1..=3).all(|id| coco.get_ann(id).is_some()));
+        assert!(coco.get_ann(4).is_none());
         assert_eq!(coco.imgs.len(), 2);
         assert_eq!(coco.cats.len(), 2);
+    }
+
+    /// A box result's segmentation is the box itself; it must rasterize to
+    /// the same RLE as the four-corner polygon pycocotools' `loadRes` builds.
+    #[test]
+    fn a_box_result_masks_like_its_corner_polygon() {
+        let gt = COCO::from_dataset(make_test_dataset());
+        let bbox = [10.5, 20.25, 30.0, 40.125];
+        let res = gt
+            .load_res_anns(vec![Annotation {
+                image_id: 1,
+                category_id: 1,
+                bbox: Some(bbox),
+                score: Some(0.9),
+                ..Default::default()
+            }])
+            .unwrap();
+        let ann = res.get_ann(1).unwrap();
+        assert!(matches!(ann.segmentation, Some(Segmentation::Rect(b)) if b == bbox));
+        assert_eq!(ann.area, Some(bbox[2] * bbox[3]));
+
+        let polygon = Annotation {
+            segmentation: Some(Segmentation::Polygon(vec![
+                Segmentation::rect_corners(&bbox).to_vec(),
+            ])),
+            ..ann.clone()
+        };
+        assert_eq!(
+            res.ann_to_rle(ann).unwrap(),
+            res.ann_to_rle(&polygon).unwrap()
+        );
+    }
+
+    /// `cat_to_imgs` must be derived from the distinct `(img, cat)` pairs, not
+    /// pushed once per annotation — img1/cat1 has three annotations (ids given
+    /// out of JSON order) and must collapse to one `cat_to_imgs` entry, while
+    /// the pair index for that pair must keep every id, in dataset order.
+    #[test]
+    fn test_cat_to_imgs_derived_from_pair_keys() {
+        let dataset = Dataset {
+            info: None,
+            images: vec![
+                Image {
+                    id: 1,
+                    file_name: "img1.jpg".into(),
+                    height: 100,
+                    width: 100,
+                    ..Default::default()
+                },
+                Image {
+                    id: 2,
+                    file_name: "img2.jpg".into(),
+                    height: 100,
+                    width: 100,
+                    ..Default::default()
+                },
+            ],
+            annotations: vec![
+                // img1/cat1, three annotations, ids given in descending order —
+                // dataset (JSON array) order is 30, 20, 10, not ascending.
+                Annotation {
+                    id: 30,
+                    image_id: 1,
+                    category_id: 1,
+                    ..Default::default()
+                },
+                Annotation {
+                    id: 20,
+                    image_id: 1,
+                    category_id: 1,
+                    ..Default::default()
+                },
+                Annotation {
+                    id: 10,
+                    image_id: 1,
+                    category_id: 1,
+                    ..Default::default()
+                },
+                // img1/cat2, one annotation
+                Annotation {
+                    id: 40,
+                    image_id: 1,
+                    category_id: 2,
+                    ..Default::default()
+                },
+                // img2/cat1, one annotation
+                Annotation {
+                    id: 50,
+                    image_id: 2,
+                    category_id: 1,
+                    ..Default::default()
+                },
+            ],
+            categories: vec![
+                Category {
+                    id: 1,
+                    name: "cat".into(),
+                    ..Default::default()
+                },
+                Category {
+                    id: 2,
+                    name: "dog".into(),
+                    ..Default::default()
+                },
+            ],
+            licenses: vec![],
+        };
+        let coco = COCO::from_dataset(dataset);
+
+        // (1) cat_to_imgs: exact membership, three img1/cat1 annotations
+        // collapse to one entry, not three.
+        assert_eq!(coco.cat_to_imgs.get(&1), Some(&vec![1, 2]));
+        assert_eq!(coco.cat_to_imgs.get(&2), Some(&vec![1]));
+
+        // (2) the pair index keeps every id, in dataset (JSON array) order —
+        // not sorted ascending, not deduplicated by anything upstream.
+        assert_eq!(
+            coco.get_ann_ids_for_img_cat(1, 1),
+            &[30, 20, 10],
+            "must preserve dataset order, the greedy tie-break's visibility contract"
+        );
+
+        // (3) the one externally observable consumer of cat_to_imgs's length.
+        let stats = coco.stats();
+        let cat1 = stats
+            .per_category
+            .iter()
+            .find(|c| c.id == 1)
+            .expect("category 1 present");
+        assert_eq!(
+            cat1.img_count, 2,
+            "cat 1 appears on img1 and img2, once each"
+        );
+    }
+
+    /// `COCOeval`'s constructor now copies an already-indexed `COCO` (`.clone()`)
+    /// instead of cloning the dataset and rebuilding the index from scratch —
+    /// safe only because every `PyCOCO` write path keeps `inner`'s index in
+    /// lockstep with `inner.dataset` (see `lib.rs`'s ctor comment). This pins
+    /// that a clone is a faithful stand-in for a fresh `create_index()` pass:
+    /// same six index maps, same warnings, and independent afterward.
+    #[test]
+    fn test_clone_is_a_faithful_reindex() {
+        let mut dataset = make_test_dataset();
+        // Reuse an existing id so `create_index` records a duplicate-id
+        // warning, giving `warnings` something to compare.
+        dataset.annotations.push(Annotation {
+            id: 3,
+            image_id: 2,
+            category_id: 1,
+            bbox: Some([5.0, 5.0, 5.0, 5.0]),
+            area: Some(25.0),
+            ..Default::default()
+        });
+
+        let a = COCO::from_dataset(dataset.clone());
+        let mut b = a.clone();
+        let c = COCO::from_dataset(dataset);
+
+        assert_eq!(b.anns, c.anns);
+        assert_eq!(b.imgs, c.imgs);
+        assert_eq!(b.cats, c.cats);
+        assert_eq!(b.cat_to_imgs, c.cat_to_imgs);
+        assert_eq!(b.index, c.index);
+        assert!(
+            !c.warnings.is_empty(),
+            "fixture must trigger a duplicate-id warning"
+        );
+        assert_eq!(b.warnings, c.warnings);
+
+        // The evaluator's copy must be a snapshot, not a shared view: mutating
+        // it and re-indexing must leave the original untouched.
+        b.dataset.annotations.truncate(1);
+        b.create_index();
+        assert_eq!(a.anns, c.anns);
+        assert_eq!(a.index, c.index);
     }
 
     #[test]

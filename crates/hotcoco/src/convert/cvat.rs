@@ -118,8 +118,8 @@ pub fn coco_to_cvat(
 
                 // Prefer polygon segmentation if available.
                 let mut wrote_shape = false;
-                if let Some(Segmentation::Polygon(ref polys)) = ann.segmentation {
-                    for poly in polys {
+                if let Some(polys) = ann.segmentation.as_ref().and_then(Segmentation::polygons) {
+                    for poly in polys.iter() {
                         if poly.len() < 6 {
                             // Fewer than 3 points — the importer (ours and
                             // CVAT's) rejects these, so don't write them.

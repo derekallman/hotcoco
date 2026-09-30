@@ -60,43 +60,64 @@ DT = VAL2017["bbox"]["dt"]
 
 # Keep in sync with the "Results (1x detections)" table in docs/benchmarks.md.
 BENCH = {
-    "bbox": {"pycocotools": 5.11, "faster-coco-eval": 1.21, "hotcoco": 0.14},
-    "segm": {"pycocotools": 5.98, "faster-coco-eval": 3.01, "hotcoco": 0.29},
-    "keypoints": {"pycocotools": 2.32, "faster-coco-eval": 1.63, "hotcoco": 0.12},
+    "bbox": {
+        "pycocotools": 4.91,
+        "faster-coco-eval": 1.32,
+        "ultrafast-pycocotools": 0.08,
+        "vernier": 0.20,
+        "hotcoco": 0.06,
+    },
+    "segm": {
+        "pycocotools": 5.72,
+        "faster-coco-eval": 2.92,
+        "ultrafast-pycocotools": 0.17,
+        "vernier": 0.57,
+        "hotcoco": 0.07,
+    },
+    "keypoints": {
+        "pycocotools": 2.27,
+        "faster-coco-eval": 1.58,
+        "ultrafast-pycocotools": 0.11,
+        "vernier": 0.16,
+        "hotcoco": 0.05,
+    },
 }
+# hotcoco's speedup vs pycocotools, as the table states it: the median of the
+# per-run ratios, not a ratio of the two-decimal times above, which would round
+# a 0.134s median into a larger multiple than was measured.
+BENCH_SPEEDUP = {"bbox": 83.9, "segm": 81.0, "keypoints": 49.7}
 
 
 def benchmark_chart(out: Path, theme: str) -> None:
     """Grouped horizontal bars: wall-clock eval time on COCO val2017.
 
-    Deliberately linear, not log. On a linear axis hotcoco's bar is a sliver
-    next to pycocotools' — which is the entire point of the figure. A log axis
-    would make the three libraries look comparable.
+    Deliberately linear, not log. On a linear axis the Rust engines' bars are
+    slivers next to pycocotools' — which is the entire point of the figure. A
+    log axis would make the five libraries look comparable.
     """
-    libs = ["pycocotools", "faster-coco-eval", "hotcoco"]
+    libs = ["pycocotools", "faster-coco-eval", "ultrafast-pycocotools", "vernier", "hotcoco"]
     kinds = list(BENCH)
 
     with style(theme=theme):
         # Read the palette back off rcParams rather than the module-level
         # constants, which are the light theme's and would not follow `theme`.
-        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"][:3]
+        colors = plt.rcParams["axes.prop_cycle"].by_key()["color"][: len(libs)]
         tick_color = plt.rcParams["xtick.color"]
         text_color = plt.rcParams["text.color"]
 
-        fig, ax = plt.subplots(figsize=(8.5, 3.6), layout="constrained")
+        fig, ax = plt.subplots(figsize=(8.5, 5.2), layout="constrained")
 
         n = len(libs)
-        height = 0.26
+        height = 0.16
         for i, (lib, color) in enumerate(zip(libs, colors)):
             ours = lib == "hotcoco"
             offsets = [k - (n - 1) / 2 * height + i * height for k in range(len(kinds))]
             values = [BENCH[kind][lib] for kind in kinds]
             bars = ax.barh(offsets, values, height=height, color=color, label=lib, zorder=3)
-            # The speed-up multiple only means anything on our own bar; the other
-            # two are the baseline it is measured against.
+            # The speed-up multiple only means anything on our own bar; the
+            # others are the baselines it is measured against.
             labels = [
-                f"{v:.2f}s  ({BENCH[kind]['pycocotools'] / v:.0f}×)" if ours else f"{v:.2f}s"
-                for kind, v in zip(kinds, values)
+                f"{v:.2f}s  ({BENCH_SPEEDUP[kind]:.0f}×)" if ours else f"{v:.2f}s" for kind, v in zip(kinds, values)
             ]
             ax.bar_label(
                 bars,

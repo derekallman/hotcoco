@@ -26,9 +26,6 @@ import sys
 import numpy as np
 from helpers import compare_metrics, written_json
 
-# IoU thresholds used by COCO eval (np.linspace(0.5, 0.95, 10))
-IOU_THRS = np.linspace(0.5, 0.95, 10).round(2).tolist()
-
 # How close an IoU value has to be to a threshold to flag as "boundary jitter"
 BOUNDARY_EPS = 1e-6
 
@@ -71,7 +68,7 @@ def run_pycocotools(gt_path, detections, iou_type):
     from pycocotools.cocoeval import COCOeval
 
     gt = COCO(gt_path)
-    dt = gt.loadRes(detections) if detections else gt.loadRes([])
+    dt = gt.loadRes(detections)
     ev = COCOeval(gt, dt, iou_type)
     ev.evaluate()
     ev.accumulate()
@@ -95,17 +92,11 @@ def _index_eval_imgs(eval_imgs):
     return idx
 
 
-def _to_array(v):
-    """Coerce list-of-lists or ndarray to float64 ndarray."""
-    return np.array(v, dtype=float)
-
-
-def _check_pair(key, hc_ei, py_ei):
+def _check_pair(hc_ei, py_ei, iou_thrs):
     """
     Compare one (image, category, aRng) pair between the two tools.
     Returns a list of issue strings, empty if clean.
     """
-    image_id, category_id, aRng = key
     issues = []
 
     hc_dt_ids = list(hc_ei["dtIds"])
@@ -136,14 +127,14 @@ def _check_pair(key, hc_ei, py_ei):
     gt_ids = sorted(set(hc_gt_ids))
 
     # dtMatches: (T, D) — matched GT ID or 0
-    hc_dtm = _to_array(hc_ei["dtMatches"])  # hotcoco
-    py_dtm = _to_array(py_ei["dtMatches"])  # pycocotools
-    hc_dti = _to_array(hc_ei["dtIgnore"])  # (T, D) bool
-    py_dti = _to_array(py_ei["dtIgnore"])  # (T, D) bool
+    hc_dtm = np.array(hc_ei["dtMatches"], dtype=float)  # hotcoco
+    py_dtm = np.array(py_ei["dtMatches"], dtype=float)  # pycocotools
+    hc_dti = np.array(hc_ei["dtIgnore"], dtype=float)  # (T, D) bool
+    py_dti = np.array(py_ei["dtIgnore"], dtype=float)  # (T, D) bool
 
     # gtIgnore: (G,) bool
-    hc_gt_ignore = _to_array(hc_ei["gtIgnore"])
-    py_gt_ignore = _to_array(py_ei["gtIgnore"])
+    hc_gt_ignore = np.array(hc_ei["gtIgnore"], dtype=float)
+    py_gt_ignore = np.array(py_ei["gtIgnore"], dtype=float)
 
     # --- gtIgnore divergence ---
     for gt_id in gt_ids:
@@ -155,9 +146,7 @@ def _check_pair(key, hc_ei, py_ei):
             issues.append(f"    GT ann_id={gt_id}: gtIgnore hotcoco={hc_v}, pycocotools={py_v}")
 
     # --- dtIgnore and dtMatches divergence, per IoU threshold ---
-    for t_idx, thr in enumerate(IOU_THRS):
-        if t_idx >= hc_dtm.shape[0]:
-            break
+    for t_idx, thr in enumerate(iou_thrs[: hc_dtm.shape[0]]):
         for dt_id in dt_ids:
             hi = hc_dt_idx[dt_id]
             pi = py_dt_idx[dt_id]
@@ -169,7 +158,7 @@ def _check_pair(key, hc_ei, py_ei):
 
             # Match divergence: one matched, other didn't (or matched different GT)
             if hc_match != py_match:
-                note = _boundary_note(hc_ei, py_ei, hc_dt_idx, py_dt_idx, hc_gt_idx, py_gt_idx, dt_id, gt_ids, thr)
+                note = _boundary_note(hc_ei, hc_dt_idx[dt_id], thr)
                 issues.append(
                     f"    IoU@{thr:.2f} DT ann_id={dt_id}: "
                     f"matched GT hotcoco={hc_match or 'none'}, "
@@ -183,17 +172,16 @@ def _check_pair(key, hc_ei, py_ei):
     return issues
 
 
-def _boundary_note(hc_ei, py_ei, hc_dt_idx, py_dt_idx, hc_gt_idx, py_gt_idx, dt_id, gt_ids, thr):
+def _boundary_note(hc_ei, d, thr):
     """
-    If the disagreement is on a DT whose best IoU is within BOUNDARY_EPS of the
-    threshold, flag it as potential float jitter rather than a real bug.
+    If the disagreement is on DT row `d` whose best IoU is within BOUNDARY_EPS of
+    the threshold, flag it as potential float jitter rather than a real bug.
     Requires 'ious' to be present in the eval_img (not always available).
     """
     hc_ious = hc_ei.get("ious")
     if hc_ious is None:
         return None
     hc_ious = np.array(hc_ious)  # (D, G)
-    d = hc_dt_idx[dt_id]
     if d >= hc_ious.shape[0]:
         return None
     row = hc_ious[d]
@@ -251,42 +239,20 @@ def compare_eval_imgs(hc_ev, py_ev):
     """
     hc_idx = _index_eval_imgs(hc_ev.eval_imgs)
     py_idx = _index_eval_imgs(py_ev.evalImgs)
+    # The grid both evaluators actually ran, so a non-default `iouThrs` labels
+    # rows correctly instead of by a second copy of the default.
+    iou_thrs = list(hc_ev.params.iouThrs)
 
-    all_keys = set(hc_idx) | set(py_idx)
     divergences = []
-
-    for key in sorted(all_keys):
+    for key in sorted(set(hc_idx) | set(py_idx)):
         image_id, category_id, aRng = key
-
-        in_hc = key in hc_idx
-        in_py = key in py_idx
-
-        if in_hc and not in_py:
-            divergences.append(
-                {
-                    "image_id": image_id,
-                    "category_id": category_id,
-                    "aRng": aRng,
-                    "issues": ["    pair present in hotcoco but missing from pycocotools"],
-                }
-            )
-            continue
-
-        if in_py and not in_hc:
-            py_ei = py_idx[key]
+        if key not in py_idx:
+            issues = ["    pair present in hotcoco but missing from pycocotools"]
+        elif key not in hc_idx:
             # Only a divergence if the entry could have contributed — see _is_inert.
-            if not _is_inert(py_ei):
-                divergences.append(
-                    {
-                        "image_id": image_id,
-                        "category_id": category_id,
-                        "aRng": aRng,
-                        "issues": ["    pair present in pycocotools but missing from hotcoco"],
-                    }
-                )
-            continue
-
-        issues = _check_pair(key, hc_idx[key], py_idx[key])
+            issues = [] if _is_inert(py_idx[key]) else ["    pair present in pycocotools but missing from hotcoco"]
+        else:
+            issues = _check_pair(hc_idx[key], py_idx[key], iou_thrs)
         if issues:
             divergences.append({"image_id": image_id, "category_id": category_id, "aRng": list(aRng), "issues": issues})
 
@@ -299,11 +265,7 @@ def compare_eval_imgs(hc_ev, py_ev):
 
 
 def print_metric_failures(mismatches):
-    """Print `helpers.MetricMismatch` records — the fields, not a dict of tuples.
-
-    The old shape round-tripped each NamedTuple through `{name: (rs, py, diff)}`,
-    which dropped `index` and reordered the pair for no gain.
-    """
+    """Print `helpers.MetricMismatch` records."""
     print("\n[LEVEL 1] METRIC DIVERGENCES:")
     for m in mismatches:
         print(f"  [{m.index}] {m.name:6s}: hotcoco={m.rs:.6f}  pycocotools={m.py:.6f}  diff={m.diff:.2e}")
@@ -340,11 +302,7 @@ def main():
     ap.add_argument(
         "--eval-imgs-only", action="store_true", help="Skip metric check; run only the eval_imgs comparison"
     )
-    ap.add_argument(
-        "--metrics-only",
-        action="store_true",
-        help="Skip the per-match comparison (the old default when metrics passed)",
-    )
+    ap.add_argument("--metrics-only", action="store_true", help="Skip the per-match comparison")
     ap.add_argument("--max-divergences", type=int, default=20, help="Max eval_img pairs to print")
     args = ap.parse_args()
 
@@ -372,15 +330,12 @@ def main():
         else:
             print("\n[LEVEL 1] Metrics OK — all within threshold")
 
-    # Level 2 runs unconditionally.
-    #
-    # It used to be gated on level 1 having already failed, which made it
-    # unreachable in the case it is uniquely good at: a matching divergence that
-    # cancels in the integral. Two detections swapped between images, or a
-    # crowd flag applied to the wrong annotation, can leave AP identical to
-    # fifteen decimal places while every per-match decision underneath is wrong.
-    # A check that only runs once something else has already noticed is not a
-    # check.
+    # Level 2 runs whether or not level 1 failed. It is uniquely good at a
+    # matching divergence that cancels in the integral: two detections swapped
+    # between images, or a crowd flag applied to the wrong annotation, can leave
+    # AP identical to fifteen decimal places while every per-match decision
+    # underneath is wrong. A check that only runs once something else has
+    # already noticed is not a check.
     if not args.metrics_only:
         divergences = compare_eval_imgs(hc_ev, py_ev)
         print_eval_img_divergences(divergences, limit=args.max_divergences)

@@ -69,19 +69,23 @@ Run COCO evaluation to compute AP/AR metrics.
 
     ```rust
     // Standard COCO
-    COCOeval::new(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self
+    COCOeval::new(coco_gt: impl Into<Arc<COCO>>, coco_dt: impl Into<Arc<COCO>>, iou_type: IouType) -> Self
 
     // LVIS federated
-    COCOeval::new_lvis(coco_gt: COCO, coco_dt: COCO, iou_type: IouType) -> Self
+    COCOeval::new_lvis(coco_gt: impl Into<Arc<COCO>>, coco_dt: impl Into<Arc<COCO>>, iou_type: IouType) -> Self
 
     // Open Images
-    COCOeval::new_oid(coco_gt: COCO, coco_dt: COCO, hierarchy: Option<Hierarchy>) -> Self
+    COCOeval::new_oid(coco_gt: impl Into<Arc<COCO>>, coco_dt: impl Into<Arc<COCO>>, hierarchy: Option<Hierarchy>) -> Self
     ```
+
+    Pass a `COCO` to hand the dataset over, or an `Arc<COCO>` to share one
+    ground truth across several evaluators. The evaluator holds both datasets
+    behind `Arc` and exposes them through `coco_gt()` and `coco_dt()`.
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `coco_gt` | `COCO` | Ground truth COCO object |
-    | `coco_dt` | `COCO` | Detections COCO object (from `load_res`) |
+    | `coco_gt` | `COCO` or `Arc<COCO>` | Ground truth COCO object |
+    | `coco_dt` | `COCO` or `Arc<COCO>` | Detections COCO object (from `load_res`) |
     | `iou_type` | `IouType` | `IouType::Bbox`, `IouType::Segm`, `IouType::Keypoints`, or `IouType::Obb` |
     | `hierarchy` | `Option<Hierarchy>` | Category hierarchy for GT expansion; `None` to skip expansion |
 

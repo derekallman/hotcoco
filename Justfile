@@ -13,18 +13,18 @@ setup:
 build:
     uv run maturin develop --release
 
-# Run all tests: Rust unit tests + Python parity regression tests
+# Run all tests: cargo test + the whole Python suite (tests/, what CI runs)
 test: build
     cargo test
-    uv run pytest scripts/test_parity.py crates/hotcoco-pyo3/tests scripts/test_stubs.py scripts/test_theme.py scripts/test_cli.py -v -x --tb=short
+    uv run pytest -x --tb=short
 
 # Run hypothesis-based parity fuzzer (slow — for bug hunting, not CI)
 fuzz: build
-    uv run pytest scripts/fuzz_parity.py -v -x --tb=short
+    uv run pytest tests/fuzz_parity.py -v -x --tb=short
 
 # Fuzz in-memory spellings of one dataset against pycocotools (~1 min)
 fuzz-dropin: build
-    uv run pytest scripts/fuzz_dropin.py -x -q -p no:cacheprovider
+    uv run pytest tests/fuzz_dropin.py -x -q -p no:cacheprovider
 
 # Verify metric parity vs pycocotools on COCO val2017
 parity: build
@@ -97,23 +97,15 @@ fmt-check:
 
 # Format Python code
 py-fmt:
-    uv run ruff format python/ scripts/
-
-# Check Python formatting without modifying (CI-safe)
-py-fmt-check:
-    uv run ruff format --check python/ scripts/
+    uv run pre-commit run ruff-format --all-files
 
 # Lint Python code
 py-lint:
-    uv run ruff check python/ scripts/
+    uv run pre-commit run ruff-check --all-files
 
-# Verify LVIS metric parity vs lvis-api (synthetic data — no data/ needed)
-parity-lvis: build
-    uv run python scripts/parity_lvis.py
-
-# Verify Open Images parity vs the TensorFlow Object Detection API (frozen fixtures)
-parity-oid: build
-    uv run python scripts/parity_oid.py
+# Run every pre-commit hook (hygiene, Ruff, typos) over the whole tree, as CI does
+hooks:
+    uv run pre-commit run --all-files
 
 # Regenerate the Open Images fixtures from the TF reference (needs network)
 gen-oid-fixtures: build
@@ -123,30 +115,15 @@ gen-oid-fixtures: build
 parity-tide: build
     uv run python scripts/parity_tide.py
 
-# Verify every hotcoco.mask operation against pycocotools.mask, bit-for-bit
-parity-mask cases="400": build
-    uv run python scripts/parity_mask.py --cases {{cases}}
-
 # Fuzz oriented-box IoU against shapely
 fuzz-obb: build
-    uv run pytest scripts/fuzz_obb_parity.py -v -x --tb=short
+    uv run pytest tests/fuzz_obb.py -v -x --tb=short
 
-# Diff per-(image, category) matching decisions against pycocotools for one fixture
+# Diff per-(image, category) matching decisions against pycocotools for one
+# fixture, with a printed report. `tests/test_adversarial.py` runs the same two
+# levels over the whole corpus as part of `just test`.
 adversarial fixture: build
     uv run python scripts/adversarial_harness.py {{fixture}}
-
-# Every reference comparison that does not need data/ — what CI runs
-parity-all: build
-    uv run pytest scripts/test_parity.py -q
-    uv run pytest scripts/test_adversarial.py -q
-    uv run python scripts/parity_lvis.py
-    uv run python scripts/parity_oid.py
-    uv run python scripts/parity_mask.py --cases 200
-
-# Diff per-(image, category) matching decisions against pycocotools across the
-# whole adversarial corpus — the check metrics alone cannot replace
-adversarial-all: build
-    uv run pytest scripts/test_adversarial.py -v --tb=short
 
 # Regenerate frozen test oracles (needs scipy/shapely/sklearn/netcal transiently)
 gen-fixtures: build

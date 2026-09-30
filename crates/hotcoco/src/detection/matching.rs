@@ -25,6 +25,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::coco::COCO;
 use crate::params::{IouType, Params};
 use crate::primitives::greedy::{GtMasks, ThreshMatrix};
@@ -49,10 +51,6 @@ pub(super) struct PairCell<'a> {
     gt_anns: Vec<&'a Annotation>,
     /// Index into `gt_anns` -> column in the pair's IoU matrix.
     gt_iou_indices: Vec<usize>,
-    /// Number of GT ids returned before annotation lookup, which can drop
-    /// entries. Only [`evaluate_cell`]'s final skip gate reads it — see the
-    /// comment there for which counts gate the skip.
-    gt_raw_count: usize,
     /// Detections score-descending and truncated to `max_det`.
     dt_anns: Vec<&'a Annotation>,
     /// Position in `dt_anns` -> row in the pair's IoU matrix.
@@ -83,6 +81,8 @@ struct GtView<'a> {
     /// Open Images only; empty otherwise. Guarded by `is_oid` at every use.
     is_group_of_sorted: Vec<bool>,
     num_not_ignored: usize,
+    /// Count of `in_denominator_sorted` — [`EvalImg::num_gt_in_denominator`].
+    num_in_denominator: usize,
 }
 
 impl GtView<'_> {
@@ -117,6 +117,322 @@ impl DtView<'_> {
     }
 }
 
+/// What `accumulate()` reads from every (image, category) pair `evaluate()`
+/// gathered, and nothing else: the score list once, and per area range the
+/// ground-truth denominator plus a matched bit and an ignore bit per detection
+/// per IoU threshold — in flat arenas, one header per pair pointing into them.
+///
+/// An [`EvalImg`] carries the same cell with every id, the ground-truth side of
+/// the match, and its own copy of the scores, one per area range. This holds
+/// no vector per pair and no record per area range. `evaluate()` builds it
+/// through [`Cells::build`]; `EvalImg`s are built by
+/// [`COCOeval::eval_imgs`](super::COCOeval::eval_imgs) on first access.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Cells {
+    /// One per pair, plus a sentinel whose offsets are the arenas' lengths,
+    /// so a pair's score count is the gap to the next header.
+    pairs: Vec<PairHeader>,
+    /// IoU thresholds and area ranges at evaluate time: the row and block
+    /// counts of every pair's bits.
+    n_thr: usize,
+    n_areas: usize,
+    /// Every pair's scores, score-descending and cut at `max_det`, back to back.
+    scores: Vec<f64>,
+    /// Per pair, per area range: how many ground truths count toward recall.
+    num_gt: Vec<u32>,
+    /// Per pair, from a word boundary: `n_areas` blocks of `2 * n_thr` rows of
+    /// `nd` bits — the matched rows, then the ignore rows.
+    bits: Vec<u64>,
+}
+
+/// One pair's place in the [`Cells`] arenas.
+#[derive(Debug, Clone, Copy, Default)]
+struct PairHeader {
+    image_id: u64,
+    category_id: u64,
+    scores_start: u32,
+    /// Word index into `bits`.
+    bits_start: u32,
+}
+
+/// One (image, category, area range) cell: a pair's index in [`Cells`] and
+/// which of its area ranges, by evaluate-time position.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct CellRef {
+    pair: u32,
+    area: u32,
+}
+
+impl CellRef {
+    pub(super) fn new(pair: usize, area: usize) -> Self {
+        CellRef {
+            pair: arena_index(pair),
+            area: arena_index(area),
+        }
+    }
+
+    pub(super) fn pair(self) -> usize {
+        self.pair as usize
+    }
+
+    pub(super) fn area(self) -> usize {
+        self.area as usize
+    }
+}
+
+/// Arena positions are `u32`, like annotation index positions.
+fn arena_index(i: usize) -> u32 {
+    u32::try_from(i).expect("cell arena positions are u32")
+}
+
+/// The bit words a pair of `nd` detections takes: `2 * n_thr` rows of `nd`
+/// bits per area range, packed end to end.
+fn words_for(n_thr: usize, n_areas: usize, nd: usize) -> usize {
+    (2 * n_thr * n_areas * nd).div_ceil(64)
+}
+
+/// A pair with nothing to gather, in the layout pass of [`Cells::build`].
+const NO_PAIR: u32 = u32::MAX;
+
+impl Cells {
+    /// The arena for `pairs`, sized exactly before anything is written: `nd`
+    /// says how many scores a pair will push (`None` for one with nothing to
+    /// gather), then `fill` writes each run of `run_len` pairs through its
+    /// [`CellWriter`], in parallel, into that run's window of every arena.
+    /// `fill` must push exactly the pairs `nd` admitted, with those counts,
+    /// and `run_len` is at least one.
+    pub(super) fn build(
+        params: &Params,
+        pairs: &[(u64, u64)],
+        run_len: usize,
+        nd: impl Fn(u64, u64) -> Option<usize> + Sync,
+        fill: impl Fn(&[(u64, u64)], &mut CellWriter<'_>) + Sync,
+    ) -> Self {
+        let (n_thr, n_areas) = (params.iou_thrs.len(), params.area_ranges.len());
+        let nds: Vec<u32> = pairs
+            .par_iter()
+            .map(|&(img_id, cat_id)| nd(img_id, cat_id).map_or(NO_PAIR, arena_index))
+            .collect();
+        // Per run: pairs kept, scores, and bit words.
+        let runs: Vec<(usize, usize, usize)> = nds
+            .par_chunks(run_len)
+            .map(|run| {
+                run.iter()
+                    .filter(|&&nd| nd != NO_PAIR)
+                    .fold((0, 0, 0), |(p, s, w), &nd| {
+                        (
+                            p + 1,
+                            s + nd as usize,
+                            w + words_for(n_thr, n_areas, nd as usize),
+                        )
+                    })
+            })
+            .collect();
+        let (n_pairs, n_scores, n_words) =
+            runs.iter().fold((0, 0, 0), |(p, s, w), &(rp, rs, rw)| {
+                (p + rp, s + rs, w + rw)
+            });
+        let mut cells = Cells {
+            pairs: vec![PairHeader::default(); n_pairs + 1],
+            n_thr,
+            n_areas,
+            scores: vec![0.0; n_scores],
+            num_gt: vec![0; n_pairs * n_areas],
+            bits: vec![0; n_words],
+        };
+        cells.pairs[n_pairs] = PairHeader {
+            scores_start: arena_index(n_scores),
+            bits_start: arena_index(n_words),
+            ..PairHeader::default()
+        };
+        // One writer per run, over disjoint windows of every arena.
+        let (mut ph, mut sc, mut ng, mut bw) = (
+            &mut cells.pairs[..n_pairs],
+            &mut cells.scores[..],
+            &mut cells.num_gt[..],
+            &mut cells.bits[..],
+        );
+        let mut writers = Vec::with_capacity(runs.len());
+        let (mut scores_base, mut bits_base) = (0, 0);
+        for &(p, s, w) in &runs {
+            let (pairs, rest) = std::mem::take(&mut ph).split_at_mut(p);
+            ph = rest;
+            let (scores, rest) = std::mem::take(&mut sc).split_at_mut(s);
+            sc = rest;
+            let (num_gt, rest) = std::mem::take(&mut ng).split_at_mut(p * n_areas);
+            ng = rest;
+            let (bits, rest) = std::mem::take(&mut bw).split_at_mut(w);
+            bw = rest;
+            writers.push(CellWriter {
+                n_thr,
+                n_areas,
+                pairs,
+                scores,
+                num_gt,
+                bits,
+                scores_base,
+                bits_base,
+                n_pairs: 0,
+                n_scores: 0,
+                n_words: 0,
+                nd: 0,
+                areas_done: n_areas,
+                bit: 0,
+            });
+            scores_base += s;
+            bits_base += w;
+        }
+        writers
+            .par_iter_mut()
+            .zip(pairs.par_chunks(run_len))
+            .for_each(|(writer, run)| {
+                fill(run, writer);
+                debug_assert!(writer.is_full(), "a run wrote what its layout pass counted");
+            });
+        cells
+    }
+
+    /// The number of pairs.
+    pub(super) fn len(&self) -> usize {
+        self.pairs.len().saturating_sub(1)
+    }
+
+    /// The pair's image and category ids.
+    pub(super) fn ids(&self, pair: usize) -> (u64, u64) {
+        let h = &self.pairs[pair];
+        (h.image_id, h.category_id)
+    }
+
+    /// The pair's scores, descending, cut at evaluate time's `max_det`.
+    pub(super) fn scores(&self, pair: usize) -> &[f64] {
+        let (start, end) = (
+            self.pairs[pair].scores_start as usize,
+            self.pairs[pair + 1].scores_start as usize,
+        );
+        &self.scores[start..end]
+    }
+
+    /// [`EvalImg::num_gt_in_denominator`] for the cell.
+    pub(super) fn num_gt(&self, cell: CellRef) -> u32 {
+        debug_assert!(cell.area() < self.n_areas);
+        self.num_gt[cell.pair() * self.n_areas + cell.area()]
+    }
+
+    /// The cell's matched and ignore rows.
+    pub(super) fn block(&self, cell: CellRef) -> Block<'_> {
+        debug_assert!(cell.area() < self.n_areas);
+        let nd = self.scores(cell.pair()).len();
+        Block {
+            words: &self.bits,
+            base: self.pairs[cell.pair()].bits_start as usize * 64
+                + cell.area() * 2 * self.n_thr * nd,
+            nd,
+            n_thr: self.n_thr,
+        }
+    }
+}
+
+/// One cell's bits: `2 * n_thr` rows of `nd`, matched rows then ignore rows.
+pub(super) struct Block<'a> {
+    words: &'a [u64],
+    /// Bit offset of the first row.
+    base: usize,
+    nd: usize,
+    n_thr: usize,
+}
+
+impl Block<'_> {
+    /// `EvalImg::dt_matched` row `t`, one bit per score.
+    pub(super) fn matched(&self, t: usize) -> impl Iterator<Item = bool> + '_ {
+        debug_assert!(t < self.n_thr);
+        self.row(t)
+    }
+
+    /// `EvalImg::dt_ignore` row `t`.
+    pub(super) fn ignore(&self, t: usize) -> impl Iterator<Item = bool> + '_ {
+        debug_assert!(t < self.n_thr);
+        self.row(self.n_thr + t)
+    }
+
+    fn row(&self, row: usize) -> impl Iterator<Item = bool> + '_ {
+        let start = self.base + row * self.nd;
+        (start..start + self.nd).map(|i| (self.words[i / 64] >> (i % 64)) & 1 == 1)
+    }
+}
+
+/// One run's window of the [`Cells`] arenas, written pair by pair: a
+/// [`begin_pair`](Self::begin_pair), then one [`push_area`](Self::push_area)
+/// per area range in `params.area_ranges` order.
+pub(super) struct CellWriter<'a> {
+    n_thr: usize,
+    n_areas: usize,
+    pairs: &'a mut [PairHeader],
+    scores: &'a mut [f64],
+    num_gt: &'a mut [u32],
+    bits: &'a mut [u64],
+    /// Where the window starts in the whole arena: what headers record.
+    scores_base: usize,
+    bits_base: usize,
+    /// How much of the window is written.
+    n_pairs: usize,
+    n_scores: usize,
+    n_words: usize,
+    /// The pair being written: its score count, how many of its area ranges
+    /// are in, and the bit cursor within `bits`.
+    nd: usize,
+    areas_done: usize,
+    bit: usize,
+}
+
+impl CellWriter<'_> {
+    /// Start a pair with its scores; its bit words are reserved here.
+    pub(super) fn begin_pair(&mut self, image_id: u64, category_id: u64, scores: &[f64]) {
+        debug_assert_eq!(
+            self.areas_done, self.n_areas,
+            "the previous pair pushed every area range"
+        );
+        self.pairs[self.n_pairs] = PairHeader {
+            image_id,
+            category_id,
+            scores_start: arena_index(self.scores_base + self.n_scores),
+            bits_start: arena_index(self.bits_base + self.n_words),
+        };
+        self.scores[self.n_scores..self.n_scores + scores.len()].copy_from_slice(scores);
+        self.nd = scores.len();
+        self.areas_done = 0;
+        self.bit = self.n_words * 64;
+        self.n_pairs += 1;
+        self.n_scores += scores.len();
+        self.n_words += words_for(self.n_thr, self.n_areas, scores.len());
+    }
+
+    /// The current pair's next area range: its denominator, then its
+    /// `2 * n_thr` rows of `nd` bits, matched rows first.
+    pub(super) fn push_area<'r>(&mut self, num_gt: u32, rows: impl Iterator<Item = &'r [bool]>) {
+        debug_assert!(self.areas_done < self.n_areas);
+        self.num_gt[(self.n_pairs - 1) * self.n_areas + self.areas_done] = num_gt;
+        let mut n_rows = 0;
+        for row in rows {
+            debug_assert_eq!(row.len(), self.nd);
+            for &set in row {
+                self.bits[self.bit / 64] |= (set as u64) << (self.bit % 64);
+                self.bit += 1;
+            }
+            n_rows += 1;
+        }
+        debug_assert_eq!(n_rows, 2 * self.n_thr);
+        self.areas_done += 1;
+    }
+
+    /// Whether every arena window is written to its end.
+    fn is_full(&self) -> bool {
+        self.areas_done == self.n_areas
+            && self.n_pairs == self.pairs.len()
+            && self.n_scores == self.scores.len()
+            && self.n_words == self.bits.len()
+    }
+}
+
 /// Per-threshold match bookkeeping — the payload of an [`EvalImg`].
 struct MatchOutcome {
     dt_matches: ThreshMatrix<u64>,
@@ -124,6 +440,27 @@ struct MatchOutcome {
     dt_matched: ThreshMatrix<bool>,
     gt_matched: ThreshMatrix<bool>,
     dt_ignore: ThreshMatrix<bool>,
+}
+
+/// The pair's ground-truth and detection ids, or `None` when both are empty.
+///
+/// pycocotools' `evaluateImg` skips a cell only when `len(gt) == 0 and
+/// len(dt) == 0` on the *raw* per-(image, category) lists — before any area
+/// range ignores anything and before the `max_det` cut — and that is the only
+/// skip here too. Anything narrower is wrong in a way AP never shows: a cell
+/// with detections but no ground truth, every one of them outside the area
+/// range, has nothing to match and moves no counter, yet its detections still
+/// occupy ranks in `accumulate()`'s score order, and the score sampled at a
+/// recall threshold (`eval["scores"]`) is read off that order. Dropping such
+/// cells shifted those samples onto later detections.
+fn pair_ids<'a>(
+    ctx: &EvalImgContext<'a>,
+    img_id: u64,
+    cat_id: u64,
+) -> Option<(&'a [u64], &'a [u64])> {
+    let gt_ids = super::COCOeval::get_anns_static(ctx.coco_gt, ctx.params, img_id, cat_id);
+    let dt_ids = super::COCOeval::get_anns_static(ctx.coco_dt, ctx.params, img_id, cat_id);
+    (!gt_ids.is_empty() || !dt_ids.is_empty()).then_some((gt_ids, dt_ids))
 }
 
 /// Resolve one (image, category) pair's annotations, once for all area ranges.
@@ -139,13 +476,7 @@ pub(super) fn gather_pair<'a>(
     cat_id: u64,
     max_det: usize,
 ) -> Option<PairCell<'a>> {
-    use super::COCOeval;
-
-    let gt_ids = COCOeval::get_anns_static(ctx.coco_gt, ctx.params, img_id, cat_id);
-    let dt_ids = COCOeval::get_anns_static(ctx.coco_dt, ctx.params, img_id, cat_id);
-    if gt_ids.is_empty() && dt_ids.is_empty() {
-        return None;
-    }
+    let (gt_ids, dt_ids) = pair_ids(ctx, img_id, cat_id)?;
 
     let (gt_iou_indices, gt_anns): (Vec<usize>, Vec<&Annotation>) = gt_ids
         .iter()
@@ -165,6 +496,9 @@ pub(super) fn gather_pair<'a>(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     with_iou_idx.truncate(max_det);
+    // The index holds every annotation, so no id is dropped above:
+    // `lean_scores_len` sizes the cell arenas on that.
+    debug_assert_eq!(with_iou_idx.len(), dt_ids.len().min(max_det));
 
     let (dt_iou_indices, dt_anns): (Vec<usize>, Vec<&Annotation>) =
         with_iou_idx.into_iter().unzip();
@@ -177,7 +511,6 @@ pub(super) fn gather_pair<'a>(
         max_det,
         gt_anns,
         gt_iou_indices,
-        gt_raw_count: gt_ids.len(),
         dt_anns,
         dt_iou_indices,
         dt_ids,
@@ -241,6 +574,7 @@ fn partition_gt<'a>(
         Vec::new()
     };
     let num_not_ignored = ignore_sorted.iter().filter(|&&x| !x).count();
+    let num_in_denominator = in_denominator_sorted.iter().filter(|&&x| x).count();
 
     GtView {
         anns,
@@ -248,6 +582,7 @@ fn partition_gt<'a>(
         iou_indices: pair.gt_iou_indices.as_slice(),
         ignore_sorted,
         in_denominator_sorted,
+        num_in_denominator,
         iscrowd_sorted,
         is_group_of_sorted,
         num_not_ignored,
@@ -445,19 +780,20 @@ fn match_cell(
     }
 }
 
-/// Evaluate one area range of an already-gathered image+category pair.
+/// Match one area range of a gathered pair: the partitioned ground truth and
+/// the match outcome, with the LVIS not-exhaustive rule applied.
 ///
 /// `not_exhaustive_cat` — when true (LVIS mode), unmatched detections are ignored
 /// rather than counted as false positives.
 ///
-/// Returns `None` for cells with nothing to report, which is what keeps
-/// `evalImgs` sparse.
-pub(super) fn evaluate_cell(
+/// Every gathered pair yields a cell for every area range; the one skip is in
+/// [`gather_pair`].
+fn match_area<'a>(
     ctx: &EvalImgContext<'_>,
-    pair: &PairCell<'_>,
+    pair: &'a PairCell<'a>,
     area_rng: [f64; 2],
     not_exhaustive_cat: bool,
-) -> Option<EvalImg> {
+) -> (GtView<'a>, MatchOutcome) {
     let is_kp = ctx.params.iou_type == IouType::Keypoints;
     let is_oid = ctx.eval_mode == EvalMode::OpenImages;
 
@@ -466,8 +802,6 @@ pub(super) fn evaluate_cell(
 
     let mut outcome = match_cell(ctx, &gt, &dt, pair.iou_matrix, is_oid);
 
-    // LVIS: on a not-exhaustively-labeled category, unmatched detections are
-    // ignored instead of penalized as false positives.
     if not_exhaustive_cat {
         for t_idx in 0..ctx.params.iou_thrs.len() {
             for di in 0..dt.len() {
@@ -477,34 +811,83 @@ pub(super) fn evaluate_cell(
             }
         }
     }
+    (gt, outcome)
+}
 
-    // Nothing non-ignored on either side means this cell contributes nothing —
-    // but only skip it when there were no ground-truth ids at all, matching the
-    // original condition. The two tests read different counts: `has_content`
-    // reads the *resolved* views (non-ignored GTs, in-range detections after
-    // the score sort and `max_det` cap), while the final gate is the *raw* GT
-    // id count — the ids returned before annotation lookup, `gt_raw_count`.
-    let has_content = gt.num_not_ignored > 0 || dt.area_ignore.iter().any(|&ignored| !ignored);
-    if !has_content && pair.gt_raw_count == 0 {
-        return None;
+/// How many scores [`push_pair_lean`] will push for a pair, or `None` when
+/// [`gather_pair`] would find nothing: the layout pass of [`Cells::build`].
+pub(super) fn lean_scores_len(
+    ctx: &EvalImgContext<'_>,
+    img_id: u64,
+    cat_id: u64,
+    max_det: usize,
+) -> Option<usize> {
+    pair_ids(ctx, img_id, cat_id).map(|(_, dt_ids)| dt_ids.len().min(max_det))
+}
+
+/// One pair under every area range, written to `cells` as the record
+/// `accumulate()` reads; nothing when the pair has neither ground truth nor
+/// detections.
+pub(super) fn push_pair_lean(
+    ctx: &EvalImgContext<'_>,
+    img_id: u64,
+    cat_id: u64,
+    max_det: usize,
+    not_exhaustive_cat: bool,
+    cells: &mut CellWriter<'_>,
+) {
+    let Some(pair) = gather_pair(ctx, img_id, cat_id, max_det) else {
+        return;
+    };
+    cells.begin_pair(img_id, cat_id, &pair.dt_scores);
+    for ar in &ctx.params.area_ranges {
+        let (gt, outcome) = match_area(ctx, &pair, ar.range, not_exhaustive_cat);
+        cells.push_area(
+            gt.num_in_denominator as u32,
+            outcome
+                .dt_matched
+                .iter_rows()
+                .chain(outcome.dt_ignore.iter_rows()),
+        );
     }
+}
 
-    Some(EvalImg {
-        image_id: pair.img_id,
-        category_id: pair.cat_id,
-        area_rng,
-        max_det: pair.max_det,
-        dt_ids: pair.dt_ids.clone(),
-        gt_ids: gt.sorted_ids(),
-        dt_matches: outcome.dt_matches,
-        gt_matches: outcome.gt_matches,
-        dt_matched: outcome.dt_matched,
-        gt_matched: outcome.gt_matched,
-        dt_scores: pair.dt_scores.clone(),
-        gt_ignore: gt.ignore_sorted,
-        gt_in_denominator: gt.in_denominator_sorted,
-        dt_ignore: outcome.dt_ignore,
-    })
+/// One pair under the area ranges at `area_idxs` (indices into
+/// `ctx.params.area_ranges`), as full [`EvalImg`]s written into `out` — one
+/// slot per index, left `None` when the pair has neither ground truth nor
+/// detections.
+pub(super) fn evaluate_pair_full(
+    ctx: &EvalImgContext<'_>,
+    img_id: u64,
+    cat_id: u64,
+    max_det: usize,
+    not_exhaustive_cat: bool,
+    area_idxs: &[usize],
+    out: &mut [Option<EvalImg>],
+) {
+    let Some(pair) = gather_pair(ctx, img_id, cat_id, max_det) else {
+        return;
+    };
+    for (slot, &a_idx) in out.iter_mut().zip(area_idxs) {
+        let area_rng = ctx.params.area_ranges[a_idx].range;
+        let (gt, outcome) = match_area(ctx, &pair, area_rng, not_exhaustive_cat);
+        *slot = Some(EvalImg {
+            image_id: pair.img_id,
+            category_id: pair.cat_id,
+            area_rng,
+            max_det: pair.max_det,
+            dt_ids: pair.dt_ids.clone(),
+            gt_ids: gt.sorted_ids(),
+            dt_matches: outcome.dt_matches,
+            gt_matches: outcome.gt_matches,
+            dt_matched: outcome.dt_matched,
+            gt_matched: outcome.gt_matched,
+            dt_scores: pair.dt_scores.clone(),
+            gt_ignore: gt.ignore_sorted,
+            gt_in_denominator: gt.in_denominator_sorted,
+            dt_ignore: outcome.dt_ignore,
+        });
+    }
 }
 
 /// D×G IoU matrix (row-major: dt.len() rows, gt.len() columns).

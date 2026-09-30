@@ -2,7 +2,7 @@
 extend-exclude = [
     "data/",
     "*.json",
-    "scripts/fixtures/",
+    "tests/fixtures/",
     # Minified bundles and font binaries: mangled identifiers and packed bytes,
     # ~850 hits between them. By extension, not by directory — `static/` also
     # holds our own dashboard.js/gallery.js/overlay.js/style.css, which excluding

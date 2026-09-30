@@ -9,20 +9,16 @@ Workflow: use this fuzzer to *find* bugs, then prove fixes with Rust integration
 tests. Do not add this to CI — it takes several minutes to run.
 
 Usage:
-    uv run pytest scripts/fuzz_parity.py -v -x --tb=short
+    uv run pytest tests/fuzz_parity.py -v -x --tb=short
     just fuzz
 """
 
 import json
 import os
-import sys
 import time
-from pathlib import Path
 
-import helpers
 import hypothesis.strategies as st
-import pytest
-from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, metric_names_for, run_both
+from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, FIXTURES_DIR, assert_metrics_match, metric_names_for, run_both
 from hypothesis import HealthCheck, given, settings
 from hypothesis.database import DirectoryBasedExampleDatabase
 
@@ -30,8 +26,7 @@ from hypothesis.database import DirectoryBasedExampleDatabase
 # Constants
 # ---------------------------------------------------------------------------
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-FAILURE_DIR = str(_SCRIPT_DIR / "fixtures" / "parity_failures")
+FAILURE_DIR = str(FIXTURES_DIR / "parity_failures")
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +296,7 @@ def assert_hotcoco_invariants(rs_ev, iou_type):
                 assert v == -1.0 or 0.0 <= v <= 1.0, f"recall {v} outside [0, 1]"
 
 
-def assert_metrics_match(py_stats, rs_stats, iou_type, gt_dataset, dt_results):
+def assert_metrics_match_or_save(py_stats, rs_stats, iou_type, gt_dataset, dt_results):
     """Shared differential assertion, plus a saved reproducer for any mismatch.
 
     Hypothesis has already minimized the failing case by the time this fires, so
@@ -315,7 +310,7 @@ def assert_metrics_match(py_stats, rs_stats, iou_type, gt_dataset, dt_results):
     def _save(_mismatches):
         save_failure(gt_dataset, dt_results, iou_type, py_stats, rs_stats)
 
-    helpers.assert_metrics_match(py_stats, rs_stats, iou_type, on_mismatch=_save)
+    assert_metrics_match(py_stats, rs_stats, iou_type, on_mismatch=_save)
 
 
 def save_failure(gt_dataset, dt_results, iou_type, py_stats, rs_stats):
@@ -348,7 +343,7 @@ HYPOTHESIS_SETTINGS = dict(
     max_examples=3334,
     deadline=None,
     suppress_health_check=[HealthCheck.too_slow],
-    database=DirectoryBasedExampleDatabase(str(_SCRIPT_DIR / "fixtures" / ".hypothesis")),
+    database=DirectoryBasedExampleDatabase(str(FIXTURES_DIR / ".hypothesis")),
 )
 
 
@@ -358,7 +353,7 @@ def test_bbox_parity(data):
     gt_dataset, dt_results = data.draw(coco_eval_data("bbox"))
     py_stats, rs_stats, rs_ev = run_both(gt_dataset, dt_results, "bbox")
     assert_hotcoco_invariants(rs_ev, "bbox")
-    assert_metrics_match(py_stats, rs_stats, "bbox", gt_dataset, dt_results)
+    assert_metrics_match_or_save(py_stats, rs_stats, "bbox", gt_dataset, dt_results)
 
 
 @given(data=st.data())
@@ -367,7 +362,7 @@ def test_segm_parity(data):
     gt_dataset, dt_results = data.draw(coco_eval_data("segm"))
     py_stats, rs_stats, rs_ev = run_both(gt_dataset, dt_results, "segm")
     assert_hotcoco_invariants(rs_ev, "segm")
-    assert_metrics_match(py_stats, rs_stats, "segm", gt_dataset, dt_results)
+    assert_metrics_match_or_save(py_stats, rs_stats, "segm", gt_dataset, dt_results)
 
 
 @given(data=st.data())
@@ -376,12 +371,4 @@ def test_kpt_parity(data):
     gt_dataset, dt_results = data.draw(coco_eval_data("keypoints"))
     py_stats, rs_stats, rs_ev = run_both(gt_dataset, dt_results, "keypoints")
     assert_hotcoco_invariants(rs_ev, "keypoints")
-    assert_metrics_match(py_stats, rs_stats, "keypoints", gt_dataset, dt_results)
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v", "-x", "--tb=short"]))
+    assert_metrics_match_or_save(py_stats, rs_stats, "keypoints", gt_dataset, dt_results)

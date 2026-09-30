@@ -9,19 +9,20 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] io::Error),
 
-    /// JSON serialization or deserialization error (serde_json paths: saving,
-    /// report emission).
+    /// JSON parse or serialization error: loading (`COCO::new`,
+    /// `COCO::load_res`), saving, and report emission.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-
-    /// JSON parse error from the simd-json loader — the main dataset-loading
-    /// path (`COCO::new`, `COCO::load_res`).
-    #[error("invalid JSON: {0}")]
-    JsonParse(#[from] simd_json::Error),
 
     /// Format conversion error (COCO ↔ YOLO).
     #[error(transparent)]
     Convert(#[from] ConvertError),
+
+    /// Annotation ids handed to [`COCO::update_anns`](crate::COCO::update_anns)
+    /// that the dataset does not have. Its own variant so a binding can map
+    /// exactly this failure to a lookup error — Python's `KeyError`.
+    #[error("annotation id(s) not in this dataset: {0:?}")]
+    UnknownAnnIds(Vec<u64>),
 
     /// Any other error with a human-readable message.
     #[error("{0}")]

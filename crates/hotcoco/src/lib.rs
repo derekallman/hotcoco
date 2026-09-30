@@ -60,11 +60,13 @@
 //! aliases; the crate-root re-exports resolve unchanged. The rename table is in
 //! the [migration guide](https://derekallman.github.io/hotcoco/getting-started/migration/).
 
+mod ann_index;
 pub mod coco;
 pub mod convert;
 pub mod detection;
 pub mod error;
 pub mod geometry;
+mod json;
 pub mod mask;
 pub mod metrics;
 pub mod params;
@@ -72,6 +74,12 @@ pub mod primitives;
 pub mod quality;
 pub mod report;
 pub mod types;
+
+/// How many parallel runs each thread draws when work is cut into runs: a
+/// few, so a thread that draws the heavy items (polygon-dense records, busy
+/// image-category pairs) does not hold everyone else, and few enough that
+/// per-run setup stays noise.
+pub(crate) const RUNS_PER_THREAD: usize = 4;
 
 pub use coco::COCO;
 pub use convert::{
@@ -101,4 +109,4 @@ pub use quality::{
     CategoryStats, DatasetStats, DatasetSummary, Finding, HealthReport, Layer, SummaryStats,
 };
 pub use report::{EvalReport, Provenance};
-pub use types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
+pub use types::{Annotation, Category, Dataset, Extra, Image, Rle, Segmentation};

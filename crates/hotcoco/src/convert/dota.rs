@@ -55,7 +55,7 @@ pub fn coco_to_dota(dataset: &Dataset, output_dir: &Path) -> Result<DotaStats, C
 
         if let Some(anns) = grouped.get(&img.id) {
             for ann in anns {
-                let obb = match &ann.obb {
+                let obb = match ann.obb.as_deref() {
                     Some(o) => o,
                     None => {
                         stats.skipped_no_obb += 1;
@@ -240,7 +240,7 @@ pub fn dota_to_coco(
                 bbox: Some(obb_to_aabb(&obb)),
                 area: Some(obb[2] * obb[3]),
                 iscrowd: difficulty > 0,
-                obb: Some(obb),
+                obb: Some(Box::new(obb)),
                 ..Default::default()
             });
             ann_id += 1;
@@ -294,7 +294,7 @@ mod tests {
                 category_id: 1,
                 bbox: Some([10.0, 10.0, 40.0, 20.0]),
                 area: Some(800.0),
-                obb: Some([30.0, 20.0, 40.0, 20.0, 0.0]),
+                obb: Some(Box::new([30.0, 20.0, 40.0, 20.0, 0.0])),
                 ..Default::default()
             }],
             categories: vec![Category {
@@ -320,7 +320,7 @@ mod tests {
 
         assert_eq!(result.annotations.len(), 1);
         let ann = &result.annotations[0];
-        let obb = ann.obb.unwrap();
+        let obb = ann.obb.as_deref().unwrap();
 
         // Check round-trip accuracy (limited by .1 decimal formatting)
         assert!((obb[0] - 30.0).abs() < EPS, "cx: {}", obb[0]);

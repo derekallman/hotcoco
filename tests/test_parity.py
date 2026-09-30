@@ -7,7 +7,7 @@ To hunt for new parity bugs, use the hypothesis fuzzer instead:
     just fuzz
 
 Usage:
-    uv run pytest scripts/test_parity.py -v -x --tb=short
+    uv run pytest tests/test_parity.py -v -x --tb=short
     just test
 """
 
@@ -79,23 +79,6 @@ def _img(id: int = 1) -> dict:
     return {"id": id, "file_name": f"img{id}.jpg", "height": 640, "width": 640}
 
 
-def _ann(
-    id: int,
-    image_id: int,
-    category_id: int,
-    bbox: list,
-    area: float,
-    score: float | None = None,
-    is_group_of: bool | None = None,
-) -> dict:
-    ann = {"id": id, "image_id": image_id, "category_id": category_id, "bbox": bbox, "area": area, "iscrowd": 0}
-    if score is not None:
-        ann["score"] = score
-    if is_group_of is not None:
-        ann["is_group_of"] = is_group_of
-    return ann
-
-
 def _cat(id: int, name: str, supercategory: str | None = None) -> dict:
     cat = {"id": id, "name": name}
     if supercategory is not None:
@@ -108,21 +91,21 @@ def _cat(id: int, name: str, supercategory: str | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_gt():
+@pytest.mark.parametrize("iou_type", ["bbox", "segm"])
+def test_empty_gt(iou_type):
     """No GT annotations, some detections → all metrics -1.0.
 
     Every metric here is the sentinel on both sides, so this asserts agreement
     about undefinedness and nothing numeric. That is the whole point of the case,
-    but the expectation has to be pinned on *hotcoco* — the original checked
-    ``py_stats``, which tests pycocotools against itself.
+    and the expectation is pinned on *hotcoco*: checking ``py_stats`` alone would
+    test pycocotools against itself.
     """
-    for iou_type in ["bbox", "segm"]:
-        gt = _make_minimal_gt(iou_type)
-        dts = [_make_bbox_det(score=0.5)]
-        py_stats, rs_stats, _ = run_both(gt, dts, iou_type)
-        assert_metrics_match(py_stats, rs_stats, iou_type)
-        assert all(s == -1.0 for s in rs_stats[:6]), f"hotcoco: expected -1.0 AP metrics, got {rs_stats[:6]}"
-        assert all(s == -1.0 for s in py_stats[:6]), f"pycocotools: expected -1.0 AP metrics, got {py_stats[:6]}"
+    gt = _make_minimal_gt(iou_type)
+    dts = [_make_bbox_det(score=0.5)]
+    py_stats, rs_stats, _ = run_both(gt, dts, iou_type)
+    assert_metrics_match(py_stats, rs_stats, iou_type)
+    assert all(s == -1.0 for s in rs_stats[:6]), f"hotcoco: expected -1.0 AP metrics, got {rs_stats[:6]}"
+    assert all(s == -1.0 for s in py_stats[:6]), f"pycocotools: expected -1.0 AP metrics, got {py_stats[:6]}"
 
 
 def test_all_crowd():
@@ -271,7 +254,7 @@ def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None):
     from pycocotools.coco import COCO as PyCOCO  # noqa: PLC0415
     from pycocotools.cocoeval import COCOeval as PyCOCOeval  # noqa: PLC0415
 
-    with written_json(gt, dts, quiet=True) as (gt_path, dt_path):
+    with written_json(gt, dts) as (gt_path, dt_path):
         with suppress_output():
             py_gt = PyCOCO(gt_path)
             py_ev = PyCOCOeval(py_gt, py_gt.loadRes(dt_path), "bbox")
@@ -300,6 +283,37 @@ def _assert_arrays_bit_equal(py_eval, rs_eval, what):
             f"{what}: {key} differs at {len(mismatch)} positions, first (t, r, k, a, m)={mismatch[0].tolist()}: "
             f"pycocotools {py_arr[tuple(mismatch[0])]!r} vs hotcoco {rs_arr[tuple(mismatch[0])]!r}"
         )
+
+
+def _rank_filler_dataset():
+    """Two images, one category: image 1 has a small GT with a TP at 0.5 and an
+    FP at 0.4; image 2 has no GT and one large detection at 0.9."""
+    images = [{"id": i, "width": 200, "height": 200, "file_name": f"{i}.jpg"} for i in (1, 2)]
+    categories = [{"id": 1, "name": "object"}]
+    anns = [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [0.0, 0.0, 10.0, 10.0], "area": 100.0, "iscrowd": 0}]
+    dts = [
+        _make_bbox_det(1, 1, bbox=[0.0, 0.0, 10.0, 10.0], score=0.5),
+        _make_bbox_det(1, 1, bbox=[50.0, 50.0, 10.0, 10.0], score=0.4),
+        _make_bbox_det(2, 1, bbox=[0.0, 0.0, 100.0, 100.0], score=0.9),
+    ]
+    return _make_minimal_gt("bbox", images=images, categories=categories, annotations=anns), dts
+
+
+def test_rank_filler_and_epsilon_guard_match_pycocotools_bit_for_bit():
+    """Under ``small``, image 2's cell has detections but no GT and every
+    detection is area-ignored; pycocotools keeps the cell (see ``gather_pair``
+    in matching.rs), so the 0.9 fills rank 0 of ``scores``. Image 1's lone
+    leading TP then shows the ``np.spacing(1)`` guard in ``precision``."""
+    gt, dts = _rank_filler_dataset()
+    py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100])
+    small = 1  # area-range index: all, small, medium, large
+    # (t=IoU 0.5, r=recall 0, k=cat 1, a=small, m=maxDets 100)
+    assert np.asarray(py_eval["scores"])[0, 0, 0, small, 2] == 0.9, "fixture must put the ignored 0.9 at rank 0"
+    # Under ``small`` the 0.9 is ignored, so the 0.5 TP is a lone leading TP.
+    assert np.asarray(py_eval["precision"])[0, 0, 0, small, 2] == 1.0 - 2.0**-52, (
+        "fixture must expose the epsilon guard"
+    )
+    _assert_arrays_bit_equal(py_eval, rs_eval, "rank filler + epsilon guard")
 
 
 def test_accumulated_arrays_match_pycocotools_bit_for_bit():
@@ -481,14 +495,14 @@ def test_basic_hierarchy():
     gt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000)],  # Poodle
+            "annotations": [_make_bbox_ann(1, 1, 1, [10, 10, 100, 100])],  # Poodle
             "categories": [_cat(1, "poodle", "dog"), _cat(2, "dog", "animal"), _cat(3, "animal")],
         }
     )
     dt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 2, [10, 10, 100, 100], 10000, score=0.9)],  # Dog
+            "annotations": [_make_bbox_ann(1, 1, 2, [10, 10, 100, 100], score=0.9)],  # Dog
             "categories": [_cat(1, "poodle", "dog"), _cat(2, "dog", "animal"), _cat(3, "animal")],
         }
     )
@@ -517,8 +531,8 @@ def test_group_of_scores_one_tp_and_absorbs_the_rest():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [300, 300, 100, 100], 10000),  # Normal GT
-                _ann(2, 1, 1, [0, 0, 200, 200], 40000, is_group_of=True),  # Group-of
+                _make_bbox_ann(1, 1, 1, [300, 300, 100, 100]),  # Normal GT
+                _make_bbox_ann(2, 1, 1, [0, 0, 200, 200], is_group_of=True),  # Group-of
             ],
             "categories": [_cat(1, "person")],
         }
@@ -527,9 +541,9 @@ def test_group_of_scores_one_tp_and_absorbs_the_rest():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [300, 300, 100, 100], 10000, score=0.9),  # ordinary TP
-                _ann(2, 1, 1, [10, 10, 80, 80], 6400, score=0.8),  # scores the group box
-                _ann(3, 1, 1, [50, 50, 80, 80], 6400, score=0.7),  # absorbed, ignored
+                _make_bbox_ann(1, 1, 1, [300, 300, 100, 100], score=0.9),  # ordinary TP
+                _make_bbox_ann(2, 1, 1, [10, 10, 80, 80], score=0.8),  # scores the group box
+                _make_bbox_ann(3, 1, 1, [50, 50, 80, 80], score=0.7),  # absorbed, ignored
             ],
             "categories": [_cat(1, "person")],
         }
@@ -561,8 +575,8 @@ def test_group_of_matches_on_ioa_not_iou():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [300, 300, 100, 100], 10000),
-                _ann(2, 1, 1, [0, 0, 200, 200], 40000, is_group_of=True),
+                _make_bbox_ann(1, 1, 1, [300, 300, 100, 100]),
+                _make_bbox_ann(2, 1, 1, [0, 0, 200, 200], is_group_of=True),
             ],
             "categories": [_cat(1, "person")],
         }
@@ -571,8 +585,8 @@ def test_group_of_matches_on_ioa_not_iou():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [10, 10, 80, 80], 6400, score=0.9),
-                _ann(2, 1, 1, [300, 300, 100, 100], 10000, score=0.8),
+                _make_bbox_ann(1, 1, 1, [10, 10, 80, 80], score=0.9),
+                _make_bbox_ann(2, 1, 1, [300, 300, 100, 100], score=0.8),
             ],
             "categories": [_cat(1, "person")],
         }
@@ -595,8 +609,8 @@ def test_undetected_group_of_is_a_miss():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [0, 0, 100, 100], 10000),  # Normal GT
-                _ann(2, 1, 1, [400, 400, 100, 100], 10000, is_group_of=True),  # Group-of (far away)
+                _make_bbox_ann(1, 1, 1, [0, 0, 100, 100]),  # Normal GT
+                _make_bbox_ann(2, 1, 1, [400, 400, 100, 100], is_group_of=True),  # Group-of (far away)
             ],
             "categories": [_cat(1, "person")],
         }
@@ -605,7 +619,7 @@ def test_undetected_group_of_is_a_miss():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [0, 0, 100, 100], 10000, score=0.9)  # Matches normal GT only
+                _make_bbox_ann(1, 1, 1, [0, 0, 100, 100], score=0.9)  # Matches normal GT only
             ],
             "categories": [_cat(1, "person")],
         }
@@ -623,7 +637,7 @@ def test_pre_expanded_idempotent():
     gt_unexpanded = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000)],
+            "annotations": [_make_bbox_ann(1, 1, 1, [10, 10, 100, 100])],
             "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
         }
     )
@@ -631,8 +645,8 @@ def test_pre_expanded_idempotent():
         {
             "images": [_img()],
             "annotations": [
-                _ann(1, 1, 1, [10, 10, 100, 100], 10000),
-                _ann(2, 1, 2, [10, 10, 100, 100], 10000),  # Expanded animal
+                _make_bbox_ann(1, 1, 1, [10, 10, 100, 100]),
+                _make_bbox_ann(2, 1, 2, [10, 10, 100, 100]),  # Expanded animal
             ],
             "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
         }
@@ -640,7 +654,7 @@ def test_pre_expanded_idempotent():
     dt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000, score=0.9)],
+            "annotations": [_make_bbox_ann(1, 1, 1, [10, 10, 100, 100], score=0.9)],
             "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
         }
     )
@@ -648,14 +662,7 @@ def test_pre_expanded_idempotent():
     ev1 = COCOeval(gt_unexpanded, dt, "bbox", oid_style=True, hierarchy=hierarchy)
     ev1.run()
 
-    dt2 = COCO(
-        {
-            "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000, score=0.9)],
-            "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
-        }
-    )
-    ev2 = COCOeval(gt_expanded, dt2, "bbox", oid_style=True, hierarchy=hierarchy)
+    ev2 = COCOeval(gt_expanded, dt, "bbox", oid_style=True, hierarchy=hierarchy)
     ev2.run()
 
     assert abs(ev1.stats[0] - ev2.stats[0]) < 1e-10, (
@@ -670,14 +677,14 @@ def test_dt_expansion():
     gt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 2, [10, 10, 100, 100], 10000)],  # Animal GT
+            "annotations": [_make_bbox_ann(1, 1, 2, [10, 10, 100, 100])],  # Animal GT
             "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
         }
     )
     dt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000, score=0.9)],  # Dog
+            "annotations": [_make_bbox_ann(1, 1, 1, [10, 10, 100, 100], score=0.9)],  # Dog
             "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
         }
     )
@@ -686,22 +693,7 @@ def test_dt_expansion():
     ev1.run()
     ap_no_expand = ev1.stats[0]
 
-    gt2 = COCO(
-        {
-            "images": [_img()],
-            "annotations": [_ann(1, 1, 2, [10, 10, 100, 100], 10000)],
-            "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
-        }
-    )
-    dt2 = COCO(
-        {
-            "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000, score=0.9)],
-            "categories": [_cat(1, "dog", "animal"), _cat(2, "animal")],
-        }
-    )
-
-    ev2 = COCOeval(gt2, dt2, "bbox", oid_style=True, hierarchy=hierarchy)
+    ev2 = COCOeval(gt, dt, "bbox", oid_style=True, hierarchy=hierarchy)
     p = ev2.params
     p.expand_dt = True
     ev2.params = p
@@ -716,14 +708,14 @@ def test_virtual_nodes():
     gt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000)],
+            "annotations": [_make_bbox_ann(1, 1, 1, [10, 10, 100, 100])],
             "categories": [_cat(1, "chair", "furniture")],  # "furniture" → virtual node
         }
     )
     dt = COCO(
         {
             "images": [_img()],
-            "annotations": [_ann(1, 1, 1, [10, 10, 100, 100], 10000, score=0.9)],
+            "annotations": [_make_bbox_ann(1, 1, 1, [10, 10, 100, 100], score=0.9)],
             "categories": [_cat(1, "chair", "furniture")],
         }
     )
@@ -962,3 +954,166 @@ def test_encode_rejects_wide_dtypes_with_a_readable_message():
 
     with pytest.raises(TypeError, match=r"mask must be a numpy array"):
         mask.encode([[0, 1], [1, 0]])
+
+
+# ---------------------------------------------------------------------------
+# update_anns: edit loaded annotations without a rebuild
+# ---------------------------------------------------------------------------
+
+
+def _size_bucket_fixture():
+    """One GT box of 400 px² (small) with a detection on top of it."""
+    gt = _make_minimal_gt("bbox", annotations=[_make_bbox_ann(1, bbox=[10.0, 10.0, 20.0, 20.0])])
+    coco_gt = COCO(gt)
+    coco_dt = coco_gt.load_res([_make_bbox_det(bbox=[10.0, 10.0, 20.0, 20.0], score=0.9)])
+    return coco_gt, coco_dt
+
+
+def _bbox_stats(coco_gt, coco_dt):
+    ev = COCOeval(coco_gt, coco_dt, "bbox")
+    with suppress_output(stderr=False):
+        ev.run()
+    return ev.stats
+
+
+def test_update_anns_area_moves_the_size_bucket_metrics():
+    # The multi-IoU-type case: an annotation's active `area` has to follow the
+    # box for bbox and the mask for segm. Reading `coco.dataset`, editing the
+    # copy, and evaluating changes nothing — the mutator is what makes it land.
+    coco_gt, coco_dt = _size_bucket_fixture()
+    before = _bbox_stats(coco_gt, coco_dt)
+    assert before[3] == pytest.approx(1.0), "400 px² starts in the small bucket"
+    assert before[4] == -1.0, "and nothing is medium yet"
+
+    # In-place mutation of the copy stays a no-op, as documented.
+    coco_gt.dataset["annotations"][0]["area"] = 5000.0
+    unchanged = _bbox_stats(coco_gt, coco_dt)
+    assert unchanged[3] == pytest.approx(1.0)
+    assert unchanged[4] == -1.0
+
+    coco_gt.update_anns([{"id": 1, "area": 5000.0}])
+    after = _bbox_stats(coco_gt, coco_dt)
+    assert after[3] == -1.0, "no small ground truth is left"
+    assert after[4] == pytest.approx(1.0), "5000 px² is a medium annotation"
+
+
+def test_an_evaluator_built_before_an_edit_keeps_its_snapshot():
+    # The evaluator shares the dataset rather than copying it; an edit after
+    # construction lands on a private copy, so the evaluator's numbers do not
+    # move underneath it and the COCO object sees the edit.
+    coco_gt, coco_dt = _size_bucket_fixture()
+    ev = COCOeval(coco_gt, coco_dt, "bbox")
+    coco_gt.update_anns([{"id": 1, "area": 5000.0}])
+    with suppress_output(stderr=False):
+        ev.run()
+    assert ev.stats[3] == pytest.approx(1.0), "the evaluator still sees a small GT"
+    assert ev.coco_gt.dataset["annotations"][0]["area"] == 400.0
+    assert coco_gt.dataset["annotations"][0]["area"] == 5000.0
+
+
+def test_update_anns_merges_and_keeps_the_other_fields():
+    gt = _make_minimal_gt("bbox", annotations=[_make_bbox_ann(1, iscrowd=1, note="keep me")])
+    coco = COCO(gt)
+
+    coco.update_anns([{"id": 1, "area": 7.0}])
+
+    ann = coco.dataset["annotations"][0]
+    assert ann["area"] == 7.0
+    assert ann["bbox"] == [10.0, 10.0, 100.0, 100.0]
+    assert ann["iscrowd"] == 1
+    assert ann["note"] == "keep me", "custom keys survive a partial edit"
+
+
+def test_update_anns_follows_a_moved_annotation():
+    gt = _make_minimal_gt(
+        "bbox",
+        images=[{"id": 1, "width": 640, "height": 480}, {"id": 2, "width": 640, "height": 480}],
+        annotations=[_make_bbox_ann(1), _make_bbox_ann(2)],
+    )
+    coco = COCO(gt)
+
+    coco.update_anns([{"id": 2, "image_id": 2}])
+
+    assert coco.get_ann_ids(img_ids=[1]) == [1]
+    assert coco.get_ann_ids(img_ids=[2]) == [2], "the index followed the moved annotation"
+    assert coco.get_img_ids(cat_ids=[1]) == [1, 2]
+
+
+def test_update_anns_accepts_whole_dicts_from_dataset():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1), _make_bbox_ann(2)]))
+
+    anns = coco.dataset["annotations"]
+    for ann in anns:
+        ann["area"] = ann["bbox"][2] * ann["bbox"][3] / 2
+    coco.update_anns(anns)
+
+    assert [a["area"] for a in coco.dataset["annotations"]] == [5000.0, 5000.0]
+
+
+def test_update_anns_rejects_unknown_annotation_ids():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(KeyError, match=r"\[99, 100\]"):
+        coco.update_anns([{"id": 1, "area": 1.0}, {"id": 99}, {"id": 100}])
+
+    # Nothing was written, the valid edit included.
+    assert coco.dataset["annotations"][0]["area"] == 10000.0
+
+
+def test_update_anns_sets_scalar_shaped_and_custom_keys_alike():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    coco.update_anns([{"id": 1, "iscrowd": True}])
+    assert coco.dataset["annotations"][0]["iscrowd"] == 1
+    coco.update_anns([{"id": 1, "iscrowd": 0}])
+    assert coco.dataset["annotations"][0]["iscrowd"] == 0
+
+    coco.update_anns([{"id": 1, "bbox": [1.0, 2.0, 3.0, 4.0]}])
+    assert coco.dataset["annotations"][0]["bbox"] == [1.0, 2.0, 3.0, 4.0]
+
+    coco.update_anns([{"id": 1, "provenance": "hand-drawn"}])
+    assert coco.dataset["annotations"][0]["provenance"] == "hand-drawn"
+    coco.update_anns([{"id": 1, "provenance": "traced"}])
+    assert coco.dataset["annotations"][0]["provenance"] == "traced"
+
+
+def test_update_anns_rejects_a_value_that_does_not_fit():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(TypeError):
+        coco.update_anns([{"id": 1, "area": "big"}])
+    with pytest.raises(TypeError):
+        coco.update_anns([{"id": -1, "area": 5.0}])
+    assert coco.dataset["annotations"][0]["area"] == 10000.0
+
+
+def test_update_anns_input_shape():
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(0)]))
+
+    with pytest.raises(TypeError):
+        coco.update_anns(["not a dict"])
+    coco.update_anns([])
+
+    # Annotation id 0 is a real id, told apart from an absent "id" key.
+    coco.update_anns([{"id": 0, "area": 5.0}])
+    assert coco.dataset["annotations"][0]["area"] == 5.0
+
+
+def test_update_anns_treats_a_misspelled_field_as_a_custom_key():
+    # As pycocotools does: `ann["Area"] = x` adds a key, and the data shows it.
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    coco.update_anns([{"id": 1, "Area": 5000.0}])
+
+    ann = coco.dataset["annotations"][0]
+    assert ann["area"] == 10000.0
+    assert ann["Area"] == 5000.0
+
+
+def test_update_anns_reports_the_missing_id_first():
+    # The dict is missing `image_id` too; the absent `id` is the more useful
+    # diagnostic, so it must not be overtaken by the conversion.
+    coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
+
+    with pytest.raises(KeyError, match="id"):
+        coco.update_anns([{"area": 1.0}])

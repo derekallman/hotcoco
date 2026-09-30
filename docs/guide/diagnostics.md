@@ -323,4 +323,3 @@ Each diagnostic has a command-line form:
 | Model comparison | `coco compare --dt-a --dt-b` (`--bootstrap`, `--json`) |
 
 Flags and defaults are in [`coco eval`](../cli.md#coco-eval) and [`coco compare`](../cli.md#coco-compare).
-

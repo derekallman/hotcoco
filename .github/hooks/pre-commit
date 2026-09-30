@@ -6,32 +6,38 @@ set -e
 
 echo "Running pre-commit checks..."
 
-echo "[1/3] cargo fmt --all -- --check"
+# The hooks in .pre-commit-config.yaml: file hygiene, Ruff, and typos. They run
+# first because they take ~1.5s and the cargo steps take ~30s. They check the
+# staged files only; pre-commit sets unstaged changes aside while it runs, so a
+# partial `git add -p` is checked as staged. `pre-commit install` cannot manage
+# this file because core.hooksPath points here.
+#
+# Hooks that rewrite a file (whitespace, end-of-file, ruff-format) exit nonzero
+# when they do, so a commit is rejected rather than silently amended: re-stage
+# and re-commit.
+#
+# Any pre-commit install works; the project environment is the fallback.
+if command -v pre-commit >/dev/null 2>&1; then
+    PRE_COMMIT="pre-commit"
+elif command -v uv >/dev/null 2>&1 && uv run --no-sync pre-commit --version >/dev/null 2>&1; then
+    PRE_COMMIT="uv run --no-sync pre-commit"
+else
+    echo "pre-commit was not found on PATH or in the project environment." >&2
+    echo "Run 'just setup', or install it any other way ('pipx install pre-commit')." >&2
+    exit 1
+fi
+
+echo "[1/4] ${PRE_COMMIT} run"
+${PRE_COMMIT} run
+
+echo "[2/4] cargo fmt --all -- --check"
 cargo fmt --all -- --check
 
-echo "[2/3] cargo clippy --workspace --all-targets -- -D warnings"
+echo "[3/4] cargo clippy --workspace --all-targets -- -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings
 
-echo "[3/3] cargo test -p hotcoco -p hotcoco-cli"
+echo "[4/4] cargo test -p hotcoco -p hotcoco-cli"
 cargo test -p hotcoco -p hotcoco-cli
-
-# Python checks run only when Python files are staged, so Rust-only commits stay
-# fast. They must never skip silently when they are relevant — that is how the
-# tree drifted to 48 ruff errors while `just py-lint` existed but gated nothing.
-PY_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.pyi?$' || true)
-if [ -n "$PY_STAGED" ]; then
-    if ! command -v uv >/dev/null 2>&1; then
-        echo "Python files are staged but 'uv' was not found on PATH." >&2
-        echo "Run 'just setup' first (see CLAUDE.md), or unstage the Python files." >&2
-        exit 1
-    fi
-
-    echo "[4/5] uv run ruff format --check python/ scripts/"
-    uv run ruff format --check python/ scripts/
-
-    echo "[5/5] uv run ruff check python/ scripts/"
-    uv run ruff check python/ scripts/
-fi
 
 # Disk guard. Both checks warn and never block — a full disk is not a reason to
 # reject a commit, but it should not take a full disk to notice either. Together

@@ -7,12 +7,15 @@
 //! epoch. But matching is genuinely per-image — [`matching::gather_pair`] and
 //! [`matching::evaluate_cell`] never read another image's annotations — so
 //! nothing about the algorithm requires waiting for the last image before
-//! matching the first one.
+//! matching the first one. (`evaluate_cell` was renamed `evaluate_pair_full` /
+//! `match_area` in the lean-arena rework; the per-image argument above still
+//! holds for both.)
 //!
 //! [`StreamingEval`] exploits that: [`StreamingEval::add_image`] runs one
 //! image's matching immediately, as its ground truth and detections become
 //! available (during postprocessing, overlapped with other work), and
-//! [`StreamingEval::finalize`] assembles the accumulated cells into an
+//! [`StreamingEval::finalize`] converts the accumulated per-pair records into
+//! the same [`matching::Cells`] arena `evaluate()` builds, so the result is an
 //! ordinary [`COCOeval`] ready for `accumulate()` → `summarize()` → `report()`.
 //! What moves off the critical path is `loadRes` and the per-image matching in
 //! `evaluate()`; `accumulate()` itself is unchanged (and already the target of
@@ -20,19 +23,17 @@
 //!
 //! # Scope of this slice (v1)
 //!
-//! This ships the matching half of candidate H's design, not the compact
-//! `~20 B/det` record format the plan sketched. That format assumes a
-//! detection's matched status is shared across area ranges
-//! (`matched_mask[T]`, `ignore_mask[T·A]`); it is not; [`matching::partition_gt`]
-//! reorders ground truths *by area range*, and the greedy matcher is
-//! order-sensitive, so which ground truth a detection matches genuinely varies
-//! per range (a detection overlapping a small box at 0.6 and a large box at
-//! 0.9 can match different boxes in `"small"` vs `"all"`). Building compact
-//! records against that unproven equivalence would risk a silent parity
-//! regression in a crate whose whole purpose is parity. So v1 keeps the full
-//! per-cell [`EvalImg`] this module was already computing and defers
-//! compaction to a follow-up PR that can use this one as its bit-identity
-//! oracle.
+//! [`StreamingEval::add_image`] still matches through the full per-cell
+//! [`EvalImg`] — one per (image, category, area range) — because
+//! [`matching::partition_gt`] reorders ground truths *by area range* and the
+//! greedy matcher is order-sensitive, so which ground truth a detection
+//! matches genuinely varies per range (a detection overlapping a small box at
+//! 0.6 and a large box at 0.9 can match different boxes in `"small"` vs
+//! `"all"`). [`StreamingEval::finalize`] then folds those `EvalImg`s into a
+//! [`matching::Cells`] arena — the compact per-detection record
+//! `accumulate()` reads — by construction bit-identical to what
+//! `evaluate()`'s own `push_pair_lean` would have written, since both read
+//! the same `dt_matched`/`dt_ignore` rows and `num_gt_in_denominator`.
 //!
 //! # Restrictions
 //!
@@ -48,15 +49,20 @@
 //!   growing category set discovered only at `finalize()` would need a second
 //!   accumulation pass. Pass the full category list to `new()` instead.
 //! - **`finalize()`'s `coco_gt`/`coco_dt` carry categories only, no
-//!   annotations.** `accumulate()`/`summarize()`/`report()` — the per-epoch
-//!   path this candidate targets — never read annotations from those fields
-//!   (only `eval_imgs`, `params`, and category names for display), so leaving
-//!   them empty is what keeps `finalize()` off the critical path: it does not
-//!   pay to rebuild the annotation index candidate D's interim already made
-//!   cheaper. But `confusion_matrix()`, `tide()`, `compare()`, and `slice_by()`
-//!   *do* read real annotations from `coco_gt`/`coco_dt`, and will silently see
-//!   an empty dataset on a streaming-finalized evaluator. Build those from a
-//!   batch [`COCOeval::new`] instead.
+//!   annotations.** `accumulate()` reads `ev.cells` (built here) and
+//!   `summarize()`/`report()` read `accumulate()`'s output and category names
+//!   for display — none of the three ever reads an annotation off
+//!   `coco_gt`/`coco_dt`. `eval_imgs()`/`default_cells()` normally rebuild
+//!   lazily from real datasets plus the whole-dataset IoU cache, neither of
+//!   which a streaming run retains; `finalize()` avoids that path entirely by
+//!   pre-seeding `ev.eval_imgs` with the records already computed in
+//!   `add_image()`, so the lazy rebuild never runs. Leaving `coco_gt`/`coco_dt`
+//!   empty is what keeps `finalize()` off the critical path: it does not pay to
+//!   rebuild the annotation index candidate D's interim already made cheaper.
+//!   But `confusion_matrix()`, `tide()`, `compare()`, and `slice_by()` *do* read
+//!   real annotations from `coco_gt`/`coco_dt`, and will silently see an empty
+//!   dataset on a streaming-finalized evaluator. Build those from a batch
+//!   [`COCOeval::new`] instead.
 
 use std::collections::{HashMap, HashSet};
 
@@ -65,6 +71,7 @@ use crate::params::Params;
 use crate::primitives::sim::SimKind;
 use crate::types::{Annotation, Category, Dataset, Image};
 
+use super::evaluate::EvalInputs;
 use super::iou::SegmRles;
 use super::matching::{self, EvalImg};
 use super::mode::FreqGroups;
@@ -80,10 +87,19 @@ pub struct StreamingEval {
     /// — see [`matching::EvalImgContext::match_floors`].
     match_floors: Vec<f64>,
     n_area_ranges: usize,
+    /// `0..n_area_ranges`, resolved once so `add_image` need not allocate it
+    /// per image — the `area_idxs` argument [`matching::evaluate_pair_full`]
+    /// expects.
+    area_idxs: Vec<usize>,
     /// One entry per (image, category) pair seen so far. Each value always has
     /// exactly `n_area_ranges` slots, in `params.area_ranges` order — the same
     /// per-pair chunk shape [`COCOeval::evaluate`](super::evaluate) writes.
     pairs: HashMap<(u64, u64), Vec<Option<EvalImg>>>,
+    /// LVIS: image → categories not exhaustively annotated there, accumulated
+    /// across every `add_image` call — the same map [`EvalInputs`] carries so
+    /// `finalize()`'s evaluator answers `not_exhaustive_cat` queries after the
+    /// fact (`confusion_matrix`, `tide`) the way a batch `evaluate()` would.
+    not_exhaustive: HashMap<u64, HashSet<u64>>,
 }
 
 impl StreamingEval {
@@ -132,6 +148,7 @@ impl StreamingEval {
             .map(|&t| crate::primitives::greedy::coco_match_floor(t))
             .collect();
         let n_area_ranges = params.area_ranges.len();
+        let area_idxs: Vec<usize> = (0..n_area_ranges).collect();
 
         Ok(StreamingEval {
             params,
@@ -139,7 +156,9 @@ impl StreamingEval {
             categories,
             match_floors,
             n_area_ranges,
+            area_idxs,
             pairs: HashMap::new(),
+            not_exhaustive: HashMap::new(),
         })
     }
 
@@ -167,11 +186,15 @@ impl StreamingEval {
         } else {
             HashSet::new()
         };
-        let not_exhaustive: HashSet<u64> = if is_lvis {
+        let not_exhaustive_set: HashSet<u64> = if is_lvis {
             image.not_exhaustive_category_ids.iter().copied().collect()
         } else {
             HashSet::new()
         };
+        if !not_exhaustive_set.is_empty() {
+            self.not_exhaustive
+                .insert(image.id, not_exhaustive_set.clone());
+        }
 
         let cats = self.sparse_cats_for_image(gt_anns, dt_anns, &neg_cats);
         if cats.is_empty() {
@@ -194,8 +217,21 @@ impl StreamingEval {
             ..Default::default()
         });
 
-        let segm_rles = (SimKind::from(self.params.iou_type) == SimKind::Mask)
-            .then(|| SegmRles::prepare(&tiny_gt, &tiny_dt, &self.params));
+        // Mirrors `COCOeval::segm_cell_ann_ids`: only ids from a cell where
+        // both sides are non-empty ever reach the segm kernel.
+        let segm_rles = (SimKind::from(self.params.iou_type) == SimKind::Mask).then(|| {
+            let mut gt_ids = Vec::new();
+            let mut dt_ids = Vec::new();
+            for &cat_id in &cats {
+                let gt = COCOeval::get_anns_static(&tiny_gt, &self.params, image.id, cat_id);
+                let dt = COCOeval::get_anns_static(&tiny_dt, &self.params, image.id, cat_id);
+                if !gt.is_empty() && !dt.is_empty() {
+                    gt_ids.extend_from_slice(gt);
+                    dt_ids.extend_from_slice(dt);
+                }
+            }
+            SegmRles::prepare(&tiny_gt, &tiny_dt, &gt_ids, &dt_ids)
+        });
 
         let max_det = self.params.max_det();
 
@@ -225,17 +261,23 @@ impl StreamingEval {
         );
 
         for &cat_id in &cats {
-            let Some(pair) = matching::gather_pair(&ctx, image.id, cat_id, max_det) else {
-                continue;
-            };
-            let not_exhaustive_cat = is_lvis && not_exhaustive.contains(&cat_id);
-            let slots: Vec<Option<EvalImg>> = self
-                .params
-                .area_ranges
-                .iter()
-                .map(|ar| matching::evaluate_cell(&ctx, &pair, ar.range, not_exhaustive_cat))
-                .collect();
-            self.pairs.insert((image.id, cat_id), slots);
+            let not_exhaustive_cat = is_lvis && not_exhaustive_set.contains(&cat_id);
+            let mut slots: Vec<Option<EvalImg>> = vec![None; self.n_area_ranges];
+            matching::evaluate_pair_full(
+                &ctx,
+                image.id,
+                cat_id,
+                max_det,
+                not_exhaustive_cat,
+                &self.area_idxs,
+                &mut slots,
+            );
+            // `gather_pair` (called inside `evaluate_pair_full`) returns `None`
+            // for a pair with neither GT nor DT ids — every slot stays `None`
+            // then, the same skip `sparse_cats_for_image` already narrowed for.
+            if slots[0].is_some() {
+                self.pairs.insert((image.id, cat_id), slots);
+            }
         }
     }
 
@@ -297,7 +339,8 @@ impl StreamingEval {
             eval_mode,
             categories,
             n_area_ranges,
-            mut pairs,
+            pairs,
+            not_exhaustive,
             ..
         } = self;
 
@@ -306,10 +349,38 @@ impl StreamingEval {
 
         let mut eval_imgs = Vec::with_capacity(keys.len() * n_area_ranges);
         for key in &keys {
-            let slots = pairs.remove(key).expect("key came from this map");
+            let slots = &pairs[key];
             debug_assert_eq!(slots.len(), n_area_ranges);
-            eval_imgs.extend(slots);
+            eval_imgs.extend(slots.iter().cloned());
         }
+
+        // Fold the same per-pair `EvalImg`s into the compact arena
+        // `accumulate()` reads — see the module docs' bit-identity note.
+        let cells = matching::Cells::build(
+            &params,
+            &keys,
+            super::run_len(keys.len()),
+            |img_id, cat_id| {
+                pairs[&(img_id, cat_id)][0]
+                    .as_ref()
+                    .map(|e| e.dt_scores.len())
+            },
+            |run, writer| {
+                for &(img_id, cat_id) in run {
+                    let slots = &pairs[&(img_id, cat_id)];
+                    let first = slots[0]
+                        .as_ref()
+                        .expect("every key in `pairs` has a non-empty first slot");
+                    writer.begin_pair(img_id, cat_id, &first.dt_scores);
+                    for e in slots.iter().flatten() {
+                        writer.push_area(
+                            e.num_gt_in_denominator() as u32,
+                            e.dt_matched.iter_rows().chain(e.dt_ignore.iter_rows()),
+                        );
+                    }
+                }
+            },
+        );
 
         let mut freq_groups = FreqGroups::default();
         if eval_mode == EvalMode::Lvis {
@@ -337,8 +408,21 @@ impl StreamingEval {
         });
         let coco_dt = COCO::from_dataset(Dataset::default());
 
+        // `eval_inputs` needs its own `params`; `with_mode` consumes the original.
+        let eval_inputs = EvalInputs {
+            params: params.clone(),
+            sparse_pairs: keys,
+            not_exhaustive,
+        };
+
         let mut ev = COCOeval::with_mode(coco_gt, coco_dt, params, eval_mode, None);
-        ev.eval_imgs = eval_imgs;
+        ev.cells = cells;
+        // Pre-seeded so `eval_imgs()`/`default_cells()` never fall back to
+        // their lazy rebuild — which would read `coco_gt`/`coco_dt`'s (empty)
+        // annotations and the (unretained) whole-dataset IoU cache. See the
+        // module docs' `finalize()` restriction.
+        ev.eval_imgs = eval_imgs.into();
+        ev.eval_inputs = Some(eval_inputs);
         ev.freq_groups = freq_groups;
         ev
     }

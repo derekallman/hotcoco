@@ -12,7 +12,7 @@ import random
 import threading
 import webbrowser
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -293,16 +293,19 @@ def create_app(
         )
         return HTMLResponse(html)
 
+    # Route parameters are written with `Optional[...]`, not `X | None`: FastAPI
+    # evaluates these annotations at runtime, and the 3.9 floor cannot evaluate
+    # a PEP 604 union. Every other annotation in this file stays a string.
     @app.get("/gallery", response_class=HTMLResponse)
     async def gallery(
         page: int = Query(1, ge=1),
-        categories: str | None = Query(None),
-        shuffle_seed: int | None = Query(None),
+        categories: Optional[str] = Query(None),
+        shuffle_seed: Optional[int] = Query(None),
         min_score: float = Query(0.0, ge=0.0, le=1.0),
-        sort: str | None = Query(None),
-        eval_filter: str | None = Query(None),
+        sort: Optional[str] = Query(None),
+        eval_filter: Optional[str] = Query(None),
         iou_thr: float = Query(0.5, ge=0.5, le=0.95),
-        slice: str | None = Query(None),
+        slice: Optional[str] = Query(None),
     ):
         img_ids, _ = _resolve_img_ids(
             categories, shuffle_seed, sort=sort, eval_filter=eval_filter, iou_thr=iou_thr, slice_name=slice
@@ -339,13 +342,13 @@ def create_app(
     @app.get("/detail/{image_id}", response_class=HTMLResponse)
     async def detail(
         image_id: int,
-        categories: str | None = Query(None),
-        shuffle_seed: int | None = Query(None),
+        categories: Optional[str] = Query(None),
+        shuffle_seed: Optional[int] = Query(None),
         min_score: float = Query(0.0, ge=0.0, le=1.0),
-        sort: str | None = Query(None),
-        eval_filter: str | None = Query(None),
+        sort: Optional[str] = Query(None),
+        eval_filter: Optional[str] = Query(None),
         iou_thr: float = Query(0.5, ge=0.5, le=0.95),
-        slice: str | None = Query(None),
+        slice: Optional[str] = Query(None),
     ):
         imgs = coco.load_imgs([image_id])
         if not imgs:
