@@ -250,7 +250,7 @@ coco eval --gt annotations.json --dt detections.json --slices slices.json
 
 ## Streaming evaluation
 
-`evaluate()` needs every detection before it matches the first image, so in a training loop the whole evaluation waits for the end of the epoch, and every prediction made along the way is held until then. `StreamingEval` matches each detector batch as soon as its predictions exist. Call `update()` after each batch — the matching runs there, overlapped with the next forward pass — and `finalize()` returns an ordinary `COCOeval` with only `accumulate()` and `summarize()` left to run.
+`evaluate()` needs every detection before it matches the first image, so in a training loop the whole evaluation waits for the end of the epoch, and every prediction made along the way is held until then. `StreamingEval` matches each detector batch as soon as its predictions exist. Call `update()` after each batch — the matching runs there, not at the end of the epoch — and `finalize()` returns an ordinary `COCOeval` with only `accumulate()` and `summarize()` left to run.
 
 ```python
 from hotcoco import COCO, StreamingEval
@@ -268,6 +268,20 @@ ev.summarize()
 ```
 
 `predictions` is the batch's detections as one list of dicts in the shape `load_res()` accepts — `image_id`, `category_id`, `bbox`, and `score`. Each batch runs through the same code `evaluate()` runs, so the numbers are identical to a batch run over the same annotations, whatever order the images arrive in and however they are batched. Memory stays at about 20 bytes per detection instead of an epoch's worth of prediction dicts. The same recipe evaluates a stored results file in chunks when it is too large to load at once.
+
+### What `update()` costs
+
+Streaming shortens the wait at the end of the epoch; it does not reduce total CPU time. On 3,000 images with 300 detections each, `update()` in batches of 32 takes about 0.33 s in all (synthetic boxes, one laptop):
+
+| Part | Time | GIL |
+|------|------|-----|
+| Converting the batch's Python dicts | about 0.23 s | held |
+| Building the batch's datasets and loading detections | about 0.04 s | released |
+| Matching | about 0.05 s | released |
+
+So the conversion of dicts, not the matching, is about 70% of `update()`, and it holds the GIL: a thread that needs the interpreter, such as a training loop calling `update()` from a worker thread, waits through it. Only the roughly quarter of `update()` spent matching runs without the GIL. A batch run that loads detections from an array pays no per-dict conversion, which is why it can cost less in total.
+
+Each call also has a fixed cost of about 0.3 ms, so pass the detector's whole batch rather than one image at a time: the same run in batches of 4 spends about three times as long in the matching and loading parts. Batches of 32 or more leave that cost under a tenth of `update()`.
 
 Analyses that need per-image records — TIDE, the confusion matrix, calibration, per-image diagnostics — need a batch `COCOeval`; the [API reference](../api/cocoeval.md#streamingeval) has what the finalized evaluator supports and the restrictions.
 
