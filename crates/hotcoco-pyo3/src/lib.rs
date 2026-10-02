@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use numpy::{PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple, PyType};
+use pyo3::types::{PyBytes, PyDict, PyList, PyTuple, PyType};
 
 use mask::transpose_mask;
 
@@ -2705,7 +2705,7 @@ evaluator supports, and the restrictions.
 >>> ev.accumulate()
 >>> ev.summarize()
 "]
-#[pyclass(name = "StreamingEval")]
+#[pyclass(name = "StreamingEval", module = "hotcoco.hotcoco")]
 struct PyStreamingEval {
     /// `None` once `finalize()` has consumed it; `update`/`finalize` then
     /// raise [`spent`] instead of panicking.
@@ -2769,6 +2769,65 @@ after ``finalize()``."]
 
         let inner = self.inner.as_mut().ok_or_else(spent)?;
         py.detach(|| inner.update(images, gt, dt)).map_err(to_pyerr)
+    }
+
+    #[doc = "Fold another ``StreamingEval``'s images into this one, as if its
+``update()`` calls had been made here. The use is a run split across processes:
+each rank streams its shard, and one rank merges the rest.
+
+An image present in both keeps ``other``'s result. ``other`` is left unchanged.
+Both must have been built with the same ``categories``, ``iou_type``,
+``lvis_style`` and ``params``; otherwise ``ValueError`` names the first field
+that differs and this evaluator is left as it was. Raises ``RuntimeError`` if
+either has been finalized."]
+    fn merge(&mut self, other: &Bound<'_, PyStreamingEval>) -> PyResult<()> {
+        let other = other
+            .try_borrow()
+            .map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err("cannot merge a StreamingEval into itself")
+            })?
+            .inner
+            .clone()
+            .ok_or_else(spent)?;
+        let inner = self.inner.as_mut().ok_or_else(spent)?;
+        inner
+            .merge(other)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    #[doc = "The evaluator's state as ``bytes``, for ``StreamingEval.from_bytes`` to
+restore in this or another process, for example after ``all_gather`` across
+ranks. Pickling and ``copy.deepcopy`` use the same state. The format is
+versioned and is not a stable interchange format across hotcoco versions that
+change it. Raises ``RuntimeError`` after ``finalize()``."]
+    fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let inner = self.inner.as_ref().ok_or_else(spent)?;
+        Ok(PyBytes::new(py, &py.detach(|| inner.to_bytes())))
+    }
+
+    #[staticmethod]
+    #[doc = "Restore an evaluator from ``to_bytes()`` output. Raises ``ValueError``
+for bytes that are truncated, damaged, or from an incompatible format version."]
+    fn from_bytes(data: &[u8]) -> PyResult<Self> {
+        hotcoco_core::StreamingEval::from_bytes(data)
+            .map(|inner| PyStreamingEval { inner: Some(inner) })
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    /// Pickle and `copy.deepcopy`: rebuild an empty evaluator, then restore the
+    /// state onto it. A bare `from_bytes` reference would not pickle — a
+    /// static method has no importable name.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let state = slf.borrow().to_bytes(py)?;
+        Ok((slf.get_type(), (PyList::empty(py),), state)
+            .into_pyobject(py)?
+            .into_any())
+    }
+
+    fn __setstate__(&mut self, state: &[u8]) -> PyResult<()> {
+        *self = Self::from_bytes(state)?;
+        Ok(())
     }
 
     #[doc = "Assemble every image seen so far into a ``COCOeval``, ready for

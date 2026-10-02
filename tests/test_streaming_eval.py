@@ -6,6 +6,9 @@ annotations, in COCO and LVIS mode, and must raise once `finalize()` has
 consumed it. No `data/` needed.
 """
 
+import copy
+import pickle
+
 import hotcoco
 import pytest
 from hotcoco import COCO, COCOeval, StreamingEval
@@ -132,6 +135,111 @@ class TestStreamingMatchesBatch:
         ev.accumulate()
         ev.summarize()
         assert all(v == -1.0 for v in ev.stats.tolist())
+
+
+def stream_images(se, ids, dts=None):
+    """Send the fixture images in ``ids`` to ``se`` in one batch."""
+    gts, dts = gt_annotations(), dts if dts is not None else dt_annotations()
+    se.update(
+        [i for i in images() if i["id"] in ids],
+        [a for a in gts if a["image_id"] in ids],
+        [d for d in dts if d["image_id"] in ids],
+    )
+    return se
+
+
+def finalized_stats(se):
+    ev = se.finalize()
+    ev.accumulate()
+    ev.summarize()
+    return ev.stats.tolist()
+
+
+class TestMergeAndSerialize:
+    """Shards merge to one stream; state survives bytes, pickle and deepcopy."""
+
+    def test_merged_shards_equal_one_stream(self):
+        whole = finalized_stats(stream_images(StreamingEval(categories()), {1, 2, 3}))
+        a = stream_images(StreamingEval(categories()), {1})
+        a.merge(stream_images(StreamingEval(categories()), {2, 3}))
+        assert finalized_stats(a) == whole
+
+    def test_merge_leaves_other_usable_and_other_wins_overlap(self):
+        moved = [{**d, "bbox": [90, 90, 5, 5]} for d in dt_annotations()]
+        a = stream_images(StreamingEval(categories()), {1, 2})
+        b = stream_images(StreamingEval(categories()), {2, 3}, moved)
+        a.merge(b)
+        expected = stream_images(StreamingEval(categories()), {1})
+        stream_images(expected, {2, 3}, moved)
+        assert finalized_stats(a) == finalized_stats(expected)
+        assert finalized_stats(b)  # not spent by being merged from
+
+    def test_merge_mismatch_raises_and_names_the_field(self):
+        a = stream_images(StreamingEval(categories()), {1})
+        with pytest.raises(ValueError, match="categories"):
+            a.merge(StreamingEval(categories()[:2]))
+        with pytest.raises(ValueError, match="eval_mode"):
+            a.merge(StreamingEval(categories(), lvis_style=True))
+        params = hotcoco.Params()
+        params.max_dets = [1, 10]
+        with pytest.raises(ValueError, match="max_dets"):
+            a.merge(StreamingEval(categories(), params=params))
+        # The failed merges changed nothing.
+        assert finalized_stats(a) == finalized_stats(stream_images(StreamingEval(categories()), {1}))
+
+    def test_merge_with_spent_raises(self):
+        a, b = StreamingEval(categories()), StreamingEval(categories())
+        b.finalize()
+        with pytest.raises(RuntimeError, match="spent"):
+            a.merge(b)
+
+    def test_merge_into_itself_is_an_error(self):
+        a = StreamingEval(categories())
+        with pytest.raises(ValueError, match="itself"):
+            a.merge(a)
+
+    def test_bytes_round_trip(self):
+        se = stream_images(StreamingEval(categories()), {1, 2, 3})
+        restored = StreamingEval.from_bytes(se.to_bytes())
+        assert finalized_stats(restored) == finalized_stats(se)
+
+    @pytest.mark.parametrize("clone", [lambda se: pickle.loads(pickle.dumps(se)), copy.deepcopy, copy.copy])
+    def test_pickle_and_copy_round_trip(self, clone):
+        se = stream_images(StreamingEval(categories()), {1, 2})
+        twin = clone(se)
+        stream_images(twin, {3})
+        stream_images(se, {3})
+        assert finalized_stats(twin) == finalized_stats(se)
+
+    def test_copy_is_independent(self):
+        se = stream_images(StreamingEval(categories()), {1})
+        twin = copy.deepcopy(se)
+        stream_images(twin, {2, 3})
+        assert finalized_stats(se) == finalized_stats(stream_images(StreamingEval(categories()), {1}))
+
+    def test_restored_lvis_state_keeps_its_mode(self):
+        se = StreamingEval(categories(), lvis_style=True)
+        with pytest.raises(ValueError, match="eval_mode"):
+            copy.deepcopy(se).merge(StreamingEval(categories()))
+
+    @pytest.mark.parametrize("bad", [b"", b"nope", b"HCSE", b"HCSE\x09\x00\x00\x00" + bytes(8)])
+    def test_bad_bytes_raise_value_error(self, bad):
+        with pytest.raises(ValueError, match="StreamingEval state"):
+            StreamingEval.from_bytes(bad)
+
+    def test_truncated_bytes_raise_value_error(self):
+        data = stream_images(StreamingEval(categories()), {1, 2, 3}).to_bytes()
+        for n in range(len(data)):
+            with pytest.raises(ValueError):
+                StreamingEval.from_bytes(data[:n])
+
+    def test_spent_eval_cannot_be_serialized(self):
+        se = StreamingEval(categories())
+        se.finalize()
+        with pytest.raises(RuntimeError, match="spent"):
+            se.to_bytes()
+        with pytest.raises(RuntimeError, match="spent"):
+            pickle.dumps(se)
 
 
 def test_spent_streaming_eval_raises():

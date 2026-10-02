@@ -338,6 +338,98 @@ impl Cells {
         out
     }
 
+    /// The arenas as little-endian bytes: per pair header (ids, then the two
+    /// arena offsets, sentinel included), the scores, `num_gt`, and the bit
+    /// words. The inverse of [`Cells::from_le_bytes`]; counts travel apart.
+    pub(super) fn write_le_bytes(&self, out: &mut Vec<u8>) {
+        for h in &self.pairs {
+            out.extend_from_slice(&h.image_id.to_le_bytes());
+            out.extend_from_slice(&h.category_id.to_le_bytes());
+            out.extend_from_slice(&h.scores_start.to_le_bytes());
+            out.extend_from_slice(&h.bits_start.to_le_bytes());
+        }
+        for s in &self.scores {
+            out.extend_from_slice(&s.to_bits().to_le_bytes());
+        }
+        for n in &self.num_gt {
+            out.extend_from_slice(&n.to_le_bytes());
+        }
+        for w in &self.bits {
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+    }
+
+    /// `(pairs, scores, bit words)` — the counts [`Cells::from_le_bytes`] needs.
+    pub(super) fn arena_sizes(&self) -> (usize, usize, usize) {
+        (self.len(), self.scores.len(), self.bits.len())
+    }
+
+    /// Rebuild an arena from [`Cells::write_le_bytes`]'s output, checking
+    /// every offset so that malformed input is an error here rather than an
+    /// out-of-bounds read in `accumulate()`.
+    pub(super) fn from_le_bytes(
+        (n_thr, n_areas): (usize, usize),
+        (n_pairs, n_scores, n_words): (usize, usize, usize),
+        bytes: &[u8],
+    ) -> Result<Self, String> {
+        let want = (n_pairs + 1)
+            .checked_mul(24)
+            .and_then(|h| h.checked_add(n_scores.checked_mul(8)?))
+            .and_then(|h| h.checked_add(n_pairs.checked_mul(n_areas)?.checked_mul(4)?))
+            .and_then(|h| h.checked_add(n_words.checked_mul(8)?))
+            .ok_or("arena sizes overflow")?;
+        if bytes.len() != want {
+            return Err(format!(
+                "expected {want} bytes of cells, found {}",
+                bytes.len()
+            ));
+        }
+        let (head, rest) = bytes.split_at((n_pairs + 1) * 24);
+        let (sc, rest) = rest.split_at(n_scores * 8);
+        let (ng, bw) = rest.split_at(n_pairs * n_areas * 4);
+        let u64_at = |b: &[u8]| u64::from_le_bytes(b.try_into().expect("8 bytes"));
+        let u32_at = |b: &[u8]| u32::from_le_bytes(b.try_into().expect("4 bytes"));
+        let pairs: Vec<PairHeader> = head
+            .chunks_exact(24)
+            .map(|c| PairHeader {
+                image_id: u64_at(&c[0..8]),
+                category_id: u64_at(&c[8..16]),
+                scores_start: u32_at(&c[16..20]),
+                bits_start: u32_at(&c[20..24]),
+            })
+            .collect();
+        // Offsets: start at zero, end at the arena lengths, and every pair's
+        // words are exactly what its score count needs.
+        let sentinel = &pairs[n_pairs];
+        if pairs[0].scores_start != 0
+            || pairs[0].bits_start != 0
+            || sentinel.scores_start as usize != n_scores
+            || sentinel.bits_start as usize != n_words
+        {
+            return Err("pair offsets do not span the arenas".into());
+        }
+        for w in pairs.windows(2) {
+            let nd = (w[1].scores_start as usize)
+                .checked_sub(w[0].scores_start as usize)
+                .ok_or("pair score offsets decrease")?;
+            let words = (w[1].bits_start as usize).checked_sub(w[0].bits_start as usize);
+            if words != Some(words_for(n_thr, n_areas, nd)) {
+                return Err("pair bit offsets do not match their score counts".into());
+            }
+        }
+        Ok(Cells {
+            pairs,
+            n_thr,
+            n_areas,
+            scores: sc
+                .chunks_exact(8)
+                .map(|b| f64::from_bits(u64_at(b)))
+                .collect(),
+            num_gt: ng.chunks_exact(4).map(u32_at).collect(),
+            bits: bw.chunks_exact(8).map(u64_at).collect(),
+        })
+    }
+
     /// The number of pairs.
     pub(super) fn len(&self) -> usize {
         self.pairs.len().saturating_sub(1)

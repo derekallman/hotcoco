@@ -242,7 +242,12 @@ class COCOeval:
 # ---------------------------------------------------------------------------
 
 class StreamingEval:
-    """Incremental evaluation — feed detector batches as they come, get a ``COCOeval`` back."""
+    """Incremental evaluation — feed detector batches as they come, get a ``COCOeval`` back.
+
+    The state pickles and copies with ``copy.deepcopy``. ``merge()`` folds
+    another rank's shard in, and ``to_bytes()`` / ``from_bytes()`` move the
+    state between processes.
+    """
 
     def __init__(
         self,
@@ -255,6 +260,12 @@ class StreamingEval:
         self, images: list[dict[str, Any]], gt_anns: list[dict[str, Any]], dt_anns: list[dict[str, Any]]
     ) -> None: ...
     def finalize(self) -> COCOeval: ...
+    def merge(self, other: StreamingEval) -> None: ...
+    def to_bytes(self) -> bytes: ...
+    @staticmethod
+    def from_bytes(data: bytes) -> StreamingEval: ...
+    def __reduce__(self) -> tuple[Any, ...]: ...
+    def __setstate__(self, state: bytes) -> None: ...
 
 # ---------------------------------------------------------------------------
 # Params

@@ -23,8 +23,10 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+use serde::{Deserialize, Serialize};
+
 use crate::coco::COCO;
-use crate::params::Params;
+use crate::params::{AreaRange, IouType, Params};
 use crate::types::{Annotation, Category, Dataset, Image};
 
 use super::matching::Cells;
@@ -86,12 +88,16 @@ use super::{COCOeval, EvalMode};
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct StreamingEval {
     params: Params,
     eval_mode: EvalMode,
     /// The categories and nothing else: what `new()` derives the K axis from
     /// and what the finalized evaluator reads category names off.
     categories: COCO,
+    /// The list `new()` received, kept so two evaluators can be compared and
+    /// a saved state can rebuild this one.
+    category_list: Vec<Category>,
     /// One arena per `update()` call, kept whole.
     batches: Vec<Cells>,
     /// Every image seen, keyed by id so `finalize()` gathers image-ascending —
@@ -127,6 +133,7 @@ impl StreamingEval {
             ));
         }
 
+        let category_list = categories.clone();
         let categories = COCO::from_dataset(Dataset {
             categories,
             ..Default::default()
@@ -141,6 +148,7 @@ impl StreamingEval {
             params,
             eval_mode,
             categories,
+            category_list,
             batches: Vec::new(),
             images: BTreeMap::new(),
         })
@@ -223,6 +231,157 @@ impl StreamingEval {
         Ok(())
     }
 
+    /// Fold `other`'s images into this evaluator, as if its `update()` calls
+    /// had been made here.
+    ///
+    /// The use is a run split across processes: each rank streams its shard,
+    /// and one rank merges the rest. An image present in both keeps `other`'s
+    /// result, the rule [`update`](Self::update) applies to an image seen
+    /// again. No matching is redone and no cell is copied; `other`'s arenas
+    /// are moved over whole.
+    ///
+    /// # Errors
+    ///
+    /// Both evaluators must have been built with the same evaluation mode,
+    /// categories, and params — every field, `img_ids` included. A mismatch is
+    /// an error naming the first field that differs, and `self` is as it was.
+    pub fn merge(&mut self, other: StreamingEval) -> crate::error::Result<()> {
+        if self.eval_mode != other.eval_mode {
+            return Err(mismatch("eval_mode"));
+        }
+        let ours = self.category_list.iter().map(|c| (c.id, &c.name));
+        if !ours.eq(other.category_list.iter().map(|c| (c.id, &c.name))) {
+            return Err(mismatch("categories"));
+        }
+        if let Some(field) = params_mismatch(&self.params, &other.params) {
+            return Err(mismatch(&format!("params.{field}")));
+        }
+        let offset = self.batches.len();
+        self.batches.extend(other.batches);
+        self.images.extend(
+            other
+                .images
+                .into_iter()
+                .map(|(id, (batch, range))| (id, (batch + offset, range))),
+        );
+        Ok(())
+    }
+
+    /// The evaluator's state as bytes, for `from_bytes` to restore in this or
+    /// another process.
+    ///
+    /// Only what `finalize()` reads is written: images replaced by a later
+    /// `update()` are dropped, so the size follows the images seen, not the
+    /// calls made. The format starts with a version number; the bytes are
+    /// not a stable interchange format across hotcoco versions that change it.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let cells = self.live_cells();
+        let counts = cells.arena_sizes();
+        let mut next = 0;
+        let images = self
+            .images
+            .iter()
+            .map(|(&id, (_, range))| {
+                next += range.len();
+                (id, range.len())
+            })
+            .collect();
+        debug_assert_eq!(next, counts.0);
+        let header = serde_json::to_vec(&StateHeader {
+            eval_mode: match self.eval_mode {
+                EvalMode::Coco => "coco",
+                EvalMode::Lvis => "lvis",
+                EvalMode::OpenImages => unreachable!("rejected by new()"),
+            }
+            .to_string(),
+            params: ParamsState::from(&self.params),
+            categories: self.category_list.clone(),
+            images,
+            n_pairs: counts.0,
+            n_scores: counts.1,
+            n_words: counts.2,
+        })
+        .expect("a header of plain data serializes");
+        let mut out = Vec::with_capacity(16 + header.len() + counts.1 * 8 + counts.2 * 8);
+        out.extend_from_slice(STATE_MAGIC);
+        out.extend_from_slice(&STATE_VERSION.to_le_bytes());
+        out.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        out.extend_from_slice(&header);
+        cells.write_le_bytes(&mut out);
+        out
+    }
+
+    /// Restore an evaluator from [`to_bytes`](Self::to_bytes) output.
+    ///
+    /// The result finalizes to what the original would have, accepts further
+    /// `update()` calls, and merges like any other.
+    ///
+    /// # Errors
+    ///
+    /// Bytes that are truncated, were not written by `to_bytes`, or carry a
+    /// format version this build does not know are an error, never a panic.
+    pub fn from_bytes(bytes: &[u8]) -> crate::error::Result<Self> {
+        let bad =
+            |why: String| crate::error::Error::Other(format!("invalid StreamingEval state: {why}"));
+        if bytes.len() < 16 || &bytes[..4] != STATE_MAGIC {
+            return Err(bad("not a StreamingEval state".into()));
+        }
+        let version = u32::from_le_bytes(bytes[4..8].try_into().expect("4 bytes"));
+        if version != STATE_VERSION {
+            return Err(bad(format!(
+                "format version {version}, this build reads version {STATE_VERSION}"
+            )));
+        }
+        let header_len = u64::from_le_bytes(bytes[8..16].try_into().expect("8 bytes"));
+        let header_end = usize::try_from(header_len)
+            .ok()
+            .and_then(|n| n.checked_add(16))
+            .filter(|&end| end <= bytes.len())
+            .ok_or_else(|| bad("truncated header".into()))?;
+        let header: StateHeader =
+            serde_json::from_slice(&bytes[16..header_end]).map_err(|e| bad(e.to_string()))?;
+        let eval_mode = match header.eval_mode.as_str() {
+            "coco" => EvalMode::Coco,
+            "lvis" => EvalMode::Lvis,
+            other => return Err(bad(format!("unknown eval mode {other:?}"))),
+        };
+        let params = Params::from(header.params);
+        let dims = (params.iou_thrs.len(), params.area_ranges.len());
+        let cells = Cells::from_le_bytes(
+            dims,
+            (header.n_pairs, header.n_scores, header.n_words),
+            &bytes[header_end..],
+        )
+        .map_err(bad)?;
+
+        let mut se = StreamingEval::new(params, eval_mode, header.categories)?;
+        let mut start = 0;
+        for (id, n) in header.images {
+            let end = start + n;
+            if end > cells.len() || (start..end).any(|p| cells.ids(p).0 != id) {
+                return Err(bad(format!("image {id} does not match its cells")));
+            }
+            se.images.insert(id, (0, start..end));
+            start = end;
+        }
+        if start != cells.len() {
+            return Err(bad("cells belong to no image".into()));
+        }
+        se.batches.push(cells);
+        Ok(se)
+    }
+
+    /// Every live image's pairs gathered into one arena, image-ascending: the
+    /// call `finalize()` makes, so what it feeds `accumulate()` is unchanged.
+    fn live_cells(&self) -> Cells {
+        Cells::gather(
+            &self.params,
+            self.images
+                .values()
+                .map(|(batch, range)| (&self.batches[*batch], range.clone())),
+        )
+    }
+
     /// Assemble every image seen so far into a [`COCOeval`] ready for
     /// `accumulate()` → `summarize()` → `report()`.
     ///
@@ -239,6 +398,7 @@ impl StreamingEval {
             categories,
             batches,
             images,
+            category_list: _,
         } = self;
 
         if params.img_ids.is_empty() {
@@ -252,6 +412,125 @@ impl StreamingEval {
         );
         COCOeval::from_cells(categories, params, eval_mode, cells)
     }
+}
+
+const STATE_MAGIC: &[u8; 4] = b"HCSE";
+const STATE_VERSION: u32 = 1;
+
+/// What precedes the arenas in a saved state. Floats are stored as their bit
+/// patterns: JSON has no spelling for an infinite area bound, and a round trip
+/// must not move a threshold by even an ulp.
+#[derive(Serialize, Deserialize)]
+struct StateHeader {
+    eval_mode: String,
+    params: ParamsState,
+    categories: Vec<Category>,
+    /// `(image id, pair count)`, image-ascending.
+    images: Vec<(u64, usize)>,
+    n_pairs: usize,
+    n_scores: usize,
+    n_words: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ParamsState {
+    iou_type: IouType,
+    img_ids: Vec<u64>,
+    cat_ids: Vec<u64>,
+    iou_thrs: Vec<u64>,
+    rec_thrs: Vec<u64>,
+    max_dets: Vec<usize>,
+    area_ranges: Vec<(String, [u64; 2])>,
+    use_cats: bool,
+    kpt_oks_sigmas: Vec<u64>,
+    expand_dt: bool,
+}
+
+fn to_bits(v: &[f64]) -> Vec<u64> {
+    v.iter().map(|x| x.to_bits()).collect()
+}
+
+fn from_bits(v: &[u64]) -> Vec<f64> {
+    v.iter().map(|&b| f64::from_bits(b)).collect()
+}
+
+impl From<&Params> for ParamsState {
+    fn from(p: &Params) -> Self {
+        ParamsState {
+            iou_type: p.iou_type,
+            img_ids: p.img_ids.clone(),
+            cat_ids: p.cat_ids.clone(),
+            iou_thrs: to_bits(&p.iou_thrs),
+            rec_thrs: to_bits(&p.rec_thrs),
+            max_dets: p.max_dets.clone(),
+            area_ranges: p
+                .area_ranges
+                .iter()
+                .map(|r| {
+                    (
+                        r.label.clone(),
+                        [r.range[0].to_bits(), r.range[1].to_bits()],
+                    )
+                })
+                .collect(),
+            use_cats: p.use_cats,
+            kpt_oks_sigmas: to_bits(&p.kpt_oks_sigmas),
+            expand_dt: p.expand_dt,
+        }
+    }
+}
+
+impl From<ParamsState> for Params {
+    fn from(s: ParamsState) -> Self {
+        let mut p = Params::new(s.iou_type);
+        p.img_ids = s.img_ids;
+        p.cat_ids = s.cat_ids;
+        p.iou_thrs = from_bits(&s.iou_thrs);
+        p.rec_thrs = from_bits(&s.rec_thrs);
+        p.max_dets = s.max_dets;
+        p.area_ranges = s
+            .area_ranges
+            .into_iter()
+            .map(|(label, [lo, hi])| AreaRange {
+                label,
+                range: [f64::from_bits(lo), f64::from_bits(hi)],
+            })
+            .collect();
+        p.use_cats = s.use_cats;
+        p.kpt_oks_sigmas = from_bits(&s.kpt_oks_sigmas);
+        p.expand_dt = s.expand_dt;
+        p
+    }
+}
+
+fn mismatch(what: &str) -> crate::error::Error {
+    crate::error::Error::Other(format!(
+        "cannot merge StreamingEvals built with different {what}: every rank must construct \
+         its evaluator from the same categories and params"
+    ))
+}
+
+/// The first [`Params`] field on which `a` and `b` differ, if any.
+fn params_mismatch(a: &Params, b: &Params) -> Option<&'static str> {
+    let areas = |p: &Params| -> Vec<(String, [f64; 2])> {
+        p.area_ranges
+            .iter()
+            .map(|r| (r.label.clone(), r.range))
+            .collect()
+    };
+    let checks = [
+        ("iou_type", a.iou_type == b.iou_type),
+        ("img_ids", a.img_ids == b.img_ids),
+        ("cat_ids", a.cat_ids == b.cat_ids),
+        ("iou_thrs", a.iou_thrs == b.iou_thrs),
+        ("rec_thrs", a.rec_thrs == b.rec_thrs),
+        ("max_dets", a.max_dets == b.max_dets),
+        ("area_ranges", areas(a) == areas(b)),
+        ("use_cats", a.use_cats == b.use_cats),
+        ("kpt_oks_sigmas", a.kpt_oks_sigmas == b.kpt_oks_sigmas),
+        ("expand_dt", a.expand_dt == b.expand_dt),
+    ];
+    checks.into_iter().find(|(_, same)| !same).map(|(f, _)| f)
 }
 
 #[cfg(test)]
@@ -534,5 +813,180 @@ mod tests {
             panic!("Open Images must be rejected");
         };
         assert!(err.to_string().contains("Open Images"));
+    }
+    /// An unfinalized evaluator over the images `ids` of the fixture.
+    fn shard(gt: &Dataset, dt_anns: &[Annotation], ids: &[u64]) -> StreamingEval {
+        let mut se = StreamingEval::new(
+            Params::new(IouType::Bbox),
+            EvalMode::Coco,
+            gt.categories.clone(),
+        )
+        .expect("mode is supported");
+        let keep: HashSet<u64> = ids.iter().copied().collect();
+        let of = |anns: &[Annotation]| -> Vec<Annotation> {
+            anns.iter()
+                .filter(|a| keep.contains(&a.image_id))
+                .cloned()
+                .collect()
+        };
+        se.update(
+            ids.iter().map(|&id| image(id)).collect(),
+            of(&gt.annotations),
+            of(dt_anns),
+        )
+        .expect("scores are finite");
+        se
+    }
+
+    /// Two ranks that each saw some images, merged, give the cells one stream
+    /// over every image gives — in either merge order.
+    #[test]
+    fn merged_disjoint_shards_equal_one_stream() {
+        let (gt, dt) = fixture();
+        let expected = format!("{:?}", stream(&gt, &dt.annotations, &[&[1, 2, 3]]).cells);
+        for (first, second) in [(&[1u64][..], &[2, 3][..]), (&[2, 3][..], &[1][..])] {
+            let mut a = shard(&gt, &dt.annotations, first);
+            a.merge(shard(&gt, &dt.annotations, second))
+                .expect("shards are compatible");
+            assert_eq!(expected, format!("{:?}", a.finalize().cells));
+        }
+    }
+
+    /// An image on both ranks keeps `other`'s result, the rule `update`
+    /// documents for an image seen again.
+    #[test]
+    fn merge_lets_the_other_evaluator_win_an_overlapping_image() {
+        let (gt, dt) = fixture();
+        let mut moved = dt.annotations.clone();
+        for d in &mut moved {
+            d.bbox = Some([500.0, 500.0, 5.0, 5.0]);
+        }
+        let mut a = shard(&gt, &dt.annotations, &[1, 2]);
+        a.merge(shard(&gt, &moved, &[2, 3])).expect("compatible");
+        let mixed: Vec<Annotation> = dt
+            .annotations
+            .iter()
+            .filter(|d| d.image_id == 1)
+            .chain(moved.iter().filter(|d| d.image_id != 1))
+            .cloned()
+            .collect();
+        let expected = stream(&gt, &mixed, &[&[1, 2, 3]]);
+        assert_eq!(
+            format!("{:?}", expected.cells),
+            format!("{:?}", a.finalize().cells)
+        );
+    }
+
+    #[test]
+    fn merge_rejects_mismatched_params_naming_the_field() {
+        let (gt, dt) = fixture();
+        let mut a = shard(&gt, &dt.annotations, &[1]);
+        let mut other_params = Params::new(IouType::Bbox);
+        other_params.max_dets = vec![1, 10];
+        let mut b = StreamingEval::new(other_params, EvalMode::Coco, gt.categories.clone())
+            .expect("mode is supported");
+        b.update(vec![image(2)], Vec::new(), Vec::new())
+            .expect("nothing to reject");
+        let err = a.merge(b).expect_err("max_dets differ").to_string();
+        assert!(err.contains("max_dets"), "{err}");
+        assert_eq!(
+            a.finalize().cells.len(),
+            shard(&gt, &dt.annotations, &[1]).finalize().cells.len()
+        );
+    }
+
+    #[test]
+    fn merge_rejects_different_categories_and_modes() {
+        let (gt, dt) = fixture();
+        let mut a = shard(&gt, &dt.annotations, &[1]);
+        let b = StreamingEval::new(
+            Params::new(IouType::Bbox),
+            EvalMode::Coco,
+            vec![category(1), category(2)],
+        )
+        .expect("mode is supported");
+        let err = a.merge(b).expect_err("category lists differ").to_string();
+        assert!(err.contains("categories"), "{err}");
+        let lvis = StreamingEval::new(
+            Params::new(IouType::Bbox),
+            EvalMode::Lvis,
+            gt.categories.clone(),
+        )
+        .expect("mode is supported");
+        let err = a.merge(lvis).expect_err("modes differ").to_string();
+        assert!(err.contains("eval_mode"), "{err}");
+    }
+    /// A saved state restores to an evaluator that finalizes to the same
+    /// cells and params, however many calls and replaced images built it.
+    #[test]
+    fn bytes_round_trip_finalizes_identically() {
+        let (gt, dt) = fixture();
+        let mut se = shard(&gt, &dt.annotations, &[1, 2]);
+        se.merge(shard(&gt, &dt.annotations, &[2, 3]))
+            .expect("compatible");
+        let restored = StreamingEval::from_bytes(&se.to_bytes()).expect("own output");
+        let (a, b) = (se.finalize(), restored.finalize());
+        assert_eq!(format!("{:?}", a.cells), format!("{:?}", b.cells));
+        assert_eq!(a.params.img_ids, b.params.img_ids);
+        assert_eq!(a.params.cat_ids, b.params.cat_ids);
+    }
+
+    /// The restored evaluator is a working one: it takes more images and
+    /// merges, and an infinite area bound survives the header.
+    #[test]
+    fn restored_evaluator_keeps_streaming_and_custom_params() {
+        let (gt, dt) = fixture();
+        let mut params = Params::new(IouType::Bbox);
+        params.area_ranges.push(AreaRange {
+            label: "huge".into(),
+            range: [1e5, f64::INFINITY],
+        });
+        let mut se = StreamingEval::new(params, EvalMode::Coco, gt.categories.clone())
+            .expect("mode is supported");
+        se.update(
+            vec![image(1)],
+            gt.annotations.clone(),
+            dt.annotations.clone(),
+        )
+        .expect("batch is valid");
+        let mut restored = StreamingEval::from_bytes(&se.to_bytes()).expect("own output");
+        restored
+            .update(vec![image(9)], Vec::new(), Vec::new())
+            .expect("accepts more images");
+        let ev = restored.finalize();
+        assert!(ev.params.area_ranges[4].range[1].is_infinite());
+        assert_eq!(ev.params.img_ids, vec![1, 9]);
+        assert!(
+            se.merge(StreamingEval::from_bytes(&se.to_bytes()).expect("own output"))
+                .is_ok()
+        );
+    }
+
+    /// Hostile or damaged bytes are an error or a harmless state, never a
+    /// panic: every prefix and every single-byte corruption of a real state.
+    #[test]
+    fn corrupt_bytes_never_panic() {
+        let (gt, dt) = fixture();
+        let bytes = shard(&gt, &dt.annotations, &[1, 2, 3]).to_bytes();
+        for n in 0..bytes.len() {
+            assert!(
+                StreamingEval::from_bytes(&bytes[..n]).is_err(),
+                "prefix {n}"
+            );
+        }
+        for i in 0..bytes.len() {
+            let mut damaged = bytes.clone();
+            damaged[i] ^= 0xFF;
+            if let Ok(se) = StreamingEval::from_bytes(&damaged) {
+                let _ = se.finalize();
+            }
+        }
+        let mut wrong = bytes.clone();
+        wrong[4] = 9;
+        let err = StreamingEval::from_bytes(&wrong)
+            .err()
+            .expect("version 9")
+            .to_string();
+        assert!(err.contains("version"), "{err}");
     }
 }
