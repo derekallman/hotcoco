@@ -7,6 +7,7 @@ consumed it. No `data/` needed.
 """
 
 import hotcoco
+import numpy as np
 import pytest
 from hotcoco import COCO, COCOeval, StreamingEval
 
@@ -132,6 +133,112 @@ class TestStreamingMatchesBatch:
         ev.accumulate()
         ev.summarize()
         assert all(v == -1.0 for v in ev.stats.tolist())
+
+
+def as_array(dts):
+    """The ``(N, 7)`` array ``load_res`` accepts for a list of raw detections."""
+    return np.array([[d["image_id"], *d["bbox"], d["score"], d["category_id"]] for d in dts], dtype=np.float64)
+
+
+def stats_after(update_dt, cats=None, **kwargs):
+    """Stats of a StreamingEval fed every fixture image in two batches."""
+    se = StreamingEval(cats or categories(), **kwargs)
+    for ids in ({1, 2}, {3}):
+        im = [i for i in images() if i["id"] in ids]
+        gt = [a for a in gt_annotations() if a["image_id"] in ids]
+        se.update(im, gt, update_dt(ids))
+    ev = se.finalize()
+    ev.accumulate()
+    ev.summarize()
+    return ev.stats.tolist()
+
+
+class TestArrayDetections:
+    """``update`` takes the ``(N, 7)`` array ``load_res`` takes, without a dict per detection."""
+
+    def test_array_equals_dict_form(self):
+        dts = dt_annotations()
+        by_dict = stats_after(lambda ids: [d for d in dts if d["image_id"] in ids])
+        by_array = stats_after(lambda ids: as_array([d for d in dts if d["image_id"] in ids]))
+        assert by_array == by_dict
+        assert by_array[0] > 0
+
+    def test_empty_array_is_an_image_with_no_detections(self):
+        stats = stats_after(lambda ids: np.zeros((0, 7)))
+        assert stats[0] == 0.0
+
+    def test_six_columns_put_everything_in_category_one_like_load_res(self):
+        dts = [d for d in dt_annotations() if d["category_id"] == 1]
+        six = stats_after(lambda ids: as_array([d for d in dts if d["image_id"] in ids])[:, :6])
+        seven = stats_after(lambda ids: as_array([d for d in dts if d["image_id"] in ids]))
+        assert six == seven
+
+    def test_wrong_column_count_raises(self):
+        se = StreamingEval(categories())
+        with pytest.raises(ValueError, match="6 or 7 columns"):
+            se.update(images()[:1], [], np.zeros((2, 5)))
+
+    def test_unlisted_type_raises_type_error(self):
+        se = StreamingEval(categories())
+        with pytest.raises(TypeError, match="list of dicts or a numpy"):
+            se.update(images()[:1], [], "detections")
+        with pytest.raises(TypeError, match="list of dicts or a numpy"):
+            se.update(images()[:1], [], np.zeros((1, 7), dtype=np.float32))
+
+    def test_segmentation_with_a_dict_list_raises(self):
+        se = StreamingEval(categories())
+        with pytest.raises(TypeError, match="segmentation goes with"):
+            se.update(images()[:1], [], [], segmentation=[])
+
+    def test_segmentation_length_must_match_rows(self):
+        se = StreamingEval(categories(), iou_type="segm")
+        with pytest.raises(ValueError, match="segmentation has 1 entries for 2 rows"):
+            se.update(images()[:1], [], np.zeros((2, 7)), segmentation=[{"size": [100, 100], "counts": "0"}])
+
+    def test_segm_array_with_rle_list_equals_dict_form(self):
+        def rle(box):
+            m = np.zeros((100, 100), dtype=np.uint8, order="F")
+            x, y, w, h = (int(v) for v in box)
+            m[y : y + h, x : x + w] = 1
+            r = hotcoco.mask.encode(m)
+            return {"size": r["size"], "counts": r["counts"]}
+
+        gts = [{**g, "segmentation": rle(g["bbox"])} for g in gt_annotations()]
+        dts = dt_annotations()
+        # Masks shifted off the boxes: a run that ignored `segmentation` and
+        # derived masks from the boxes would score differently.
+        for d in dts:
+            x, y, w, h = d["bbox"]
+            d["segmentation"] = rle([x + 12, y + 12, w, h])
+
+        def run(update_dt):
+            se = StreamingEval(categories(), iou_type="segm")
+            for ids in ({1, 2}, {3}):
+                se.update(
+                    [i for i in images() if i["id"] in ids],
+                    [a for a in gts if a["image_id"] in ids],
+                    update_dt(ids),
+                    **(
+                        {}
+                        if isinstance(update_dt(ids), list)
+                        else {"segmentation": [d["segmentation"] for d in dts if d["image_id"] in ids]}
+                    ),
+                )
+            ev = se.finalize()
+            ev.accumulate()
+            ev.summarize()
+            return ev.stats.tolist()
+
+        def run_without_masks():
+            return run(
+                lambda ids: [{k: v for k, v in d.items() if k != "segmentation"} for d in dts if d["image_id"] in ids]
+            )
+
+        by_dict = run(lambda ids: [d for d in dts if d["image_id"] in ids])
+        by_array = run(lambda ids: as_array([d for d in dts if d["image_id"] in ids]))
+        assert by_array == by_dict
+        no_masks = run_without_masks()
+        assert by_array != no_masks
 
 
 def test_spent_streaming_eval_raises():

@@ -267,7 +267,7 @@ ev.accumulate()
 ev.summarize()
 ```
 
-`predictions` is the batch's detections as one list of dicts in the shape `load_res()` accepts — `image_id`, `category_id`, `bbox`, and `score`. Each batch runs through the same code `evaluate()` runs, so the numbers are identical to a batch run over the same annotations, whatever order the images arrive in and however they are batched. Memory stays at about 20 bytes per detection instead of an epoch's worth of prediction dicts. The same recipe evaluates a stored results file in chunks when it is too large to load at once.
+`predictions` is the batch's detections as one list of dicts in the shape `load_res()` accepts — `image_id`, `category_id`, `bbox`, and `score`. Or pass the `(N, 7)` float64 array `load_res()` accepts and skip building a dict per detection, most of what `update()` costs: on 3,000 images of 300 detections, `update()` takes about 0.14 s with arrays where lists of dicts take about 0.4 s. Each batch runs through the same code `evaluate()` runs, so the numbers are identical to a batch run over the same annotations, whatever order the images arrive in and however they are batched. Memory stays at about 20 bytes per detection instead of an epoch's worth of prediction dicts. The same recipe evaluates a stored results file in chunks when it is too large to load at once.
 
 Analyses that need per-image records — TIDE, the confusion matrix, calibration, per-image diagnostics — need a batch `COCOeval`; the [API reference](../api/cocoeval.md#streamingeval) has what the finalized evaluator supports and the restrictions.
 

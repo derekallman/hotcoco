@@ -391,7 +391,7 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
     Ok(ann)
 }
 
-fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
+pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     // Try as dict (CompressedRle or UncompressedRle)
     if let Ok(dict) = obj.cast::<PyDict>() {
         let size: [u32; 2] = req!(dict, "size");
@@ -777,6 +777,42 @@ pub fn f64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
             "{name} must be a sequence of floats or a 1-D numpy array"
         ))
     })
+}
+
+/// A 1-D non-negative integer argument — see [`f64_vec`]. numpy `int64` and
+/// `int32` (what detection code usually holds) in one copy, a sequence of ints
+/// otherwise. A negative value raises `ValueError`: ids are unsigned.
+pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
+    let signed: Vec<i64> = if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i64>>() {
+        arr.as_array().to_vec()
+    } else if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i32>>() {
+        arr.as_array().iter().map(|&v| i64::from(v)).collect()
+    } else {
+        obj.extract::<Vec<i64>>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(format!(
+                "{name} must be a sequence of ints or a 1-D numpy int array"
+            ))
+        })?
+    };
+    signed
+        .into_iter()
+        .map(|v| {
+            u64::try_from(v).map_err(|_| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "{name} must not contain negative values, got {v}"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// A 1-D flag argument: a bool array as is, an int array or sequence with
+/// non-zero meaning true — COCO spells `iscrowd` as 0/1.
+pub fn flag_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<bool>>() {
+        return Ok(arr.as_array().to_vec());
+    }
+    Ok(u64_vec(obj, name)?.into_iter().map(|v| v != 0).collect())
 }
 
 /// A 1-D bool argument — see [`f64_vec`]. The fast path matters even more

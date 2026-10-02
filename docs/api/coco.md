@@ -389,6 +389,51 @@ type:
 
 ---
 
+### `from_arrays`
+
+Build a dataset from columns, with no Python dict per annotation. Building the
+list of dicts that `COCO(dict)` takes is most of its cost on a large dataset:
+on 300,000 annotations `from_arrays` takes 0.015 s where building the dicts
+and calling `COCO(dict)` takes 0.294 s. The result equals `COCO(dict)` over the
+same annotations.
+
+=== "Python"
+
+    ```python
+    COCO.from_arrays(
+        images: list[dict],
+        categories: list[dict],
+        image_ids: ArrayLike,
+        category_ids: ArrayLike,
+        boxes: ArrayLike,
+        *,
+        ids: ArrayLike | None = None,
+        area: ArrayLike | None = None,
+        iscrowd: ArrayLike | None = None,
+        rles: list[dict] | None = None,
+    ) -> COCO
+    ```
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `images`, `categories` | `list[dict]` | Image and category dicts, as `COCO(dict)` takes them. There is one per image and category, not per annotation. |
+    | `image_ids`, `category_ids` | `ArrayLike` | One integer per annotation. numpy `int64` and `int32` arrays are read without a per-element cost. |
+    | `boxes` | `ArrayLike` | Shape `(N, 4)`, COCO `[x, y, w, h]`. |
+    | `ids` | <code>ArrayLike &#124; None</code> | Annotation ids. Default `1..N`. |
+    | `area` | <code>ArrayLike &#124; None</code> | Default: each box's `w * h`. |
+    | `iscrowd` | <code>ArrayLike &#124; None</code> | Ints or bools. Default: none are crowds. |
+    | `rles` | <code>list[dict] &#124; None</code> | `N` RLE or polygon segmentations, for `segm`. `area` is then required, because the box area would not match the mask. |
+
+    Raises `ValueError` for columns of different lengths, a `boxes` array that
+    is not `(N, 4)`, a negative id, or `rles` without `area`, and `TypeError`
+    for a column that is not an array or sequence of the right kind.
+
+    ```python
+    gt = COCO.from_arrays(images, categories, image_ids, category_ids, boxes)
+    ```
+
+---
+
 ### `update_anns`
 
 Edit annotations that are already loaded, matched by `id`, keeping the indices
@@ -407,13 +452,32 @@ shape: assign [`dataset`](#dataset) for those.
 === "Python"
 
     ```python
-    update_anns(anns: list[dict], *, create: bool = False) -> None
+    update_anns(
+        anns: list[dict] | None = None,
+        *,
+        create: bool = False,
+        ids: ArrayLike | None = None,
+        area: ArrayLike | None = None,
+    ) -> None
     ```
 
     | Parameter | Type | Description |
     |---|---|---|
-    | `anns` | `list[dict]` | Partial or whole annotation dicts, each with an `id` already in the dataset. |
+    | `anns` | <code>list[dict] &#124; None</code> | Partial or whole annotation dicts, each with an `id` already in the dataset. |
     | `create` | `bool`, keyword-only | Allow a schema-unknown key to create a new custom key on an annotation that does not have it yet. Default `False`. |
+    | `ids` | <code>ArrayLike &#124; None</code>, keyword-only | The column form: annotation ids, integers. Pass either `anns` or `ids`, not both. |
+    | `area` | <code>ArrayLike &#124; None</code>, keyword-only | The column form's values: `area[i]` is written to annotation `ids[i]`. Required with `ids`. |
+
+    The column form edits `area` across a dataset with no dict per annotation,
+    which is the multi-IoU-type switch above at array speed. It raises
+    `KeyError` for ids the dataset does not have and `ValueError` when the
+    columns differ in length; nothing is written in either case. On 300,000
+    annotations it takes 0.009 s where building and passing the dicts takes
+    0.091 s.
+
+    ```python
+    coco.update_anns(ids=ann_ids, area=new_areas)  # two numpy arrays of the same length
+    ```
 
     ```python
     coco.update_anns([

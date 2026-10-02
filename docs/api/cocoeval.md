@@ -885,7 +885,13 @@ built for, see
 ### `update`
 
 ```python
-se.update(images: list[dict], gt_anns: list[dict], dt_anns: list[dict]) -> None
+se.update(
+    images: list[dict],
+    gt_anns: list[dict],
+    dt_anns: list[dict] | ndarray,
+    *,
+    segmentation: list[dict] | None = None,
+) -> None
 ```
 
 Match a batch of images' ground truth against their detections now. `images`
@@ -896,7 +902,7 @@ is fine; passing the detector's whole batch amortizes the per-call setup.
 unique within the batch. `dt_anns` are raw predictions in the shape
 `load_res()` accepts — `image_id`, `category_id`, `bbox` (or
 `segmentation`/`keypoints`), and `score` — and are loaded the same way: ids
-assigned, `area` derived, `iscrowd` cleared. Within an image, detections with
+assigned, `area` derived, `iscrowd` cleared. `dt_anns` can also be the float64 array `load_res()` accepts, shape `(N, 7)` with columns `[image_id, x, y, w, h, score, category_id]`, which skips building a dict per detection. An `(N, 6)` array has no category column and puts every row in category 1, as `load_res()` does. For `segm`, `segmentation` is a list of `N` RLE or polygon entries, one per row; it goes only with an array, since a dict carries its own. Within an image, detections with
 tied scores rank in the order given, as they do in a results file, so keep a
 batch's predictions in the order the detector emitted them. An image seen
 again in a later call replaces its earlier result.

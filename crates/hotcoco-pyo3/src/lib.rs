@@ -314,30 +314,8 @@ impl PyCOCO {
         }
 
         // Case 3: numpy float64 array, shape (N, 6) or (N, 7)
-        //   (N, 6): [image_id, x, y, w, h, score]           — category_id defaults to 1
-        //   (N, 7): [image_id, x, y, w, h, score, cat_id]   — matches pycocotools loadNumpyAnnotations
         if let Ok(arr) = res.cast::<PyArray2<f64>>() {
-            let arr = arr.readonly();
-            let arr = arr.as_array();
-            let ncols = arr.ncols();
-            if ncols != 6 && ncols != 7 {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "load_res: numpy array must have 6 or 7 columns \
-                     [image_id, x, y, w, h, score[, category_id]], got {ncols}",
-                )));
-            }
-            let anns = arr
-                .rows()
-                .into_iter()
-                .map(|row| Annotation {
-                    id: 0,
-                    image_id: row[0] as u64,
-                    category_id: if ncols == 7 { row[6] as u64 } else { 1 },
-                    bbox: Some([row[1], row[2], row[3], row[4]]),
-                    score: Some(row[5]),
-                    ..Default::default()
-                })
-                .collect::<Vec<_>>();
+            let anns = anns_from_array(arr, "load_res", None)?;
             return self
                 .inner
                 .load_res_anns(anns)
@@ -349,6 +327,120 @@ impl PyCOCO {
             "load_res expects a file path (str), list of annotation dicts, \
              or numpy float64 array of shape (N, 6) or (N, 7)",
         ))
+    }
+
+    /// Build a dataset from columns, with no Python dict per annotation.
+    ///
+    /// ``images`` and ``categories`` are lists of dicts, as ``COCO(dict)``
+    /// takes them — there is one per image and category, not one per
+    /// annotation. The annotations are parallel arrays of length ``N``:
+    ///
+    /// - ``image_ids``, ``category_ids``: integers.
+    /// - ``boxes``: float array of shape ``(N, 4)``, COCO ``[x, y, w, h]``.
+    /// - ``ids``: integer annotation ids. Default ``1..=N``.
+    /// - ``area``: floats. Default: the box's ``w * h``.
+    /// - ``iscrowd``: ints or bools. Default: all false.
+    /// - ``rles``: a list of ``N`` RLE or polygon segmentations. ``area`` is
+    ///   then required, because the box area would not match the mask.
+    ///
+    /// The result equals ``COCO(dict)`` over the same annotations. Raises
+    /// ``ValueError`` for columns of different lengths, a box array that is not
+    /// ``(N, 4)``, or a negative id, and ``TypeError`` for a column that is not
+    /// an array or sequence of the right kind.
+    #[staticmethod]
+    #[pyo3(signature = (images, categories, image_ids, category_ids, boxes, *, ids=None, area=None, iscrowd=None, rles=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn from_arrays(
+        images: &Bound<'_, PyList>,
+        categories: &Bound<'_, PyList>,
+        image_ids: &Bound<'_, PyAny>,
+        category_ids: &Bound<'_, PyAny>,
+        boxes: &Bound<'_, PyAny>,
+        ids: Option<&Bound<'_, PyAny>>,
+        area: Option<&Bound<'_, PyAny>>,
+        iscrowd: Option<&Bound<'_, PyAny>>,
+        rles: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyCOCO> {
+        let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
+        let image_ids = convert::u64_vec(image_ids, "image_ids")?;
+        let n = image_ids.len();
+        let same_length = |name: &str, len: usize| {
+            if len == n {
+                Ok(())
+            } else {
+                Err(value_err(format!(
+                    "from_arrays: {name} has {len} entries but image_ids has {n}"
+                )))
+            }
+        };
+        let category_ids = convert::u64_vec(category_ids, "category_ids")?;
+        same_length("category_ids", category_ids.len())?;
+        let (flat, rows, cols) = convert::f64_matrix_arg(boxes, "boxes")?;
+        if cols != 4 || rows != n {
+            return Err(value_err(format!(
+                "from_arrays: boxes must have shape ({n}, 4), got ({rows}, {cols})"
+            )));
+        }
+        let ids = match ids {
+            Some(obj) => {
+                let ids = convert::u64_vec(obj, "ids")?;
+                same_length("ids", ids.len())?;
+                ids
+            }
+            None => (1..=n as u64).collect(),
+        };
+        let area = match (area, rles) {
+            (Some(obj), _) => {
+                let area = convert::f64_vec(obj, "area")?;
+                same_length("area", area.len())?;
+                Some(area)
+            }
+            (None, Some(_)) => {
+                return Err(value_err(
+                    "from_arrays: area is required with rles, because the box area \
+                     would not match the mask"
+                        .into(),
+                ));
+            }
+            (None, None) => None,
+        };
+        let iscrowd = match iscrowd {
+            Some(obj) => {
+                let crowd = convert::flag_vec(obj, "iscrowd")?;
+                same_length("iscrowd", crowd.len())?;
+                Some(crowd)
+            }
+            None => None,
+        };
+        if let Some(rles) = rles {
+            same_length("rles", rles.len())?;
+        }
+
+        let mut annotations = Vec::with_capacity(n);
+        for i in 0..n {
+            let b = &flat[i * 4..i * 4 + 4];
+            let bbox = [b[0], b[1], b[2], b[3]];
+            annotations.push(Annotation {
+                id: ids[i],
+                image_id: image_ids[i],
+                category_id: category_ids[i],
+                bbox: Some(bbox),
+                area: Some(area.as_ref().map_or(bbox[2] * bbox[3], |a| a[i])),
+                iscrowd: iscrowd.as_ref().is_some_and(|c| c[i]),
+                segmentation: match rles {
+                    Some(rles) => Some(convert::py_to_segmentation(&rles.get_item(i)?)?),
+                    None => None,
+                },
+                ..Default::default()
+            });
+        }
+        let dataset = hotcoco_core::Dataset {
+            images: dict_list(images, "images", py_to_image)?,
+            categories: dict_list(categories, "categories", py_to_category)?,
+            annotations,
+            ..Default::default()
+        };
+        Ok(PyCOCO::without_image_dir(dataset))
     }
 
     /// Convert an annotation's segmentation to RLE.
@@ -1082,6 +1174,9 @@ impl PyCOCO {
     /// anns : list of dict
     ///     Partial or whole annotation dicts, each with an ``id`` that is
     ///     already in the dataset.
+    /// ids, area : array-like, keyword-only
+    ///     The column form: ``area[i]`` is written to annotation ``ids[i]``, with no
+    ///     dict per annotation. Pass either ``anns`` or ``ids``, not both.
     /// create : bool, keyword-only, default False
     ///     Allow a dict's schema-unknown key to create a new custom key on
     ///     an annotation that does not have it yet.
@@ -1101,30 +1196,36 @@ impl PyCOCO {
     /// --------
     /// >>> coco.update_anns([{"id": ann["id"], "area": mask.area(coco.ann_to_rle(ann))}
     /// ...                   for ann in coco.dataset["annotations"]])
-    #[pyo3(signature = (anns, *, create=false))]
-    fn update_anns(&mut self, anns: &Bound<'_, PyList>, create: bool) -> PyResult<()> {
-        let mut updated = Vec::with_capacity(anns.len());
+    #[pyo3(signature = (anns=None, *, create=false, ids=None, area=None))]
+    fn update_anns(
+        &mut self,
+        anns: Option<&Bound<'_, PyList>>,
+        create: bool,
+        ids: Option<&Bound<'_, PyAny>>,
+        area: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<()> {
         let mut missing = Vec::new();
-        for item in anns {
-            let dict = item.cast::<PyDict>().map_err(|_| {
-                pyo3::exceptions::PyTypeError::new_err("update_anns: list elements must be dicts")
-            })?;
-            let Some(id) = dict.get_item(pyo3::intern!(dict.py(), "id"))? else {
-                return Err(pyo3::exceptions::PyKeyError::new_err(
-                    "every annotation passed to update_anns() needs an 'id'",
+        let updated = match (anns, ids) {
+            (Some(_), Some(_)) => {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "update_anns: pass either a list of dicts or ids= with columns, not both",
                 ));
-            };
-            let id: u64 = convert::extract_int(&id)?;
-            // Merged into a copy, so a bad value further down the list leaves
-            // the dataset untouched; every unknown id is reported at once, as
-            // the core reports them.
-            let Some(mut ann) = self.inner.get_ann(id).cloned() else {
-                missing.push(id);
-                continue;
-            };
-            merge_ann_dict_checked(&mut ann, dict, create)?;
-            updated.push(ann);
-        }
+            }
+            (None, None) => {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "update_anns: pass a list of dicts, or ids= with a column such as area=",
+                ));
+            }
+            (Some(anns), None) => {
+                if area.is_some() {
+                    return Err(pyo3::exceptions::PyTypeError::new_err(
+                        "update_anns: area= goes with ids=, not with a list of dicts",
+                    ));
+                }
+                self.merged_from_dicts(anns, create, &mut missing)?
+            }
+            (None, Some(ids)) => self.edited_from_columns(ids, area, &mut missing)?,
+        };
         if !missing.is_empty() {
             return Err(to_pyerr(hotcoco_core::Error::UnknownAnnIds(missing)));
         }
@@ -2712,6 +2813,127 @@ struct PyStreamingEval {
     inner: Option<hotcoco_core::StreamingEval>,
 }
 
+impl PyCOCO {
+    /// The annotations `anns` edits, each merged into a copy of the stored
+    /// one, so a bad value further down the list leaves the dataset
+    /// untouched; unknown ids are collected into `missing`.
+    fn merged_from_dicts(
+        &self,
+        anns: &Bound<'_, PyList>,
+        create: bool,
+        missing: &mut Vec<u64>,
+    ) -> PyResult<Vec<Annotation>> {
+        let mut updated = Vec::with_capacity(anns.len());
+        for item in anns {
+            let dict = item.cast::<PyDict>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err("update_anns: list elements must be dicts")
+            })?;
+            let Some(id) = dict.get_item(pyo3::intern!(dict.py(), "id"))? else {
+                return Err(pyo3::exceptions::PyKeyError::new_err(
+                    "every annotation passed to update_anns() needs an 'id'",
+                ));
+            };
+            let id: u64 = convert::extract_int(&id)?;
+            // Merged into a copy, so a bad value further down the list leaves
+            // the dataset untouched; every unknown id is reported at once, as
+            // the core reports them.
+            let Some(mut ann) = self.inner.get_ann(id).cloned() else {
+                missing.push(id);
+                continue;
+            };
+            merge_ann_dict_checked(&mut ann, dict, create)?;
+            updated.push(ann);
+        }
+        Ok(updated)
+    }
+
+    /// The column form: `area[i]` is written to annotation `ids[i]`. Nothing
+    /// is applied here, so an unknown id leaves the dataset untouched.
+    fn edited_from_columns(
+        &self,
+        ids: &Bound<'_, PyAny>,
+        area: Option<&Bound<'_, PyAny>>,
+        missing: &mut Vec<u64>,
+    ) -> PyResult<Vec<Annotation>> {
+        let ids = convert::u64_vec(ids, "ids")?;
+        let Some(area) = area else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "update_anns: ids= needs a column to write, such as area=",
+            ));
+        };
+        let area = convert::f64_vec(area, "area")?;
+        if area.len() != ids.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "update_anns: area has {} entries but ids has {}",
+                area.len(),
+                ids.len()
+            )));
+        }
+        let mut updated = Vec::with_capacity(ids.len());
+        for (id, area) in ids.into_iter().zip(area) {
+            match self.inner.get_ann(id) {
+                Some(ann) => {
+                    let mut ann = ann.clone();
+                    ann.area = Some(area);
+                    updated.push(ann);
+                }
+                None => missing.push(id),
+            }
+        }
+        Ok(updated)
+    }
+}
+
+/// Detections from the array `load_res` accepts: float64, shape `(N, 6)` or
+/// `(N, 7)`, columns `[image_id, x, y, w, h, score[, category_id]]` — the
+/// pycocotools `loadNumpyAnnotations` convention. A six-column array has no
+/// category column, so every row gets category 1, as in pycocotools.
+/// `segmentation`, when given, holds one entry per row and is set on it.
+/// The one owner of the array form: `load_res` and `StreamingEval.update`
+/// both read it here.
+fn anns_from_array(
+    arr: &Bound<'_, PyArray2<f64>>,
+    what: &str,
+    segmentation: Option<&Bound<'_, PyList>>,
+) -> PyResult<Vec<Annotation>> {
+    let arr = arr.readonly();
+    let arr = arr.as_array();
+    let ncols = arr.ncols();
+    if ncols != 6 && ncols != 7 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{what}: numpy array must have 6 or 7 columns \
+             [image_id, x, y, w, h, score[, category_id]], got {ncols}",
+        )));
+    }
+    if let Some(segs) = segmentation {
+        if segs.len() != arr.nrows() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{what}: segmentation has {} entries for {} rows",
+                segs.len(),
+                arr.nrows()
+            )));
+        }
+    }
+    let mut anns: Vec<Annotation> = arr
+        .rows()
+        .into_iter()
+        .map(|row| Annotation {
+            id: 0,
+            image_id: row[0] as u64,
+            category_id: if ncols == 7 { row[6] as u64 } else { 1 },
+            bbox: Some([row[1], row[2], row[3], row[4]]),
+            score: Some(row[5]),
+            ..Default::default()
+        })
+        .collect();
+    if let Some(segs) = segmentation {
+        for (ann, seg) in anns.iter_mut().zip(segs) {
+            ann.segmentation = Some(convert::py_to_segmentation(&seg)?);
+        }
+    }
+    Ok(anns)
+}
+
 /// The error for a `StreamingEval` used after `finalize()` consumed it.
 fn spent() -> PyErr {
     pyo3::exceptions::PyRuntimeError::new_err(
@@ -2752,20 +2974,43 @@ impl PyStreamingEval {
 ``images``: the batch's image dicts, each with at least ``id``.
 ``gt_anns``: their annotations, in the shape ``COCO(dict)`` accepts.
 ``dt_anns``: their raw predictions, in the shape ``load_res()`` accepts and
-loaded the same way. Pass the detector's whole batch; a batch of one works.
+loaded the same way: a list of dicts, or a float64 array of shape ``(N, 7)``
+with columns ``[image_id, x, y, w, h, score, category_id]`` (an ``(N, 6)``
+array has no category column and puts every row in category 1, as
+``load_res()`` does). The array skips building a dict per detection.
+``segmentation``: with an array, a list of ``N`` RLE or polygon entries, one
+per row, for segm evaluation. Pass the detector's whole batch; a batch of
+one works.
 
 Raises the error ``load_res()`` raises for a NaN score, and ``RuntimeError``
 after ``finalize()``."]
+    #[pyo3(signature = (images, gt_anns, dt_anns, *, segmentation=None))]
     fn update(
         &mut self,
         py: Python<'_>,
         images: &Bound<'_, PyList>,
         gt_anns: &Bound<'_, PyList>,
-        dt_anns: &Bound<'_, PyList>,
+        dt_anns: &Bound<'_, PyAny>,
+        segmentation: Option<&Bound<'_, PyList>>,
     ) -> PyResult<()> {
         let images = dict_list(images, "images", py_to_image)?;
         let gt = dict_list(gt_anns, "gt_anns", py_to_annotation)?;
-        let dt = dict_list(dt_anns, "dt_anns", py_to_annotation)?;
+        let dt = if let Ok(list) = dt_anns.cast::<PyList>() {
+            if segmentation.is_some() {
+                return Err(pyo3::exceptions::PyTypeError::new_err(
+                    "update: segmentation goes with a detection array; a list of dicts \
+                     carries its own",
+                ));
+            }
+            dict_list(list, "dt_anns", py_to_annotation)?
+        } else if let Ok(arr) = dt_anns.cast::<PyArray2<f64>>() {
+            anns_from_array(arr, "update", segmentation)?
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "update expects dt_anns as a list of dicts or a numpy float64 array \
+                 of shape (N, 6) or (N, 7)",
+            ));
+        };
 
         let inner = self.inner.as_mut().ok_or_else(spent)?;
         py.detach(|| inner.update(images, gt, dt)).map_err(to_pyerr)

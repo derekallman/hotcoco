@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Column-form inputs, with no Python dict per annotation.** Building dicts
+  had become the dominant cost on the caller's side: about 70% of
+  `StreamingEval.update()`. Three additions, all additive:
+  - `StreamingEval.update(images, gt_anns, dt_anns, *, segmentation=None)`
+    takes the `(N, 7)` float64 array `load_res()` accepts as `dt_anns`, with an
+    optional list of `N` RLE or polygon entries for `segm`. `update()` on
+    3,000 images of 300 detections takes about 0.14 s with arrays where dicts
+    take about 0.4 s. `load_res()` and `update()` read the array through one
+    parser, so an `(N, 6)` array means category 1 in both.
+  - `COCO.from_arrays(images, categories, image_ids, category_ids, boxes, *,
+    ids, area, iscrowd, rles)` builds a dataset equal to `COCO(dict)` over the
+    same annotations. On 300,000 annotations it takes 0.015 s where building
+    the dicts and calling `COCO(dict)` takes 0.294 s. `categories` is a
+    required argument and `area` defaults to each box's `w * h`; `rles` needs
+    an explicit `area`.
+  - `COCO.update_anns(ids=..., area=...)` writes a column of areas by id. On
+    300,000 annotations it takes 0.009 s where the dict form takes 0.091 s
+    with the dicts built. The `anns` argument of `update_anns` is now
+    optional; positional calls are unchanged.
+
 ### Changed
 
 ### Fixed
