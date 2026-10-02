@@ -146,6 +146,33 @@ pub fn default_rec_thrs() -> Vec<f64> {
     linspace(0.0, 1.0, 101)
 }
 
+/// Largest per-point gap at which a threshold grid counts as the default grid
+/// rounded through a narrower float type.
+///
+/// A grid computed in `f32` and read back as `f64` is at most about 3.6e-8 from
+/// the default; 1e-6 clears that with room and sits far below any deliberate
+/// change to a grid.
+///
+/// The grid is **snapped** to the default, not merely tolerated, because the
+/// difference is not harmless: recall `k / n` lands exactly on a recall-grid
+/// point, and a grid point one ulp higher excludes it, so `accumulate()` picks
+/// the next precision. On a category with 20 ground truths that moved 240 of
+/// 12,120 precision cells, by up to 0.33. A comparison with a tolerance would
+/// have called such a run comparable to the reference while its numbers were
+/// not; snapping makes them the reference's.
+const GRID_SNAP_TOL: f64 = 1e-6;
+
+/// `grid`, or `default` when `grid` is `default` rounded through a narrower
+/// float: same length, every point within [`GRID_SNAP_TOL`]. NaN never snaps.
+fn snap_to_default(grid: Vec<f64>, default: &[f64]) -> Vec<f64> {
+    let rounded = grid.len() == default.len()
+        && grid
+            .iter()
+            .zip(default)
+            .all(|(g, d)| (g - d).abs() <= GRID_SNAP_TOL);
+    if rounded { default.to_vec() } else { grid }
+}
+
 /// Evaluation parameters controlling IoU thresholds, area ranges, and detection limits.
 ///
 /// Defaults match pycocotools: 10 IoU thresholds (0.50:0.05:0.95), 101 recall
@@ -285,6 +312,27 @@ impl Params {
             .enumerate()
             .min_by(|&(_, &a), &(_, &b)| (a - thr).abs().total_cmp(&(b - thr).abs()))
             .map_or(0, |(i, _)| i)
+    }
+
+    /// Set `iou_thrs`, turning a rounded copy of the default grid into the
+    /// default grid.
+    ///
+    /// A grid built in `f32` — `torch.linspace`, which torchmetrics uses — and
+    /// read back as `f64` sits up to 3e-8 from 0.50:0.05:0.95. Such a grid
+    /// becomes [`default_iou_thrs`] exactly; any other grid is kept as given.
+    /// See [`GRID_SNAP_TOL`] for what counts as rounded and why snapping beats
+    /// tolerating the difference.
+    ///
+    /// The field is public and assigning it directly stores the grid as given;
+    /// this setter is what the Python bindings call.
+    pub fn set_iou_thrs(&mut self, thrs: Vec<f64>) {
+        self.iou_thrs = snap_to_default(thrs, &default_iou_thrs());
+    }
+
+    /// Set `rec_thrs`, turning a rounded copy of the 101-point default grid into
+    /// the default grid. Same rule as [`set_iou_thrs`](Self::set_iou_thrs).
+    pub fn set_rec_thrs(&mut self, thrs: Vec<f64>) {
+        self.rec_thrs = snap_to_default(thrs, &default_rec_thrs());
     }
 
     /// Create default parameters for the given evaluation type.
@@ -537,6 +585,54 @@ mod tests {
         let p = Params::new(IouType::Bbox);
         assert_eq!(p.all_area_range(), p.area_ranges[p.all_area_idx()].range);
         assert_eq!(p.all_area_range(), [0.0, 1e10]);
+    }
+
+    /// What `torch.linspace` hands over once read back as `f64`: the default
+    /// grid rounded through `f32`. The tests assert it really differs, so a
+    /// passing snap test cannot be a grid that was already exact.
+    fn through_f32(grid: &[f64]) -> Vec<f64> {
+        grid.iter().map(|&x| f64::from(x as f32)).collect()
+    }
+
+    #[test]
+    fn a_rounded_default_grid_snaps_to_the_default() {
+        let mut p = Params::new(IouType::Bbox);
+        let (iou, rec) = (through_f32(&p.iou_thrs), through_f32(&p.rec_thrs));
+        assert_ne!(iou, default_iou_thrs(), "fixture must drift");
+        assert_ne!(rec, default_rec_thrs(), "fixture must drift");
+        p.set_iou_thrs(iou);
+        p.set_rec_thrs(rec);
+        assert_eq!(p.iou_thrs, default_iou_thrs());
+        assert_eq!(p.rec_thrs, default_rec_thrs());
+    }
+
+    /// The snap exists to make *identical* grids, not to forgive different
+    /// ones: a grid that departs by more than rounding must be kept as set,
+    /// so `reference_deviations` still sees it.
+    #[test]
+    fn a_grid_beyond_rounding_is_kept_as_set() {
+        let mut p = Params::new(IouType::Bbox);
+        let mut grid = default_iou_thrs();
+        grid[3] += 2e-6;
+        p.set_iou_thrs(grid.clone());
+        assert_eq!(p.iou_thrs, grid, "2e-6 is past the 1e-6 tolerance");
+
+        let mut near = default_rec_thrs();
+        near[50] += 5e-7;
+        p.set_rec_thrs(near);
+        assert_eq!(p.rec_thrs, default_rec_thrs(), "5e-7 is inside it");
+    }
+
+    #[test]
+    fn a_grid_of_another_length_is_never_snapped() {
+        let mut p = Params::new(IouType::Bbox);
+        let short = through_f32(&default_rec_thrs()[..100]);
+        p.set_rec_thrs(short.clone());
+        assert_eq!(p.rec_thrs, short);
+        p.set_iou_thrs(vec![0.5]);
+        assert_eq!(p.iou_thrs, vec![0.5]);
+        p.set_iou_thrs(Vec::new());
+        assert!(p.iou_thrs.is_empty());
     }
 
     #[test]

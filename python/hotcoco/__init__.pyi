@@ -19,6 +19,8 @@ from . import mask as mask
 from . import metrics as metrics
 from . import primitives as primitives
 
+__version__: str
+
 # ---------------------------------------------------------------------------
 # COCO
 # ---------------------------------------------------------------------------
@@ -242,7 +244,11 @@ class COCOeval:
 # ---------------------------------------------------------------------------
 
 class StreamingEval:
-    """Incremental evaluation — feed detector batches as they come, get a ``COCOeval`` back."""
+    """Incremental evaluation — feed detector batches as they come, get a ``COCOeval`` back.
+
+    ``update()`` raises ``KeyError`` naming every category id in the batch that
+    ``categories`` does not list, and leaves the evaluator as it was.
+    """
 
     def __init__(
         self,
@@ -266,6 +272,9 @@ class Params:
     Attribute reads return **copies**: ``p.max_dets.append(200)`` mutates a
     temporary and is a silent no-op. Assign whole values instead:
     ``p.max_dets = [1, 10, 100, 200]``.
+
+    Assigning ``iou_thrs`` or ``rec_thrs`` a grid that is the default rounded
+    through ``float32`` stores the default grid exactly.
     """
 
     def __init__(self, iou_type: str = "bbox") -> None: ...

@@ -266,7 +266,7 @@ summarize() -> None
 
 Compute and print the standard COCO metrics. Populates `stats`.
 
-The table goes through Python's `sys.stdout`, so `contextlib.redirect_stdout` captures or silences it, and it shows in a notebook cell. To skip printing altogether, call [`summary_lines`](#summary_lines) instead.
+The table goes through Python's `sys.stdout`, so `contextlib.redirect_stdout` captures or silences it, and it shows in a notebook cell. To skip printing altogether, call [`summary_lines`](#summary_lines) instead. A library that embeds hotcoco and wants neither the table nor the warnings below should use it, and read what the warnings would have said from [`reference_deviations`](#reference_deviations).
 
 !!! warning "Non-default parameters"
     `summarize()` uses a fixed display format that assumes default `iou_thrs`, `max_dets`, and `area_rng_lbl`. If you've changed any of these, a `UserWarning` is emitted (catchable with `warnings.catch_warnings`, visible in Jupyter) and some metrics might show `-1.000` (for example, AP50 when `iou_thrs` doesn't include 0.50). The `stats` array always has 12 entries (10 for keypoints) regardless of your parameters. `-1.000` always means "not computed for this configuration" — an unknown area label or max-dets value degrades to `-1.0` rather than silently substituting the `"all"` slice.
@@ -375,6 +375,8 @@ summary_lines() -> list[str]
 ```
 
 The same lines `summarize()` prints, returned instead of written to stdout — one string per metric, already formatted. Use it to route the summary into a logger, a report, or a test assertion.
+
+It populates `stats` as `summarize()` does and prints nothing, but it also skips the `UserWarning` about a non-default configuration that `summarize()` emits. That makes it the quiet path for code that embeds hotcoco, and it means nothing tells you the run is not comparable to the reference: call [`reference_deviations`](#reference_deviations), or read `provenance` from [`report`](#report), when that matters.
 
 ---
 
@@ -866,7 +868,7 @@ built for, see
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
-    | `categories` | `list[dict]` | — | Every category the run will see, as COCO category dicts. A category with no annotations keeps a `-1.0` slot instead of vanishing from the per-class results. |
+    | `categories` | `list[dict]` | — | Every category the run will see, as COCO category dicts. A category with no annotations keeps a `-1.0` slot instead of vanishing from the per-class results. The list cannot grow later: `update()` raises `KeyError` for an annotation in a category that is not on it. |
     | `iou_type` | `str` | `"bbox"` | `"bbox"`, `"segm"`, `"keypoints"`, or `"obb"` |
     | `lvis_style` | `bool` | `False` | LVIS federated evaluation; sets `max_dets` to `[300]` when `params` is not given |
     | `params` | <code>Params &#124; None</code> | `None` | Evaluation parameters, frozen for the run. `img_ids`, when set, skips images outside it; `cat_ids`, when empty, is filled from `categories`. |
@@ -881,6 +883,11 @@ built for, see
     ```
 
     Returns an error for `EvalMode::OpenImages`.
+
+    `StreamingEval::unknown_category_ids(anns) -> Vec<u64>` returns the ids in
+    `anns` that `categories` does not list, sorted and without duplicates —
+    the same check `update()` makes, for validating data before streaming it.
+    It is empty when `params.use_cats` is false.
 
 ### `update`
 
@@ -900,6 +907,17 @@ assigned, `area` derived, `iscrowd` cleared. Within an image, detections with
 tied scores rank in the order given, as they do in a results file, so keep a
 batch's predictions in the order the detector emitted them. An image seen
 again in a later call replaces its earlier result.
+
+A ground truth or detection whose `category_id` is not in `categories` raises
+`KeyError` naming every such id, as `update_anns` does for an unknown
+annotation id. Without it the label would drop out of every metric, because
+the category list is fixed when the `StreamingEval` is built. The batch is
+rejected whole: the evaluator is as it was before the call, so a caller that
+catches the error and carries on gets honest numbers. A batch `COCOeval` does
+not check, and drops such an annotation silently. Only the categories listed
+count: `params.cat_ids` narrows what is evaluated without making the rest
+unknown, and with `use_cats` false no category is checked, because every
+annotation pools into one.
 
 A NaN score raises the same `RuntimeError` as `load_res()`; so does calling
 this after `finalize()`.
@@ -925,6 +943,16 @@ see no cells. Build a batch `COCOeval` for those.
 ---
 
 ## Module-level functions
+
+### `__version__`
+
+```python
+hotcoco.__version__ -> str
+```
+
+The version of the compiled extension that is loaded, for example `"1.1.0"`. For an installed wheel it equals `importlib.metadata.version("hotcoco")`. Use it to gate a workaround on a release or to put in a bug report.
+
+---
 
 ### `compare`
 

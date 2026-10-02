@@ -1338,17 +1338,20 @@ impl PyParams {
     fn iou_thrs(&self) -> Vec<f64> {
         self.inner.iou_thrs.clone()
     }
+    /// Assigning a grid that is the default rounded through ``float32``
+    /// stores the default grid exactly; see ``Params::set_iou_thrs``.
     #[setter]
     fn set_iou_thrs(&mut self, val: Vec<f64>) {
-        self.inner.iou_thrs = val;
+        self.inner.set_iou_thrs(val);
     }
     #[getter]
     fn rec_thrs(&self) -> Vec<f64> {
         self.inner.rec_thrs.clone()
     }
+    /// Same snapping rule as ``iou_thrs``, against the 101-point recall grid.
     #[setter]
     fn set_rec_thrs(&mut self, val: Vec<f64>) {
-        self.inner.rec_thrs = val;
+        self.inner.set_rec_thrs(val);
     }
     #[getter]
     fn max_dets(&self) -> Vec<usize> {
@@ -2754,6 +2757,8 @@ impl PyStreamingEval {
 ``dt_anns``: their raw predictions, in the shape ``load_res()`` accepts and
 loaded the same way. Pass the detector's whole batch; a batch of one works.
 
+Raises ``KeyError`` naming every category id in the batch that ``categories``
+does not list, ground truth or detection, and leaves the evaluator as it was.
 Raises the error ``load_res()`` raises for a NaN score, and ``RuntimeError``
 after ``finalize()``."]
     fn update(
@@ -2768,6 +2773,15 @@ after ``finalize()``."]
         let dt = dict_list(dt_anns, "dt_anns", py_to_annotation)?;
 
         let inner = self.inner.as_mut().ok_or_else(spent)?;
+        // The core rejects the same batch, but as a bare message: ask first so the
+        // Python error is the lookup failure `update_anns` raises for an unknown id.
+        let unknown = inner.unknown_category_ids(gt.iter().chain(&dt));
+        if !unknown.is_empty() {
+            return Err(pyo3::exceptions::PyKeyError::new_err(format!(
+                "category id(s) {unknown:?} are not in this StreamingEval's categories; pass \
+                 every category the run will see to `categories`"
+            )));
+        }
         py.detach(|| inner.update(images, gt, dt)).map_err(to_pyerr)
     }
 
@@ -3033,6 +3047,8 @@ fn compare(
 
 #[pymodule]
 fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The version of the binary that is loaded, not of whatever metadata sits beside it.
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<PyCOCO>()?;
     m.add_class::<PyCOCOeval>()?;
     m.add_class::<PyStreamingEval>()?;

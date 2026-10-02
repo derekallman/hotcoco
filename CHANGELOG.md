@@ -9,7 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`hotcoco.__version__`** names the compiled extension that is loaded. It was
+  missing, so `hasattr(hotcoco, "__version__")` was `False` and the install
+  check in CONTRIBUTING.md raised `AttributeError`. It equals
+  `importlib.metadata.version("hotcoco")` for an installed wheel.
+- *Rust API:* `StreamingEval::unknown_category_ids` returns the category ids in
+  a set of annotations that the evaluator was not built with, the same check
+  `update()` makes, and `Params::set_iou_thrs` / `Params::set_rec_thrs` store a
+  threshold grid with the snapping rule below.
+
 ### Changed
+
+- **`StreamingEval.update()` raises `KeyError` for a category it was not built
+  with.** A ground truth or detection whose `category_id` is not in
+  `categories` used to drop out of every metric without a trace, so an
+  off-by-one class map or a background id looked like a model that never
+  predicted that class. The error names every unknown id, rejects the batch
+  whole, and leaves the evaluator as it was. A batch `COCOeval` still drops
+  such an annotation silently. A category that is listed but excluded by
+  `params.cat_ids` is not an error, and with `use_cats` false nothing is
+  checked.
+- **Assigning a `float32` threshold grid to `Params.iou_thrs` or
+  `Params.rec_thrs` stores the default grid.** A grid built with
+  `torch.linspace` and read back as `float64` sits up to 4e-8 from the
+  default, and every `summarize()` warned that the grid differed. It was not
+  only noise: on a category with 20 ground truths the `float32` recall grid
+  changed 240 of 12,120 precision cells, by up to 0.33, because recall `k / n`
+  lands exactly on a grid point that is one ulp too high to include it. A
+  grid of the same length with every point within 1e-6 of the default now
+  becomes the default exactly, so the numbers are the default grid's and the
+  warning goes away. Any other grid is stored as given and still warns.
 
 ### Fixed
 

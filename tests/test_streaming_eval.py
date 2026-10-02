@@ -134,6 +134,53 @@ class TestStreamingMatchesBatch:
         assert all(v == -1.0 for v in ev.stats.tolist())
 
 
+class TestUnknownCategory:
+    """A label outside `categories` raises instead of vanishing from every metric."""
+
+    @staticmethod
+    def streaming(**kwargs):
+        return StreamingEval([{"id": 1, "name": "a"}, {"id": 2, "name": "b"}], iou_type="bbox", **kwargs)
+
+    def test_detection_in_an_unlisted_category_raises_key_error(self):
+        se = self.streaming()
+        dt = [{"image_id": 2, "category_id": 7, "bbox": [0, 0, 5, 5], "score": 0.5}]
+        with pytest.raises(KeyError, match=r"\[7\]"):
+            se.update([{"id": 2, "width": 10, "height": 10}], [], dt)
+
+    def test_ground_truth_in_an_unlisted_category_raises_key_error(self):
+        se = self.streaming()
+        gts = [
+            {"id": 1, "image_id": 2, "category_id": 9, "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0},
+            {"id": 2, "image_id": 2, "category_id": 4, "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0},
+        ]
+        # Every offender, sorted — not only the first.
+        with pytest.raises(KeyError, match=r"\[4, 9\]"):
+            se.update([{"id": 2, "width": 10, "height": 10}], gts, [])
+
+    def test_a_rejected_batch_is_not_recorded(self):
+        se = self.streaming()
+        se.update(images()[:1], gt_annotations()[:1], dt_annotations()[:1])
+        bad = [{"image_id": 2, "category_id": 7, "bbox": [0, 0, 5, 5], "score": 0.5}]
+        with pytest.raises(KeyError):
+            se.update(images()[1:2], [], bad)
+        ev = se.finalize()
+        assert list(ev.params.img_ids) == [1]
+
+    def test_a_listed_category_outside_cat_ids_is_not_an_error(self):
+        params = hotcoco.Params("bbox")
+        params.cat_ids = [1]
+        se = self.streaming(params=params)
+        dt = [{"image_id": 2, "category_id": 2, "bbox": [0, 0, 5, 5], "score": 0.5}]
+        se.update([{"id": 2, "width": 10, "height": 10}], [], dt)
+
+    def test_pooled_categories_are_not_checked(self):
+        params = hotcoco.Params("bbox")
+        params.use_cats = False
+        se = self.streaming(params=params)
+        dt = [{"image_id": 2, "category_id": 7, "bbox": [0, 0, 5, 5], "score": 0.5}]
+        se.update([{"id": 2, "width": 10, "height": 10}], [], dt)
+
+
 def test_spent_streaming_eval_raises():
     se = StreamingEval(categories(), iou_type="bbox")
     se.update(images()[:1], gt_annotations()[:1], dt_annotations()[:1])

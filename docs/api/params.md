@@ -89,6 +89,8 @@ IoU thresholds for evaluation.
 | **Type** | `list[float]` | `Vec<f64>` |
 | **Default** | `[0.5, 0.55, 0.6, ..., 0.95]` (10 values) | Same |
 
+Assigning a grid that is the default rounded through `float32` stores the default grid exactly. That is what `torch.linspace(...).tolist()` returns: every point sits within about 4e-8 of the default. The rule is a grid of the same length with every point within 1e-6 of the default; any other grid is stored as given. It snaps instead of tolerating the difference because the difference is not harmless. Recall `k / n` lands exactly on a recall-grid point, and a point one ulp higher excludes it, so a `float32` recall grid changes which precision some cells pick up (on a category with 20 ground truths, up to 0.33 in a cell). The snapped run gets the default grid's numbers and no `iou_thrs differ` warning. Reading the property back returns the default grid, not the exact floats you set. In Rust, `Params::set_iou_thrs` snaps; assigning the field stores the grid as given.
+
 ---
 
 ### `rec_thrs`
@@ -99,6 +101,8 @@ Recall thresholds for precision interpolation.
 |---|---|---|
 | **Type** | `list[float]` | `Vec<f64>` |
 | **Default** | `[0.0, 0.01, 0.02, ..., 1.0]` (101 values) | Same |
+
+Snaps a `float32`-rounded copy of the default grid to the default, by the same rule as [`iou_thrs`](#iou_thrs). In Rust, `Params::set_rec_thrs` snaps.
 
 ---
 

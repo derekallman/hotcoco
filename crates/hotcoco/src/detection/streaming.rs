@@ -20,7 +20,7 @@
 //!
 //! This module is private; the published contract is on [`StreamingEval`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
 use crate::coco::COCO;
@@ -60,6 +60,9 @@ use super::{COCOeval, EvalMode};
 ///   the ground truth's categories before the first cell is matched, so a
 ///   category with no annotations still gets a `-1.0` slot on the K axis
 ///   instead of vanishing. Pass every category the run will see to `new()`.
+///   An annotation naming a category outside the list is an error in
+///   [`update`](Self::update), where a batch `COCOeval` drops it without a word:
+///   the list cannot grow, so the label would be lost from every metric.
 /// - **`params` is frozen at construction.** `iou_thrs`, `area_ranges`, and
 ///   `max_dets` shape every stored cell; `use_cats` and `cat_ids` fix the
 ///   K axis.
@@ -92,6 +95,9 @@ pub struct StreamingEval {
     /// The categories and nothing else: what `new()` derives the K axis from
     /// and what the finalized evaluator reads category names off.
     categories: COCO,
+    /// The ids in `categories`, which [`unknown_category_ids`](Self::unknown_category_ids)
+    /// checks annotations against.
+    known_categories: HashSet<u64>,
     /// One arena per `update()` call, kept whole.
     batches: Vec<Cells>,
     /// Every image seen, keyed by id so `finalize()` gathers image-ascending —
@@ -127,6 +133,7 @@ impl StreamingEval {
             ));
         }
 
+        let known_categories = categories.iter().map(|c| c.id).collect();
         let categories = COCO::from_dataset(Dataset {
             categories,
             ..Default::default()
@@ -141,9 +148,38 @@ impl StreamingEval {
             params,
             eval_mode,
             categories,
+            known_categories,
             batches: Vec::new(),
             images: BTreeMap::new(),
         })
+    }
+
+    /// The ids of categories in `anns` that this evaluator was not constructed
+    /// with, sorted and without duplicates.
+    ///
+    /// [`update`](Self::update) rejects a batch whose annotations name any of
+    /// them. Exposed so a binding, or a caller validating data before streaming
+    /// it, can ask the same question without sending a batch.
+    ///
+    /// Empty whenever `params.use_cats` is false: every annotation pools into
+    /// one placeholder category then, so no id can be lost. The list checked is
+    /// the one `new()` received, not `params.cat_ids`, which only narrows what
+    /// is evaluated.
+    pub fn unknown_category_ids<'a>(
+        &self,
+        anns: impl IntoIterator<Item = &'a Annotation>,
+    ) -> Vec<u64> {
+        if !self.params.use_cats {
+            return Vec::new();
+        }
+        let mut ids: Vec<u64> = anns
+            .into_iter()
+            .map(|a| a.category_id)
+            .filter(|id| !self.known_categories.contains(id))
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
     }
 
     /// Match a batch of images' ground truth against their detections now.
@@ -164,6 +200,12 @@ impl StreamingEval {
     ///
     /// # Errors
     ///
+    /// A ground truth or detection whose category is not in the list given to
+    /// [`new`](Self::new) is an error naming every such id: an off-by-one class
+    /// map or a background id would otherwise drop out of every metric without
+    /// a trace. See [`unknown_category_ids`](Self::unknown_category_ids). The
+    /// batch is rejected whole; the evaluator is as it was before the call.
+    ///
     /// A detection with a NaN score is an error, as it is in `load_res`.
     pub fn update(
         &mut self,
@@ -171,6 +213,14 @@ impl StreamingEval {
         gt_anns: Vec<Annotation>,
         dt_anns: Vec<Annotation>,
     ) -> crate::error::Result<()> {
+        let unknown = self.unknown_category_ids(gt_anns.iter().chain(&dt_anns));
+        if !unknown.is_empty() {
+            return Err(crate::error::Error::Other(format!(
+                "category id(s) {unknown:?} are not in this StreamingEval's categories; pass \
+                 every category the run will see to `categories`"
+            )));
+        }
+
         let mut ids: Vec<u64> = images.iter().map(|img| img.id).collect();
         ids.sort_unstable();
         ids.dedup();
@@ -239,6 +289,7 @@ impl StreamingEval {
             categories,
             batches,
             images,
+            known_categories: _,
         } = self;
 
         if params.img_ids.is_empty() {
@@ -522,6 +573,114 @@ mod tests {
             )
             .expect_err("NaN score is rejected");
         assert!(err.to_string().contains("NaN"));
+    }
+
+    fn streaming_over(categories: Vec<Category>) -> StreamingEval {
+        StreamingEval::new(Params::new(IouType::Bbox), EvalMode::Coco, categories)
+            .expect("mode is supported")
+    }
+
+    #[test]
+    fn unknown_category_ids_are_sorted_and_unique() {
+        let se = streaming_over(vec![category(1), category(2)]);
+        let anns = [
+            ann(1, 1, 7, [0.0, 0.0, 5.0, 5.0], None),
+            ann(2, 1, 3, [0.0, 0.0, 5.0, 5.0], None),
+            ann(3, 1, 7, [0.0, 0.0, 5.0, 5.0], None),
+            ann(4, 1, 1, [0.0, 0.0, 5.0, 5.0], None),
+        ];
+        assert_eq!(se.unknown_category_ids(&anns), vec![3, 7]);
+        assert!(se.unknown_category_ids(&[]).is_empty());
+    }
+
+    /// An off-by-one class map or a background id used to vanish from every
+    /// metric without a trace: `evaluate()` only visits the categories it was
+    /// built with.
+    #[test]
+    fn detection_in_an_unlisted_category_is_an_error() {
+        let mut se = streaming_over(vec![category(1)]);
+        let err = se
+            .update(
+                vec![image(2)],
+                Vec::new(),
+                vec![ann(0, 2, 7, [0.0, 0.0, 5.0, 5.0], Some(0.5))],
+            )
+            .expect_err("category 7 is not in the list");
+        let msg = err.to_string();
+        assert!(msg.contains("[7]"), "names the id: {msg}");
+        assert!(msg.contains("categories"), "says what to fix: {msg}");
+    }
+
+    /// A ground truth in an unlisted category is lost the same way, so both
+    /// sides are checked — and every offender is named, not the first.
+    #[test]
+    fn ground_truth_in_an_unlisted_category_is_an_error() {
+        let mut se = streaming_over(vec![category(1)]);
+        let err = se
+            .update(
+                vec![image(2)],
+                vec![
+                    ann(1, 2, 9, [0.0, 0.0, 5.0, 5.0], None),
+                    ann(2, 2, 4, [0.0, 0.0, 5.0, 5.0], None),
+                ],
+                Vec::new(),
+            )
+            .expect_err("categories 4 and 9 are not in the list");
+        assert!(err.to_string().contains("[4, 9]"), "{err}");
+    }
+
+    /// A rejected batch must leave the run as if it had never been sent, so a
+    /// caller that catches the error and carries on gets honest numbers.
+    #[test]
+    fn rejected_batch_leaves_the_evaluator_untouched() {
+        let mut se = streaming_over(vec![category(1)]);
+        se.update(
+            vec![image(1)],
+            vec![ann(1, 1, 1, [0.0, 0.0, 10.0, 10.0], None)],
+            vec![ann(0, 1, 1, [0.0, 0.0, 10.0, 10.0], Some(0.9))],
+        )
+        .expect("known category");
+        se.update(
+            vec![image(2)],
+            Vec::new(),
+            vec![ann(0, 2, 7, [0.0, 0.0, 5.0, 5.0], Some(0.5))],
+        )
+        .expect_err("category 7 is not in the list");
+        let ev = se.finalize();
+        assert_eq!(ev.params.img_ids, vec![1], "image 2 was never recorded");
+        assert_eq!(ev.cells.len(), 1);
+    }
+
+    /// Without `use_cats` every annotation pools into one placeholder
+    /// category, so no id can vanish and none is checked.
+    #[test]
+    fn categories_play_no_role_without_use_cats() {
+        let mut params = Params::new(IouType::Bbox);
+        params.use_cats = false;
+        let mut se = StreamingEval::new(params, EvalMode::Coco, vec![category(1)])
+            .expect("mode is supported");
+        let dt = [ann(0, 2, 7, [0.0, 0.0, 5.0, 5.0], Some(0.5))];
+        assert!(se.unknown_category_ids(&dt).is_empty());
+        se.update(vec![image(2)], Vec::new(), dt.to_vec())
+            .expect("pooled, not rejected");
+    }
+
+    /// `cat_ids` narrows what is evaluated; `categories` is what is known. A
+    /// deliberate subset must keep working, so a detection in a listed
+    /// category the run excluded is skipped, not rejected.
+    #[test]
+    fn category_outside_cat_ids_but_listed_is_not_an_error() {
+        let mut params = Params::new(IouType::Bbox);
+        params.cat_ids = vec![1];
+        let mut se = StreamingEval::new(params, EvalMode::Coco, vec![category(1), category(2)])
+            .expect("mode is supported");
+        se.update(
+            vec![image(1)],
+            Vec::new(),
+            vec![ann(0, 1, 2, [0.0, 0.0, 5.0, 5.0], Some(0.5))],
+        )
+        .expect("category 2 is listed, just not evaluated");
+        assert_eq!(se.finalize().cells.len(), 0);
     }
 
     #[test]
