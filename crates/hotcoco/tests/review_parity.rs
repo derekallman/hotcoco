@@ -66,9 +66,9 @@ fn fr_poly_far_out_of_image_matches_pycocotools() {
     }
 }
 
-/// The memory bound survives: a polygon whose boundary walk would run to
-/// billions of points (1000 vertices alternating ±1e9) falls back to the
-/// image-extent clamp instead of reserving gigabytes, and stays in the image.
+/// The cost bound survives without bending edges: a polygon whose boundary
+/// walk would run to billions of points (1000 vertices alternating ±1e9)
+/// returns promptly and stays in the image.
 #[test]
 fn fr_poly_absurd_many_vertex_polygon_stays_bounded() {
     let poly: Vec<f64> = (0..2000)
@@ -77,6 +77,27 @@ fn fr_poly_absurd_many_vertex_polygon_stays_bounded() {
     let rle = mask::fr_poly(&poly, 100, 100).unwrap();
     assert!(mask::area(&rle) <= 100 * 100);
     assert_eq!(rle.counts.iter().map(|&c| c as u64).sum::<u64>(), 100 * 100);
+}
+
+/// A vertex at `x = 1e6` on a 640×480 image is a five-million-point edge in
+/// maskApi.c. Walking it all cost ~80 MB and ~30 ms per call; the walk now
+/// skips what cannot reach the image, so it is bounded by the image size.
+/// Twenty calls must take a small fraction of what one full walk did. The
+/// area is `pycocotools.mask.frPyObjects` output; `tests/test_mask_parity.py`
+/// checks the counts on the same polygon.
+#[test]
+fn fr_poly_far_vertex_is_bounded_by_the_image() {
+    let poly = [10.0, 10.0, 1e6, 200.0, 300.0, 400.0];
+    let started = std::time::Instant::now();
+    for _ in 0..20 {
+        let rle = mask::fr_poly(&poly, 480, 640).unwrap();
+        assert_eq!(mask::area(&rle), 189_125);
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(100),
+        "20 calls took {elapsed:?}: the walk is not bounded by the image"
+    );
 }
 
 // ── LVIS caps detections per image, not per (image, category) ───────────────
@@ -227,4 +248,89 @@ fn lvis_keeps_a_results_set_capped_by_the_caller() {
     let stats = run(Some(300));
     assert!((stats[0] - 2.0 / 3.0).abs() < 1e-12, "AP {}", stats[0]);
     assert_eq!(stats[6], 0.0, "APr");
+}
+
+/// The per-image cap is lvis-api's `LVISResults` default — 300 — whatever
+/// `params.max_dets` says, because `LVISEval` wraps a raw results list in
+/// `LVISResults(lvis_gt, results)` without passing its own `max_dets`.
+/// `StreamingEval` used to cap at `params.max_det()` instead, so a streaming
+/// run with `max_dets = [1000]` kept cat 1's tied detection that the batch
+/// path (and lvis-api) drops, and `[100]` dropped two hundred more.
+#[test]
+fn lvis_streaming_caps_like_batch_with_custom_max_dets() {
+    let (images, categories, gt_anns, dt_anns) = over_300_fixture();
+    for max_dets in [vec![100], vec![1000]] {
+        let mut params = EvalMode::Lvis.default_params(IouType::Bbox);
+        params.max_dets.clone_from(&max_dets);
+
+        let gt = COCO::from_dataset(Dataset {
+            images: images.clone(),
+            annotations: gt_anns.clone(),
+            categories: categories.clone(),
+            ..Default::default()
+        });
+        let dt = gt.load_res_anns(dt_anns.clone()).unwrap();
+        let mut batch = COCOeval::new_lvis(gt, dt, IouType::Bbox);
+        batch.params = params.clone();
+        batch.evaluate();
+        batch.accumulate();
+        batch.summarize();
+
+        let mut se = StreamingEval::new(params, EvalMode::Lvis, categories.clone()).unwrap();
+        se.update(images.clone(), gt_anns.clone(), dt_anns.clone())
+            .unwrap();
+        let mut streamed = se.finalize();
+        streamed.accumulate();
+        streamed.summarize();
+
+        let stats = batch.stats().unwrap();
+        assert_eq!(streamed.stats().unwrap(), stats, "max_dets = {max_dets:?}");
+        assert_eq!(
+            stats[6], 0.0,
+            "max_dets = {max_dets:?}: APr after the 300 cap"
+        );
+    }
+}
+
+/// The `Arc` form of the cap — what Python's `cap_detections_per_image` calls
+/// on its shared dataset — used to copy the whole set on every call before
+/// looking at it. It now hands the same set back when capping would change
+/// nothing, and otherwise evaluates exactly like the by-value form.
+#[test]
+fn lvis_shared_cap_copies_only_when_it_changes_something() {
+    use std::sync::Arc;
+    let (images, categories, gt_anns, dt_anns) = over_300_fixture();
+    let gt = COCO::from_dataset(Dataset {
+        images,
+        annotations: gt_anns,
+        categories,
+        ..Default::default()
+    });
+
+    // Image 2's single detection: nothing over any cap.
+    let small = Arc::new(
+        gt.load_res_anns(dt_anns[dt_anns.len() - 1..].to_vec())
+            .unwrap(),
+    );
+    for max_det in [Some(300), Some(1000), None] {
+        let capped = Arc::clone(&small).cap_detections_per_image_shared(max_det);
+        assert!(Arc::ptr_eq(&capped, &small), "{max_det:?}: no copy");
+    }
+
+    // Image 1 holds 302: every cap changes what LVIS evaluates.
+    let full = Arc::new(gt.load_res_anns(dt_anns.clone()).unwrap());
+    for (max_det, ap) in [(Some(300), 2.0 / 3.0), (Some(1000), 1.0), (None, 1.0)] {
+        let capped = Arc::clone(&full).cap_detections_per_image_shared(max_det);
+        assert!(!Arc::ptr_eq(&capped, &full), "{max_det:?}");
+        let mut ev = COCOeval::new_lvis(gt.clone(), capped, IouType::Bbox);
+        ev.evaluate();
+        ev.accumulate();
+        ev.summarize();
+        let stats = ev.stats().unwrap();
+        assert!(
+            (stats[0] - ap).abs() < 1e-12,
+            "{max_det:?}: AP {}",
+            stats[0]
+        );
+    }
 }

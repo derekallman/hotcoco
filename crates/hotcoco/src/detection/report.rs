@@ -83,7 +83,7 @@ impl COCOeval {
         }
 
         let expected_max_dets = if self.eval_mode == EvalMode::Lvis {
-            vec![300usize]
+            vec![crate::coco::LVIS_MAX_DETS_PER_IMAGE]
         } else {
             defaults.max_dets.clone()
         };

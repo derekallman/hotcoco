@@ -62,6 +62,15 @@ fn run_len(n: usize) -> usize {
         .max(1)
 }
 
+/// The error for an analysis asked about a threshold the cells have no row for
+/// — see [`COCOeval::evaluated_iou_row`].
+fn not_evaluated_at(thr: f64) -> String {
+    format!(
+        "IoU threshold {thr} was not in params.iou_thrs when evaluate() ran; \
+         call evaluate() again after changing iou_thrs"
+    )
+}
+
 /// COCO evaluation engine.
 ///
 /// Computes AP and AR metrics for bbox, segmentation, and keypoint predictions.
@@ -130,7 +139,9 @@ impl COCOeval {
     ///
     /// LVIS replaces `coco_dt` here with its per-image-capped copy — see
     /// [`new_lvis`](Self::new_lvis) — so every constructor path, streaming
-    /// batches included, applies the cap the way lvis-api's `LVISResults` does.
+    /// batches included, applies the cap the way lvis-api's `LVISResults` does:
+    /// [`LVIS_MAX_DETS_PER_IMAGE`](crate::coco::LVIS_MAX_DETS_PER_IMAGE), never
+    /// `params.max_dets`, which `LVISEval` does not pass to `LVISResults`.
     /// A set [`COCO::cap_detections_per_image`] already capped is kept as is.
     fn with_mode(
         coco_gt: impl Into<Arc<COCO>>,
@@ -141,7 +152,7 @@ impl COCOeval {
     ) -> Self {
         let mut coco_dt: Arc<COCO> = coco_dt.into();
         if eval_mode == EvalMode::Lvis && !coco_dt.is_per_image_capped() {
-            if let Some(capped) = coco_dt.capped_copy(params.max_det()) {
+            if let Some(capped) = coco_dt.capped_copy(crate::coco::LVIS_MAX_DETS_PER_IMAGE) {
                 coco_dt = Arc::new(capped);
             }
         }
@@ -250,6 +261,42 @@ impl COCOeval {
         self.eval_inputs.is_some()
     }
 
+    /// The row IoU threshold `thr` occupies in the cells `evaluate()` matched,
+    /// or `None` if `evaluate()` never matched at it (or has not run).
+    ///
+    /// The only lookup from a threshold to a matched row. The cells hold one
+    /// row per threshold of the grid `evaluate()` saw; `params.iou_thrs` may
+    /// have been reordered or grown since, so a threshold's position there is
+    /// not its row. `accumulate()` and every per-threshold analysis resolve by
+    /// value through here. [`Params::iou_thr_idx`](crate::Params::iou_thr_idx)
+    /// owns the matching tolerance.
+    pub(in crate::detection) fn evaluated_iou_row(&self, thr: f64) -> Option<usize> {
+        self.eval_inputs.as_ref()?.params.iou_thr_idx(thr)
+    }
+
+    /// For the analyses that take an approximate threshold (TIDE, per-image
+    /// diagnostics): snap `thr` to the nearest entry of `params.iou_thrs`, and
+    /// return that grid value with its [`evaluated_iou_row`](Self::evaluated_iou_row).
+    ///
+    /// # Errors
+    ///
+    /// When `params.iou_thrs` is empty, or the snapped threshold was not in the
+    /// grid `evaluate()` matched on.
+    pub(in crate::detection) fn snapped_iou_row(
+        &self,
+        thr: f64,
+    ) -> crate::error::Result<(f64, usize)> {
+        let snapped = *self
+            .params
+            .iou_thrs
+            .get(self.params.nearest_iou_thr_idx(thr))
+            .ok_or("params.iou_thrs is empty")?;
+        let row = self
+            .evaluated_iou_row(snapped)
+            .ok_or_else(|| not_evaluated_at(snapped))?;
+        Ok((snapped, row))
+    }
+
     /// Accumulated precision/recall curves (set after `accumulate()`).
     //
     // The pyo3 binding caches the dict built from this value and invalidates
@@ -356,10 +403,11 @@ impl COCOeval {
     /// `(image, category)` cell: the evaluator holds the detections you pass
     /// capped to each image's 300 highest-scoring, as lvis-api's
     /// `LVISResults` does at load time, and [`coco_dt`](Self::coco_dt) returns
-    /// that capped copy. Your own handle is untouched. The cap is the
-    /// construction-time `params.max_det()`; editing `params.max_dets`
-    /// afterwards changes the per-cell cap, not this one — lvis-api's
-    /// `LVISResults(max_dets=)` and `LVISEval` params are likewise separate.
+    /// that capped copy. Your own handle is untouched. The cap is always 300,
+    /// lvis-api's `LVISResults` default, whatever `params.max_dets` says:
+    /// `LVISEval` wraps raw results without passing its own `max_dets`, so the
+    /// two are separate there too, and `params.max_dets` only sets the per-cell
+    /// cap.
     ///
     /// Detections that [`COCO::cap_detections_per_image`] already capped —
     /// at any value, or `None` for none — are used as is, the way lvis-api's

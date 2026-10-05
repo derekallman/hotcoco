@@ -22,38 +22,40 @@ def _asgi_get(app, path: str, query: str = ""):
     """Issue a GET against an ASGI app; return (status, headers, body)."""
     import asyncio
 
-    async def run():
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0", "spec_version": "2.3"},
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": path,
-            "raw_path": path.encode(),
-            "query_string": query.encode(),
-            "root_path": "",
-            "headers": [(b"host", b"testserver")],
-            "client": ("testclient", 50000),
-            "server": ("testserver", 80),
-        }
+    return asyncio.run(_asgi_get_async(app, path, query))
 
-        async def receive():
-            return {"type": "http.request", "body": b"", "more_body": False}
 
-        out = {"status": None, "headers": {}, "chunks": []}
+async def _asgi_get_async(app, path: str, query: str = ""):
+    """`_asgi_get` as a coroutine, for tests that issue requests concurrently."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": query.encode(),
+        "root_path": "",
+        "headers": [(b"host", b"testserver")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
 
-        async def send(message):
-            if message["type"] == "http.response.start":
-                out["status"] = message["status"]
-                out["headers"] = {k.decode(): v.decode() for k, v in message.get("headers", [])}
-            elif message["type"] == "http.response.body":
-                out["chunks"].append(message.get("body", b""))
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
 
-        await app(scope, receive, send)
-        return out["status"], out["headers"], b"".join(out["chunks"])
+    out = {"status": None, "headers": {}, "chunks": []}
 
-    return asyncio.run(run())
+    async def send(message):
+        if message["type"] == "http.response.start":
+            out["status"] = message["status"]
+            out["headers"] = {k.decode(): v.decode() for k, v in message.get("headers", [])}
+        elif message["type"] == "http.response.body":
+            out["chunks"].append(message.get("body", b""))
+
+    await app(scope, receive, send)
+    return out["status"], out["headers"], b"".join(out["chunks"])
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +419,58 @@ def test_dashboard_on_evaluate_only_eval(tmp_path):
     # Second request is served from the cache and must not re-accumulate into an error.
     status, _, _ = _asgi_get(app, "/dashboard")
     assert status == 200
+
+
+class _SlowAccumulate:
+    """Delegates to a real COCOeval, with an accumulate() that takes a while and counts its calls."""
+
+    def __init__(self, ev, delay):
+        self._ev = ev
+        self._delay = delay
+        self.accumulate_calls = 0
+
+    def accumulate(self):
+        import time
+
+        self.accumulate_calls += 1
+        time.sleep(self._delay)
+        self._ev.accumulate()
+
+    def __getattr__(self, name):
+        return getattr(self._ev, name)
+
+
+def test_dashboard_first_build_does_not_block_the_server(tmp_path):
+    """The first /dashboard request accumulates; that must not stall other requests, or run twice."""
+    import asyncio
+    import time
+
+    from hotcoco import COCOeval
+    from hotcoco.server import create_app
+
+    pytest.importorskip("plotly")
+    dataset, tmpdir = _minimal_dataset(tmp_path)
+    coco = COCO(dataset, image_dir=tmpdir)
+    dt = coco.load_res([{"image_id": 1, "category_id": 1, "bbox": [12, 11, 28, 20], "score": 0.9}])
+    real = COCOeval(coco, dt, "bbox")
+    real.evaluate()
+    slow = _SlowAccumulate(real, delay=0.5)
+    app = create_app(coco, dt_coco=dt, coco_eval=slow)
+
+    async def tick():
+        # Scheduled before the dashboard requests; a blocked event loop holds it up.
+        started = time.perf_counter()
+        await asyncio.sleep(0.05)
+        return time.perf_counter() - started
+
+    async def run():
+        return await asyncio.gather(tick(), _asgi_get_async(app, "/dashboard"), _asgi_get_async(app, "/dashboard"))
+
+    tick_s, first, second = asyncio.run(run())
+    assert first[0] == 200 and second[0] == 200
+    assert first[2] == second[2]
+    assert tick_s < 0.3, f"event loop stalled {tick_s:.2f}s while the dashboard built"
+    assert slow.accumulate_calls == 1, "two concurrent first requests both accumulated"
 
 
 def test_dashboard_on_summarized_eval(tmp_path):

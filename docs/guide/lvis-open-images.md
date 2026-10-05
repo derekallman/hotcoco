@@ -86,6 +86,7 @@ Starting from the CSV files Open Images ships rather than from COCO JSON, load t
 ### Category hierarchy
 
 Open Images categories form a hierarchy — a "Dog" detection also counts as an "Animal" detection if Animal is an ancestor of Dog. Pass a `Hierarchy` to expand GT annotations automatically at evaluation time.
+Each box expands on its own, as the TF Object Detection API expands it: a dog box and a cat box with the same coordinates become two "Animal" ground truths. A ground truth that is already expanded — the input holds the identical box at the ancestor — is not copied again, so pre-expanded Open Images files evaluate unchanged.
 
 ```python
 from hotcoco import COCO, COCOeval, Hierarchy

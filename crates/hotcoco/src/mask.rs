@@ -359,10 +359,11 @@ fn interp(s: f64, t: f64, base: f64) -> f64 {
 /// for each. A mask can therefore differ by a boundary pixel between an arm64
 /// and an x86-64 machine — exactly as pycocotools' own output does.
 ///
-/// Errors when `h * w` exceeds `u32::MAX`. Coordinates far outside the image
-/// (beyond one image-extent past its edges) are clamped — they cannot place
-/// pixels inside the image, but unclamped they overflow the rasterizer's
-/// integer edge walk.
+/// Errors when `h * w` exceeds `u32::MAX`. Vertices far outside the image are
+/// kept where they are, so edge slopes match the reference; the boundary walk
+/// skips the stretches that cannot reach the image, so its cost is bounded by
+/// the image size rather than the polygon's. Only coordinates beyond ±2²²
+/// pixels are clamped, where maskApi.c's own integer arithmetic overflows.
 pub fn fr_poly(xy: &[f64], h: u32, w: u32) -> crate::error::Result<Rle> {
     let hw = checked_hw(h, w)?;
     Ok(POLY_SCRATCH.with(|s| fr_poly_impl(&mut s.borrow_mut(), xy, h, w, hw)))
@@ -401,124 +402,206 @@ fn fr_poly_impl(scratch: &mut PolyScratch, xy: &[f64], h: u32, w: u32, hw: u32) 
         };
     }
 
-    let scale: f64 = 5.0;
-    let h_s = h as i64;
-    let w_s = w as i64;
-
-    // Stage 1: Upsample polygon vertices by 5x and walk each edge using a
-    // Bresenham-like algorithm to produce dense boundary points (u, v).
+    // Stage 1: upsample the vertices by `SCALE` and walk each edge.
+    //
+    // Untrusted coordinates like ±1e9 would overflow the i32 edge subtractions
+    // in the walk (a debug panic), so vertices are clamped to ±2²² pixels — far
+    // beyond any real annotation, and the bound that keeps every edge length
+    // inside i32. pycocotools' `(int)` cast is undefined behavior past i32
+    // anyway. Float-to-int casts saturate and NaN casts to 0, so no coordinate
+    // value can panic here. The clamp is the only place a vertex moves: the walk
+    // bounds its own length by the image (see `walk_edge`), not by bending
+    // edges, so every polygon inside the ceiling rasterizes like the reference.
+    const MAX_ABS_UPSAMPLED: f64 = SCALE * (1u32 << 22) as f64;
     let x_int = &mut scratch.x_int;
     let y_int = &mut scratch.y_int;
-    // Untrusted coordinates like ±1e9 would overflow the i32 edge subtractions
-    // below (a debug panic) and reserve multi-GB boundary buffers, so vertices
-    // are clamped — but clamping each vertex independently changes the slope
-    // of every edge it touches, so it must only happen when it has to. First
-    // pass: a fixed ceiling of ±2²² pixels, far beyond any real annotation,
-    // which keeps every edge length inside i32. A polygon whose boundary walk
-    // then fits in `MAX_BOUNDARY_POINTS` rasterizes bit-identically to
-    // pycocotools (whose `(int)` cast is undefined behavior past i32 anyway).
-    // Only a polygon too long to walk falls back to clamping one image-extent
-    // beyond the image, which bounds the walk by the image size. Float-to-int
-    // casts saturate and NaN casts to 0, so no coordinate value can panic here.
-    const MAX_ABS_UPSAMPLED: f64 = 5.0 * (1u32 << 22) as f64;
-    const MAX_BOUNDARY_POINTS: usize = 1 << 25;
-    let fill = |x_int: &mut Vec<i32>, y_int: &mut Vec<i32>, clamp_x: f64, clamp_y: f64| {
-        x_int.clear();
-        y_int.clear();
-        x_int.reserve(k + 1);
-        y_int.reserve(k + 1);
-        for j in 0..k {
-            x_int.push((scale * xy[j * 2] + 0.5).clamp(-clamp_x, clamp_x) as i32);
-            y_int.push((scale * xy[j * 2 + 1] + 0.5).clamp(-clamp_y, clamp_y) as i32);
-        }
-        // Close the polygon by repeating the first vertex
-        x_int.push(x_int[0]);
-        y_int.push(y_int[0]);
-        // Total boundary points across all edges, for allocation
-        (0..k)
-            .map(|j| {
-                (x_int[j] - x_int[j + 1])
-                    .unsigned_abs()
-                    .max((y_int[j] - y_int[j + 1]).unsigned_abs()) as usize
-                    + 1
-            })
-            .sum::<usize>()
-    };
-    let mut m_total = fill(x_int, y_int, MAX_ABS_UPSAMPLED, MAX_ABS_UPSAMPLED);
-    if m_total > MAX_BOUNDARY_POINTS {
-        let clamp_x = (2.0 * scale * (w as f64 + 1.0)).min(MAX_ABS_UPSAMPLED);
-        let clamp_y = (2.0 * scale * (h as f64 + 1.0)).min(MAX_ABS_UPSAMPLED);
-        m_total = fill(x_int, y_int, clamp_x, clamp_y);
+    x_int.clear();
+    y_int.clear();
+    for j in 0..k {
+        let up = |c: f64| (SCALE * c + 0.5).clamp(-MAX_ABS_UPSAMPLED, MAX_ABS_UPSAMPLED) as i32;
+        x_int.push(up(xy[j * 2]));
+        y_int.push(up(xy[j * 2 + 1]));
     }
+    // Close the polygon by repeating the first vertex
+    x_int.push(x_int[0]);
+    y_int.push(y_int[0]);
 
     let u = &mut scratch.u;
     let v = &mut scratch.v;
     u.clear();
     v.clear();
-    u.reserve(m_total);
-    v.reserve(m_total);
-
-    // Walk each edge, stepping along the longer axis (dx or dy).
-    // If the edge runs "backwards" (right-to-left or bottom-to-top), flip the
-    // direction so we always step forward, then reverse the traversal order.
+    let bands = Bands::new(h, w);
     for j in 0..k {
-        let mut xs = x_int[j];
-        let mut xe = x_int[j + 1];
-        let mut ys = y_int[j];
-        let mut ye = y_int[j + 1];
-        let dx = (xe - xs).unsigned_abs() as i32;
-        let dy = (ys - ye).unsigned_abs() as i32;
-        let flip = (dx >= dy && xs > xe) || (dx < dy && ys > ye);
-        if flip {
-            std::mem::swap(&mut xs, &mut xe);
-            std::mem::swap(&mut ys, &mut ye);
-        }
-        // Slope of the minor axis per step along the major axis
-        let s: f64 = if dx >= dy {
-            if dx == 0 {
-                0.0
-            } else {
-                (ye - ys) as f64 / dx as f64
-            }
-        } else if dy == 0 {
-            0.0
-        } else {
-            (xe - xs) as f64 / dy as f64
-        };
-        // `interp`, not a bare `base + s * t`, reproduces the reference's
-        // arithmetic *per architecture*. maskApi.c writes `(int)(ys+s*t+.5)`;
-        // whether the compiler fuses `s*t+ys` into one FMA (one rounding) or
-        // leaves it as two roundings depends on the target: arm64 has an FMA
-        // instruction and clang/gcc contract by default there, while the x86_64
-        // wheels on PyPI are built for baseline x86-64, which has none. Rust never
-        // contracts implicitly, so a single fixed choice matches one platform's
-        // pycocotools and disagrees with the other's on boundary pixels (~2 of 400
-        // random polygons — the first v1.0.0 tag failed CI on Linux for exactly
-        // this after passing on an arm64 Mac). This path builds every segm GT
-        // mask, so mirroring the platform is what keeps segmentation parity exact
-        // wherever hotcoco and pycocotools are compared on the same machine.
-        if dx >= dy {
-            // Step along x, interpolate y
-            for d in 0..=dx {
-                let t = if flip { dx - d } else { d };
-                u.push(t + xs);
-                v.push((interp(s, t as f64, ys as f64) + 0.5) as i32);
-            }
-        } else {
-            // Step along y, interpolate x
-            for d in 0..=dy {
-                let t = if flip { dy - d } else { d };
-                v.push(t + ys);
-                u.push((interp(s, t as f64, xs as f64) + 0.5) as i32);
-            }
+        walk_edge(
+            (x_int[j], y_int[j]),
+            (x_int[j + 1], y_int[j + 1]),
+            &bands,
+            u,
+            v,
+        );
+    }
+
+    boundary_to_rle(u, v, &mut scratch.a, h, w, hw)
+}
+
+/// `rleFrPoly`'s upsampling factor.
+const SCALE: f64 = 5.0;
+
+/// The upsampled coordinate ranges outside which a boundary point cannot change
+/// [`boundary_to_rle`]'s output, inclusive.
+///
+/// Stage 2 emits a crossing for consecutive points `(u₀, v₀) → (u₁, v₁)` with
+/// `u₀ ≠ u₁` only when the crossed boundary `min(u₀, u₁)` (or `u₁ − 1` when
+/// rising) is `5·xd + 2` for a column `xd` in `0..w` — so only in
+/// `[2, 5w − 3]`. A point outside `[−5, 5w + 5]` is more than two steps past
+/// that range, and consecutive points are at most two apart in `u` (one along
+/// an edge, one more where `(int)(x + 0.5)` truncates a negative vertex toward
+/// zero), so no pair touching it crosses, and dropping a run of such points
+/// joins two points that cross nothing either. `v` never gates a crossing — it
+/// only places it, clamped to row `0` at or below `v = 2` and to row `h` at or above
+/// `v = 5h + 2` — so points beyond `[−5, 5h + 5]` matter only through their
+/// `u`: one point per distinct `u` reproduces every crossing they make.
+struct Bands {
+    u: (i64, i64),
+    v: (i64, i64),
+}
+
+impl Bands {
+    fn new(h: u32, w: u32) -> Self {
+        let band = |extent: u32| (-(SCALE as i64), SCALE as i64 * (i64::from(extent) + 1));
+        Bands {
+            u: band(w),
+            v: band(h),
         }
     }
+}
+
+/// The first `t` in `lo..hi` for which `pred` holds, or `hi` if none does.
+/// `pred` must be monotone over the range: false, then true.
+fn first_true(mut lo: i32, mut hi: i32, pred: impl Fn(i32) -> bool) -> i32 {
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if pred(mid) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    lo
+}
+
+/// Stage 1 for one edge: append its upsampled boundary points to `u`/`v`,
+/// minus the points [`Bands`] proves cannot change the mask.
+///
+/// The points are maskApi.c's — `t` steps along the longer axis and the other
+/// coordinate is interpolated with [`interp`] — and so are their values; only
+/// which of them are materialized differs. A vertex at `x = 10⁶` on a 640 px
+/// image is a five-million-point edge in maskApi.c and a few thousand here.
+/// Both coordinates are monotone in `t` along one edge (a rounded linear
+/// function), which is what lets the band edges and the `u`-steps be found by
+/// bisection instead of by walking.
+fn walk_edge(
+    start: (i32, i32),
+    end: (i32, i32),
+    bands: &Bands,
+    u: &mut Vec<i32>,
+    v: &mut Vec<i32>,
+) {
+    let ((mut xs, mut ys), (mut xe, mut ye)) = (start, end);
+    let dx = (xe - xs).unsigned_abs() as i32;
+    let dy = (ys - ye).unsigned_abs() as i32;
+    // If the edge runs "backwards" (right-to-left or bottom-to-top), flip the
+    // direction so `t` always steps forward, then reverse the traversal order.
+    let flip = (dx >= dy && xs > xe) || (dx < dy && ys > ye);
+    if flip {
+        std::mem::swap(&mut xs, &mut xe);
+        std::mem::swap(&mut ys, &mut ye);
+    }
+    let x_major = dx >= dy;
+    let len = if x_major { dx } else { dy };
+    // Slope of the minor axis per step along the major axis
+    let s: f64 = match (x_major, len) {
+        (_, 0) => 0.0,
+        (true, _) => (ye - ys) as f64 / dx as f64,
+        (false, _) => (xe - xs) as f64 / dy as f64,
+    };
+    // `interp`, not a bare `base + s * t`, reproduces the reference's
+    // arithmetic *per architecture*. maskApi.c writes `(int)(ys+s*t+.5)`;
+    // whether the compiler fuses `s*t+ys` into one FMA (one rounding) or
+    // leaves it as two roundings depends on the target: arm64 has an FMA
+    // instruction and clang/gcc contract by default there, while the x86_64
+    // wheels on PyPI are built for baseline x86-64, which has none. Rust never
+    // contracts implicitly, so a single fixed choice matches one platform's
+    // pycocotools and disagrees with the other's on boundary pixels (~2 of 400
+    // random polygons — the first v1.0.0 tag failed CI on Linux for exactly
+    // this after passing on an arm64 Mac). This path builds every segm GT
+    // mask, so mirroring the platform is what keeps segmentation parity exact
+    // wherever hotcoco and pycocotools are compared on the same machine.
+    let at = |t: i32| -> (i32, i32) {
+        if x_major {
+            (t + xs, (interp(s, t as f64, ys as f64) + 0.5) as i32)
+        } else {
+            ((interp(s, t as f64, xs as f64) + 0.5) as i32, t + ys)
+        }
+    };
+
+    // The `t` range whose `u` lies in the band, as a half-open `[lo, hi)`.
+    // `key` turns a falling `u` into a rising one so one bisection serves both.
+    let (u0, u1) = (at(0).0, at(len).0);
+    let key = |t: i32| -> i64 {
+        let ut = i64::from(at(t).0);
+        if u1 >= u0 { ut } else { -ut }
+    };
+    let (band_lo, band_hi) = if u1 >= u0 {
+        bands.u
+    } else {
+        (-bands.u.1, -bands.u.0)
+    };
+    let lo = first_true(0, len + 1, |t| key(t) >= band_lo);
+    let hi = first_true(lo, len + 1, |t| key(t) > band_hi);
+
+    // Inside `[v_in_lo, v_in_hi)` every point is kept; outside it, one point
+    // per distinct `u`. An x-major edge keeps everything: `u = t + xs` is
+    // already one point per `u`. A y-major edge has `v = t + ys`, so the
+    // range is where `v` lies in its band.
+    let (v_in_lo, v_in_hi) = if x_major {
+        (lo, hi)
+    } else {
+        let clip = |t: i64| t.clamp(i64::from(lo), i64::from(hi)) as i32;
+        (
+            clip(bands.v.0 - i64::from(ys)),
+            clip(bands.v.1 - i64::from(ys) + 1),
+        )
+    };
+    let first = u.len();
+    let mut t = lo;
+    while t < hi {
+        let (ut, vt) = at(t);
+        u.push(ut);
+        v.push(vt);
+        t = if (v_in_lo..v_in_hi).contains(&t) {
+            t + 1
+        } else {
+            let run_end = if t < v_in_lo { v_in_lo } else { hi };
+            first_true(t + 1, run_end, |t2| at(t2).0 != ut)
+        };
+    }
+    if flip {
+        u[first..].reverse();
+        v[first..].reverse();
+    }
+}
+
+/// Stages 2 and 3 of `rleFrPoly`: turn the upsampled boundary `u`/`v` into the
+/// RLE of the polygon's interior. `a` is scratch.
+fn boundary_to_rle(u: &[i32], v: &[i32], a: &mut Vec<u32>, h: u32, w: u32, hw: u32) -> Rle {
+    let h_s = h as i64;
+    let w_s = w as i64;
 
     // Stage 2: Detect column transitions (x-boundary crossings) in the upsampled
     // boundary, downsample back to original resolution, and convert directly to
     // column-major flat indices (skipping intermediate bx/by storage).
     let m = u.len();
-    let a = &mut scratch.a;
     a.clear();
     a.reserve(m);
 
@@ -527,14 +610,14 @@ fn fr_poly_impl(scratch: &mut PolyScratch, xy: &[f64], h: u32, w: u32, hw: u32) 
         if u[j] != u[j - 1] {
             // Determine which column boundary was crossed and downsample
             let xd_raw = if u[j] < u[j - 1] { u[j] } else { u[j] - 1 };
-            let xd: f64 = (xd_raw as f64 + 0.5) / scale - 0.5;
+            let xd: f64 = (xd_raw as f64 + 0.5) / SCALE - 0.5;
             // Skip if this doesn't land on an integer column boundary within image bounds
             if xd != xd.floor() || xd < 0.0 || xd > (w_s - 1) as f64 {
                 continue;
             }
             // Downsample the y-coordinate and clamp to image bounds
             let yd_raw = if v[j] < v[j - 1] { v[j] } else { v[j - 1] };
-            let mut yd: f64 = (yd_raw as f64 + 0.5) / scale - 0.5;
+            let mut yd: f64 = (yd_raw as f64 + 0.5) / SCALE - 0.5;
             if yd < 0.0 {
                 yd = 0.0;
             } else if yd > h_s as f64 {
@@ -581,15 +664,6 @@ fn fr_poly_impl(scratch: &mut PolyScratch, xy: &[f64], h: u32, w: u32, hw: u32) 
                 i += 1;
             }
         }
-    }
-
-    // A far out-of-image polygon can walk up to `MAX_BOUNDARY_POINTS`; don't
-    // let one such call pin hundreds of MB in this thread's scratch forever.
-    const SCRATCH_KEEP: usize = 1 << 20;
-    if u.capacity() > SCRATCH_KEEP {
-        *u = Vec::new();
-        *v = Vec::new();
-        *a = Vec::new();
     }
 
     Rle { h, w, counts }
@@ -1134,5 +1208,101 @@ mod tests {
         // This decodes to raw=0x1f=31, sign-extended → -1
         let negative_one = "O"; // byte 79 = 48 + 31, decodes to x=31, sign-extended to -1
         assert!(rle_from_string(negative_one, 10, 10).is_err());
+    }
+
+    /// maskApi.c's stage 1 verbatim: every boundary point of every edge, none
+    /// skipped. The reference [`walk_edge`] must reproduce through
+    /// [`boundary_to_rle`].
+    fn fr_poly_full_walk(xy: &[f64], h: u32, w: u32) -> Rle {
+        let k = xy.len() / 2;
+        let up = |c: f64| (SCALE * c + 0.5) as i32;
+        let x: Vec<i32> = (0..=k).map(|j| up(xy[(j % k) * 2])).collect();
+        let y: Vec<i32> = (0..=k).map(|j| up(xy[(j % k) * 2 + 1])).collect();
+        let (mut u, mut v) = (Vec::new(), Vec::new());
+        for j in 0..k {
+            let (mut xs, mut xe, mut ys, mut ye) = (x[j], x[j + 1], y[j], y[j + 1]);
+            let dx = (xe - xs).abs();
+            let dy = (ys - ye).abs();
+            let flip = (dx >= dy && xs > xe) || (dx < dy && ys > ye);
+            if flip {
+                std::mem::swap(&mut xs, &mut xe);
+                std::mem::swap(&mut ys, &mut ye);
+            }
+            if dx >= dy {
+                let s = if dx == 0 {
+                    0.0
+                } else {
+                    (ye - ys) as f64 / dx as f64
+                };
+                for d in 0..=dx {
+                    let t = if flip { dx - d } else { d };
+                    u.push(t + xs);
+                    v.push((interp(s, t as f64, ys as f64) + 0.5) as i32);
+                }
+            } else {
+                let s = (xe - xs) as f64 / dy as f64;
+                for d in 0..=dy {
+                    let t = if flip { dy - d } else { d };
+                    v.push(t + ys);
+                    u.push((interp(s, t as f64, xs as f64) + 0.5) as i32);
+                }
+            }
+        }
+        boundary_to_rle(&u, &v, &mut Vec::new(), h, w, h * w)
+    }
+
+    /// Skipping the points that cannot reach the image changes no mask.
+    /// Random polygons whose vertices reach several image-extents past every
+    /// edge, so every band boundary is crossed in both directions by x-major
+    /// and y-major edges, against the full walk.
+    #[test]
+    fn test_fr_poly_skipped_walk_matches_full_walk() {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for case in 0..3000 {
+            let h = 1 + (next() * 40.0) as u32;
+            let w = 1 + (next() * 40.0) as u32;
+            let k = 3 + (next() * 6.0) as usize;
+            // Mostly near the image, sometimes far out, sometimes on a
+            // half-pixel so upsampled vertices land exactly on band edges.
+            let coord = |r: f64, extent: u32, far: f64| -> f64 {
+                let span = extent as f64 * if far < 0.3 { 12.0 } else { 3.0 };
+                let c = (r - 0.5) * span + extent as f64 / 2.0;
+                if far > 0.8 {
+                    (c * 2.0).round() / 2.0
+                } else {
+                    c
+                }
+            };
+            let xy: Vec<f64> = (0..k)
+                .flat_map(|_| {
+                    let (rx, ry, fx, fy) = (next(), next(), next(), next());
+                    [coord(rx, w, fx), coord(ry, h, fy)]
+                })
+                .collect();
+            let fast = fr_poly(&xy, h, w).unwrap();
+            let full = fr_poly_full_walk(&xy, h, w);
+            assert_eq!(fast.counts, full.counts, "case {case}: {xy:?} on {h}x{w}");
+        }
+    }
+
+    /// Vertices a million pixels out — past the image on the major axis, the
+    /// minor axis, and both — rasterize like the full walk.
+    #[test]
+    fn test_fr_poly_far_vertex_matches_full_walk() {
+        let (h, w) = (480, 640);
+        for xy in [
+            vec![10.0, 10.0, 1e6, 200.0, 300.0, 400.0],
+            vec![10.0, 10.0, 200.0, 1e6, 300.0, 400.0],
+            vec![-1e6, -1e6, 1e6, 5.0, 300.0, 1e6],
+        ] {
+            let fast = fr_poly(&xy, h, w).unwrap();
+            assert_eq!(fast.counts, fr_poly_full_walk(&xy, h, w).counts, "{xy:?}");
+        }
     }
 }

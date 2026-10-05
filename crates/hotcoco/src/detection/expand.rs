@@ -15,16 +15,19 @@ use crate::{COCO, Hierarchy};
 /// (excluding self). Adds virtual categories for any hierarchy-only node IDs
 /// not already present in the dataset.
 ///
-/// Each annotation expands on its own, as the Open Images protocol expands
-/// each box: a cat detection at 0.3 and a dog detection at 0.9 on the same box
-/// become two animal detections, at 0.3 and 0.9. A copy is skipped only when
-/// an annotation identical to it — same image, category, score, and geometry
-/// (box, oriented box, and segmentation) — already exists, which makes
-/// expanding an expanded dataset a no-op: `evaluate()` expands the handles it
-/// replaced, so a second `evaluate()` must not expand further. The cost is
-/// that two children with the same score *and* the same geometry yield one
-/// ancestor copy; nothing in an annotation tells a re-expanded copy from such a
-/// twin.
+/// Each annotation expands on its own, as the TF Object Detection API's
+/// `OIDHierarchicalLabelsExpansion` expands each box row: a cat detection at
+/// 0.3 and a dog detection at 0.9 on the same box become two animal
+/// detections, at 0.3 and 0.9, and two ground truths on one box in sibling
+/// classes become two animal ground truths. A copy is skipped only when the
+/// *input* already holds an annotation identical to it — same image,
+/// category, score, crowd and group-of flags, and geometry (box, oriented box,
+/// and segmentation). That is what makes a pre-expanded dataset (Open Images
+/// distributes its ground truth expanded) and an expanded one — `evaluate()`
+/// expands the handles it replaced, so a second `evaluate()` expands its own
+/// output — come back unchanged. Copies are never compared with each other:
+/// an annotation's ancestors are distinct, so two copies can only be twins if
+/// they come from two input annotations, and those are two objects.
 ///
 /// One function for both sides: Open Images expands ground truth always and
 /// detections when `params.expand_dt` is set, with the identical
@@ -34,17 +37,19 @@ pub fn expand_annotations(coco: &COCO, hierarchy: &Hierarchy) -> COCO {
     // One digest per annotation, shared by every ancestor copy: only the
     // category varies between them.
     let digests: Vec<u64> = anns.iter().map(identity_digest).collect();
-    let mut seen: HashSet<CopyKey> = HashSet::with_capacity(anns.len());
+    let mut input: HashSet<CopyKey> = HashSet::with_capacity(anns.len());
     let mut expanded_anns: Vec<Annotation> = Vec::with_capacity(anns.len());
     let mut next_id = anns.iter().map(|a| a.id).max().unwrap_or(0) + 1;
 
-    // Record existing annotations in `seen` and copy them to output
+    // Record the input annotations in `input` and copy them to output
     for (ann, &digest) in anns.iter().zip(&digests) {
-        seen.insert((ann.image_id, ann.category_id, digest));
+        input.insert((ann.image_id, ann.category_id, digest));
         expanded_anns.push(ann.clone());
     }
 
-    // For each original annotation, add ancestor copies
+    // For each original annotation, add ancestor copies. `input` holds only
+    // the input annotations: a copy is never recorded, so it cannot suppress
+    // another source's copy.
     for (ann, &digest) in anns.iter().zip(&digests) {
         let ancestors = hierarchy.ancestors(ann.category_id);
 
@@ -52,8 +57,8 @@ pub fn expand_annotations(coco: &COCO, hierarchy: &Hierarchy) -> COCO {
             if ancestor_id == ann.category_id {
                 continue; // skip self
             }
-            if !seen.insert((ann.image_id, ancestor_id, digest)) {
-                continue; // this copy already exists
+            if input.contains(&(ann.image_id, ancestor_id, digest)) {
+                continue; // the input already has this annotation
             }
 
             let mut new_ann = ann.clone();
@@ -95,14 +100,16 @@ pub fn expand_annotations(coco: &COCO, hierarchy: &Hierarchy) -> COCO {
 /// [`expand_annotations`] for why the score is part of it.
 type CopyKey = (u64, u64, u64);
 
-/// A digest of an annotation's score and geometry — box, oriented box, and
-/// segmentation — computed once per annotation rather than once per ancestor
-/// copy, so the set holds neither a second copy of every mask nor a re-hash of
-/// it per ancestor. Two distinct annotations would also need the same image and
+/// A digest of an annotation's score, crowd and group-of flags, and geometry —
+/// box, oriented box, and segmentation — computed once per annotation rather
+/// than once per ancestor copy, so the set holds neither a second copy of
+/// every mask nor a re-hash of it per ancestor. Two distinct annotations would also need the same image and
 /// category to collide.
 fn identity_digest(ann: &Annotation) -> u64 {
     let mut h = DefaultHasher::new();
     ann.score.map(f64::to_bits).hash(&mut h);
+    ann.iscrowd.hash(&mut h);
+    ann.is_group_of.hash(&mut h);
     ann.bbox.map(|b| b.map(f64::to_bits)).hash(&mut h);
     ann.obb.as_deref().map(|o| o.map(f64::to_bits)).hash(&mut h);
     match &ann.segmentation {

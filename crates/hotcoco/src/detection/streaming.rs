@@ -262,6 +262,11 @@ impl StreamingEval {
             annotations: gt_anns,
             ..Default::default()
         });
+        if crate::primitives::sim::SimKind::from(self.params.iou_type)
+            == crate::primitives::sim::SimKind::Mask
+        {
+            keep_rasterized_masks_of_arealess(&mut gt);
+        }
         gt.fill_missing_areas();
         let dt = gt.load_res_anns(dt_anns)?;
 
@@ -491,6 +496,37 @@ impl StreamingEval {
             params.img_ids = images.keys().copied().collect();
         }
         COCOeval::from_cells(categories, params, eval_mode, cells)
+    }
+}
+
+/// Swap each area-less polygon or rectangle ground truth's segmentation for
+/// the RLE it rasterizes to, so it is rasterized once per batch instead of
+/// twice: `fill_missing_areas` needs the mask for the area, and
+/// `evaluate()`'s `SegmRles::prepare` needs it again for the IoUs. Both read
+/// the RLE back through `ann_to_rle` unchanged — the same mask, a copy rather
+/// than a rasterization. An annotation that cannot be rasterized (no image
+/// size) keeps its polygon, for `check_inputs` to report.
+fn keep_rasterized_masks_of_arealess(gt: &mut COCO) {
+    use crate::types::Segmentation;
+    let rasterized: Vec<(usize, crate::types::Rle)> = gt
+        .dataset
+        .annotations
+        .iter()
+        .enumerate()
+        .filter(|(_, ann)| {
+            ann.area.is_none()
+                && matches!(
+                    ann.segmentation,
+                    Some(Segmentation::Polygon(_) | Segmentation::Rect(_))
+                )
+        })
+        .filter_map(|(i, ann)| Some((i, gt.ann_to_rle(ann)?)))
+        .collect();
+    for (i, rle) in rasterized {
+        gt.dataset.annotations[i].segmentation = Some(Segmentation::UncompressedRle {
+            size: [rle.h, rle.w],
+            counts: rle.counts,
+        });
     }
 }
 

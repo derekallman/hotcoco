@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+import contextlib
 import io
 import logging
 import os
@@ -18,6 +19,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
+from starlette.concurrency import run_in_threadpool
 
 from . import browse as _browse
 
@@ -122,18 +124,30 @@ def create_app(
     _eval_cache: collections.OrderedDict[float, dict] = collections.OrderedDict()
     _EVAL_CACHE_MAX = 3
 
+    # Held around every call into `coco_eval`. The dashboard builds in a worker
+    # thread (see `dashboard` below), and the evaluator is not shareable across
+    # threads: a second call while `accumulate()` runs raises "Already
+    # borrowed". Reentrant because the dashboard build reads the index too.
+    _eval_lock = threading.RLock()
+
     def _get_eval_index(iou_thr: float) -> dict | None:
         if not has_eval:
             return None
         iou_thr = round(iou_thr, 2)
-        if iou_thr in _eval_cache:
-            _eval_cache.move_to_end(iou_thr)
-            return _eval_cache[iou_thr]
-        idx = coco_eval.image_diagnostics(iou_thr=iou_thr)
-        _eval_cache[iou_thr] = idx
-        if len(_eval_cache) > _EVAL_CACHE_MAX:
-            _eval_cache.popitem(last=False)
-        return idx
+        idx = _eval_cache.get(iou_thr)
+        if idx is not None:
+            # The worker thread may evict it between the read and this move.
+            with contextlib.suppress(KeyError):
+                _eval_cache.move_to_end(iou_thr)
+            return idx
+        with _eval_lock:
+            idx = _eval_cache.get(iou_thr)
+            if idx is None:
+                idx = coco_eval.image_diagnostics(iou_thr=iou_thr)
+                _eval_cache[iou_thr] = idx
+                if len(_eval_cache) > _EVAL_CACHE_MAX:
+                    _eval_cache.popitem(last=False)
+            return idx
 
     # Thumbnail cache: (image_id, min_score) -> PNG bytes (LRU, bounded)
     _MAX_CACHE = 500
@@ -425,37 +439,45 @@ def create_app(
 
     _dashboard_cache: dict[str, str | None] = {"html": None}
 
+    def _build_dashboard_html() -> str:
+        # `_eval_lock` also makes concurrent first requests build the page once.
+        with _eval_lock:
+            if _dashboard_cache["html"] is not None:
+                return _dashboard_cache["html"]
+
+            from .dashboard import build_dashboard
+
+            # browse() and `coco explore` run only evaluate(): the gallery needs
+            # just the per-image matches, and accumulating up front would slow
+            # startup for a page that may never be opened. The dashboard plots
+            # the accumulated curves and reads the summary stats, so finish the
+            # pipeline here, once, on first request. summary_lines() fills the
+            # stats like summarize() but without printing into the server log.
+            # `stats` is an empty list until then and a numpy array after, so test
+            # its length; `.eval` would build the full precision/recall dict.
+            if len(coco_eval.stats) == 0:
+                coco_eval.accumulate()
+                coco_eval.summary_lines()
+
+            # The 0.5 diagnostics are usually already in the LRU from the gallery;
+            # the dashboard reads the same walk rather than paying for its own.
+            data = build_dashboard(coco_eval, slices=slices, diagnostics=_get_eval_index(0.5))
+            html = env.get_template("dashboard.html").render(has_eval=True, **data)
+            _dashboard_cache["html"] = html
+            return html
+
     @app.get("/dashboard", response_class=HTMLResponse)
     async def dashboard():
         if _dashboard_cache["html"] is not None:
             return HTMLResponse(_dashboard_cache["html"])
 
-        template = env.get_template("dashboard.html")
-
         if not has_eval:
-            html = template.render(has_eval=False)
-            return HTMLResponse(html)
+            return HTMLResponse(env.get_template("dashboard.html").render(has_eval=False))
 
-        from .dashboard import build_dashboard
-
-        # browse() and `coco explore` run only evaluate(): the gallery needs
-        # just the per-image matches, and accumulating up front would slow
-        # startup for a page that may never be opened. The dashboard plots
-        # the accumulated curves and reads the summary stats, so finish the
-        # pipeline here, once, on first request. summary_lines() fills the
-        # stats like summarize() but without printing into the server log.
-        # `stats` is an empty list until then and a numpy array after, so test
-        # its length; `.eval` would build the full precision/recall dict.
-        if len(coco_eval.stats) == 0:
-            coco_eval.accumulate()
-            coco_eval.summary_lines()
-
-        # The 0.5 diagnostics are usually already in the LRU from the gallery;
-        # the dashboard reads the same walk rather than paying for its own.
-        data = build_dashboard(coco_eval, slices=slices, diagnostics=_get_eval_index(0.5))
-        html = template.render(has_eval=True, **data)
-        _dashboard_cache["html"] = html
-        return HTMLResponse(html)
+        # Accumulating and building the figures takes seconds on a large run;
+        # in a worker thread, the gallery and thumbnails keep being served. A
+        # request that needs a diagnostics index not yet cached waits for it.
+        return HTMLResponse(await run_in_threadpool(_build_dashboard_html))
 
     return app
 

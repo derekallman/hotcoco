@@ -25,7 +25,7 @@ impl EvalMode {
         let mut params = crate::params::Params::new(iou_type);
         match self {
             EvalMode::Coco => {}
-            EvalMode::Lvis => params.max_dets = vec![300],
+            EvalMode::Lvis => params.max_dets = vec![crate::coco::LVIS_MAX_DETS_PER_IMAGE],
             EvalMode::OpenImages => {
                 params.iou_thrs = vec![0.5];
                 params.area_ranges = vec![crate::AreaRange {

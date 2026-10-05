@@ -107,18 +107,16 @@ impl<'a> EvalGrouping<'a> {
         // axis, its row in the evaluate-time grid. The T axis is
         // `params.iou_thrs` as it stands, since `summarize()`, `report()`, and
         // the diagnostics name a row by its position there, but each cell holds
-        // one row per evaluate-time threshold. `Params::iou_thr_idx` owns the
-        // lookup: a reordered grid reads each row under its own label, and a
-        // threshold `evaluate()` never matched at keeps the `-1.0` "not
-        // computed" fill instead of reading a row it does not have.
-        let t_rows: Vec<Option<usize>> = match ev.eval_inputs.as_ref() {
-            Some(inputs) => params
-                .iou_thrs
-                .iter()
-                .map(|&thr| inputs.params.iou_thr_idx(thr))
-                .collect(),
-            None => vec![None; params.iou_thrs.len()],
-        };
+        // one row per evaluate-time threshold. `COCOeval::evaluated_iou_row`
+        // owns the lookup, shared with every per-threshold analysis: a
+        // reordered grid reads each row under its own label, and a threshold
+        // `evaluate()` never matched at keeps the `-1.0` "not computed" fill
+        // instead of reading a row it does not have.
+        let t_rows: Vec<Option<usize>> = params
+            .iou_thrs
+            .iter()
+            .map(|&thr| ev.evaluated_iou_row(thr))
+            .collect();
 
         // Group the pairs by (k_idx, a_idx) — one pass over the cells, in parallel.
         //

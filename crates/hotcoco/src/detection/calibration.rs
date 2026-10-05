@@ -77,13 +77,18 @@ impl COCOeval {
             return Err("calibration() requires evaluate() to be called first".into());
         }
 
-        // Find the IoU threshold index
-        let t_idx = self.params.iou_thr_idx(iou_threshold).ok_or_else(|| {
-            format!(
+        // An exact threshold, not a snap: it names the definition of "correct".
+        // Listed in the current grid and resolved to its evaluate-time row.
+        if self.params.iou_thr_idx(iou_threshold).is_none() {
+            return Err(format!(
                 "iou_threshold={iou_threshold} not found in params.iou_thrs={:?}",
                 self.params.iou_thrs
             )
-        })?;
+            .into());
+        }
+        let t_idx = self
+            .evaluated_iou_row(iou_threshold)
+            .ok_or_else(|| super::not_evaluated_at(iou_threshold))?;
 
         // Collect detections globally and per-category
         let mut all: ScoredOutcomes = (Vec::new(), Vec::new());

@@ -175,9 +175,9 @@ struct PyCOCO {
 /// foreign format or merged from several sources does not.
 impl PyCOCO {
     /// A dataset derived from this one — same images, so same `image_dir`.
-    fn derived(&self, inner: hotcoco_core::COCO) -> PyCOCO {
+    fn derived(&self, inner: impl Into<Arc<hotcoco_core::COCO>>) -> PyCOCO {
         PyCOCO {
-            inner: Arc::new(inner),
+            inner: inner.into(),
             image_dir: self.image_dir.clone(),
         }
     }
@@ -357,7 +357,7 @@ impl PyCOCO {
     /// unchanged. ``LVISResults(gt, results, max_dets=)`` is the same cap.
     fn cap_detections_per_image(&self, py: Python<'_>, max_det: Option<usize>) -> PyCOCO {
         let inner = Arc::clone(&self.inner);
-        self.derived(py.detach(|| Arc::unwrap_or_clone(inner).cap_detections_per_image(max_det)))
+        self.derived(py.detach(|| inner.cap_detections_per_image_shared(max_det)))
     }
 
     /// Build a dataset from columns, with no Python dict per annotation.

@@ -160,6 +160,75 @@ fn accumulate_after_reordering_iou_thrs_keeps_each_row_under_its_label() {
     assert_eq!(stats[2], reference[2], "AP75 must read the 0.75 row");
 }
 
+/// The per-threshold analyses read the same evaluate-time rows `accumulate()`
+/// does. Each used to index the cells by a threshold's position in
+/// `params.iou_thrs` as it stands, so after a reorder `0.75` read the `0.5` row.
+#[test]
+fn analyses_after_reordering_iou_thrs_read_each_threshold_by_value() {
+    let reference = two_category_eval(None, true);
+    let mut ev = two_category_eval(None, true);
+    ev.params.iou_thrs = vec![0.75, 0.5];
+
+    let cal = |e: &COCOeval| {
+        let c = e.calibration(10, 0.75).expect("calibration");
+        (c.ece, c.mce, c.num_detections, c.per_category)
+    };
+    assert_eq!(cal(&ev), cal(&reference), "calibration at 0.75");
+
+    let tide = |e: &COCOeval| {
+        let t = e.tide_errors(0.75, 0.1).expect("tide");
+        (t.delta_ap, t.counts, t.ap_base)
+    };
+    assert_eq!(tide(&ev), tide(&reference), "TIDE at 0.75");
+
+    let diag = |e: &COCOeval| {
+        let d = e.image_diagnostics(0.75, 0.5).expect("diagnostics");
+        let mut per_image: Vec<_> = d
+            .images
+            .iter()
+            .map(|(&id, s)| (id, s.tp, s.fp, s.fn_count))
+            .collect();
+        per_image.sort_unstable();
+        (d.iou_thr, per_image)
+    };
+    let (thr, per_image) = diag(&ev);
+    assert_eq!(thr, 0.75);
+    assert_eq!(per_image, diag(&reference).1, "diagnostics at 0.75");
+    assert!(
+        per_image.iter().any(|&(_, _, fp, _)| fp > 0),
+        "fixture: odd images are FPs at 0.75"
+    );
+}
+
+/// A threshold added to `params.iou_thrs` after `evaluate()` has no row in the
+/// cells. The analyses used to index past the end of the matrix; they must say
+/// the threshold was never evaluated instead.
+#[test]
+fn analyses_reject_a_threshold_evaluate_never_matched_at() {
+    let mut ev = two_category_eval(None, true);
+    let mut grown = ev.params.iou_thrs.clone();
+    grown.push(0.97);
+    ev.params.iou_thrs = grown;
+
+    let errors = [
+        ev.calibration(10, 0.97)
+            .map(|_| ())
+            .expect_err("calibration"),
+        ev.tide_errors(0.97, 0.1).map(|_| ()).expect_err("tide"),
+        ev.image_diagnostics(0.97, 0.5)
+            .map(|_| ())
+            .expect_err("diagnostics"),
+    ];
+    for err in errors {
+        assert!(
+            err.to_string().contains("evaluate()"),
+            "error must say the threshold was not evaluated, got: {err}"
+        );
+    }
+    // A threshold that was evaluated still works on the grown grid.
+    ev.calibration(10, 0.5).expect("0.5 was evaluated");
+}
+
 // --- 2. compare() refuses runs over different category sets -----------------
 
 #[test]
@@ -380,4 +449,58 @@ fn oid_evaluate_twice_with_expand_dt_is_idempotent() {
     ev.summarize();
     assert_eq!(ev.stats().expect("summarized"), first.as_slice());
     assert_eq!(scores_of(ev.coco_dt(), 3), vec![0.3, 0.9]);
+}
+
+/// Two ground truths on the same box in sibling classes are two objects of
+/// their shared ancestor, as the TF Object Detection API's
+/// `OIDHierarchicalLabelsExpansion` expands each box row on its own. The
+/// dedup used to compare each copy against the copies already made, so the
+/// second animal vanished and recall at animal could reach 1.0 with one
+/// detection. Copies are now compared only against the input, which is what
+/// keeps a pre-expanded dataset (and a second `evaluate()`) from doubling.
+#[test]
+fn expansion_keeps_sibling_ground_truths_on_one_box_distinct() {
+    let b = [10.0, 10.0, 100.0, 100.0];
+    let gt = COCO::from_dataset(dataset(
+        vec![image(1)],
+        vec![gt_box(1, 1, 1, b), gt_box(2, 1, 2, b)],
+        vec![cat(1), cat(2), cat(3)],
+    ));
+    let hierarchy = animal_hierarchy();
+    let expanded = hotcoco::detection::expand::expand_annotations(&gt, &hierarchy);
+    let animals = |c: &COCO| {
+        c.dataset
+            .annotations
+            .iter()
+            .filter(|a| a.category_id == 3)
+            .count()
+    };
+    assert_eq!(animals(&expanded), 2, "one animal per source box");
+    let twice = hotcoco::detection::expand::expand_annotations(&expanded, &hierarchy);
+    assert_eq!(animals(&twice), 2, "re-expanding adds nothing");
+}
+
+/// A group-of box and a single-object box on the same coordinates are
+/// different ground truths, so an existing group-of animal does not stand in
+/// for the copy of a single dog.
+#[test]
+fn expansion_does_not_treat_a_group_of_box_as_its_single_twin() {
+    let b = [10.0, 10.0, 100.0, 100.0];
+    let group = Annotation {
+        is_group_of: Some(true),
+        ..gt_box(2, 1, 3, b)
+    };
+    let gt = COCO::from_dataset(dataset(
+        vec![image(1)],
+        vec![gt_box(1, 1, 1, b), group],
+        vec![cat(1), cat(2), cat(3)],
+    ));
+    let expanded = hotcoco::detection::expand::expand_annotations(&gt, &animal_hierarchy());
+    let singles = expanded
+        .dataset
+        .annotations
+        .iter()
+        .filter(|a| a.category_id == 3 && a.is_group_of != Some(true))
+        .count();
+    assert_eq!(singles, 1, "the dog's animal copy is not the group-of box");
 }

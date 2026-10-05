@@ -95,10 +95,10 @@ fn check_mask_dims_rejects_polygons_on_dimensionless_images() {
         ..Default::default()
     });
 
-    let err = gt.check_mask_dims(&[1, 2]).unwrap_err().to_string();
+    let err = gt.check_mask_dims(&[1, 2], None).unwrap_err().to_string();
     assert!(err.contains("ids 1)"), "names the offending image: {err}");
     assert!(!err.contains("ids 1, 2"), "image 2 has dims: {err}");
-    gt.check_mask_dims(&[2]).unwrap();
+    gt.check_mask_dims(&[2], None).unwrap();
 
     // `check_inputs` reads the iou type as it stands at evaluate time, so a
     // bbox evaluator switched to segm after construction is still checked.
@@ -130,7 +130,7 @@ fn check_mask_dims_accepts_rle_and_dimensionless_bbox_only_datasets_in_bbox_mode
         categories: vec![cat(1)],
         ..Default::default()
     });
-    rle.check_mask_dims(&[1]).unwrap();
+    rle.check_mask_dims(&[1], None).unwrap();
 
     // Boxes do rasterize in segm mode, so a bbox-only dataset is rejected
     // there — but it is still a perfectly good bbox dataset.
@@ -140,7 +140,7 @@ fn check_mask_dims_accepts_rle_and_dimensionless_bbox_only_datasets_in_bbox_mode
         categories: vec![cat(1)],
         ..Default::default()
     });
-    assert!(boxes.check_mask_dims(&[1]).is_err());
+    assert!(boxes.check_mask_dims(&[1], None).is_err());
     let dt = boxes
         .load_res_anns(vec![det_box(1, 1, [0.0, 0.0, 10.0, 10.0], 0.9)])
         .unwrap();
@@ -330,6 +330,52 @@ fn streaming_update_derives_missing_gt_area_from_bbox() {
     assert_eq!(s[3], -1.0, "no small ground truth: APs is not computed");
     assert_close(s[4], 1.0);
     assert_eq!(s[5], -1.0, "no large ground truth: APl is not computed");
+}
+
+/// Segm streaming derives an area-less polygon's area from its mask, and the
+/// IoUs from the same mask: the batch rasterizes each such polygon once and
+/// keeps the RLE. The triangle's box is `large` and its mask `medium`, so a
+/// box-derived area, or a mask lost between the two uses, would show up here.
+#[test]
+fn streaming_segm_derives_area_from_the_mask_it_matches_on() {
+    let tri = vec![10.0, 10.0, 110.0, 10.0, 10.0, 110.0];
+    let bbox = [10.0, 10.0, 100.0, 100.0];
+    let poly = Segmentation::Polygon(vec![tri.clone()]);
+    let images = vec![image(1, Some((200, 200)))];
+    let gt = Annotation {
+        area: None,
+        segmentation: Some(poly.clone()),
+        ..gt_box(1, 1, 1, bbox)
+    };
+    let dt = Annotation {
+        segmentation: Some(poly),
+        ..det_box(1, 1, bbox, 0.9)
+    };
+
+    let mut se =
+        StreamingEval::new(Params::new(IouType::Segm), EvalMode::Coco, vec![cat(1)]).unwrap();
+    se.update(images.clone(), vec![gt.clone()], vec![dt.clone()])
+        .unwrap();
+    let mut streamed = se.finalize();
+    streamed.accumulate();
+    streamed.summarize();
+
+    let mask_area = hotcoco::mask::area(&hotcoco::mask::fr_poly(&tri, 200, 200).unwrap()) as f64;
+    let gt_coco = COCO::from_dataset(Dataset {
+        images,
+        annotations: vec![Annotation {
+            area: Some(mask_area),
+            ..gt
+        }],
+        categories: vec![cat(1)],
+        ..Default::default()
+    });
+    let dt_coco = gt_coco.load_res_anns(vec![dt]).unwrap();
+    let batch = stats(&mut COCOeval::new(gt_coco, dt_coco, IouType::Segm));
+
+    assert_eq!(streamed.stats().unwrap(), batch.as_slice());
+    assert_close(batch[4], 1.0);
+    assert_eq!(batch[5], -1.0, "the mask is medium, not large");
 }
 
 /// An authored `area` wins over the derived one: COCO files carry mask areas
@@ -547,4 +593,51 @@ fn pooled_run_has_no_per_class_entries() {
     ev.run();
     let r = ev.get_results(None, true);
     assert_eq!(r.keys().filter(|k| k.starts_with("AP/")).count(), 3);
+}
+
+/// pycocotools rasterizes only the annotations `_prepare` loads — those in
+/// `params.catIds` when `useCats` is on — so a polygon in a category the run
+/// leaves out never needs a canvas. The check used to cover every category
+/// and failed the whole segm run on it. With `use_cats` off every category is
+/// loaded, so the same polygon is an error again.
+#[test]
+fn check_inputs_ignores_dimensionless_images_outside_cat_ids() {
+    let poly = Segmentation::Polygon(vec![square(10.0, 10.0, 50.0)]);
+    let gt = COCO::from_dataset(Dataset {
+        images: vec![image(1, Some((100, 100))), image(2, None)],
+        annotations: vec![
+            Annotation {
+                segmentation: Some(poly.clone()),
+                ..gt_box(1, 1, 1, [10.0, 10.0, 50.0, 50.0])
+            },
+            // Category 2, on the image without `height`/`width`.
+            Annotation {
+                segmentation: Some(poly.clone()),
+                ..gt_box(2, 2, 2, [10.0, 10.0, 50.0, 50.0])
+            },
+        ],
+        categories: vec![cat(1), cat(2)],
+        ..Default::default()
+    });
+    let dt = gt
+        .load_res_anns(vec![Annotation {
+            segmentation: Some(poly),
+            ..det_box(1, 1, [10.0, 10.0, 50.0, 50.0], 0.9)
+        }])
+        .unwrap();
+    let mut ev = COCOeval::new(gt, dt, IouType::Segm);
+    assert!(
+        ev.check_inputs().is_err(),
+        "category 2 is in the default scope"
+    );
+
+    ev.params.cat_ids = vec![1];
+    ev.check_inputs().unwrap();
+    assert_close(stats(&mut ev)[0], 1.0);
+
+    ev.params.use_cats = false;
+    assert!(
+        ev.check_inputs().is_err(),
+        "use_cats = false pools every category, category 2 included"
+    );
 }

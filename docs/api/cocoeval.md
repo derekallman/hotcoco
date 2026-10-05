@@ -66,9 +66,10 @@ Run COCO evaluation to compute AP/AR metrics.
         accepted; mixing the two spellings of one argument is an error.
 
     !!! note "`segm` needs image sizes"
-        With `iou_type="segm"`, every evaluated image whose annotations are
-        polygons or boxes must carry `height` and `width`, or `evaluate()` raises
-        `ValueError` naming the images. A polygon drawn onto an image of
+        With `iou_type="segm"`, every image holding a polygon or box annotation
+        the evaluation covers — in `params.img_ids` and, with `use_cats` on,
+        `params.cat_ids` — must carry `height` and `width`, or `evaluate()`
+        raises `ValueError` naming the images. A polygon drawn onto an image of
         unknown size is an empty mask, which would score as AP 0 with nothing
         to say why; pycocotools raises `KeyError` at the same point. RLE
         masks carry their own size and are not affected. Box evaluation never
@@ -645,7 +646,7 @@ Requires `evaluate()` to have been called first.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `pos_thr` | `float` | `0.5` | IoU threshold for TP/FP classification |
+| `pos_thr` | `float` | `0.5` | IoU threshold for TP/FP classification, snapped to the nearest in `params.iouThrs`. Raises `RuntimeError` if that threshold was not in the grid when `evaluate()` ran. |
 | `bg_thr` | `float` | `0.1` | Background IoU threshold for Loc/Both/Bkg discrimination |
 
 **Returns** a dict with:
@@ -685,7 +686,7 @@ Requires `evaluate()` to have been called first. Bins all non-ignored detections
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `n_bins` | `int` | `10` | Number of equal-width confidence bins in [0, 1]. |
-| `iou_threshold` | `float` | `0.5` | IoU threshold for TP/FP classification. Must match one of `params.iouThrs`. |
+| `iou_threshold` | `float` | `0.5` | IoU threshold for TP/FP classification. Must match one of `params.iouThrs`, and have been in it when `evaluate()` ran; otherwise raises `RuntimeError`. |
 
 **Returns** a dict with:
 
@@ -760,7 +761,7 @@ Requires `evaluate()` to have been called first.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `iou_thr` | `float` | `0.5` | IoU threshold for TP/FP classification (snapped to nearest in `params.iouThrs`). |
+| `iou_thr` | `float` | `0.5` | IoU threshold for TP/FP classification (snapped to nearest in `params.iouThrs`). Raises `RuntimeError` if that threshold was not in the grid when `evaluate()` ran. |
 | `score_thr` | `float` | `0.5` | Minimum detection confidence to consider for label error detection. |
 
 **Returns** a dict with:
@@ -849,20 +850,24 @@ Loading is identical.
 ### `LVISResults`
 
 ```python
-hotcoco.LVISResults(lvis_gt: COCO, results, max_dets: int = 300) -> COCO
+hotcoco.LVISResults(lvis_gt: COCO, results, max_dets: int | None = 300) -> COCO
 ```
 
 Returns a `COCO` detections object: `lvis_gt.load_res(results)` capped the way
 lvis-api's `LVISResults` caps it — each image's `max_dets` highest-scoring
 detections across every category, ties in results-file order. `max_dets=-1`
-keeps every detection. The cap is `COCO.cap_detections_per_image(max_dets)`,
-which you can call directly (`None` keeps every detection).
+or `None` keeps every detection, and an integral float such as `300.0` is
+that integer. The cap is `COCO.cap_detections_per_image(max_dets)`, which you
+can call directly (`None` keeps every detection).
 
 `LVISeval` evaluates an `LVISResults` result as is, as lvis-api's `LVISEval`
 takes an `LVISResults` object unchanged, so `max_dets=1000` or `-1` holds
 through evaluation. Detections loaded with plain `load_res()` get lvis-api's
-default instead: `LVISeval` caps them at its `params.max_dets` (300) the same
-way when constructed, as lvis-api caps a results path or list it loads itself.
+default instead: `LVISeval` caps them at 300 the same way when constructed,
+as lvis-api caps a results path or list it loads itself. The 300 does not
+follow `params.max_dets`, which lvis-api's `LVISEval` does not pass to
+`LVISResults` either; `StreamingEval` with `lvis_style=True` applies the same
+300.
 
 ---
 
@@ -935,9 +940,9 @@ is fine; passing the detector's whole batch amortizes the per-call setup.
 `gt_anns` are annotation dicts in the shape `COCO(dict)` accepts; `id` is
 assigned and a missing `area` is derived (the mask's pixel count, or the
 box's `w × h` for an annotation without a mask), so targets as a data loader
-yields them — `image_id`, `category_id`, `bbox`, `iscrowd` — are enough. For `segm`, every image whose
-annotations are polygons or boxes needs `height` and `width`, or the call
-raises `RuntimeError` naming the images. `dt_anns` are raw predictions in the shape
+yields them — `image_id`, `category_id`, `bbox`, `iscrowd` — are enough. For `segm`, every image holding
+a polygon or box annotation in an evaluated category needs `height` and
+`width`, or the call raises `RuntimeError` naming the images. `dt_anns` are raw predictions in the shape
 `load_res()` accepts — `image_id`, `category_id`, `bbox` (or
 `segmentation`/`keypoints`), and `score` — and are loaded the same way: ids
 assigned, `area` derived, `iscrowd` cleared. Within an image, detections with

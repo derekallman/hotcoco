@@ -14,6 +14,8 @@ Docs: https://derekallman.github.io/hotcoco/
 
 from __future__ import annotations
 
+import operator as _operator
+
 from .hotcoco import (  # noqa: F401
     COCO,
     COCOeval,
@@ -78,10 +80,25 @@ class LVISResults:
     an ``LVISResults`` unchanged, so ``max_dets=1000`` or ``-1`` holds through
     evaluation. A plain ``load_res`` result passed to ``LVISeval`` gets the
     default 300-per-image cap instead, like a path or list passed to lvis-api.
+
+    ``max_dets=None`` keeps every detection too, and an integral float such as
+    ``300.0`` is that integer. A fractional ``max_dets`` raises ``ValueError``.
     """
 
     def __new__(cls, lvis_gt, results, max_dets=300):
-        return lvis_gt._load_res_capped(results, None if max_dets < 0 else max_dets)
+        return lvis_gt._load_res_capped(results, _per_image_cap(max_dets))
+
+
+def _per_image_cap(max_dets):
+    """``LVISResults``' ``max_dets`` as the binding's cap: ``None`` for no cap."""
+    if max_dets is None:
+        return None
+    if isinstance(max_dets, float):
+        if not max_dets.is_integer():
+            raise ValueError(f"max_dets must be a whole number of detections, got {max_dets!r}")
+        max_dets = int(max_dets)
+    max_dets = _operator.index(max_dets)
+    return None if max_dets < 0 else max_dets
 
 
 import sys as _sys  # noqa: E402

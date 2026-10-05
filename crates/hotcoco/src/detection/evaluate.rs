@@ -114,16 +114,19 @@ impl COCOeval {
     /// # Errors
     ///
     /// An error naming the offending images, from either the ground truth or
-    /// the detections. Only the images the evaluation covers are checked.
+    /// the detections. Only the images and categories the evaluation covers
+    /// are checked.
     pub fn check_inputs(&self) -> crate::error::Result<()> {
         use crate::primitives::sim::SimKind;
         if SimKind::from(self.params.iou_type) == SimKind::Mask {
-            // Only the images `evaluate()` will visit: an annotation on an
-            // image outside `params.img_ids`, or with no image record, is
-            // never rasterized.
-            let (img_ids, _) = self.resolved_ids();
-            self.coco_gt.check_mask_dims(&img_ids)?;
-            self.coco_dt.check_mask_dims(&img_ids)?;
+            // Only the (image, category) pairs `evaluate()` will visit: an
+            // annotation on an image outside `params.img_ids`, with no image
+            // record, or in a category outside `params.cat_ids` is never
+            // rasterized. `use_cats = false` pools every category.
+            let (img_ids, cat_ids) = self.resolved_ids();
+            let cat_ids = self.params.use_cats.then_some(&*cat_ids);
+            self.coco_gt.check_mask_dims(&img_ids, cat_ids)?;
+            self.coco_dt.check_mask_dims(&img_ids, cat_ids)?;
         }
         Ok(())
     }

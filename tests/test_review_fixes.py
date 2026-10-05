@@ -116,6 +116,23 @@ class TestLVISResultsCapsPerImage:
         assert len(LVISResults(gt, dets, max_dets=-1).dataset["annotations"]) == 5
         assert len(gt.load_res(dets).cap_detections_per_image(None).dataset["annotations"]) == 5
 
+    def test_none_and_integral_float_max_dets(self):
+        """1.1 ignored ``max_dets``, so ``None`` and ``300.0`` worked; the cap
+        made both raise. ``None`` keeps everything, like ``-1``; an integral
+        float is that integer; a fractional one is an error."""
+        import numpy as np
+
+        gt, dets = self._gt_and_dets()
+
+        def kept(max_dets):
+            return len(LVISResults(gt, dets, max_dets=max_dets).dataset["annotations"])
+
+        assert kept(None) == 5
+        assert kept(2.0) == kept(np.float64(2.0)) == kept(np.int64(2)) == kept(2) == 3
+        assert kept(-1.0) == 5
+        with pytest.raises(ValueError, match="max_dets"):
+            LVISResults(gt, dets, max_dets=2.5)
+
 
 class TestStreamingGroundTruthFixups:
     def test_gt_without_ids_or_area_matches_batch(self):

@@ -318,8 +318,9 @@ impl COCOeval {
         }
 
         // `pos_thr` is an analysis threshold, not a metric name, so it snaps to
-        // the nearest grid point rather than requiring an exact match.
-        let t_idx = self.params.nearest_iou_thr_idx(pos_thr);
+        // the nearest grid point rather than requiring an exact match; `t_idx`
+        // is that point's evaluate-time row.
+        let (_, t_idx) = self.snapped_iou_row(pos_thr)?;
 
         // Filtered once; the classification and Miss passes walk the same cells.
         // `default_cells` owns the (area = "all", default max_det) predicate.

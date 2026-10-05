@@ -234,8 +234,9 @@ impl COCOeval {
             return Err("image_diagnostics() requires evaluate() to be called first".into());
         }
 
-        // Snap to nearest IoU threshold — the reported `iou_thr` says which one.
-        let t_idx = self.params.nearest_iou_thr_idx(iou_thr);
+        // Snap to nearest IoU threshold — the reported `iou_thr` says which one;
+        // `t_idx` is its evaluate-time row.
+        let (snapped, t_idx) = self.snapped_iou_row(iou_thr)?;
 
         let (annotations, tallies) = self.classify_annotations(t_idx);
         let images = summarize_images(tallies, &self.params.rec_thrs);
@@ -245,7 +246,7 @@ impl COCOeval {
             annotations,
             images,
             label_errors,
-            iou_thr: self.params.iou_thrs[t_idx],
+            iou_thr: snapped,
         })
     }
 
@@ -266,9 +267,9 @@ impl COCOeval {
         // `default_cells` owns the (area = "all", default max_det) predicate.
         for eval_img in self.default_cells() {
             // Shape trust, not bounds checks: `evaluate()` builds every
-            // `EvalImg` with one threshold row per `params.iou_thrs` entry and
-            // one column per `dt_ids`/`gt_ids` element, and `t_idx` comes from
-            // `nearest_iou_thr_idx` over the same list. `accumulate` and TIDE
+            // `EvalImg` with one threshold row per evaluate-time `iou_thrs`
+            // entry and one column per `dt_ids`/`gt_ids` element, and `t_idx`
+            // comes from `evaluated_iou_row` over that same grid. `accumulate` and TIDE
             // index the identical shapes unguarded; runtime guards here would
             // only hide a real shape defect as silently skipped cells.
             debug_assert!(t_idx < eval_img.dt_matched.num_rows());

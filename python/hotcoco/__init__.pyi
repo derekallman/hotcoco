@@ -394,12 +394,13 @@ LVIS = COCO
 
 class LVISResults:
     """Drop-in for lvis-api ``LVISResults`` — ``lvis_gt.load_res(results)`` capped
-    to each image's ``max_dets`` highest-scoring detections (``-1`` keeps all).
+    to each image's ``max_dets`` highest-scoring detections (``-1`` or ``None``
+    keeps all; an integral float is that integer).
 
     ``LVISeval`` evaluates the result as is, without its default 300 cap."""
 
     def __new__(
-        cls, lvis_gt: COCO, results: str | list[dict[str, Any]] | npt.NDArray[Any], max_dets: int = 300
+        cls, lvis_gt: COCO, results: str | list[dict[str, Any]] | npt.NDArray[Any], max_dets: int | float | None = 300
     ) -> COCO: ...
 
 # ---------------------------------------------------------------------------

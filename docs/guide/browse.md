@@ -214,8 +214,9 @@ coco.browse(eval=ev, image_dir="images/")
 ```
 
 The evaluator needs only `evaluate()`. The dashboard runs `accumulate()` and
-computes the summary on its first request, without printing; an evaluator that
-has already been summarized is used as is.
+computes the summary on its first request, without printing, in a worker
+thread so the gallery stays responsive; an evaluator that has already been
+summarized is used as is.
 
 The dashboard shows:
 

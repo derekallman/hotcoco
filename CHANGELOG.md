@@ -134,13 +134,14 @@ Each entry below has a regression test that fails on the old code.
   rasterized onto a 0×0 canvas and segm AP came out 0.000 with no warning.
   pycocotools raises `KeyError` at the same point. RLE carries its own size
   and box evaluation never reads the fields, so neither is affected. Only the
-  images the evaluation covers are checked, the ones pycocotools reads: an
-  annotation whose `image_id` has no image record, or an image outside
-  `params.img_ids`, is ignored as before.
+  annotations the evaluation covers are checked, the ones pycocotools
+  rasterizes: an annotation whose `image_id` has no image record, on an image
+  outside `params.img_ids`, or in a category outside `params.cat_ids` (with
+  `use_cats` on) is ignored as before.
   `StreamingEval.update()` and `coco eval` run the same check in segm mode.
   *Rust API:* `COCOeval::check_inputs` (call it before `evaluate()`),
-  `COCO::check_mask_dims(img_ids)`, and `COCO::ann_to_rle` returns `None` rather than an empty mask for such an
-  annotation.
+  `COCO::check_mask_dims(img_ids, cat_ids)`, and `COCO::ann_to_rle` returns
+  `None` rather than an empty mask for such an annotation.
 - **`StreamingEval.update()` assigns ground-truth ids and derives a missing
   `area`.** Targets in the shape a data loader yields carry neither. Without
   ids, every ground truth in a batch shared id 0 and the id index resolved all
@@ -151,7 +152,9 @@ Each entry below has a regression test that fails on the old code.
   Ids are now assigned per batch (nothing after `update()` reads them) and a
   missing `area` is the mask's pixel count — COCO's definition of instance
   area, and what `load_res()` derives for mask detections — or the box's
-  `w × h` for an annotation without a mask; an authored `area` is kept. *Rust API:* `COCO::fill_missing_areas`.
+  `w × h` for an annotation without a mask; an authored `area` is kept. In
+  segm mode each such polygon is rasterized once and the mask reused for
+  matching. *Rust API:* `COCO::fill_missing_areas`.
 - **LVIS frequency-group AP (`APr`/`APc`/`APf`) and the per-class table read
   the K axis the accumulation was built on.** Both used `params.cat_ids` as
   it stood at `summarize()` time, which disagrees with `accumulate()`'s axis
@@ -186,6 +189,9 @@ Each entry below has a regression test that fails on the old code.
   in debug builds). Each threshold now resolves by value to the row
   `evaluate()` matched it on, as area ranges already did, and a threshold that
   was never evaluated reports `-1.0`; run `evaluate()` again to compute it.
+  `calibration()`, `tide_errors()`, and `image_diagnostics()` read the same
+  rows the same way — each read its row by position in the current grid —
+  and raise `RuntimeError` for a threshold that was never evaluated.
 - **`compare()` raises `ValueError` when the two evaluators differ in
   `use_cats` or in their set of `cat_ids`,** instead of differencing and
   bootstrapping a one-category AP against an 80-category mAP. The same
@@ -200,15 +206,21 @@ Each entry below has a regression test that fails on the old code.
   `expand_dt` two children on one box (cat@0.3, dog@0.9) yielded a single
   ancestor copy at whichever score came first in the file, and
   segmentation-only annotations without a bbox all collapsed into one copy per
-  image. Each annotation now expands on its own; only an identical copy is
-  skipped.
+  image. Each annotation now expands on its own, as the TF Object Detection
+  API expands each box, so two ground truths on one box in sibling classes
+  are two ancestor ground truths, not one. A copy is skipped only when the
+  input already holds an identical annotation — score, `iscrowd`, and
+  `is_group_of` included — so a pre-expanded dataset and a second
+  `evaluate()` stay as they are.
 - **Polygons reaching far outside the image rasterize as pycocotools does.**
   Vertices were clamped to one image extent past the edges — there to keep
   untrusted coordinates like `±1e9` from overflowing the edge walk — but the
   clamp bent every edge that crossed it, so `[0, 0, 300, 100, 0, 100]` on a
   100×100 image got area 7530 instead of 8350. Vertices within about ±4
-  million pixels now rasterize bit-identically; coordinates beyond that, or a
-  boundary walk past 2²⁵ points, still fall back to the bounded path.
+  million pixels now rasterize bit-identically, and only coordinates beyond
+  that are clamped. The boundary walk skips the stretches that cannot reach
+  the image, so its cost stays bounded by the image size: a vertex at
+  `x = 1e6` on a 640×480 image takes 0.1 ms and no extra memory.
 - **`compare()` bootstrap confidence intervals use `numpy.quantile`'s default
   linear percentile.** The old indices put the upper bound one rank too high,
   so the interval was asymmetric around the point estimate. Bounds are now
@@ -240,7 +252,8 @@ Each entry below has a regression test that fails on the old code.
 - **The browse dashboard no longer returns 500 on an evaluator that has only
   been evaluated.** `coco.browse(dt=...)`, `coco explore`, and `browse(eval=ev)`
   all construct one that way; `/dashboard` now accumulates and computes the
-  summary on first request, without printing.
+  summary on first request, without printing, in a worker thread so the
+  gallery keeps being served, and once even when two first requests overlap.
 - **The browse server escapes JSON it inlines into pages.** `categories` and
   `slice` query values and category names reached an inline `<script>` block
   unescaped, so a crafted URL could inject script on the local server. Inlined
@@ -273,10 +286,15 @@ Each entry below has a regression test that fails on the old code.
   applies the cap when constructed, and `LVISResults` now honors its
   `max_dets` argument instead of ignoring it. As in lvis-api, `LVISeval`
   takes an `LVISResults` result as is, so `max_dets=1000` or `-1` holds
-  through evaluation; a plain `load_res()` result gets the 300 cap. New
+  through evaluation; a plain `load_res()` result gets the 300 cap. The
+  cap is 300 whatever `params.max_dets` says, as `LVISEval` wraps raw results
+  in `LVISResults` without passing its own `max_dets`; `StreamingEval` in
+  LVIS mode applies the same 300. `LVISResults` takes `max_dets=None` (no
+  cap, like `-1`) and an integral float such as `300.0`. New
   `COCO.cap_detections_per_image(max_det)` (Rust:
-  `COCO::cap_detections_per_image`) exposes the cap; `None` keeps every
-  detection.
+  `COCO::cap_detections_per_image`, and `cap_detections_per_image_shared` for
+  a set behind an `Arc`) exposes the cap; `None` keeps every detection. It
+  copies the dataset only when the cap changes what LVIS evaluates.
 
 ## [1.1.0] - 2026-10-01
 

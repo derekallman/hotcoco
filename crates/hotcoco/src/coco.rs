@@ -45,6 +45,12 @@ pub struct COCO {
     per_image_capped: bool,
 }
 
+/// Detections LVIS keeps per image, across categories: lvis-api's
+/// `LVISResults` default, which `LVISEval` applies to every raw results list
+/// whatever its own `params.max_dets`. The only owner of the number — both the
+/// LVIS default `max_dets` and the per-image cap read it.
+pub(crate) const LVIS_MAX_DETS_PER_IMAGE: usize = 300;
+
 /// What kind of results a detection file holds, decided from its first
 /// annotation.
 ///
@@ -690,8 +696,8 @@ impl COCO {
         }
     }
 
-    /// Check that every mask an evaluation of `img_ids` would rasterize has a
-    /// canvas to land on.
+    /// Check that every mask an evaluation of `img_ids` and `cat_ids` would
+    /// rasterize has a canvas to land on.
     ///
     /// `height` and `width` are optional on an image record — box evaluation
     /// never reads them — and default to 0. A polygon drawn onto a 0×0 canvas is
@@ -700,23 +706,33 @@ impl COCO {
     /// is the check the segm entry points run first, so the failure is an error
     /// naming the images, not a plausible number.
     ///
-    /// Only annotations on `img_ids` are checked — the images the evaluation
-    /// covers, as pycocotools reads `height` and `width` only for those. An
-    /// annotation on any other image, including one with no image record, is
-    /// never rasterized and never an error. [`COCOeval::check_inputs`](crate::COCOeval::check_inputs)
-    /// passes the evaluation's resolved image ids.
+    /// Only annotations on `img_ids` in `cat_ids` are checked — the ones the
+    /// evaluation covers, as pycocotools rasterizes only what `_prepare` loads.
+    /// `cat_ids = None` means every category, as when `use_cats` is off. An
+    /// annotation outside that scope, including one on an image with no image
+    /// record, is never rasterized and never an error.
+    /// [`COCOeval::check_inputs`](crate::COCOeval::check_inputs) passes the
+    /// evaluation's resolved ids.
     ///
     /// # Errors
     ///
-    /// An error when an annotation on one of `img_ids` whose mask comes from
+    /// An error when an annotation in scope whose mask comes from
     /// the image size (a polygon, a rectangle, or a bbox-only record — see
     /// [`ann_to_rle`](Self::ann_to_rle)) belongs to an image without `height`
     /// and `width`, or an id in `img_ids` with no image record.
-    pub fn check_mask_dims(&self, img_ids: &[u64]) -> crate::error::Result<()> {
-        let scope: rustc_hash::FxHashSet<u64> = img_ids.iter().copied().collect();
+    pub fn check_mask_dims(
+        &self,
+        img_ids: &[u64],
+        cat_ids: Option<&[u64]>,
+    ) -> crate::error::Result<()> {
+        let imgs: rustc_hash::FxHashSet<u64> = img_ids.iter().copied().collect();
+        let cats: Option<rustc_hash::FxHashSet<u64>> =
+            cat_ids.map(|ids| ids.iter().copied().collect());
         let mut bad = std::collections::BTreeSet::new();
         for ann in &self.dataset.annotations {
-            if !scope.contains(&ann.image_id) || !Self::needs_image_dims(ann) {
+            let in_scope = imgs.contains(&ann.image_id)
+                && cats.as_ref().is_none_or(|c| c.contains(&ann.category_id));
+            if !in_scope || !Self::needs_image_dims(ann) {
                 continue;
             }
             let ok = self
@@ -779,25 +795,58 @@ impl COCO {
         capped
     }
 
+    /// [`cap_detections_per_image`](Self::cap_detections_per_image) for a set
+    /// held behind an `Arc` that others share — the Python binding's case,
+    /// where taking `self` by value would mean copying first.
+    ///
+    /// Returns `self` itself, not a copy, when the cap drops nothing and the
+    /// capped mark would change nothing: no image holds more than `max_det`
+    /// annotations nor more than LVIS's own 300, so LVIS evaluation's default
+    /// cap is a no-op on it too. Otherwise a capped copy, or a marked one when
+    /// the set must be shielded from that default cap (`None`, or a `max_det`
+    /// above 300, on a set with an image over 300).
+    #[must_use]
+    pub fn cap_detections_per_image_shared(
+        self: std::sync::Arc<Self>,
+        max_det: Option<usize>,
+    ) -> std::sync::Arc<COCO> {
+        if let Some(mut capped) = max_det.and_then(|n| self.capped_copy(n)) {
+            capped.per_image_capped = true;
+            return std::sync::Arc::new(capped);
+        }
+        if self.per_image_capped || self.images_over(LVIS_MAX_DETS_PER_IMAGE).is_empty() {
+            return self;
+        }
+        let mut marked = std::sync::Arc::unwrap_or_clone(self);
+        marked.per_image_capped = true;
+        std::sync::Arc::new(marked)
+    }
+
     /// Whether [`cap_detections_per_image`](Self::cap_detections_per_image)
     /// produced this set, so LVIS evaluation must not cap it again.
     pub(crate) fn is_per_image_capped(&self) -> bool {
         self.per_image_capped
     }
 
+    /// The images holding more than `max_det` annotations, with their counts.
+    fn images_over(&self, max_det: usize) -> FxHashMap<u64, usize> {
+        let mut per_img: FxHashMap<u64, usize> = FxHashMap::default();
+        for ann in &self.dataset.annotations {
+            *per_img.entry(ann.image_id).or_default() += 1;
+        }
+        per_img.retain(|_, &mut n| n > max_det);
+        per_img
+    }
+
     /// The per-image cap's working half: `None` when no image holds more than
     /// `max_det` annotations, so a caller holding only a reference copies
     /// nothing in the common case. The copy is not marked as capped.
     pub(crate) fn capped_copy(&self, max_det: usize) -> Option<COCO> {
-        let anns = &self.dataset.annotations;
-        let mut per_img: FxHashMap<u64, usize> = FxHashMap::default();
-        for ann in anns {
-            *per_img.entry(ann.image_id).or_default() += 1;
-        }
-        per_img.retain(|_, &mut n| n > max_det);
+        let per_img = self.images_over(max_det);
         if per_img.is_empty() {
             return None;
         }
+        let anns = &self.dataset.annotations;
 
         // (score, position) for each over-cap image's annotations, in dataset
         // order, so the stable sort below breaks ties by position.
@@ -845,9 +894,7 @@ impl COCO {
 
         match &ann.segmentation {
             Some(Segmentation::Polygon(polys)) => mask::fr_polys(polys, h, w).ok(),
-            Some(Segmentation::Rect(bbox)) => {
-                mask::fr_poly(&Segmentation::rect_corners(bbox), h, w).ok()
-            }
+            Some(Segmentation::Rect(bbox)) => mask::fr_bbox(bbox, h, w).ok(),
             Some(Segmentation::CompressedRle { size, counts }) => {
                 mask::rle_from_string(counts, size[0], size[1]).ok()
             }
