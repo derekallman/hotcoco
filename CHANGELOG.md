@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Based on [#24](https://github.com/derekallman/hotcoco/pull/24) by Jirka
   Borovec.
 
+- *Rust API:* `hotcoco::mask::area_from_string(s, h, w)` returns the area
+  of the RLE a compressed `counts` string encodes without building its run
+  list, and fails on exactly the strings `rle_from_string` rejects.
+
 ### Changed
 
 - **`load_res()` takes a `float32` array as well as `float64`,** widened once on
@@ -103,6 +107,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   an alias of `mask.iou`, so the two layers could not differ. *Rust API:*
   `COCOeval::print_results_lines()` returns the lines `print_results()`
   prints.
+
+- **`mask.encode`, `mask.area`, and `COCO(dict)` are faster on the calls
+  TorchMetrics makes for every validation batch.** Measured on 46,000
+  full-image masks from COCO val2017 on an M1:
+  - `mask.encode` of one Fortran-order mask, TorchMetrics' `update()` call,
+    takes about 10 µs where it took about 220 µs; pycocotools takes about
+    120 µs. A Fortran-order mask is read in place, runs are found 32 and 8
+    bytes at a time, and a C-order mask goes through an 8×8-block transpose,
+    which `COCO.ann_to_mask` now uses as well.
+  - `mask.area` of one RLE dict takes about 0.7 µs where it took about
+    1.5 µs. It sums the runs as the `counts` string decodes, and every other
+    reader of a compressed `counts` string (`decode`, `toBbox`, `iou`,
+    `merge`, `frPyObjects`, segm evaluation) shares the faster decoder.
+  - `COCO(dict)` converts a custom key whose value is a plain `None`, `bool`,
+    `int`, `float`, or `str` without `json.dumps`. TorchMetrics adds two such
+    keys, `area_bbox` and `area_segm`, to every detection: 46,000 of them
+    took about 130 ms to load and now take about 60 ms. A record with any
+    other custom value goes through `json.dumps` as before, so what is
+    stored, and any error raised, is unchanged.
+- **`mask.encode` holds the GIL while it runs.** Releasing it for a scan of
+  about 10 µs cost about 2.5 ms per mask whenever another Python thread was
+  busy, waiting out the switch interval to get it back. pycocotools holds it
+  too.
 
 ### Fixed
 
@@ -295,6 +322,14 @@ Each entry below has a regression test that fails on the old code.
   `COCO::cap_detections_per_image`, and `cap_detections_per_image_shared` for
   a set behind an `Arc`) exposes the cap; `None` keeps every detection. It
   copies the dataset only when the cap changes what LVIS evaluates.
+- **RLE `counts` given as a `bytearray` or `memoryview` raises `TypeError`.**
+  Every `mask` function and `COCO(dict)` read it as a list of ints, so the
+  bytes of the compressed string became run lengths: `mask.area` returned 308
+  for a 12-pixel mask, with no error. pycocotools raises `TypeError` too.
+- **An RLE dict spelled `{"h": h, "w": w, "counts": ...}` decodes compressed
+  `counts`.** `bytes` counts in that spelling were read as a list of ints,
+  the same silently wrong mask, and `str` counts raised `TypeError`. Both now
+  decode as they do in the `{"size": [h, w], "counts": ...}` spelling.
 
 ## [1.1.0] - 2026-10-01
 

@@ -137,10 +137,13 @@ Compute the area (number of foreground pixels) of RLE mask(s).
 
     ```rust
     fn area(rle: &Rle) -> u64
+    fn area_from_string(s: &str, h: u32, w: u32) -> Result<u64>
     ```
 
     ```rust
     let a = mask::area(&rle);
+    // From a compressed `counts` string, without building the run list
+    let a = mask::area_from_string(counts, 480, 640)?;
     ```
 
 ---

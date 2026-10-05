@@ -34,6 +34,8 @@ fn checked_hw(h: u32, w: u32) -> crate::error::Result<u32> {
 /// Encode a column-major binary mask into RLE.
 ///
 /// `mask` is stored in column-major order (Fortran order): pixel (x, y) is at index `y + h * x`.
+/// Any nonzero byte is foreground, so `bool`, `0`/`1`, `0`/`255`, and `int8` `-1` masks
+/// all encode the same.
 ///
 /// Errors when `mask.len() != h * w`, or when `h * w` exceeds `u32::MAX`.
 pub fn encode(mask: &[u8], h: u32, w: u32) -> crate::error::Result<Rle> {
@@ -42,22 +44,97 @@ pub fn encode(mask: &[u8], h: u32, w: u32) -> crate::error::Result<Rle> {
         return Err(format!("encode: mask length {} must equal h*w = {n}", mask.len()).into());
     }
 
+    // Runs alternate background, foreground, background, ... and start with
+    // background, so a mask whose first pixel is foreground opens with a 0.
+    // The last run ends at the end of the mask, which also makes an empty
+    // mask `[0]`, as in maskApi.c.
     let mut counts = Vec::with_capacity(h.min(w) as usize * 2);
-    let mut p: u8 = 0;
-    let mut c: u32 = 0;
-
-    for &v in mask.iter().take(n) {
-        let v = (v != 0) as u8;
-        if v != p {
-            counts.push(c);
-            c = 0;
-            p = v;
+    let mut start = 0;
+    let mut foreground = false;
+    loop {
+        let end = if foreground {
+            run_end::<true>(mask, start)
+        } else {
+            run_end::<false>(mask, start)
+        };
+        // Only the first run can be empty; every later one starts on a byte
+        // of its own class. A scan that broke this would never reach `n`.
+        debug_assert!(end > start || counts.is_empty(), "empty run at {start}");
+        counts.push((end - start) as u32);
+        if end == n {
+            break;
         }
-        c += 1;
+        start = end;
+        foreground = !foreground;
     }
-    counts.push(c);
 
     Ok(Rle { h, w, counts })
+}
+
+/// `0x01` in every byte of a word.
+const LOW_BITS: u64 = u64::from_le_bytes([0x01; 8]);
+/// `0x80` in every byte of a word.
+const HIGH_BITS: u64 = u64::from_le_bytes([0x80; 8]);
+
+/// Eight mask bytes as one word, first byte in the low bits on every platform.
+#[inline]
+fn word(chunk: &[u8]) -> u64 {
+    let mut bytes = [0; 8];
+    bytes.copy_from_slice(chunk);
+    u64::from_le_bytes(bytes)
+}
+
+/// Marks the bytes of `x` that would end a run: nonzero bytes in a background
+/// run, zero bytes in a foreground run. Only the lowest mark is meaningful,
+/// and it is exact.
+///
+/// The foreground test is the classic has-zero-byte trick,
+/// `(x - 0x0101..) & !x & 0x8080..`, which sets the high bit of every zero
+/// byte. A borrow out of a zero byte can also mark a `0x01` byte above it, but
+/// never one below, so the lowest mark is always the first zero byte.
+#[inline]
+fn run_ends<const FOREGROUND: bool>(x: u64) -> u64 {
+    if FOREGROUND {
+        x.wrapping_sub(LOW_BITS) & !x & HIGH_BITS
+    } else {
+        x
+    }
+}
+
+/// Where the run starting at `mask[from]` ends: the index of the first byte
+/// of the other class, or `mask.len()`.
+///
+/// Skips 32-byte blocks that lie wholly inside the run — four words, one
+/// branch — then finds the end word by word: a marked word's lowest set bit,
+/// divided by 8, is the end's offset within it. Against a byte-at-a-time
+/// loop this is about 30× faster on typical masks, whose long background runs
+/// are almost all skipping, and still 2.5× faster on salt-and-pepper noise,
+/// where every run is one byte.
+#[inline]
+fn run_end<const FOREGROUND: bool>(mask: &[u8], from: usize) -> usize {
+    let mut at = from;
+    for block in mask[from..].chunks_exact(32) {
+        let marks = block
+            .chunks_exact(8)
+            .fold(0, |acc, w| acc | run_ends::<FOREGROUND>(word(w)));
+        if marks != 0 {
+            break;
+        }
+        at += 32;
+    }
+    let mut words = mask[at..].chunks_exact(8);
+    for w in &mut words {
+        let marks = run_ends::<FOREGROUND>(word(w));
+        if marks != 0 {
+            return at + (marks.trailing_zeros() / 8) as usize;
+        }
+        at += 8;
+    }
+    let tail = words.remainder();
+    at + tail
+        .iter()
+        .position(|&b| (b != 0) != FOREGROUND)
+        .unwrap_or(tail.len())
 }
 
 /// Decode an RLE to a column-major binary mask of size `h * w`.
@@ -736,8 +813,86 @@ fn rle_encode_i64(s: &mut String, mut x: i64) {
 ///
 /// Returns an error if the decoded counts sum exceeds `h * w`.
 pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
+    // Every run takes at least one character, so `s.len()` bounds the run
+    // count. Capped at `h * w + 1`, the most runs a mask can hold, so a long
+    // malformed string cannot reserve more than its mask could need.
+    let max_runs = (h as usize).saturating_mul(w as usize).saturating_add(1);
+    let mut counts = Vec::with_capacity(s.len().min(max_runs));
+    fr_string_runs(s, h, w, |count| counts.push(count))?;
+    Ok(Rle { h, w, counts })
+}
+
+/// The area of the RLE a compressed `counts` string encodes, without
+/// decoding it into a run list first.
+///
+/// Equal to `area(&rle_from_string(s, h, w)?)`, and fails on exactly the
+/// strings `rle_from_string` rejects. Use it when the area is all you need —
+/// `pycocotools.mask.area` on an RLE dict, say — since it skips allocating
+/// and filling the counts vector.
+pub fn area_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<u64> {
+    let mut area = 0u64;
+    let mut foreground = false;
+    fr_string_runs(s, h, w, |count| {
+        if foreground {
+            area += u64::from(count);
+        }
+        foreground = !foreground;
+    })?;
+    Ok(area)
+}
+
+/// Why a compressed `counts` string failed to decode.
+///
+/// [`fr_string_runs`] only records what went wrong; the message is formatted
+/// after it returns. A `format!` inside the decode loop borrows the loop's
+/// counters, which keeps them on the stack instead of in registers — that
+/// alone made decoding about 2.5× slower.
+enum FrStringError {
+    BelowZero { byte: u8, pos: usize },
+    TooManyGroups { pos: usize },
+    Negative { count: i64, index: usize },
+    AboveU32 { count: i64, index: usize },
+    Overrun { total: u64, hw: u64 },
+}
+
+impl From<FrStringError> for crate::error::Error {
+    #[cold]
+    fn from(err: FrStringError) -> Self {
+        crate::error::Error::Other(match err {
+            FrStringError::BelowZero { byte, pos } => {
+                format!("invalid RLE: byte value {byte} at position {pos} is below ASCII '0' (48)")
+            }
+            FrStringError::TooManyGroups { pos } => format!(
+                "invalid RLE: run length at byte {pos} has too many continuation characters"
+            ),
+            FrStringError::Negative { count, index } => {
+                format!("invalid RLE: negative count {count} at position {index}")
+            }
+            FrStringError::AboveU32 { count, index } => {
+                format!("invalid RLE: count {count} at position {index} exceeds u32::MAX")
+            }
+            FrStringError::Overrun { total, hw } => {
+                format!("invalid RLE: total counts {total} exceed h*w={hw}")
+            }
+        })
+    }
+}
+
+/// The run lengths of a compressed `counts` string, handed to `run` one at a
+/// time as they decode — maskApi.c's `rleFrString` without the array.
+///
+/// From the fourth run on, each value is a delta against the run two back
+/// (`cnts[m-2]` in the C). Those two runs are carried in locals rather than
+/// read back from an output buffer, so a caller that only folds the runs,
+/// like [`area_from_string`], needs no buffer at all. The one decoder behind
+/// both public entry points, so they cannot disagree on what a string means.
+#[inline]
+fn fr_string_runs(s: &str, h: u32, w: u32, mut run: impl FnMut(u32)) -> Result<(), FrStringError> {
     let bytes = s.as_bytes();
-    let mut counts = Vec::new();
+    // `cnts[m-2]` and `cnts[m-1]`: the two runs before the current one.
+    let (mut prev2, mut prev1) = (0u32, 0u32);
+    let mut m = 0usize;
+    let mut total = 0u64;
     let mut i = 0;
 
     while i < bytes.len() {
@@ -745,12 +900,9 @@ pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
         let mut shift = 0;
         let mut more = true;
         while more && i < bytes.len() {
-            if bytes[i] < 48 {
-                return Err(format!(
-                    "invalid RLE: byte value {} at position {} is below ASCII '0' (48)",
-                    bytes[i], i
-                )
-                .into());
+            let byte = bytes[i];
+            if byte < 48 {
+                return Err(FrStringError::BelowZero { byte, pos: i });
             }
             // Bound the LEB-style shift: any valid u32 run length — even
             // delta-encoded, hence possibly negative — fits well within 11
@@ -758,12 +910,9 @@ pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
             // bits grows `shift` past 63 and overflows the `<<` below (a debug
             // panic, a masked shift in release).
             if shift > 55 {
-                return Err(format!(
-                    "invalid RLE: run length at byte {i} has too many continuation characters"
-                )
-                .into());
+                return Err(FrStringError::TooManyGroups { pos: i });
             }
-            let c = (bytes[i] - 48) as i64;
+            let c = i64::from(byte - 48);
             i += 1;
             x |= (c & 0x1f) << shift;
             more = (c & 0x20) != 0;
@@ -774,36 +923,28 @@ pub fn rle_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<Rle> {
             x |= !0i64 << shift;
         }
         // maskApi.c rleFrString: if(m>2) x += (long) cnts[m-2];
-        if counts.len() > 2 {
-            x = x.wrapping_add(counts[counts.len() - 2] as i64);
+        if m > 2 {
+            x = x.wrapping_add(i64::from(prev2));
         }
         if x < 0 {
-            return Err(format!(
-                "invalid RLE: negative count {x} at position {}",
-                counts.len()
-            )
-            .into());
+            return Err(FrStringError::Negative { count: x, index: m });
         }
         // Validate before narrowing: `as u32` would silently truncate, letting
         // an oversized run wrap and pass the total-vs-h*w check below.
-        if x > u32::MAX as i64 {
-            return Err(format!(
-                "invalid RLE: count {x} at position {} exceeds u32::MAX",
-                counts.len()
-            )
-            .into());
-        }
-        counts.push(x as u32);
+        let Ok(count) = u32::try_from(x) else {
+            return Err(FrStringError::AboveU32 { count: x, index: m });
+        };
+        total += u64::from(count);
+        run(count);
+        (prev2, prev1) = (prev1, count);
+        m += 1;
     }
 
-    // Validate total counts don't exceed h*w
-    let total: u64 = counts.iter().map(|&c| c as u64).sum();
-    let hw = h as u64 * w as u64;
+    let hw = u64::from(h) * u64::from(w);
     if total > hw {
-        return Err(format!("invalid RLE: total counts {total} exceed h*w={hw}").into());
+        return Err(FrStringError::Overrun { total, hw });
     }
-
-    Ok(Rle { h, w, counts })
+    Ok(())
 }
 
 /// Convert multiple polygons for a single object to a single merged RLE.
@@ -856,6 +997,119 @@ mod tests {
         let mask = vec![1u8; 12];
         let rle = encode(&mask, 3, 4).unwrap();
         assert_eq!(rle.counts, vec![0, 12]);
+    }
+
+    /// The byte-at-a-time loop `encode` used before the word scan: the
+    /// reference the scan must match exactly.
+    fn encode_reference(mask: &[u8]) -> Vec<u32> {
+        let mut counts = Vec::new();
+        let (mut foreground, mut run) = (false, 0u32);
+        for &v in mask {
+            if (v != 0) != foreground {
+                counts.push(run);
+                run = 0;
+                foreground = !foreground;
+            }
+            run += 1;
+        }
+        counts.push(run);
+        counts
+    }
+
+    /// `encode` agrees with the reference and round-trips through `decode`,
+    /// with the mask laid out as a single column.
+    fn check_encode(mask: &[u8]) {
+        let n = mask.len() as u32;
+        let rle = encode(mask, n, 1).unwrap();
+        assert_eq!(rle.counts, encode_reference(mask), "mask {mask:?}");
+        let binary: Vec<u8> = mask.iter().map(|&v| u8::from(v != 0)).collect();
+        assert_eq!(decode(&rle), binary, "round trip of {mask:?}");
+    }
+
+    #[test]
+    fn test_encode_scan_every_run_position() {
+        // Every length up to 80 covers every tail length after the 32-byte
+        // blocks and the 8-byte words, and a run starting and ending at every
+        // offset crosses each word and block boundary from both sides.
+        for n in 0..=80 {
+            check_encode(&vec![0; n]);
+            check_encode(&vec![1; n]);
+            let alternating: Vec<u8> = (0..n).map(|i| (i % 2) as u8).collect();
+            check_encode(&alternating);
+            let inverted: Vec<u8> = alternating.iter().map(|v| 1 - v).collect();
+            check_encode(&inverted);
+            for start in 0..n {
+                for end in start + 1..=n {
+                    let mut run = vec![0; n];
+                    run[start..end].fill(1);
+                    check_encode(&run);
+                    let mut gap = vec![1; n];
+                    gap[start..end].fill(0);
+                    check_encode(&gap);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_encode_scan_any_nonzero_byte_is_foreground() {
+        // Every byte value as foreground, next to zeros on both sides. 0x01
+        // above a zero byte is the has-zero-byte trick's false positive; 0x80
+        // and 0xFF exercise the high bit it tests.
+        for v in 1..=255u8 {
+            for n in [1, 7, 8, 9, 31, 32, 33, 64] {
+                for at in 0..n {
+                    let mut single = vec![0; n];
+                    single[at] = v;
+                    check_encode(&single);
+                    let mut hole = vec![v; n];
+                    hole[at] = 0;
+                    check_encode(&hole);
+                }
+            }
+        }
+        // Mixed nonzero values are one foreground run, not one run per value.
+        let mixed = [0, 1, 2, 0x7F, 0x80, 0xFF, 0x01, 0, 0, 3];
+        assert_eq!(encode(&mixed, 10, 1).unwrap().counts, vec![1, 6, 2, 1]);
+    }
+
+    #[test]
+    fn test_encode_scan_random_masks_match_reference() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x5EED_0E4C);
+        for _ in 0..3000 {
+            let n = rng.random_range(0..400);
+            let density = [0.0, 0.02, 0.3, 0.5, 0.7, 0.98, 1.0][rng.random_range(0..7)];
+            // Runs of random length, so long runs and one-byte runs both occur.
+            let mut mask = Vec::with_capacity(n);
+            while mask.len() < n {
+                let len = rng.random_range(1..=48).min(n - mask.len());
+                let foreground = rng.random_bool(density);
+                for _ in 0..len {
+                    mask.push(if foreground {
+                        rng.random_range(1..=255)
+                    } else {
+                        0
+                    });
+                }
+            }
+            check_encode(&mask);
+        }
+    }
+
+    #[test]
+    fn test_encode_scan_full_size_mask() {
+        // A 426×640 mask with a few rectangles, as column-major bytes.
+        let (h, w) = (426usize, 640usize);
+        let mut mask = vec![0u8; h * w];
+        for &(y0, y1, x0, x1) in &[(10, 200, 30, 90), (0, 426, 300, 301), (425, 426, 0, 640)] {
+            for x in x0..x1 {
+                mask[x * h + y0..x * h + y1].fill(1);
+            }
+        }
+        let rle = encode(&mask, h as u32, w as u32).unwrap();
+        assert_eq!(rle.counts, encode_reference(&mask));
+        assert_eq!(decode(&rle), mask);
     }
 
     #[test]
@@ -1208,6 +1462,199 @@ mod tests {
         // This decodes to raw=0x1f=31, sign-extended → -1
         let negative_one = "O"; // byte 79 = 48 + 31, decodes to x=31, sign-extended to -1
         assert!(rle_from_string(negative_one, 10, 10).is_err());
+    }
+
+    /// `rle_from_string` as it stood before the streaming decoder: a direct
+    /// port of maskApi.c's `rleFrString` that collects into a vector and reads
+    /// the delta back from it, plus the same validation. The reference the
+    /// streaming decoder must reproduce, errors included.
+    fn fr_string_reference(s: &str, h: u32, w: u32) -> Result<Vec<u32>, String> {
+        let bytes = s.as_bytes();
+        let mut counts: Vec<u32> = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let (mut x, mut shift, mut more) = (0i64, 0, true);
+            while more && i < bytes.len() {
+                if bytes[i] < 48 {
+                    return Err(format!(
+                        "invalid RLE: byte value {} at position {i} is below ASCII '0' (48)",
+                        bytes[i]
+                    ));
+                }
+                if shift > 55 {
+                    return Err(format!(
+                        "invalid RLE: run length at byte {i} has too many continuation characters"
+                    ));
+                }
+                let c = (bytes[i] - 48) as i64;
+                i += 1;
+                x |= (c & 0x1f) << shift;
+                more = (c & 0x20) != 0;
+                shift += 5;
+            }
+            if shift > 0 && (x & (1 << (shift - 1))) != 0 {
+                x |= !0i64 << shift;
+            }
+            if counts.len() > 2 {
+                x = x.wrapping_add(counts[counts.len() - 2] as i64);
+            }
+            if x < 0 {
+                return Err(format!(
+                    "invalid RLE: negative count {x} at position {}",
+                    counts.len()
+                ));
+            }
+            if x > u32::MAX as i64 {
+                return Err(format!(
+                    "invalid RLE: count {x} at position {} exceeds u32::MAX",
+                    counts.len()
+                ));
+            }
+            counts.push(x as u32);
+        }
+        let total: u64 = counts.iter().map(|&c| c as u64).sum();
+        let hw = h as u64 * w as u64;
+        if total > hw {
+            return Err(format!("invalid RLE: total counts {total} exceed h*w={hw}"));
+        }
+        Ok(counts)
+    }
+
+    /// A random run list covering every width the codec has: zero-length
+    /// runs, the one- and two-character values that dominate real masks, and
+    /// runs past 2^20 that need five or more groups. Long enough lists put
+    /// most runs through the stride-2 delta, in both signs.
+    fn random_rle(rng: &mut impl rand::Rng) -> Rle {
+        let n = rng.random_range(0..300);
+        let counts: Vec<u32> = (0..n)
+            .map(|_| match rng.random_range(0..5) {
+                0 => rng.random_range(0..3),
+                1 => rng.random_range(0..40),
+                2 => rng.random_range(0..2000),
+                3 => rng.random_range(1 << 20..1 << 23),
+                _ => rng.random_range(0..1 << 16),
+            })
+            .collect();
+        let total: u64 = counts.iter().map(|&c| u64::from(c)).sum();
+        let w = rng.random_range(1..=640u32);
+        let h = u32::try_from(total.div_ceil(u64::from(w)).max(1)).unwrap();
+        Rle { h, w, counts }
+    }
+
+    #[test]
+    fn test_rle_string_random_roundtrip_and_area() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x5EED_A2EA);
+        for case in 0..3000 {
+            let rle = random_rle(&mut rng);
+            let s = rle_to_string(&rle);
+            let decoded = rle_from_string(&s, rle.h, rle.w).unwrap();
+            assert_eq!(decoded.counts, rle.counts, "case {case}: {s}");
+            assert_eq!(
+                area_from_string(&s, rle.h, rle.w).unwrap(),
+                area(&rle),
+                "case {case}: {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_area_from_string_edge_masks() {
+        // Long runs past 2^20, the second a negative multi-group delta.
+        let long = vec![5, 1 << 21, 3, 1 << 20, 9];
+        let cases: [(u32, u32, Vec<u32>, u64); 7] = [
+            (4, 5, vec![20], 0),       // empty
+            (4, 5, vec![0, 20], 20),   // full
+            (4, 5, vec![7, 1, 12], 1), // one pixel
+            (1, 1, vec![0, 1], 1),     // 1x1 full
+            (4, 5, vec![], 0),         // no runs at all
+            (4, 5, vec![1; 20], 10),   // every run one pixel
+            (4096, 1024, long, (1 << 21) + (1 << 20)),
+        ];
+        for (h, w, counts, want) in cases {
+            let rle = Rle { h, w, counts };
+            let s = rle_to_string(&rle);
+            assert_eq!(
+                area_from_string(&s, h, w).unwrap(),
+                want,
+                "{:?}",
+                rle.counts
+            );
+            assert_eq!(area(&rle), want);
+        }
+    }
+
+    /// The streaming decoder against the collecting one it replaced, on valid
+    /// strings and on corrupted ones: same runs, or the same error message.
+    /// `area_from_string` must fail exactly where `rle_from_string` does.
+    #[test]
+    fn test_fr_string_matches_reference_on_valid_and_corrupt_input() {
+        use rand::{Rng, SeedableRng};
+        // One string per error, since random corruption rarely builds the
+        // long runs the last two need.
+        let mut inputs: Vec<(String, u32, u32)> = [
+            ("\x1f", 10, 10),             // below '0'
+            ("2O", 10, 10),               // negative
+            ("5", 2, 2),                  // overrun
+            ("PPPPPP8", 10, 10),          // past u32::MAX
+            ("PPPPPPPPPPPPPPPP", 10, 10), // too many groups
+        ]
+        .into_iter()
+        .map(|(s, h, w)| (s.to_owned(), h, w))
+        .collect();
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xC0C0_57E1);
+        for _ in 0..3000 {
+            let rle = random_rle(&mut rng);
+            let mut bytes = rle_to_string(&rle).into_bytes();
+            // Corrupt about two thirds of the strings: overwrite characters
+            // with any ASCII (below '0' included), or cut the string short so
+            // it ends inside a continued run.
+            match rng.random_range(0..3) {
+                0 if !bytes.is_empty() => {
+                    for _ in 0..rng.random_range(1..4) {
+                        let at = rng.random_range(0..bytes.len());
+                        bytes[at] = rng.random_range(0..128);
+                    }
+                }
+                1 if !bytes.is_empty() => bytes.truncate(rng.random_range(0..bytes.len())),
+                _ => {}
+            }
+            // A smaller canvas half the time, so overruns are exercised too.
+            let h = if rng.random_bool(0.5) {
+                rle.h
+            } else {
+                rng.random_range(0..=rle.h)
+            };
+            inputs.push((String::from_utf8(bytes).unwrap(), h, rle.w));
+        }
+
+        let mut errors = std::collections::BTreeSet::new();
+        for (s, h, w) in &inputs {
+            let (s, h, w) = (s.as_str(), *h, *w);
+            let want = fr_string_reference(s, h, w);
+            let got = rle_from_string(s, h, w)
+                .map(|r| r.counts)
+                .map_err(|e| e.to_string());
+            assert_eq!(got, want, "{s:?} at {h}x{w}");
+            let got_area = area_from_string(s, h, w).map_err(|e| e.to_string());
+            let want_area = want
+                .as_ref()
+                .map(|c| c.iter().skip(1).step_by(2).map(|&c| u64::from(c)).sum());
+            assert_eq!(
+                got_area,
+                want_area.map_err(Clone::clone),
+                "{s:?} at {h}x{w}"
+            );
+            if let Err(e) = want {
+                // The message up to its first number names the error.
+                errors.insert(
+                    e.split(|c: char| c.is_ascii_digit())
+                        .next()
+                        .map(str::to_owned),
+                );
+            }
+        }
+        assert_eq!(errors.len(), 5, "every error kind exercised: {errors:?}");
     }
 
     /// maskApi.c's stage 1 verbatim: every boundary point of every edge, none

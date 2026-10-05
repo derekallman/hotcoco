@@ -1,7 +1,11 @@
+use std::borrow::Cow;
+
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString};
+use pyo3::types::{
+    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString,
+};
 
 /// Extract an optional field from a Python dict.
 ///
@@ -103,27 +107,44 @@ pub(crate) fn numpy_dtype_name(obj: &Bound<'_, PyAny>) -> Option<String> {
         .ok()
 }
 
-/// Compressed RLE `counts` as a string, from either the `str` or the `bytes`
-/// spelling; `None` for anything else (an uncompressed list).
+/// Compressed RLE `counts`, from either the `str` or the `bytes` spelling;
+/// `None` for anything else (an uncompressed list).
 ///
 /// `bytes` is what `mask.encode` and pycocotools emit. It has to be checked
 /// before any list branch: Python bytes extract as a sequence of ints, so a
 /// caller that tries the list first reads the ASCII codes of the compressed
-/// string as run lengths — a silently empty mask, not an error. Both RLE
-/// parsers go through here so that cannot happen to one and not the other
-/// again.
-fn counts_as_str(counts: &Bound<'_, PyAny>) -> PyResult<Option<String>> {
-    if let Ok(s) = counts.extract::<String>() {
-        return Ok(Some(s));
-    }
+/// string as run lengths — a silently wrong mask, not an error. `bytearray`
+/// and `memoryview` extract the same way, so they are a `TypeError`, as in
+/// pycocotools. Every RLE dict reader goes through here so that cannot
+/// happen to one and not the other again.
+///
+/// `bytes` is borrowed in place rather than copied, and checked first: it is
+/// the common spelling, and a failed `str` cast builds a Python error only to
+/// discard it.
+fn counts_str<'a>(counts: &'a Bound<'_, PyAny>) -> PyResult<Option<Cow<'a, str>>> {
     if let Ok(b) = counts.cast::<PyBytes>() {
-        return std::str::from_utf8(b.as_bytes())
-            .map(|s| Some(s.to_owned()))
-            .map_err(|e| {
-                pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
-            });
+        let s = std::str::from_utf8(b.as_bytes()).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
+        })?;
+        return Ok(Some(Cow::Borrowed(s)));
+    }
+    if let Ok(s) = counts.cast::<PyString>() {
+        // A `str` with no UTF-8 form (a lone surrogate) is left to the list
+        // branch, which rejects it.
+        return Ok(s.to_cow().ok());
+    }
+    if counts.is_instance_of::<PyByteArray>() || counts.is_instance_of::<PyMemoryView>() {
+        return Err(counts_type_error(counts));
     }
     Ok(None)
+}
+
+/// The `TypeError` for RLE `counts` that is neither a string nor a run list.
+fn counts_type_error(counts: &Bound<'_, PyAny>) -> PyErr {
+    pyo3::exceptions::PyTypeError::new_err(format!(
+        "RLE 'counts' must be str, bytes, or a list of ints, got {}",
+        type_name(counts)
+    ))
 }
 
 /// `req!` with an explicit reader such as [`extract_int`]. Same interning
@@ -176,12 +197,13 @@ const CATEGORY_KEYS: &[&str] = &[
     "frequency",
 ];
 
-/// Collect every key of `dict` not in `known` into a JSON map.
+/// Collect every key of `dict` not in `known` into a JSON map, in dict order.
 ///
-/// Goes through Python's `json.dumps` in one call per record rather than a
-/// hand-rolled per-value converter: the values are arbitrary user objects, and
-/// `json` already defines exactly which of those a COCO file can hold. A
-/// non-serializable value raises the stdlib's own `TypeError`, naming the type.
+/// Plain scalar values, the common case (TorchMetrics adds a float `area_bbox`
+/// and an int `area_segm` to every detection), convert in Rust through
+/// [`scalar_to_json`]. Any other value sends the whole record through
+/// `json.dumps` ([`extra_from_dict`]), so a value JSON cannot hold raises
+/// exactly what it always did, message included.
 ///
 /// `known` says whether a key is a schema key, and may consume it: the record
 /// converters pass their key list, the annotation merge passes the setter.
@@ -189,22 +211,78 @@ fn extract_extra(
     dict: &Bound<'_, PyDict>,
     mut known: impl FnMut(&str, &Bound<'_, PyAny>) -> PyResult<bool>,
 ) -> PyResult<Extra> {
-    let py = dict.py();
-    let mut extras: Option<Bound<'_, PyDict>> = None;
+    // The custom entries as JSON for as long as every value is a plain
+    // scalar; from the first other value on, a dict for `json.dumps`.
+    let mut scalars = Vec::new();
+    let mut fallback: Option<Bound<'_, PyDict>> = None;
     for (k, v) in dict {
         let Ok(key) = k.cast::<PyString>() else {
             continue; // non-string keys cannot appear in COCO JSON
         };
-        if known(&key.to_cow()?, &v)? {
+        let name = key.to_cow()?;
+        if known(&name, &v)? {
             continue;
         }
-        extras
-            .get_or_insert_with(|| PyDict::new(py))
-            .set_item(k, v)?;
+        if let Some(fallback) = &fallback {
+            fallback.set_item(k, v)?;
+            continue;
+        }
+        match scalar_to_json(&v) {
+            Some(json) => scalars.push((name.into_owned(), json)),
+            None => {
+                // The scalars so far are read back from `dict` by name: `known`
+                // can consume a key, so it cannot be called a second time.
+                let objects = PyDict::new(dict.py());
+                for (name, _) in &scalars {
+                    if let Some(value) = dict.get_item(name)? {
+                        objects.set_item(name, value)?;
+                    }
+                }
+                objects.set_item(k, v)?;
+                fallback = Some(objects);
+            }
+        }
     }
-    match extras {
-        Some(extras) => extra_from_dict(&extras),
-        None => Ok(Extra::new()),
+    match fallback {
+        Some(objects) => extra_from_dict(&objects),
+        None => Ok(scalars.into_iter().collect()),
+    }
+}
+
+/// `value` as the `serde_json::Value` that parsing `json.dumps(value)`
+/// yields, when it is an exact `None`, `bool`, `int`, `float`, or `str`;
+/// `None` for anything else, which keeps the `json.dumps` path.
+///
+/// - Exact types only: a subclass can override what `json` writes for it,
+///   and a numpy scalar is a different type to `json` altogether.
+/// - A `float` stays a float, `1.0` included: its `repr` always has a `.` or
+///   an exponent, so `serde_json` never reads it back as an integer, and the
+///   core crate's `float_roundtrip` feature makes that read exact. NaN and
+///   infinity have no JSON spelling — `serde_json` rejects what `json.dumps`
+///   writes for them — so they are not converted here.
+/// - An `int` gets the split `serde_json` makes when parsing one: `u64` if
+///   non-negative, `i64` if negative. Outside both ranges it parses as a
+///   float, so such an int is not converted here.
+/// - A `str` with a lone surrogate has no UTF-8 form, so it is not converted
+///   here either.
+fn scalar_to_json(value: &Bound<'_, PyAny>) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    if value.is_none() {
+        Some(Value::Null)
+    } else if let Ok(b) = value.cast_exact::<PyBool>() {
+        Some(Value::Bool(b.is_true()))
+    } else if let Ok(f) = value.cast_exact::<PyFloat>() {
+        serde_json::Number::from_f64(f.value()).map(Value::Number)
+    } else if value.is_exact_instance_of::<PyInt>() {
+        value
+            .extract::<i64>()
+            .map(Value::from)
+            .or_else(|_| value.extract::<u64>().map(Value::from))
+            .ok()
+    } else if let Ok(s) = value.cast_exact::<PyString>() {
+        s.to_cow().ok().map(|s| Value::String(s.into_owned()))
+    } else {
+        None
     }
 }
 
@@ -370,7 +448,9 @@ pub(crate) fn merge_ann_dict_checked(
             ann.id
         )));
     }
-    if !custom.is_empty() {
+    if ann.extra.is_empty() {
+        ann.extra = custom;
+    } else if !custom.is_empty() {
         ann.extra = std::mem::take(&mut ann.extra)
             .into_iter()
             .chain(custom)
@@ -398,15 +478,13 @@ pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
         let counts_obj = dict
             .get_item(pyo3::intern!(dict.py(), "counts"))?
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("dict missing 'counts'"))?;
-        if let Some(counts) = counts_as_str(&counts_obj)? {
+        if let Some(counts) = counts_str(&counts_obj)? {
+            let counts = counts.into_owned();
             return Ok(Segmentation::CompressedRle { size, counts });
         }
-        let counts: Vec<u32> = counts_obj.extract().map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err(format!(
-                "RLE 'counts' must be str, bytes, or a list of ints, got {}",
-                type_name(&counts_obj)
-            ))
-        })?;
+        let counts: Vec<u32> = counts_obj
+            .extract()
+            .map_err(|_| counts_type_error(&counts_obj))?;
         return Ok(Segmentation::UncompressedRle { size, counts });
     }
     // Otherwise it's a polygon (list of lists)
@@ -520,40 +598,51 @@ pub fn rle_to_coco_py(py: Python<'_>, rle: &Rle) -> PyResult<Py<PyAny>> {
 }
 
 pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
-    // Support {"h", "w", "counts": [ints]}, {"size": [h,w], "counts": "string"},
-    // and {"size": [h,w], "counts": b"bytes"} (pycocotools format)
-    if let Some(size_obj) = dict.get_item(pyo3::intern!(dict.py(), "size"))? {
-        let size: [u32; 2] = size_obj.extract()?;
-        let counts_obj = dict
-            .get_item(pyo3::intern!(dict.py(), "counts"))?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("RLE dict has 'size' but missing 'counts'")
-            })?;
-        if let Some(s) = counts_as_str(&counts_obj)? {
-            return hotcoco_core::mask::rle_from_string(&s, size[0], size[1])
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
-        }
-        // Uncompressed RLE: a list of ints
-        let counts: Vec<u32> = counts_obj.extract()?;
-        return Ok(Rle {
-            h: size[0],
-            w: size[1],
-            counts,
-        });
+    read_rle_dict(dict, hotcoco_core::mask::rle_from_string, |rle| rle)
+}
+
+/// Read one RLE dict, handing a compressed `counts` string to `compressed`
+/// while it is still borrowed from the dict, or a run list to
+/// `uncompressed` as an [`Rle`].
+///
+/// The split lets a caller that needs less than the decoded runs — `mask.area`
+/// needs only their sum — read them straight off the string. Takes the
+/// pycocotools spelling `{"size": [h, w], "counts": ...}` and
+/// `{"h": h, "w": w, "counts": ...}`, with `counts` as `bytes`, `str`, or a
+/// list of ints in either. A string that does not decode is a `ValueError`.
+pub(crate) fn read_rle_dict<R>(
+    dict: &Bound<'_, PyDict>,
+    compressed: impl FnOnce(&str, u32, u32) -> Result<R, hotcoco_core::Error>,
+    uncompressed: impl FnOnce(Rle) -> R,
+) -> PyResult<R> {
+    let py = dict.py();
+    let (h, w, counts_obj) = if let Some(size_obj) = dict.get_item(pyo3::intern!(py, "size"))? {
+        let [h, w]: [u32; 2] = size_obj.extract()?;
+        let counts = dict.get_item(pyo3::intern!(py, "counts"))?.ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("RLE dict has 'size' but missing 'counts'")
+        })?;
+        (h, w, counts)
+    } else {
+        let h: u32 = dict
+            .get_item(pyo3::intern!(py, "h"))?
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'h'"))?
+            .extract()?;
+        let w: u32 = dict
+            .get_item(pyo3::intern!(py, "w"))?
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'w'"))?
+            .extract()?;
+        let counts = dict
+            .get_item(pyo3::intern!(py, "counts"))?
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'counts'"))?;
+        (h, w, counts)
+    };
+    if let Some(s) = counts_str(&counts_obj)? {
+        return compressed(&s, h, w)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
     }
-    let h: u32 = dict
-        .get_item(pyo3::intern!(dict.py(), "h"))?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'h'"))?
-        .extract()?;
-    let w: u32 = dict
-        .get_item(pyo3::intern!(dict.py(), "w"))?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'w'"))?
-        .extract()?;
-    let counts: Vec<u32> = dict
-        .get_item(pyo3::intern!(dict.py(), "counts"))?
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'counts'"))?
-        .extract()?;
-    Ok(Rle { h, w, counts })
+    // Uncompressed RLE: a list of ints
+    let counts: Vec<u32> = counts_obj.extract()?;
+    Ok(uncompressed(Rle { h, w, counts }))
 }
 
 /// One RLE dict from a Python object (`size` + `counts`, or `h` + `w` +

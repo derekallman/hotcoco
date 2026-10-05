@@ -148,6 +148,141 @@ class TestArea:
         assert a.dtype == np.uint32
 
 
+# `mask.area` sums the foreground runs as the compressed `counts` string
+# decodes, without building a run list. These masks aim at the decoder's
+# corners: runs long enough to need five or more 5-bit groups (past 2^20),
+# including a negative multi-group delta; masks of one-pixel runs, where nearly
+# every value goes through the stride-2 delta; and the empty, full, and
+# single-pixel extremes.
+
+
+def _mask_from_runs(runs: list[int], h: int, w: int) -> np.ndarray:
+    """Fortran-order mask whose column-major run lengths are `runs`, background first."""
+    assert sum(runs) == h * w
+    flat = np.repeat(np.arange(len(runs)) % 2, runs).astype(np.uint8)
+    return np.asfortranarray(flat.reshape((h, w), order="F"))
+
+
+def _runs_of(m: np.ndarray) -> list[int]:
+    """The uncompressed RLE counts of a mask: column-major, background first."""
+    flat = m.ravel(order="F")
+    edges = np.flatnonzero(np.diff(flat)) + 1
+    runs = np.diff(np.concatenate([[0], edges, [flat.size]])).tolist()
+    return [0, *runs] if flat[0] else runs
+
+
+def _area_masks() -> dict[str, np.ndarray]:
+    rng = np.random.default_rng(7)
+    h, w = 427, 640
+    first, last = np.zeros((h, w), np.uint8), np.zeros((h, w), np.uint8)
+    first[0, 0] = last[-1, -1] = 1
+    middle = np.zeros((h, w), np.uint8)
+    middle[200, 300] = 1
+    masks = {
+        "empty": np.zeros((h, w), np.uint8),
+        "full": np.ones((h, w), np.uint8),
+        "pixel_first": first,
+        "pixel_middle": middle,
+        "pixel_last": last,
+        "one_by_one": np.ones((1, 1), np.uint8),
+        # Column-major, an odd height makes every run one pixel long.
+        "checkerboard": (np.indices((h, w)).sum(axis=0) % 2).astype(np.uint8),
+        "long_runs": _mask_from_runs([1_200_000, 800_000, 250_000], 1500, 1500),
+        # Run 3 is a delta of 3 - 1_050_000 against run 1.
+        "long_negative_delta": _mask_from_runs([1_100_000, 1_050_000, 2, 3, 95_000, 4_995], 1500, 1500),
+    }
+    for density in (0.001, 0.05, 0.5, 0.95, 0.999):
+        masks[f"random_{density}"] = (rng.random((h, w)) < density).astype(np.uint8)
+    return {name: np.asfortranarray(m) for name, m in masks.items()}
+
+
+AREA_MASKS = _area_masks()
+
+
+@pytest.mark.parametrize("name", list(AREA_MASKS))
+def test_area_from_compressed_counts_matches_pycocotools(name):
+    m = AREA_MASKS[name]
+    rle = pm.encode(m)
+    want = int(pm.area(rle))
+    as_str = {"size": rle["size"], "counts": rle["counts"].decode("ascii")}
+    for spelling in (rle, as_str):
+        got = hm.area(spelling)
+        assert type(got) is int
+        assert got == want
+
+
+@pytest.mark.parametrize("name", list(AREA_MASKS))
+def test_area_from_uncompressed_counts_matches_pycocotools(name):
+    # pycocotools' `area` takes only compressed counts; `frPyObjects`
+    # compresses the run list for it, and proves the list is the same mask.
+    m = AREA_MASKS[name]
+    rle = pm.encode(m)
+    h, w = m.shape
+    uncompressed = {"size": [h, w], "counts": _runs_of(m)}
+    assert pm.frPyObjects(uncompressed, h, w)["counts"] == rle["counts"]
+    assert hm.area(uncompressed) == int(pm.area(rle))
+
+
+def test_area_batched_matches_pycocotools():
+    rles = [pm.encode(m) for m in AREA_MASKS.values()]
+    rles += [{"size": r["size"], "counts": r["counts"].decode("ascii")} for r in rles]
+    got, want = hm.area(rles), pm.area(rles)
+    assert got.dtype == want.dtype == np.uint32
+    np.testing.assert_array_equal(got, want)
+
+
+class TestCountsSpellings:
+    """Every RLE dict reader takes the same `counts` spellings. Read as a list
+    of ints, the bytes of a compressed string would be run lengths — a wrong
+    mask with no error, the issue #5 failure class."""
+
+    @staticmethod
+    def _mask_and_rle():
+        m = np.zeros((10, 10), np.uint8, order="F")
+        m[2:5, 3:7] = 1
+        return m, pm.encode(m)
+
+    @pytest.mark.parametrize("wrap", [bytearray, memoryview])
+    def test_byte_buffers_are_rejected(self, wrap):
+        # pycocotools raises TypeError for these too.
+        _, rle = self._mask_and_rle()
+        bad = {"size": rle["size"], "counts": wrap(rle["counts"])}
+        for fn in (hm.area, hm.decode, hm.toBbox):
+            with pytest.raises(TypeError, match="must be str, bytes, or a list of ints"):
+                fn(bad)
+
+    @pytest.mark.parametrize("spelling", ["bytes", "str"])
+    def test_h_w_spelling_decodes_compressed_counts(self, spelling):
+        m, rle = self._mask_and_rle()
+        counts = rle["counts"] if spelling == "bytes" else rle["counts"].decode("ascii")
+        hw = {"h": 10, "w": 10, "counts": counts}
+        assert hm.area(hw) == int(m.sum())
+        np.testing.assert_array_equal(hm.decode(hw), m)
+
+
+@pytest.mark.parametrize(
+    ("size", "counts"),
+    [
+        ([10, 10], b"!"),  # below '0'
+        ([10, 10], b"O"),  # negative run
+        ([10, 10], "O"),
+        ([2, 2], b"5"),  # runs past h * w
+        ([10, 10], b"PPPPPP8"),  # run past u32::MAX
+        ([10, 10], b"P" * 20),  # too many continuation characters
+        ([10, 10], b"\xff"),  # not UTF-8
+    ],
+)
+def test_area_rejects_what_decode_rejects(size, counts):
+    rle = {"size": size, "counts": counts}
+    with pytest.raises(ValueError) as decode_error:
+        hm.decode(rle)
+    message = str(decode_error.value)
+    for call in (lambda: hm.area(rle), lambda: hm.area([rle])):
+        with pytest.raises(ValueError) as area_error:
+            call()
+        assert str(area_error.value) == message
+
+
 # ---------------------------------------------------------------------------
 # toBbox
 # ---------------------------------------------------------------------------
@@ -399,6 +534,144 @@ def test_every_operation_matches_bit_for_bit(case):
     assert len(pb) == len(hb), f"frPyObjects/bbox {ctx}"
     for i, (a, b) in enumerate(zip(pb, hb)):
         assert norm_rle(a) == norm_rle(b), f"frPyObjects/bbox {ctx}[{i}] bbox={bbox}"
+
+
+# ---------------------------------------------------------------------------
+# encode: the word-at-a-time scan, every memory layout, every one-byte dtype
+# ---------------------------------------------------------------------------
+#
+# `encode` finds where each run ends 32 and 8 bytes at a time, reads a
+# Fortran-order mask straight from its buffer, and moves a C-order mask to
+# Fortran order with an 8x8-block transpose. These cases aim at each of those:
+# runs that end on and across word boundaries, sizes that leave a ragged tail
+# or a ragged block edge, and every layout path for 2-D and 3-D input.
+#
+# The reference is pycocotools on the *binarized* mask: hotcoco treats any
+# nonzero byte as foreground, while pycocotools starts a new run wherever the
+# byte value changes (a 1 next to a 2).
+
+SCAN_SHAPES = [(1, 1), (1, 7), (7, 1), (3, 5), (8, 8), (9, 7), (5, 13), (16, 2), (33, 3), (11, 37), (64, 65)]
+
+
+def reference_rle(m: np.ndarray):
+    """pycocotools' RLE of ``m != 0``; a list of RLEs for an (H, W, N) stack."""
+    return pm.encode(np.asfortranarray(m != 0, dtype=np.uint8))
+
+
+def scan_patterns(h: int, w: int, rng: np.random.Generator):
+    """Named (H, W) uint8 0/1 masks, built in column-major order — the order
+    the scan reads — so the run boundaries land where they are aimed."""
+    n = h * w
+    index = np.arange(n)
+    flat = {
+        "zeros": np.zeros(n),
+        "ones": np.ones(n),
+        "first_pixel": index == 0,
+        "last_pixel": index == n - 1,
+        "all_but_first": index != 0,
+        "all_but_last": index != n - 1,
+        "alternating": index % 2,
+        "alternating_inverted": 1 - index % 2,
+        # Runs ending inside a word, on a word edge, across a word edge, and
+        # across the 32-byte block edge; the slices clip on small masks.
+        "boundary_runs": np.isin(index, np.r_[5:11, 14:16, 16:18, 30:34, 39:41, 62:67]),
+    }
+    for p in (0.05, 0.5, 0.95):
+        flat[f"random_{p}"] = rng.random(n) < p
+    for name, f in flat.items():
+        yield name, np.asarray(f, dtype=np.uint8).reshape((h, w), order="F")
+
+
+def layouts_2d(m: np.ndarray):
+    """The same (H, W) mask under every memory layout encode has a path for."""
+    h, w = m.shape
+    yield "fortran", np.asfortranarray(m)
+    yield "c_order", np.ascontiguousarray(m)
+    big = np.zeros((2 * h + 1, 3 * w + 2), dtype=m.dtype)
+    big[1::2, 2::3] = m
+    yield "strided", big[1::2, 2::3]
+    yield "reversed", np.ascontiguousarray(m[::-1, ::-1])[::-1, ::-1]
+    tall = np.zeros((h + 3, w), dtype=m.dtype, order="F")
+    tall[1 : h + 1] = m
+    yield "fortran_rows_sliced", tall[1 : h + 1]
+
+
+class TestEncodeScan:
+    @pytest.mark.parametrize("shape", SCAN_SHAPES)
+    def test_2d_every_layout_matches_pycocotools(self, shape):
+        rng = np.random.default_rng(shape[0] * 100 + shape[1])
+        for name, m in scan_patterns(*shape, rng):
+            ref = norm_rle(reference_rle(m))
+            for layout, view in layouts_2d(m):
+                assert np.array_equal(view, m)
+                assert norm_rle(hm.encode(view)) == ref, f"{shape} {name} {layout}"
+
+    @pytest.mark.parametrize("shape", SCAN_SHAPES)
+    def test_2d_every_one_byte_dtype_matches_pycocotools(self, shape):
+        rng = np.random.default_rng(shape[0] * 100 + shape[1] + 1)
+        for name, m in scan_patterns(*shape, rng):
+            fg = m != 0
+            variants = {
+                "bool": fg,
+                "uint8_2": fg.astype(np.uint8) * 2,
+                "uint8_255": fg.astype(np.uint8) * 255,
+                # int8 has no pycocotools path (it rejects the dtype), and -1
+                # reaches the scan as 255.
+                "int8_minus_one": fg.astype(np.int8) * -1,
+                "int8_mixed": np.where(fg, rng.choice(np.array([1, -1, 127, -128], dtype=np.int8), m.shape), 0),
+                "uint8_mixed": np.where(fg, rng.integers(1, 256, m.shape), 0).astype(np.uint8),
+            }
+            ref = norm_rle(reference_rle(m))
+            for dtype_name, raw in variants.items():
+                for layout in (np.asfortranarray, np.ascontiguousarray):
+                    assert norm_rle(hm.encode(layout(raw))) == ref, f"{shape} {name} {dtype_name} {layout.__name__}"
+
+    @pytest.mark.parametrize("n", [1, 3, 8, 9, 17])
+    @pytest.mark.parametrize("shape", [(1, 1), (7, 3), (8, 8), (9, 5), (17, 2)])
+    def test_3d_every_layout_matches_pycocotools(self, shape, n):
+        rng = np.random.default_rng(shape[0] * 1000 + shape[1] * 10 + n)
+        patterns = [m for _, m in scan_patterns(*shape, rng)]
+        stack = np.stack([patterns[i % len(patterns)] for i in range(n)], axis=2)
+        ref = [norm_rle(r) for r in reference_rle(stack)]
+        wide = np.zeros(stack.shape[:2] + (2 * n,), dtype=np.uint8)
+        wide[:, :, ::2] = stack
+        for layout, view in {
+            "fortran": np.asfortranarray(stack),
+            "c_order": np.ascontiguousarray(stack),
+            "strided_n": wide[:, :, ::2],
+            "c_order_bool": np.ascontiguousarray(stack != 0),
+            "fortran_uint8_255": np.asfortranarray(stack * 255),
+        }.items():
+            got = hm.encode(view)
+            assert isinstance(got, list) and len(got) == n
+            assert [norm_rle(r) for r in got] == ref, f"{shape}x{n} {layout}"
+
+    def test_full_size_stack_matches_pycocotools(self):
+        """Realistic size, with H (426) and N (10) off the 8x8 block grid."""
+        rng = np.random.default_rng(7)
+        stack = np.zeros((426, 640, 10), dtype=bool)
+        for i in range(10):
+            for _ in range(rng.integers(1, 4)):
+                y0, x0 = rng.integers(0, 400), rng.integers(0, 600)
+                stack[y0 : y0 + rng.integers(1, 200), x0 : x0 + rng.integers(1, 300), i] = True
+        stack[:, :, 9] = rng.random((426, 640)) < 0.5
+        ref = [norm_rle(r) for r in reference_rle(stack)]
+        for layout in (np.asfortranarray, np.ascontiguousarray):
+            assert [norm_rle(r) for r in hm.encode(layout(stack))] == ref, layout.__name__
+        # TorchMetrics: an (N, H, W) bool batch, one Fortran-order mask at a time.
+        for i, m in enumerate(np.ascontiguousarray(stack.transpose(2, 0, 1))):
+            assert norm_rle(hm.encode(np.asfortranarray(m))) == ref[i]
+
+    @pytest.mark.parametrize("shape", [(0, 5), (5, 0), (0, 0), (0, 5, 2), (5, 0, 2), (3, 4, 0), (0, 3, 2)])
+    def test_zero_size_matches_pycocotools(self, shape):
+        m = np.zeros(shape, dtype=np.uint8)
+        ref = pm.encode(np.asfortranarray(m))
+        for layout in (np.asfortranarray, np.ascontiguousarray):
+            got = hm.encode(layout(m))
+            if len(shape) == 2:
+                assert norm_rle(got) == norm_rle(ref)
+            else:
+                assert [norm_rle(r) for r in got] == [norm_rle(r) for r in ref]
 
 
 # ---------------------------------------------------------------------------

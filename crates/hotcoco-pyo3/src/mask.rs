@@ -7,13 +7,14 @@
 //! definition.
 
 use hotcoco_core::mask as rmask;
-use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
+use numpy::ndarray::{ArrayView2, Axis};
+use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray2, PyReadonlyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
     Flag, boxes_arg, extract_coco_rle, extract_rle_list, f64_array, numpy_dtype_name, py_to_rle,
-    rle_to_coco_py, type_name,
+    read_rle_dict, rle_to_coco_py, type_name,
 };
 use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
@@ -25,11 +26,7 @@ use crate::to_pyerr;
 pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
     debug_assert_eq!(src.len(), h * w);
     let mut dst = vec![0u8; h * w];
-    for y in 0..h {
-        for x in 0..w {
-            dst[y + h * x] = src[y * w + x];
-        }
-    }
+    transpose_into(src, w, &mut dst, h, h, w);
     dst
 }
 
@@ -97,56 +94,173 @@ fn as_uint8<'py>(mask: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     }
 }
 
-/// Column-major (Fortran-order) bytes of one `(H, W)` view, whatever its
-/// memory layout.
+/// Column-major (Fortran-order) bytes of one `(H, W)` view that is not
+/// Fortran-contiguous — [`encode_view`] encodes those from their own buffer.
 ///
-/// The transpose of a Fortran-order view is already standard layout, so
-/// `as_standard_layout` borrows and the result is one copy. A C-order or
-/// sliced view goes through ndarray's layout conversion first: its strided
-/// copy is about 3× faster than iterating the transposed view element by
-/// element (350 µs against 1.2 ms for a 480×640 mask), which is why this is
-/// not `t.iter().copied().collect()`.
-fn col_major(view: numpy::ndarray::ArrayView2<'_, u8>) -> Vec<u8> {
+/// A C-order mask is the one common case, and gets [`transpose_mask`]'s
+/// blocked transpose: about 45 µs for a 426×640 mask, against about 100 µs
+/// for ndarray's strided copy. Any other layout (a sliced or strided view)
+/// still takes that copy, which is about 3× faster than iterating the
+/// transposed view element by element — the reason this is not
+/// `t.iter().copied().collect()`.
+fn col_major(view: ArrayView2<'_, u8>) -> Vec<u8> {
+    if let Some(row_major) = view.to_slice() {
+        let (h, w) = view.dim();
+        return transpose_mask(row_major, h, w);
+    }
     let t = view.t();
     let std = t.as_standard_layout();
     std.as_slice()
         .map_or_else(|| std.iter().copied().collect(), <[u8]>::to_vec)
 }
 
+/// Write the `rows × cols` byte matrix `src` into `dst` transposed: element
+/// `(r, c)`, read from `src[r * src_stride + c]`, lands at
+/// `dst[c * dst_stride + r]`.
+///
+/// Works in 8×8 blocks — eight 8-byte rows in, eight 8-byte columns out — so
+/// both sides move a word at a time and the destination's cache lines are
+/// reused by the next block down instead of each byte landing on its own
+/// line. A stack of C-order masks reads every byte from a different line
+/// otherwise, which made it about 7× slower than a Fortran-order stack. The
+/// ragged right and bottom edges go byte by byte.
+fn transpose_into(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    cols: usize,
+) {
+    let (rows8, cols8) = (rows - rows % 8, cols - cols % 8);
+    for r0 in (0..rows8).step_by(8) {
+        for c0 in (0..cols8).step_by(8) {
+            let mut block = [0u64; 8];
+            for (i, row) in block.iter_mut().enumerate() {
+                let at = (r0 + i) * src_stride + c0;
+                *row = load_le(&src[at..at + 8]);
+            }
+            for (j, col) in transpose_8x8(block).into_iter().enumerate() {
+                let at = (c0 + j) * dst_stride + r0;
+                dst[at..at + 8].copy_from_slice(&col.to_le_bytes());
+            }
+        }
+        for c in cols8..cols {
+            for r in r0..r0 + 8 {
+                dst[c * dst_stride + r] = src[r * src_stride + c];
+            }
+        }
+    }
+    for r in rows8..rows {
+        for c in 0..cols {
+            dst[c * dst_stride + r] = src[r * src_stride + c];
+        }
+    }
+}
+
+/// Eight bytes as a word, first byte in the low bits on every platform.
+fn load_le(bytes: &[u8]) -> u64 {
+    let mut word = [0; 8];
+    word.copy_from_slice(bytes);
+    u64::from_le_bytes(word)
+}
+
+/// Transpose an 8×8 byte matrix held as eight little-endian rows.
+///
+/// Three swap rounds, each exchanging the off-diagonal blocks of every
+/// diagonal block pair: 4×4 blocks, then 2×2, then single bytes.
+fn transpose_8x8(mut m: [u64; 8]) -> [u64; 8] {
+    for (shift, mask) in [
+        (32, 0x0000_0000_FFFF_FFFF_u64),
+        (16, 0x0000_FFFF_0000_FFFF),
+        (8, 0x00FF_00FF_00FF_00FF),
+    ] {
+        let step = shift / 8;
+        for i in (0..8).filter(|i| i & step == 0) {
+            let t = ((m[i] >> shift) ^ m[i + step]) & mask;
+            m[i] ^= t << shift;
+            m[i + step] ^= t;
+        }
+    }
+    m
+}
+
+// The encoders below hold the GIL. Fortran-order input is encoded straight
+// from the numpy buffer, and a buffer read without the GIL can be written by
+// another Python thread mid-scan. The scan is also short (about 10 µs for a
+// 426×640 mask), so a release buys nothing and risks the convoy effect: with
+// one busy Python thread alongside, releasing it measured about 2.5 ms per
+// mask, waiting out switch intervals to get the GIL back. pycocotools holds
+// it too.
+
+/// Encode one `(H, W)` view, from its own buffer when it is Fortran-contiguous
+/// — TorchMetrics' call, one `np.asfortranarray` mask at a time — and through
+/// [`col_major`] otherwise.
+fn encode_view(view: ArrayView2<'_, u8>) -> hotcoco_core::error::Result<hotcoco_core::Rle> {
+    let (h, w) = view.dim();
+    // The transpose of a Fortran-order view is standard layout, and its slice
+    // is the mask's own buffer: already the column-major bytes `encode` takes.
+    match view.t().to_slice() {
+        Some(col_major) => rmask::encode(col_major, h as u32, w as u32),
+        None => rmask::encode(&col_major(view), h as u32, w as u32),
+    }
+}
+
 fn encode_2d(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let arr: PyReadonlyArray2<u8> = mask.extract()?;
-    let [h, w] = [arr.shape()[0], arr.shape()[1]];
-    let col_major = col_major(arr.as_array());
-    // Owned buffer from here on, so the encode itself runs without the GIL —
-    // same convention as the COCOeval driver paths.
-    let rle = py
-        .detach(|| rmask::encode(&col_major, h as u32, w as u32))
-        .map_err(to_pyerr)?;
+    let rle = encode_view(arr.as_array()).map_err(to_pyerr)?;
     rle_to_coco_py(py, &rle)
 }
 
 fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let arr: PyReadonlyArray3<u8> = mask.extract()?;
-    let [h, w, n] = [arr.shape()[0], arr.shape()[1], arr.shape()[2]];
-    // Each slice is converted from the borrowed view; the stack is never
-    // copied whole.
     let view = arr.as_array();
-    let slices: Vec<Vec<u8>> = (0..n)
-        .map(|i| col_major(view.index_axis(numpy::ndarray::Axis(2), i)))
-        .collect();
-    let rles = py
-        .detach(|| {
-            slices
-                .iter()
-                .map(|s| rmask::encode(s, h as u32, w as u32))
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .map_err(to_pyerr)?;
+    let (h, w, n) = view.dim();
+    let hw = h * w;
+    let rles = if let Some(stack) = view.reversed_axes().to_slice() {
+        // Fortran order: slice `i` is the contiguous block `i * h * w ..`,
+        // already column-major. ndarray counts every zero-size array as
+        // contiguous, so those all land here and the C-order offsets below
+        // never index an empty buffer.
+        encode_slices(stack, h, w, n)
+    } else if let Some(row_major) = view.to_slice().filter(|_| n >= 8) {
+        // C order: one blocked pass to Fortran order. For each column `x`,
+        // the `(h, n)` matrix of `(y, i)` bytes sits at `x * n` with row
+        // stride `w * n`, and its transpose belongs at `x * h` with row stride
+        // `h * w` — slice `i`'s column `x`. With fewer than eight slices there
+        // is no 8×8 block along `n`, every byte would take the ragged-edge
+        // loop, and slice by slice below is faster: the lone slice of an
+        // `(h, w, 1)` stack is C-contiguous, so it still gets the blocked
+        // transpose.
+        let mut stack = vec![0; hw * n];
+        for x in 0..w {
+            transpose_into(&row_major[x * n..], w * n, &mut stack[x * h..], hw, h, n);
+        }
+        encode_slices(&stack, h, w, n)
+    } else {
+        (0..n)
+            .map(|i| encode_view(view.index_axis(Axis(2), i)))
+            .collect()
+    }
+    .map_err(to_pyerr)?;
     let list = PyList::empty(py);
     for rle in &rles {
         list.append(rle_to_coco_py(py, rle)?)?;
     }
     Ok(list.into_any().unbind())
+}
+
+/// Encode each `h × w` column-major block of a Fortran-order `(h, w, n)` stack.
+fn encode_slices(
+    stack: &[u8],
+    h: usize,
+    w: usize,
+    n: usize,
+) -> hotcoco_core::error::Result<Vec<hotcoco_core::Rle>> {
+    let hw = h * w;
+    (0..n)
+        .map(|i| rmask::encode(&stack[i * hw..(i + 1) * hw], h as u32, w as u32))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -224,18 +338,27 @@ pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 #[pyo3(text_signature = "(rle)")]
 pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
-        let r = py_to_rle(dict)?;
-        let a = rmask::area(&r);
+        let a = rle_dict_area(dict)?;
         Ok(a.into_pyobject(py)?.into_any().unbind())
     } else {
-        let rles = extract_rle_list(rle)?;
+        let items: Vec<Bound<'_, PyAny>> = rle.extract()?;
         // `uint32`, matching pycocotools' array dtype exactly — the parity
         // suite checks dtypes, not just values. (The scalar path above hands
         // back a Python int, which has no dtype to match.)
-        let areas: Vec<u32> = rles.iter().map(|r| rmask::area(r) as u32).collect();
+        let areas = items
+            .iter()
+            .map(|item| rle_dict_area(item.cast::<PyDict>()?).map(|a| a as u32))
+            .collect::<PyResult<Vec<u32>>>()?;
         let arr = PyArray1::from_vec(py, areas);
         Ok(arr.into_any().unbind())
     }
+}
+
+/// One RLE dict's area. A compressed `counts` string is summed as it decodes,
+/// never expanded into a run list — torchmetrics calls `mask.area` twice per
+/// detection, one dict at a time, so this is a hot path.
+fn rle_dict_area(dict: &Bound<'_, PyDict>) -> PyResult<u64> {
+    read_rle_dict(dict, rmask::area_from_string, |rle| rmask::area(&rle))
 }
 
 // ---------------------------------------------------------------------------

@@ -91,7 +91,6 @@ fn upsert(
     match entries.iter_mut().find(|(k, _)| *k == key) {
         Some(slot) => Some(std::mem::replace(&mut slot.1, value)),
         None => {
-            entries.reserve_exact(1);
             entries.push((key, value));
             None
         }
@@ -192,7 +191,8 @@ impl IntoIterator for Extra {
 impl FromIterator<(String, serde_json::Value)> for Extra {
     /// A repeated key keeps its last value, as a JSON object does.
     fn from_iter<I: IntoIterator<Item = (String, serde_json::Value)>>(iter: I) -> Self {
-        let mut entries = Vec::new();
+        let iter = iter.into_iter();
+        let mut entries = Vec::with_capacity(iter.size_hint().0);
         for (key, value) in iter {
             upsert(&mut entries, key, value);
         }

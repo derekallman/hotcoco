@@ -81,7 +81,9 @@ An RLE dict looks like:
 Every hotcoco entry point that reads a `segmentation` dict — the `COCO`
 constructor and `load_res()` — accepts `bytes`, `str`, or a list of run lengths,
 so an RLE from `mask.encode()` goes straight in. The same holds for dicts from
-third-party mask libraries, including pycocotools itself.
+third-party mask libraries, including pycocotools itself. A `bytearray` or
+`memoryview` is a `TypeError`, as in pycocotools: read as a list, its bytes
+would become run lengths.
 
 JSON cannot hold bytes, though. When writing RLE dicts into a COCO JSON file
 yourself, convert first:
