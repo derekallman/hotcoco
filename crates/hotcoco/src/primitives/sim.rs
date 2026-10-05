@@ -125,6 +125,10 @@ where
 /// Returns a D×G matrix (row-major, `dt.len()` rows, `gt.len()` columns).
 /// For `iscrowd[j] == true`, uses crowd IoU: intersection / area(dt) instead of
 /// intersection / union.
+///
+/// A pair whose masks differ in `h` or `w` gets `-1.0`, as pycocotools
+/// `rleIou` returns for it — the overlap of two masks on different canvases is
+/// undefined, and a run-stream walk over them would report a plausible number.
 pub fn mask_iou(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<Vec<f64>> {
     let d = dt.len();
     let g = gt.len();
@@ -139,6 +143,9 @@ pub fn mask_iou(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<Vec<f64>> {
         let dt_a = dt_areas[i] as f64;
         (0..g)
             .map(|j| {
+                if dt[i].h != gt[j].h || dt[i].w != gt[j].w {
+                    return -1.0;
+                }
                 let inter = intersection_area(&dt[i], &gt[j]) as f64;
                 iou_from_areas(inter, dt_a, gt_areas[j] as f64, iscrowd[j])
             })

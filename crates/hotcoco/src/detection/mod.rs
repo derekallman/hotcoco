@@ -55,7 +55,6 @@ use std::sync::Arc;
 use crate::coco::COCO;
 use crate::detection::hierarchy::Hierarchy;
 use crate::params::{IouType, Params};
-use mode::FreqGroups;
 
 /// How many of `n` items each parallel run takes, at least one.
 fn run_len(n: usize) -> usize {
@@ -120,9 +119,6 @@ pub struct COCOeval {
     pub(crate) stats: Option<Vec<f64>>,
     /// Evaluation mode (COCO, LVIS, or OpenImages).
     pub eval_mode: EvalMode,
-    /// K-axis positions bucketed by the categories' LVIS `frequency` tags.
-    /// Filled by `evaluate()`; read only in LVIS mode.
-    freq_groups: FreqGroups,
     /// Open Images: category hierarchy for GT/DT expansion.
     pub hierarchy: Option<Hierarchy>,
 }
@@ -131,6 +127,11 @@ impl COCOeval {
     /// The one struct literal behind all three public constructors. What they
     /// differ in is a parameter here; everything else is the same empty
     /// pre-`evaluate()` state, so a field added later is initialized once.
+    ///
+    /// LVIS replaces `coco_dt` here with its per-image-capped copy — see
+    /// [`new_lvis`](Self::new_lvis) — so every constructor path, streaming
+    /// batches included, applies the cap the way lvis-api's `LVISResults` does.
+    /// A set [`COCO::cap_detections_per_image`] already capped is kept as is.
     fn with_mode(
         coco_gt: impl Into<Arc<COCO>>,
         coco_dt: impl Into<Arc<COCO>>,
@@ -138,9 +139,15 @@ impl COCOeval {
         eval_mode: EvalMode,
         hierarchy: Option<Hierarchy>,
     ) -> Self {
+        let mut coco_dt: Arc<COCO> = coco_dt.into();
+        if eval_mode == EvalMode::Lvis && !coco_dt.is_per_image_capped() {
+            if let Some(capped) = coco_dt.capped_copy(params.max_det()) {
+                coco_dt = Arc::new(capped);
+            }
+        }
         COCOeval {
             coco_gt: coco_gt.into(),
-            coco_dt: coco_dt.into(),
+            coco_dt,
             params,
             eval_imgs: std::sync::OnceLock::new(),
             default_eval_imgs: std::sync::OnceLock::new(),
@@ -151,7 +158,6 @@ impl COCOeval {
             eval: None,
             stats: None,
             eval_mode,
-            freq_groups: FreqGroups::default(),
             hierarchy,
         }
     }
@@ -186,9 +192,6 @@ impl COCOeval {
         ev.cells = cells;
         ev.eval_inputs = Some(inputs);
         ev.eval_imgs = std::sync::OnceLock::from(Vec::new());
-        // LVIS evaluates per category, so `cat_ids` is the K axis it reads.
-        ev.freq_groups =
-            FreqGroups::from_categories(&ev.coco_gt.dataset.categories, &ev.params.cat_ids);
         ev
     }
 
@@ -215,6 +218,7 @@ impl COCOeval {
     }
 
     /// The detection dataset this evaluator reads — see [`coco_gt`](Self::coco_gt).
+    /// Under LVIS, the per-image-capped copy [`new_lvis`](Self::new_lvis) made.
     pub fn coco_dt(&self) -> &Arc<COCO> {
         &self.coco_dt
     }
@@ -339,20 +343,28 @@ impl COCOeval {
         (img_ids, cat_ids)
     }
 
-    /// LVIS frequency-group buckets, populated during `evaluate()` in LVIS mode.
-    ///
-    /// Driver-private: the analysis layer re-aggregates over these, but they are an
-    /// implementation detail of federated evaluation rather than public surface.
-    pub(in crate::detection) fn freq_groups(&self) -> &FreqGroups {
-        &self.freq_groups
-    }
-
     /// Create a new COCOeval configured for LVIS federated evaluation.
     ///
     /// LVIS uses federated annotation — each image is only exhaustively labeled
-    /// for a subset of categories. This constructor sets `max_dets=300` and enables
-    /// federated filtering so unmatched detections on unlabeled or unchecked categories
-    /// are not penalized as false positives.
+    /// for a subset of categories. This constructor sets `max_dets=300` and
+    /// enables federated filtering so unmatched detections on unlabeled or
+    /// unchecked categories are not penalized as false positives.
+    ///
+    /// # LVIS replaces `coco_dt`
+    ///
+    /// The 300 cap applies per image across every category, not per
+    /// `(image, category)` cell: the evaluator holds the detections you pass
+    /// capped to each image's 300 highest-scoring, as lvis-api's
+    /// `LVISResults` does at load time, and [`coco_dt`](Self::coco_dt) returns
+    /// that capped copy. Your own handle is untouched. The cap is the
+    /// construction-time `params.max_det()`; editing `params.max_dets`
+    /// afterwards changes the per-cell cap, not this one — lvis-api's
+    /// `LVISResults(max_dets=)` and `LVISEval` params are likewise separate.
+    ///
+    /// Detections that [`COCO::cap_detections_per_image`] already capped —
+    /// at any value, or `None` for none — are used as is, the way lvis-api's
+    /// `LVISEval` takes an `LVISResults` unchanged. That is how to evaluate
+    /// under a cap other than 300.
     ///
     /// Behavior controlled by per-image GT fields:
     /// - `neg_category_ids`: categories confirmed absent → unmatched DTs count as FP.

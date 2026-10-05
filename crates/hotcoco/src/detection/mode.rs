@@ -53,8 +53,10 @@ pub enum FreqGroup {
 
 /// LVIS category-index buckets grouped by frequency.
 ///
-/// Each field holds the `k_idx` (position in `params.cat_ids`) of all categories
-/// in that frequency bucket. Populated during `evaluate()` when `eval_mode == Lvis`.
+/// Each field holds the `k_idx` of all categories in that frequency bucket —
+/// positions on [`AccumulatedEval::cat_ids`](super::AccumulatedEval::cat_ids),
+/// which says why. Built by `summarize_impl` per summary, never stored on the
+/// evaluator, where it went stale against a later `accumulate()`.
 #[derive(Debug, Clone, Default)]
 pub(super) struct FreqGroups {
     pub rare: Vec<usize>,

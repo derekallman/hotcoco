@@ -207,11 +207,15 @@ pills in the sidebar.
 
 ```python
 ev = COCOeval(coco, coco.load_res("results.json"), "bbox")
-ev.evaluate(); ev.accumulate(); ev.summarize()
+ev.evaluate()
 
 coco.browse(eval=ev, image_dir="images/")
 # click "Dashboard" in the sidebar
 ```
+
+The evaluator needs only `evaluate()`. The dashboard runs `accumulate()` and
+computes the summary on its first request, without printing; an evaluator that
+has already been summarized is used as is.
 
 The dashboard shows:
 

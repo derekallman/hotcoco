@@ -10,10 +10,11 @@ assignment that turns similarity into pairs::
 
 Nothing here scores. Feed the pairs to :mod:`hotcoco.metrics` for that.
 
-The IoU kernels are the same functions ``hotcoco.mask`` exposes — re-exported
-under their kernel names. ``hotcoco.mask`` mirrors ``pycocotools.mask`` and is a
-permanent compatibility surface; this module is where they live as primitives.
-Both call one implementation, so they cannot disagree.
+The IoU kernels are strict: ``bbox_iou`` takes boxes, ``mask_iou`` takes RLEs.
+``hotcoco.mask`` mirrors ``pycocotools.mask`` and is a permanent compatibility
+surface — its ``iou`` accepts either and dispatches on type the way pycocotools
+does, then forwards here. ``mask.bbox_iou`` is this module's ``bbox_iou``. One
+implementation underneath, so the two surfaces cannot disagree.
 
 Greedy matching (COCO's rank-ordered assignment) has no binding yet. Its Rust
 signature carries pycocotools' crowd and ignore semantics, and exposing that
@@ -29,14 +30,10 @@ are the exception: those are frozen, since ``pycocotools`` parity depends on the
 
 from __future__ import annotations
 
-from .hotcoco import mask as _mask
 from .hotcoco import primitives as _primitives
 
 lsap = _primitives.lsap
-
-#: Pairwise IoU between two sets of boxes, shape ``(len(dt), len(gt))``.
-bbox_iou = _mask.bbox_iou
-#: Pairwise IoU between two sets of RLE masks.
-mask_iou = _mask.iou
+bbox_iou = _primitives.bbox_iou
+mask_iou = _primitives.mask_iou
 
 __all__ = ["bbox_iou", "lsap", "mask_iou"]

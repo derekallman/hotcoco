@@ -555,21 +555,21 @@ _FROM_COCO = {
         "to_yolo",
         lambda s: f"{s['annotations']:,} annotations",
         True,
-        (("skipped (crowd):   ", "skipped_crowd"), ("skipped (no bbox): ", "missing_bbox")),
+        (("skipped (crowd):   ", "skipped_crowd"), ("skipped (no bbox): ", "skipped_no_bbox")),
     ),
     "voc": (
         "VOC",
         "to_voc",
         lambda s: f"{s['annotations']:,} annotations",
         True,
-        (("crowd → difficult: ", "crowd_as_difficult"), ("skipped (no bbox): ", "missing_bbox")),
+        (("crowd → difficult: ", "crowd_as_difficult"), ("skipped (no bbox): ", "skipped_no_bbox")),
     ),
     "cvat": (
         "CVAT",
         "to_cvat",
         lambda s: f"{s['boxes']:,} boxes, {s['polygons']:,} polygons",
         False,
-        (("skipped (no geometry): ", "skipped_no_geometry"),),
+        (("skipped (no geometry): ", "skipped_no_geometry"), ("skipped (degenerate):  ", "skipped_degenerate")),
     ),
     "dota": (
         "DOTA",
@@ -583,11 +583,7 @@ _FROM_COCO = {
         "to_oid",
         lambda s: f"{s['annotations']:,} annotations",
         False,
-        (
-            ("group-of boxes:    ", "group_of"),
-            ("skipped (no bbox): ", "missing_bbox"),
-            ("skipped (no dims): ", "missing_dims"),
-        ),
+        (("group-of boxes:    ", "group_of"), ("skipped (no bbox): ", "skipped_no_bbox")),
     ),
 }
 

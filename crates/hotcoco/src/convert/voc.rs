@@ -171,7 +171,9 @@ pub fn coco_to_voc(dataset: &Dataset, output_dir: &Path) -> Result<VocStats, Con
 ///
 /// Returns [`ConvertError::XmlError`] on malformed XML or
 /// [`ConvertError::ParseError`] if required elements are missing or a value is
-/// unparsable. Errors name the file and the byte position where available.
+/// unparsable — including an `<object>` with an empty `<name>`, no `<bndbox>`,
+/// a missing coordinate, or an inverted box (`xmax < xmin` or `ymax < ymin`).
+/// Errors name the file and the byte position where available.
 pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
     let ann_dir = {
         let sub = voc_dir.join("Annotations");
@@ -315,7 +317,8 @@ struct ParsedVocImage {
     objects: Vec<ParsedVocObject>,
 }
 
-#[derive(Default)]
+/// A validated `<object>`: a non-empty class name and a complete,
+/// non-inverted box.
 struct ParsedVocObject {
     name: String,
     xmin: f64,
@@ -325,17 +328,71 @@ struct ParsedVocObject {
     difficult: bool,
 }
 
-impl ParsedVocObject {
+/// An `<object>` while it is being read. Every field is optional here so a
+/// missing one is detected when the object closes, rather than defaulting to
+/// `0.0` and producing a box with negative width or height.
+#[derive(Default)]
+struct PartialVocObject {
+    name: String,
+    has_bndbox: bool,
+    xmin: Option<f64>,
+    ymin: Option<f64>,
+    xmax: Option<f64>,
+    ymax: Option<f64>,
+    difficult: bool,
+}
+
+impl PartialVocObject {
     /// Assign one `<bndbox>` coordinate by its tag; an unrecognized tag is
     /// ignored.
     fn set_coord(&mut self, tag: &[u8], val: f64) {
         match tag {
-            b"xmin" => self.xmin = val,
-            b"ymin" => self.ymin = val,
-            b"xmax" => self.xmax = val,
-            b"ymax" => self.ymax = val,
+            b"xmin" => self.xmin = Some(val),
+            b"ymin" => self.ymin = Some(val),
+            b"xmax" => self.xmax = Some(val),
+            b"ymax" => self.ymax = Some(val),
             _ => {}
         }
+    }
+
+    /// Check the object is complete. A missing `<name>`, `<bndbox>`, or
+    /// coordinate, or a box whose max is below its min, is malformed input.
+    fn finish(self) -> Result<ParsedVocObject, ConvertError> {
+        if self.name.is_empty() {
+            return Err(ConvertError::ParseError(
+                "<object> has a missing or empty <name>".into(),
+            ));
+        }
+        if !self.has_bndbox {
+            return Err(ConvertError::ParseError(format!(
+                "<object> `{}` has no <bndbox>",
+                self.name
+            )));
+        }
+        let coord = |val: Option<f64>, tag: &str| {
+            val.ok_or_else(|| {
+                ConvertError::ParseError(format!(
+                    "<object> `{}`: <bndbox> is missing <{tag}>",
+                    self.name
+                ))
+            })
+        };
+        let (xmin, ymin) = (coord(self.xmin, "xmin")?, coord(self.ymin, "ymin")?);
+        let (xmax, ymax) = (coord(self.xmax, "xmax")?, coord(self.ymax, "ymax")?);
+        if xmax < xmin || ymax < ymin {
+            return Err(ConvertError::ParseError(format!(
+                "<object> `{}`: inverted <bndbox> (xmin {xmin}, xmax {xmax}, ymin {ymin}, ymax {ymax})",
+                self.name
+            )));
+        }
+        Ok(ParsedVocObject {
+            name: self.name,
+            xmin,
+            ymin,
+            xmax,
+            ymax,
+            difficult: self.difficult,
+        })
     }
 }
 
@@ -387,7 +444,7 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
     let mut part_depth: u32 = 0;
     let mut current_tag: Vec<u8> = Vec::new();
     // The object currently being filled; `None` outside any `<object>`.
-    let mut object: Option<ParsedVocObject> = None;
+    let mut object: Option<PartialVocObject> = None;
 
     let mut buf = Vec::new();
     loop {
@@ -406,9 +463,14 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
                     b"size" => section = Section::Size,
                     b"object" => {
                         section = Section::Object;
-                        object = Some(ParsedVocObject::default());
+                        object = Some(PartialVocObject::default());
                     }
-                    b"bndbox" => section = Section::ObjectBox,
+                    b"bndbox" => {
+                        section = Section::ObjectBox;
+                        if let Some(obj) = object.as_mut() {
+                            obj.has_bndbox = true;
+                        }
+                    }
                     _ => {}
                 }
                 current_tag = tag.to_vec();
@@ -425,9 +487,14 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
                     _ if section == Section::Part => {}
                     b"size" => section = Section::Root,
                     b"object" => {
-                        // `extend` over the `Option`: a stray `</object>` with no
-                        // open object contributes nothing.
-                        objects.extend(object.take());
+                        // A stray `</object>` with no open object contributes
+                        // nothing.
+                        if let Some(obj) = object.take() {
+                            let obj = obj
+                                .finish()
+                                .map_err(|err| at_byte(err, xml.buffer_position()))?;
+                            objects.push(obj);
+                        }
                         section = Section::Root;
                     }
                     b"bndbox" => section = Section::Object,
@@ -484,7 +551,7 @@ fn route_text(
     tag: &[u8],
     text: &str,
     fields: &mut VocFields,
-    object: Option<&mut ParsedVocObject>,
+    object: Option<&mut PartialVocObject>,
 ) -> Result<(), ConvertError> {
     match (section, tag) {
         (Section::Root, b"filename") => fields.filename = text.to_string(),

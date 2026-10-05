@@ -90,10 +90,11 @@ pub struct BootstrapCI {
 /// the unit type rather than handing back indices, which would make every caller
 /// build a second set to map indices onto its own units.
 ///
-/// Bounds are raw percentiles: `floor(α/2 · n)` and `ceil((1-α/2) · n)` into the
-/// sorted samples, clamped to the last index. No BCa correction — the intervals
-/// are readable as "the middle 95% of what resampling produced", not as a
-/// bias-corrected estimator.
+/// Bounds are the `α/2` and `1 - α/2` quantiles of the samples, computed as
+/// `numpy.quantile` computes them by default (`method="linear"`), so they match
+/// it bit for bit on the same samples and sit symmetrically in the
+/// distribution. No BCa correction — the intervals are readable as "the middle
+/// 95% of what resampling produced", not as a bias-corrected estimator.
 ///
 /// `statistic` is called from multiple threads, hence the `Sync` bound. Returns an
 /// empty vector when `n_samples` is 0 or `units` is empty.
@@ -149,11 +150,8 @@ where
             // order, which may panic (Rust ≥ 1.81) or scramble the percentiles.
             samples.sort_by(f64::total_cmp);
 
-            let lo_idx = ((alpha / 2.0) * nb as f64).floor() as usize;
-            let hi_idx = ((1.0 - alpha / 2.0) * nb as f64).ceil() as usize;
-
-            let lower = samples[lo_idx.min(nb - 1)];
-            let upper = samples[hi_idx.min(nb - 1)];
+            let lower = quantile_linear(&samples, alpha / 2.0);
+            let upper = quantile_linear(&samples, 1.0 - alpha / 2.0);
 
             let pos_count = samples.iter().filter(|&&x| x > 0.0).count();
             let prob_positive = pos_count as f64 / nb as f64;
@@ -174,6 +172,27 @@ where
             }
         })
         .collect()
+}
+
+/// The `q`-quantile of non-empty `sorted`, as `numpy.quantile(..., method="linear")`
+/// (numpy's default) computes it: virtual index `(n - 1) · q`, interpolated
+/// between its two neighbors. The interpolation mirrors numpy's `_lerp`, which
+/// works from the nearer endpoint, so results are bit-identical, not just close.
+fn quantile_linear(sorted: &[f64], q: f64) -> f64 {
+    let last = sorted.len() - 1;
+    let pos = last as f64 * q;
+    if pos >= last as f64 {
+        return sorted[last];
+    }
+    let i = pos.floor();
+    let gamma = pos - i;
+    let (a, b) = (sorted[i as usize], sorted[i as usize + 1]);
+    let diff = b - a;
+    if gamma >= 0.5 {
+        b - diff * (1.0 - gamma)
+    } else {
+        a + diff * gamma
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +317,59 @@ mod tests {
         assert_eq!(cis.len(), 1);
         // total_cmp puts positive NaN last, so the lower bound stays finite.
         assert!(cis[0].lower.is_finite());
+    }
+
+    /// Fixed sorted samples `sqrt(k + 0.5) * 1.37`, `k = 0..n`.
+    fn fixed_sorted(n: usize) -> Vec<f64> {
+        (0..n).map(|k| (k as f64 + 0.5).sqrt() * 1.37).collect()
+    }
+
+    /// Both bounds follow `numpy.quantile`'s default (`method="linear"`)
+    /// exactly. The old indices, `floor(α/2·n)` and `ceil((1-α/2)·n)`, left
+    /// one more sample below the lower bound than above the upper one. Expected
+    /// values are `np.quantile(s, [(1-c)/2, 1-(1-c)/2])` from numpy 2.4.3.
+    #[test]
+    fn percentile_bounds_match_numpy_linear() {
+        let cases: [(usize, f64, f64, f64); 4] = [
+            (100, 0.95, 2.354675875759626, 13.494629160245948),
+            (100, 0.9, 3.197598499238932, 13.321436123251699),
+            (1000, 0.95, 6.914735711498051, 42.76781454282384),
+            (1000, 0.9, 9.730835484433253, 42.21623350725108),
+        ];
+        for (n, confidence, lo, hi) in cases {
+            let s = fixed_sorted(n);
+            let alpha = 1.0 - confidence;
+            assert_eq!(
+                quantile_linear(&s, alpha / 2.0),
+                lo,
+                "n={n} c={confidence} lower"
+            );
+            assert_eq!(
+                quantile_linear(&s, 1.0 - alpha / 2.0),
+                hi,
+                "n={n} c={confidence} upper"
+            );
+        }
+    }
+
+    /// Symmetric: reversing and negating the samples mirrors the interval.
+    #[test]
+    fn percentile_bounds_are_symmetric() {
+        for n in [7, 100, 1000] {
+            let s = fixed_sorted(n);
+            let neg: Vec<f64> = s.iter().rev().map(|x| -x).collect();
+            for q in [0.025, 0.05] {
+                let lo = quantile_linear(&s, q);
+                let hi_neg = quantile_linear(&neg, 1.0 - q);
+                assert!((lo + hi_neg).abs() < 1e-12, "n={n} q={q}: {lo} vs {hi_neg}");
+            }
+        }
+    }
+
+    /// A single sample is its own interval (no out-of-bounds neighbor).
+    #[test]
+    fn percentile_of_one_sample() {
+        assert_eq!(quantile_linear(&[3.0], 0.025), 3.0);
+        assert_eq!(quantile_linear(&[3.0], 0.975), 3.0);
     }
 }

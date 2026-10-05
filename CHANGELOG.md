@@ -94,7 +94,189 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   tracked under `.claude/skills/`: `ship` (the pre-commit checklist) and
   `bench` (the benchmark-table procedure). Neither file ships in the crate.
 
+- **`hotcoco.primitives` is the strict layer; `hotcoco.mask` is the
+  pycocotools-shaped one.** `primitives.mask_iou` takes RLEs only and
+  `primitives.bbox_iou` takes an `(N, 4)` array or 4-element rows;
+  both are typed that way in the stubs. `hotcoco.mask.iou` is a lenient
+  wrapper over them with pycocotools' type dispatch, and `mask.bbox_iou` is
+  the same object as `primitives.bbox_iou`. Before, `primitives.mask_iou` was
+  an alias of `mask.iou`, so the two layers could not differ. *Rust API:*
+  `COCOeval::print_results_lines()` returns the lines `print_results()`
+  prints.
+
 ### Fixed
+
+A whole-project review (2026-10-02) found a group of places where hotcoco
+produced a plausible number instead of the right one, or instead of an error.
+Each entry below has a regression test that fails on the old code.
+
+- **An RLE whose counts stop short of `h × w` no longer scores IoU above 1.**
+  pycocotools accepts such a mask (`decode` fills the missing tail with
+  background), but hotcoco's run-stream walkers kept the last run's value over
+  the tail, so a detection `{"size": [10, 1], "counts": [0, 2]}` against a
+  full-column ground truth returned IoU 5.0 and cleared every threshold.
+  `mask.iou`, `mask.merge`, and the segm evaluation now read the tail as
+  background, as `decode` does.
+- **`mask.iou` returns `-1` for masks of different sizes,** as pycocotools'
+  `rleIou` does, instead of a plausible overlap from walking two run streams
+  of different geometry.
+- **A box rasterizes to the same mask as its corner polygon.** `fr_bbox`
+  filled `floor(x)..ceil(x + w)` analytically while pycocotools' `rleFrBbox`
+  draws the four corners through `rleFrPoly`; a fractional box such as
+  `[0.5, 0.5, 2, 2]` got area 9 instead of 4. Inside a segm evaluation a
+  box-only ground truth took the analytic path while its detection took the
+  polygon path, so identical fractional boxes scored IoU 0.44 against each
+  other and missed at 0.5. `fr_bbox` now routes through `fr_poly`; integer
+  boxes are unchanged.
+- **A segm `COCOeval.evaluate()` raises `ValueError` when an image whose
+  annotations are polygons or boxes has no `height` and `width`.** The fields
+  are optional on an image record and defaulted to 0, so every polygon
+  rasterized onto a 0×0 canvas and segm AP came out 0.000 with no warning.
+  pycocotools raises `KeyError` at the same point. RLE carries its own size
+  and box evaluation never reads the fields, so neither is affected. Only the
+  images the evaluation covers are checked, the ones pycocotools reads: an
+  annotation whose `image_id` has no image record, or an image outside
+  `params.img_ids`, is ignored as before.
+  `StreamingEval.update()` and `coco eval` run the same check in segm mode.
+  *Rust API:* `COCOeval::check_inputs` (call it before `evaluate()`),
+  `COCO::check_mask_dims(img_ids)`, and `COCO::ann_to_rle` returns `None` rather than an empty mask for such an
+  annotation.
+- **`StreamingEval.update()` assigns ground-truth ids and derives a missing
+  `area`.** Targets in the shape a data loader yields carry neither. Without
+  ids, every ground truth in a batch shared id 0 and the id index resolved all
+  of them to the batch's last annotation — possibly in another image and
+  category — so matching ran against the wrong box. Without `area`, the
+  matcher read 0 and put every object in `small`, so APm and APl were `-1` or
+  counted every detection as a false positive while APs counted everything.
+  Ids are now assigned per batch (nothing after `update()` reads them) and a
+  missing `area` is the mask's pixel count — COCO's definition of instance
+  area, and what `load_res()` derives for mask detections — or the box's
+  `w × h` for an annotation without a mask; an authored `area` is kept. *Rust API:* `COCO::fill_missing_areas`.
+- **LVIS frequency-group AP (`APr`/`APc`/`APf`) and the per-class table read
+  the K axis the accumulation was built on.** Both used `params.cat_ids` as
+  it stood at `summarize()` time, which disagrees with `accumulate()`'s axis
+  whenever `cat_ids` is narrowed or reordered between the two calls, and
+  whenever `use_cats` is false (one pooled slot). The frequency groups then
+  averaged another category's precision or indexed past the end — a panic for
+  a streaming LVIS run with `use_cats=False` — and `get_results(per_class=True)`
+  / `results(per_class=True)` reported the pooled class-agnostic AP under the
+  first category's name. `AccumulatedEval` now records its K axis and both
+  consumers read it; a pooled run has no per-class entries. *Rust API:*
+  `AccumulatedEval::cat_ids`.
+- **`coco convert --from coco --to yolo|voc|oid` no longer exits 1 after
+  writing its output.** The summary table read a `missing_bbox` stat the
+  converters never return, so every non-`--json` run ended with
+  `error: 'missing_bbox'`. It now reads the real `skipped_no_bbox` count, and
+  the CVAT summary also reports `skipped_degenerate` polygons.
+- **`COCO.from_cvat` keeps a label's own name.** Any `<name>` inside a
+  `<label>` overwrote the label name, including `<attribute><name>`, so a
+  label with attributes was recorded under its last attribute's name — a
+  spurious category, the real one moved out of declared order, and every id
+  shifted. Every CVAT export with label attributes hit this.
+- **`COCO.from_voc` raises `ValueError` naming the file and position for an
+  `<object>` with an empty or missing `<name>`, no `<bndbox>`, a missing
+  coordinate, or an inverted box.** A missing coordinate defaulted to 0, so a
+  missing `ymax` produced the box `[9, 9, 41, -9]`.
+- **`healthcheck` flags `bbox_out_of_bounds` for a box past the top or left
+  edge** (negative `x` or `y`), not only the right or bottom edge.
+- **`accumulate()` after changing `params.iou_thrs` reads each threshold's own
+  matches.** The T axis was sized from the current grid while each cell holds
+  one row per evaluate-time threshold, so a grid reordered after `evaluate()`
+  reported the 0.5 row as AP75, and a longer grid read past the rows (a panic
+  in debug builds). Each threshold now resolves by value to the row
+  `evaluate()` matched it on, as area ranges already did, and a threshold that
+  was never evaluated reports `-1.0`; run `evaluate()` again to compute it.
+- **`compare()` raises `ValueError` when the two evaluators differ in
+  `use_cats` or in their set of `cat_ids`,** instead of differencing and
+  bootstrapping a one-category AP against an 80-category mAP. The same
+  categories in another order still compare: the per-category table pairs by
+  id, and the means do not depend on order.
+- **`calibration()` omits a category with no counted detections from
+  `per_category`** instead of reporting ECE `0.0` for it. An empty set of
+  detections has no calibration error to report; `0.0` read as perfect.
+- **Open Images hierarchy expansion keeps each detection's own score on its
+  ancestor copies.** The copy-deduplication key — there so that a second
+  `evaluate()` does not expand again — omitted the score and the mask, so with
+  `expand_dt` two children on one box (cat@0.3, dog@0.9) yielded a single
+  ancestor copy at whichever score came first in the file, and
+  segmentation-only annotations without a bbox all collapsed into one copy per
+  image. Each annotation now expands on its own; only an identical copy is
+  skipped.
+- **Polygons reaching far outside the image rasterize as pycocotools does.**
+  Vertices were clamped to one image extent past the edges — there to keep
+  untrusted coordinates like `±1e9` from overflowing the edge walk — but the
+  clamp bent every edge that crossed it, so `[0, 0, 300, 100, 0, 100]` on a
+  100×100 image got area 7530 instead of 8350. Vertices within about ±4
+  million pixels now rasterize bit-identically; coordinates beyond that, or a
+  boundary walk past 2²⁵ points, still fall back to the bounded path.
+- **`compare()` bootstrap confidence intervals use `numpy.quantile`'s default
+  linear percentile.** The old indices put the upper bound one rank too high,
+  so the interval was asymmetric around the point estimate. Bounds are now
+  interpolated and bit-identical to numpy's.
+- **`mask.frPyObjects` decides box-versus-polygon once, from the first entry,
+  as pycocotools does.** It decided per entry, so a 4-value entry after a
+  polygon was a box where pycocotools makes it a degenerate polygon (area 0).
+  Lists of boxes are still accepted (pycocotools' box path needs an array).
+- **`tide_errors()` matches tidecv's Loc, Cls, and Miss ΔAP definitions.**
+  Loc and Cls follow tidecv's best-GT-match rule: an error aimed at an
+  already-matched ground truth is suppressed instead of becoming a TP, only
+  the highest-scoring error per missed ground truth is promoted, and a fixed
+  Cls error counts as a TP in the ground truth's category, not the
+  detection's. Every such error used to become a TP, which could push recall
+  past 1.0. Fixing a Miss now removes the ground truth from the recall
+  denominator, as tidecv does, instead of injecting a top-scoring TP. On
+  val2017: Loc 0.1115 → 0.1036, Cls 0.0002 → 0.0000, Miss 0.0242 → 0.0148.
+  On images without crowd regions every ΔAP now matches tidecv within ±0.005;
+  the remaining full-set Loc and Miss gaps are the documented crowd-handling
+  difference. The old full-set Loc agreement was two errors cancelling —
+  over-promotion against tidecv's crowd-region Loc errors — so
+  `scripts/parity_tide.py` now gates the crowd-free comparison at ±0.005 and
+  bounds the full set.
+- **`CocoEvaluator.synchronize_between_processes()` works under NCCL.** It
+  gathered pickled results as CPU byte tensors with `all_gather`, which NCCL
+  rejects, so every multi-GPU run failed there. It now uses
+  `torch.distributed.all_gather_object` and returns at once when the world
+  size is 1.
+- **The browse dashboard no longer returns 500 on an evaluator that has only
+  been evaluated.** `coco.browse(dt=...)`, `coco explore`, and `browse(eval=ev)`
+  all construct one that way; `/dashboard` now accumulates and computes the
+  summary on first request, without printing.
+- **The browse server escapes JSON it inlines into pages.** `categories` and
+  `slice` query values and category names reached an inline `<script>` block
+  unescaped, so a crafted URL could inject script on the local server. Inlined
+  JSON now escapes `<`, `>`, `&`, U+2028, and U+2029, and navigation query
+  strings are URL-encoded.
+- **Drop-in gaps against pycocotools, all reproduced side by side:**
+  `COCO()` accepts any `os.PathLike` such as `pathlib.Path`; `getAnnIds`
+  accepts `iscrowd=0`/`1` (and numpy ints or bools) and `areaRng=[]` for no
+  area filter; `mask.merge(rles, 1)` accepts an int `intersect`; the id-list
+  arguments of `getAnnIds`, `getCatIds`, `getImgIds`, `loadAnns`, `loadCats`,
+  and `loadImgs` (and their snake_case forms) accept any iterable of ints,
+  such as a `set` or `dict.keys()`. Each raised `TypeError` or `ValueError`
+  where pycocotools works. The snake_case `get_ann_ids` keeps its typed
+  `bool`/two-element forms.
+- **`mask.iou` accepts boxes, as `pycocotools.mask.iou` does:** an `(N, 4)`
+  array of any numeric dtype or a list of `[x, y, w, h]` rows, dispatching the
+  way pycocotools does; mixing boxes and RLEs raises `TypeError`. Custom
+  `COCOeval` subclasses that call `maskUtils.iou` from `computeIoU` work again
+  under `init_as_pycocotools()`.
+- **`COCOeval.run()` and `print_results()` print through `sys.stdout`,** so
+  `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells capture
+  the table; both wrote with Rust `println!` to the process's fd 1, which none
+  of those see. `run()` now emits the same comparability `UserWarning`s as
+  `summarize()`, and `print_results()` before `summarize()` emits a
+  `UserWarning` instead of writing to fd 2.
+- **LVIS evaluation caps detections at 300 per image across all categories,**
+  as lvis-api's `LVISResults` does, instead of 300 per `(image, category)`
+  cell. Ties keep results-file order. Numbers change only for images with more
+  than 300 detections; `tests/test_parity_lvis.py` now has one. `LVISeval`
+  applies the cap when constructed, and `LVISResults` now honors its
+  `max_dets` argument instead of ignoring it. As in lvis-api, `LVISeval`
+  takes an `LVISResults` result as is, so `max_dets=1000` or `-1` holds
+  through evaluation; a plain `load_res()` result gets the 300 cap. New
+  `COCO.cap_detections_per_image(max_det)` (Rust:
+  `COCO::cap_detections_per_image`) exposes the cap; `None` keeps every
+  detection.
 
 ## [1.1.0] - 2026-10-01
 

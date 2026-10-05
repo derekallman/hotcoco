@@ -175,7 +175,7 @@ Default values (nose, eyes, ears, shoulders, elbows, wrists, hips, knees, ankles
 
 ### `expand_dt`
 
-Whether to expand detection annotations up the category hierarchy in Open Images mode. When `True`, a "Dog" detection is also propagated as an "Animal" detection (if Animal is an ancestor of Dog).
+Whether to expand detection annotations up the category hierarchy in Open Images mode. When `True`, a "Dog" detection is also propagated as an "Animal" detection (if Animal is an ancestor of Dog). Each detection expands at its own score: a cat@0.3 and a dog@0.9 on one box become two "Animal" detections, at 0.3 and 0.9.
 
 Only has an effect when `oid_style=True` and a `Hierarchy` is attached to the evaluator. Default is `False` — only GT annotations are expanded.
 

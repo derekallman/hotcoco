@@ -75,10 +75,11 @@ pub struct ComparisonResult {
 /// Compare two evaluations on the same dataset.
 ///
 /// Both evaluators must have had [`evaluate()`](COCOeval::evaluate) called and must
-/// use the same `eval_mode`, `iou_type`, `iou_thrs`, `rec_thrs`, `max_dets`, and
-/// `area_ranges` (labels and bounds) — the comparison summarizes both runs under
-/// one metric catalog, so a mismatch on any of those axes is an error rather
-/// than a silently wrong delta. Accumulation and summarization are performed
+/// use the same `eval_mode`, `iou_type`, `iou_thrs`, `rec_thrs`, `max_dets`,
+/// `area_ranges` (labels and bounds), `use_cats`, and set of `cat_ids` (in any
+/// order) — the comparison summarizes both runs under one metric catalog and
+/// averages over one category set, so a mismatch on any of those axes is an
+/// error rather than a silently wrong delta. Accumulation and summarization are performed
 /// internally on the shared image set — callers do not need to call
 /// `accumulate()` or `summarize()` first.
 ///
@@ -153,6 +154,41 @@ pub fn compare(
                 .into(),
         );
     }
+    // Every summary metric is a mean over the K axis, so the two runs must
+    // average over the same categories. The order may differ: K is only ever
+    // averaged, and the per-category table pairs the sides by id. With
+    // `use_cats = false` every category is pooled into one K slot and
+    // `cat_ids` does not select anything, so only `use_cats` itself must agree.
+    if eval_a.params.use_cats != eval_b.params.use_cats {
+        return Err(format!(
+            "use_cats mismatch: {} vs {}. Per-category and category-agnostic AP \
+             are different metrics, so both evaluators must use the same setting",
+            eval_a.params.use_cats, eval_b.params.use_cats
+        )
+        .into());
+    }
+    if eval_a.params.use_cats {
+        let sorted = |ids: &[u64]| {
+            let mut ids = ids.to_vec();
+            ids.sort_unstable();
+            ids
+        };
+        let (cats_a, cats_b) = (
+            sorted(&eval_a.params.cat_ids),
+            sorted(&eval_b.params.cat_ids),
+        );
+        if cats_a != cats_b {
+            return Err(format!(
+                "cat_ids mismatch: {} vs {} categories. Every summary metric \
+                 averages over the categories, so a delta between runs over \
+                 different category sets compares two different means — both \
+                 evaluators must use the same cat_ids",
+                cats_a.len(),
+                cats_b.len()
+            )
+            .into());
+        }
+    }
     if opts.confidence <= 0.0 || opts.confidence >= 1.0 {
         return Err(format!("confidence must be in (0, 1), got {}", opts.confidence).into());
     }
@@ -194,28 +230,24 @@ pub fn compare(
         .collect();
 
     // --- Per-category AP ---
-    // `per_cat_ap_static` returns one entry per `params.cat_ids` slot, so both
-    // sides must be looked up by category id rather than by position. The two
-    // evaluators may carry different category lists — different GT files, or the
-    // same file filtered differently — and a positional read would pair A's
-    // category with whatever B happened to evaluate in that slot, under A's name.
+    // Keyed by category id, never by position: the two evaluators hold the same
+    // categories (checked above) but may list them in different orders. Ids come
+    // from each accumulation's K axis, so a pooled (`use_cats = false`) side
+    // contributes none.
     let by_cat = |ev: &COCOeval, acc: &_| -> HashMap<u64, f64> {
-        ev.params
-            .cat_ids
-            .iter()
-            .copied()
-            .zip(per_cat_ap_static(acc, &ev.params, ev.eval_mode))
+        per_cat_ap_static(acc, &ev.params, ev.eval_mode)
+            .into_iter()
             .collect()
     };
     let per_cat_a = by_cat(eval_a, &acc_a);
     let per_cat_b = by_cat(eval_b, &acc_b);
 
-    // Union, so a category only one side evaluated is reported rather than dropped.
-    let mut all_cat_ids: Vec<u64> = eval_a
-        .params
+    // Union, so a category only one side evaluated is reported rather than
+    // dropped.
+    let mut all_cat_ids: Vec<u64> = acc_a
         .cat_ids
         .iter()
-        .chain(eval_b.params.cat_ids.iter())
+        .chain(acc_b.cat_ids.iter())
         .copied()
         .collect();
     all_cat_ids.sort_unstable();
@@ -361,45 +393,52 @@ mod tests {
         assert!(result.ci.is_none());
     }
 
-    /// `per_cat_ap_static` returns one entry per `params.cat_ids` slot, so pairing
-    /// the two sides by position reports B's category-2 AP under A's category-1
-    /// name whenever the evaluators carry different category lists.
+    /// Pairing the two sides by position reports B's category-2 AP under A's category-1
+    /// name whenever the evaluators list their categories in different orders.
     #[test]
     fn per_category_pairs_by_cat_id_not_position() {
         let ev_a = make_eval();
         let cat_ids = ev_a.params.cat_ids.clone();
         assert!(cat_ids.len() >= 2, "fixture must have >= 2 categories");
-        let only = cat_ids[1];
 
-        // Same data, but B evaluates only the *second* category — so its
-        // per-category vector has one entry, at the slot A uses for its first.
+        // Same data, but B lists its categories reversed — so a positional
+        // read pairs A's first category with B's last.
         let gt = COCO::new(&fixtures_dir().join("gt.json")).unwrap();
         let dt = gt.load_res(&fixtures_dir().join("dt.json")).unwrap();
         let mut ev_b = COCOeval::new(gt, dt, IouType::Bbox);
-        ev_b.params.cat_ids = vec![only];
+        ev_b.params.cat_ids = cat_ids.iter().rev().copied().collect();
         ev_b.evaluate();
 
         let result = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap();
 
+        let aps: Vec<f64> = result.per_category.iter().map(|c| c.ap_a).collect();
+        assert!(
+            aps.windows(2).any(|w| w[0] != w[1]),
+            "fixture must give categories different APs, or a positional \
+             pairing would pass unnoticed"
+        );
         for cat in &result.per_category {
-            if cat.cat_id == only {
-                assert!(
-                    cat.ap_b >= 0.0,
-                    "category {only} was evaluated by B and should carry its own AP"
-                );
-            } else {
-                assert_eq!(
-                    cat.ap_b, -1.0,
-                    "category {} was not evaluated by B and must not borrow \
-                     another category's AP",
-                    cat.cat_id
-                );
-                assert_eq!(
-                    cat.delta, 0.0,
-                    "a category missing from B is no evidence, not a regression"
-                );
-            }
+            assert_eq!(
+                cat.ap_a, cat.ap_b,
+                "category {} must carry B's AP for the same category",
+                cat.cat_id
+            );
         }
+    }
+
+    /// Every summary metric averages over the categories, so two runs over
+    /// different category sets have no delta to report.
+    #[test]
+    fn compare_rejects_a_category_subset() {
+        let ev_a = make_eval();
+        let gt = COCO::new(&fixtures_dir().join("gt.json")).unwrap();
+        let dt = gt.load_res(&fixtures_dir().join("dt.json")).unwrap();
+        let mut ev_b = COCOeval::new(gt, dt, IouType::Bbox);
+        ev_b.params.cat_ids = vec![ev_a.params.cat_ids[1]];
+        ev_b.evaluate();
+
+        let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
+        assert!(err.to_string().contains("cat_ids"), "{err}");
     }
 
     #[test]

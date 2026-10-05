@@ -220,6 +220,15 @@ fn merge_two(a: &Rle, b: &Rle, intersect: bool) -> Rle {
             vb = bi % 2 == 1;
             bi += 1;
         }
+        // A stream whose counts sum to less than `h * w` is exhausted here; its
+        // remaining pixels are background, exactly as `decode` zero-fills them.
+        // Without this reset the last run's value would leak over the tail.
+        if ca == 0 {
+            va = false;
+        }
+        if cb == 0 {
+            vb = false;
+        }
 
         let step = if ca > 0 && cb > 0 {
             ca.min(cb)
@@ -304,27 +313,19 @@ pub(crate) fn intersection_area(a: &Rle, b: &Rle) -> u64 {
             vb = bi % 2 == 1;
             bi += 1;
         }
-        if ca == 0 && cb == 0 {
+        // A stream whose counts sum to less than `h * w` is exhausted here, and
+        // its tail is background (see `merge_two`), so nothing past this point
+        // can be in the intersection.
+        if ca == 0 || cb == 0 {
             break;
         }
 
-        let step = if ca > 0 && cb > 0 {
-            ca.min(cb)
-        } else if ca > 0 {
-            ca
-        } else {
-            cb
-        };
-
+        let step = ca.min(cb);
         if va && vb {
             count += step;
         }
-        if ca > 0 {
-            ca -= step;
-        }
-        if cb > 0 {
-            cb -= step;
-        }
+        ca -= step;
+        cb -= step;
         total += step;
     }
 
@@ -408,34 +409,46 @@ fn fr_poly_impl(scratch: &mut PolyScratch, xy: &[f64], h: u32, w: u32, hw: u32) 
     // Bresenham-like algorithm to produce dense boundary points (u, v).
     let x_int = &mut scratch.x_int;
     let y_int = &mut scratch.y_int;
-    x_int.clear();
-    y_int.clear();
-    x_int.reserve(k + 1);
-    y_int.reserve(k + 1);
-    // Clamp upsampled vertices to one image-extent beyond the image (with an
-    // absolute i32-safe ceiling). Stage 2 only emits column crossings inside
-    // [0, w), so real annotations — which sit inside the image give or take a
-    // few pixels — rasterize identically; untrusted coordinates like ±1e9
-    // would otherwise overflow the i32 edge subtractions below (a debug
-    // panic) and reserve multi-GB boundary buffers. Float-to-int casts
-    // saturate and NaN casts to 0, so no coordinate value can panic here.
-    let clamp_x = (2.0 * scale * (w as f64 + 1.0)).min((i32::MAX / 4) as f64);
-    let clamp_y = (2.0 * scale * (h as f64 + 1.0)).min((i32::MAX / 4) as f64);
-    for j in 0..k {
-        x_int.push((scale * xy[j * 2] + 0.5).clamp(-clamp_x, clamp_x) as i32);
-        y_int.push((scale * xy[j * 2 + 1] + 0.5).clamp(-clamp_y, clamp_y) as i32);
-    }
-    // Close the polygon by repeating the first vertex
-    x_int.push(x_int[0]);
-    y_int.push(y_int[0]);
-
-    // Pre-count total boundary points across all edges for allocation
-    let mut m_total: usize = 0;
-    for j in 0..k {
-        m_total += (x_int[j] - x_int[j + 1])
-            .unsigned_abs()
-            .max((y_int[j] - y_int[j + 1]).unsigned_abs()) as usize
-            + 1;
+    // Untrusted coordinates like ±1e9 would overflow the i32 edge subtractions
+    // below (a debug panic) and reserve multi-GB boundary buffers, so vertices
+    // are clamped — but clamping each vertex independently changes the slope
+    // of every edge it touches, so it must only happen when it has to. First
+    // pass: a fixed ceiling of ±2²² pixels, far beyond any real annotation,
+    // which keeps every edge length inside i32. A polygon whose boundary walk
+    // then fits in `MAX_BOUNDARY_POINTS` rasterizes bit-identically to
+    // pycocotools (whose `(int)` cast is undefined behavior past i32 anyway).
+    // Only a polygon too long to walk falls back to clamping one image-extent
+    // beyond the image, which bounds the walk by the image size. Float-to-int
+    // casts saturate and NaN casts to 0, so no coordinate value can panic here.
+    const MAX_ABS_UPSAMPLED: f64 = 5.0 * (1u32 << 22) as f64;
+    const MAX_BOUNDARY_POINTS: usize = 1 << 25;
+    let fill = |x_int: &mut Vec<i32>, y_int: &mut Vec<i32>, clamp_x: f64, clamp_y: f64| {
+        x_int.clear();
+        y_int.clear();
+        x_int.reserve(k + 1);
+        y_int.reserve(k + 1);
+        for j in 0..k {
+            x_int.push((scale * xy[j * 2] + 0.5).clamp(-clamp_x, clamp_x) as i32);
+            y_int.push((scale * xy[j * 2 + 1] + 0.5).clamp(-clamp_y, clamp_y) as i32);
+        }
+        // Close the polygon by repeating the first vertex
+        x_int.push(x_int[0]);
+        y_int.push(y_int[0]);
+        // Total boundary points across all edges, for allocation
+        (0..k)
+            .map(|j| {
+                (x_int[j] - x_int[j + 1])
+                    .unsigned_abs()
+                    .max((y_int[j] - y_int[j + 1]).unsigned_abs()) as usize
+                    + 1
+            })
+            .sum::<usize>()
+    };
+    let mut m_total = fill(x_int, y_int, MAX_ABS_UPSAMPLED, MAX_ABS_UPSAMPLED);
+    if m_total > MAX_BOUNDARY_POINTS {
+        let clamp_x = (2.0 * scale * (w as f64 + 1.0)).min(MAX_ABS_UPSAMPLED);
+        let clamp_y = (2.0 * scale * (h as f64 + 1.0)).min(MAX_ABS_UPSAMPLED);
+        m_total = fill(x_int, y_int, clamp_x, clamp_y);
     }
 
     let u = &mut scratch.u;
@@ -570,81 +583,33 @@ fn fr_poly_impl(scratch: &mut PolyScratch, xy: &[f64], h: u32, w: u32, hw: u32) 
         }
     }
 
+    // A far out-of-image polygon can walk up to `MAX_BOUNDARY_POINTS`; don't
+    // let one such call pin hundreds of MB in this thread's scratch forever.
+    const SCRATCH_KEEP: usize = 1 << 20;
+    if u.capacity() > SCRATCH_KEEP {
+        *u = Vec::new();
+        *v = Vec::new();
+        *a = Vec::new();
+    }
+
     Rle { h, w, counts }
 }
 
 /// Convert a bounding box `[x, y, w, h]` to an RLE mask.
 ///
-/// Computes column-major RLE counts analytically from bbox coordinates
-/// without allocating a full pixel mask.
+/// The box's four corners are rasterized as a polygon through [`fr_poly`], as
+/// pycocotools' `rleFrBbox` does, so a box and the equivalent polygon produce
+/// the same pixels. That matters for fractional boxes: filling
+/// `floor(x)..ceil(x + w)` analytically rounds every edge outward and gives
+/// `[0.5, 0.5, 2, 2]` an area of 9 where the reference gives 4 — and inside
+/// an evaluation a box-only ground truth took that path while the detection
+/// it was meant to match went through `fr_poly`, so identical fractional
+/// boxes scored IoU 4/9 against each other.
 ///
-/// Errors when `h * w` exceeds `u32::MAX`. Box coordinates are clamped to the
-/// image; non-finite or out-of-range values produce an empty mask (the
-/// float-to-int casts saturate, and NaN casts to 0).
+/// Errors when `h * w` exceeds `u32::MAX`. Non-finite or far out-of-range
+/// coordinates are handled as [`fr_poly`] handles them.
 pub fn fr_bbox(bb: &[f64; 4], h: u32, w: u32) -> crate::error::Result<Rle> {
-    let hw = checked_hw(h, w)?;
-    let bx = bb[0];
-    let by = bb[1];
-    let bw = bb[2];
-    let bh = bb[3];
-
-    // Clamp to image bounds
-    let xs = bx.max(0.0).floor() as u32;
-    let ys = by.max(0.0).floor() as u32;
-    let xe = ((bx + bw).ceil() as u32).min(w);
-    let ye = ((by + bh).ceil() as u32).min(h);
-
-    if xs >= xe || ys >= ye {
-        return Ok(Rle {
-            h,
-            w,
-            counts: vec![hw],
-        });
-    }
-
-    // In column-major order, each column within [xs, xe) has the pattern:
-    //   ys zeros (from row 0 to ys), (ye - ys) ones, (h - ye) zeros
-    // The first column starts at offset xs * h.
-    // Between columns, the trailing zeros of one column merge with the leading zeros of the next.
-    let col_ones = ye - ys;
-    let num_cols = xe - xs;
-
-    // Capacity math in usize: `2 * num_cols` can exceed u32 when w > 2^31.
-    let mut counts = Vec::with_capacity(2 * num_cols as usize + 2);
-
-    // Leading zeros before first foreground pixel
-    let leading = xs * h + ys;
-    counts.push(leading);
-
-    if num_cols == 1 {
-        // Single column: ones, then trailing zeros
-        counts.push(col_ones);
-        let trailing = (w - xe) * h + (h - ye);
-        if trailing > 0 {
-            counts.push(trailing);
-        }
-    } else {
-        // First column ones
-        counts.push(col_ones);
-
-        // For columns 1..num_cols-1, gap between columns = (h - ye) + ys
-        let gap = h - col_ones; // = (h - ye) + ys
-        for _ in 1..num_cols - 1 {
-            counts.push(gap);
-            counts.push(col_ones);
-        }
-
-        // Last column: gap, ones, trailing
-        counts.push(gap);
-        counts.push(col_ones);
-
-        let trailing = (w - xe) * h + (h - ye);
-        if trailing > 0 {
-            counts.push(trailing);
-        }
-    }
-
-    Ok(Rle { h, w, counts })
+    fr_poly(&crate::types::Segmentation::rect_corners(bb), h, w)
 }
 
 /// Compress an RLE into the LEB128-like string format used by COCO.
@@ -874,6 +839,65 @@ mod tests {
         let ious = iou(&[r1], &[r2], &[false]);
         // intersection = 2, union = 3 + 3 - 2 = 4
         assert!((ious[0][0] - 0.5).abs() < 1e-10);
+    }
+
+    /// An RLE whose counts stop short of `h * w` ends in a foreground run.
+    /// `decode` renders the omitted tail as background; the run-stream walkers
+    /// must agree, or the tail leaks the last run's value into every pixel of
+    /// the other mask and IoU exceeds 1.
+    #[test]
+    fn test_short_rle_tail_is_background() {
+        let short = Rle {
+            h: 10,
+            w: 1,
+            counts: vec![0, 2],
+        };
+        let full = Rle {
+            h: 10,
+            w: 1,
+            counts: vec![0, 10],
+        };
+        assert_eq!(intersection_area(&short, &full), 2);
+        assert_eq!(intersection_area(&full, &short), 2);
+        let ious = iou(
+            std::slice::from_ref(&short),
+            std::slice::from_ref(&full),
+            &[false],
+        );
+        assert!((ious[0][0] - 0.2).abs() < 1e-12, "got {}", ious[0][0]);
+
+        // merge agrees with decode on both the union and the intersection.
+        let union = merge(&[short.clone(), full.clone()], false).unwrap();
+        assert_eq!(decode(&union), decode(&full));
+        let inter = merge(&[full, short.clone()], true).unwrap();
+        assert_eq!(decode(&inter), decode(&short));
+    }
+
+    /// Reference values from `pycocotools.mask.frPyObjects([[box]], 10, 10)`:
+    /// the analytic floor/ceil fill gave 9 and 12.
+    #[test]
+    fn test_fr_bbox_fractional_matches_polygon_rasterization() {
+        let a = fr_bbox(&[0.5, 0.5, 2.0, 2.0], 10, 10).unwrap();
+        assert_eq!(area(&a), 4);
+        assert_eq!(to_bbox(&a), [1.0, 1.0, 2.0, 2.0]);
+        let b = fr_bbox(&[1.2, 1.7, 3.3, 2.1], 10, 10).unwrap();
+        assert_eq!(area(&b), 8);
+
+        // A box and its own corner polygon are the same mask, so a box-only
+        // ground truth and a box detection cannot disagree about their overlap.
+        let poly = fr_poly(&[0.5, 0.5, 0.5, 2.5, 2.5, 2.5, 2.5, 0.5], 10, 10).unwrap();
+        assert_eq!(a.counts, poly.counts);
+        assert_eq!(iou(&[a], &[poly], &[false])[0][0], 1.0);
+    }
+
+    #[test]
+    fn test_iou_mismatched_dims_is_minus_one() {
+        // pycocotools `rleIou` returns -1 for masks on different canvases.
+        let a = encode(&[1u8; 24], 4, 6).unwrap();
+        let b = encode(&[1u8; 24], 6, 4).unwrap();
+        let ious = iou(std::slice::from_ref(&a), &[b, a.clone()], &[false, false]);
+        assert_eq!(ious[0][0], -1.0);
+        assert_eq!(ious[0][1], 1.0);
     }
 
     #[test]

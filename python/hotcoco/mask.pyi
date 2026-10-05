@@ -15,6 +15,9 @@ import numpy.typing as npt
 
 _Rle = dict[str, Any]
 
+#: ``[x, y, w, h]`` boxes: an ``(N, 4)`` array or a sequence of 4-element rows.
+_Boxes = npt.NDArray[Any] | Sequence[Sequence[float]] | Sequence[npt.NDArray[Any]]
+
 _MaskDtype = np.dtype[np.uint8] | np.dtype[np.bool_]
 
 @overload
@@ -46,20 +49,26 @@ def to_bbox(rle: _Rle | list[_Rle]) -> npt.NDArray[np.float64]:
     ...
 
 def toBbox(rle: _Rle | list[_Rle]) -> npt.NDArray[np.float64]: ...
-def merge(rles: _Rle | list[_Rle], intersect: bool = False) -> _Rle:
+def merge(rles: _Rle | list[_Rle], intersect: int | bool = False) -> _Rle:
     """Merge RLE masks via union (default) or intersection."""
     ...
 
+@overload
 def iou(
-    dt: _Rle | list[_Rle], gt: _Rle | list[_Rle], iscrowd: Sequence[bool | int] | npt.NDArray[Any]
+    dt: _Rle | Sequence[_Rle], gt: _Rle | Sequence[_Rle], iscrowd: Sequence[bool | int] | npt.NDArray[Any]
 ) -> npt.NDArray[np.float64]:
     """IoU between dt and gt RLE masks, shape ``(D, G)``. Crowd GTs use IoA."""
     ...
 
-def bbox_iou(
-    dt: Sequence[Sequence[float]], gt: Sequence[Sequence[float]], iscrowd: Sequence[bool | int] | npt.NDArray[Any]
-) -> npt.NDArray[np.float64]:
-    """IoU between dt and gt ``[x, y, w, h]`` boxes, shape ``(D, G)``."""
+@overload
+def iou(dt: _Boxes, gt: _Boxes, iscrowd: Sequence[bool | int] | npt.NDArray[Any]) -> npt.NDArray[np.float64]:
+    """IoU between dt and gt ``[x, y, w, h]`` boxes, shape ``(D, G)`` — as ``pycocotools.mask.iou``
+    dispatches. An array of any numeric dtype is boxes; dt and gt must be the same kind."""
+    ...
+
+def bbox_iou(dt: _Boxes, gt: _Boxes, iscrowd: Sequence[bool | int] | npt.NDArray[Any]) -> npt.NDArray[np.float64]:
+    """IoU between dt and gt ``[x, y, w, h]`` boxes, shape ``(D, G)``. The same object as
+    ``hotcoco.primitives.bbox_iou``."""
     ...
 
 def fr_poly(xy: Sequence[float], h: int, w: int) -> _Rle:

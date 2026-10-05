@@ -80,7 +80,7 @@ Prediction dict keys by `iou_type`:
 
 #### `synchronize_between_processes()`
 
-Gathers results across all distributed ranks via `torch.distributed.all_gather`. No-op when `torch.distributed` is not initialized or not installed.
+Gathers results across all distributed ranks via `torch.distributed.all_gather_object`, which works under both the gloo and NCCL backends. No-op when `torch.distributed` is not installed or initialized, or when the world size is 1.
 
 #### `accumulate()`
 

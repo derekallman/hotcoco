@@ -65,6 +65,15 @@ Run COCO evaluation to compute AP/AR metrics.
         backend calls `COCOeval(gt, dt, iouType=...)`). Both spellings are
         accepted; mixing the two spellings of one argument is an error.
 
+    !!! note "`segm` needs image sizes"
+        With `iou_type="segm"`, every evaluated image whose annotations are
+        polygons or boxes must carry `height` and `width`, or `evaluate()` raises
+        `ValueError` naming the images. A polygon drawn onto an image of
+        unknown size is an empty mask, which would score as AP 0 with nothing
+        to say why; pycocotools raises `KeyError` at the same point. RLE
+        masks carry their own size and are not affected. Box evaluation never
+        reads the fields.
+
 === "Rust"
 
     ```rust
@@ -289,6 +298,8 @@ run() -> None
 
 Run the full pipeline in one call: `evaluate()` → `accumulate()` → `summarize()`. Primarily used with LVIS pipelines (Detectron2, MMDetection) that expect a single `run()` call.
 
+It behaves as those three calls do: the table goes through `sys.stdout`, and the same non-default-parameter `UserWarning`s as [`summarize`](#summarize) are emitted.
+
 ---
 
 ### `metric_keys`
@@ -365,6 +376,8 @@ print_results() -> None
 ```
 
 Print a formatted results table to stdout. For LVIS, matches the lvis-api `print_results()` style.
+
+Like [`summarize`](#summarize), it prints through `sys.stdout`, so `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells capture it. Called before `summarize()`, it prints nothing and emits a `UserWarning`. In Rust, `print_results_lines()` returns the same lines without printing.
 
 ---
 
@@ -839,9 +852,17 @@ Loading is identical.
 hotcoco.LVISResults(lvis_gt: COCO, results, max_dets: int = 300) -> COCO
 ```
 
-Returns a `COCO` detections object, equivalent to `lvis_gt.load_res(results)`.
-`max_dets` is accepted for API compatibility but not applied here — the 300-detection
-cap is a `Params` setting that `LVISeval` already configures.
+Returns a `COCO` detections object: `lvis_gt.load_res(results)` capped the way
+lvis-api's `LVISResults` caps it — each image's `max_dets` highest-scoring
+detections across every category, ties in results-file order. `max_dets=-1`
+keeps every detection. The cap is `COCO.cap_detections_per_image(max_dets)`,
+which you can call directly (`None` keeps every detection).
+
+`LVISeval` evaluates an `LVISResults` result as is, as lvis-api's `LVISEval`
+takes an `LVISResults` object unchanged, so `max_dets=1000` or `-1` holds
+through evaluation. Detections loaded with plain `load_res()` get lvis-api's
+default instead: `LVISeval` caps them at its `params.max_dets` (300) the same
+way when constructed, as lvis-api caps a results path or list it loads itself.
 
 ---
 
@@ -911,8 +932,12 @@ Match a batch of images' ground truth against their detections now. `images`
 are COCO image dicts with at least `id` — plus `neg_category_ids` and
 `not_exhaustive_category_ids` in LVIS mode, where they apply. A batch of one
 is fine; passing the detector's whole batch amortizes the per-call setup.
-`gt_anns` are annotation dicts in the shape `COCO(dict)` accepts, with ids
-unique within the batch. `dt_anns` are raw predictions in the shape
+`gt_anns` are annotation dicts in the shape `COCO(dict)` accepts; `id` is
+assigned and a missing `area` is derived (the mask's pixel count, or the
+box's `w × h` for an annotation without a mask), so targets as a data loader
+yields them — `image_id`, `category_id`, `bbox`, `iscrowd` — are enough. For `segm`, every image whose
+annotations are polygons or boxes needs `height` and `width`, or the call
+raises `RuntimeError` naming the images. `dt_anns` are raw predictions in the shape
 `load_res()` accepts — `image_id`, `category_id`, `bbox` (or
 `segmentation`/`keypoints`), and `score` — and are loaded the same way: ids
 assigned, `area` derived, `iscrowd` cleared. Within an image, detections with
@@ -1033,7 +1058,7 @@ hotcoco.compare(
 ) -> dict
 ```
 
-Pairwise model comparison. Both evaluators must have had `evaluate()` called and use the same `eval_mode`, `iou_type`, and evaluation grid — mismatched `iou_thrs`, `rec_thrs`, `max_dets`, or area ranges raise `ValueError` rather than summarizing one run under the other's catalog. Accumulation and summarization are performed internally on the shared image set.
+Pairwise model comparison. Both evaluators must have had `evaluate()` called and use the same `eval_mode`, `iou_type`, evaluation grid, and category axis — mismatched `iou_thrs`, `rec_thrs`, `max_dets`, area ranges, `use_cats`, or set of `cat_ids` raise `ValueError` rather than summarizing one run under the other's catalog. The same categories in another order compare fine: the per-category table pairs by id. Accumulation and summarization are performed internally on the shared image set.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|

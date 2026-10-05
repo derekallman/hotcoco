@@ -70,12 +70,18 @@ class LVISResults:
     """Drop-in replacement for lvis-api LVISResults.
 
     ``LVISResults(lvis_gt, predictions, max_dets=300)`` returns a ``COCO``
-    object. ``max_dets`` is accepted for API compatibility; detection
-    truncation is handled by ``LVISeval`` params (``max_dets=300``).
+    object holding each image's ``max_dets`` highest-scoring detections across
+    every category, ties in results-file order — lvis-api's per-image cap.
+    ``max_dets=-1`` keeps every detection, as in lvis-api.
+
+    ``LVISeval`` evaluates the result as is, as lvis-api's ``LVISEval`` takes
+    an ``LVISResults`` unchanged, so ``max_dets=1000`` or ``-1`` holds through
+    evaluation. A plain ``load_res`` result passed to ``LVISeval`` gets the
+    default 300-per-image cap instead, like a path or list passed to lvis-api.
     """
 
-    def __new__(cls, lvis_gt, results, max_dets=300):  # noqa: ARG003
-        return lvis_gt.load_res(results)
+    def __new__(cls, lvis_gt, results, max_dets=300):
+        return lvis_gt._load_res_capped(results, None if max_dets < 0 else max_dets)
 
 
 import sys as _sys  # noqa: E402

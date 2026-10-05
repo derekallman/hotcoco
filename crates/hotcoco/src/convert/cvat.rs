@@ -250,6 +250,9 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
     let mut in_task = false;
     let mut in_labels = false;
     let mut in_label = false;
+    // Elements open below the current `<label>`: its own `<name>` is at depth 1,
+    // an `<attributes><attribute><name>` at depth 3 and must not be read.
+    let mut label_depth = 0usize;
     let mut current_tag: Vec<u8> = Vec::new();
     let mut label_name = String::new();
 
@@ -264,12 +267,16 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
             Ok(Event::Start(ref e)) => {
                 let name = e.name();
                 let tag = name.as_ref();
+                if in_label {
+                    label_depth += 1;
+                }
                 match tag {
                     b"meta" => in_meta = true,
                     b"task" if in_meta => in_task = true,
                     b"labels" if in_task => in_labels = true,
-                    b"label" if in_labels => {
+                    b"label" if in_labels && !in_label => {
                         in_label = true;
+                        label_depth = 0;
                         label_name.clear();
                     }
                     b"image" => current_image = Some(parse_image_attrs(e)?),
@@ -324,6 +331,8 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
             Ok(Event::End(ref e)) => {
                 let name = e.name();
                 match name.as_ref() {
+                    // Closing a child of the open `<label>`, not the label itself.
+                    _ if in_label && label_depth > 0 => label_depth -= 1,
                     b"meta" => in_meta = false,
                     b"task" => in_task = false,
                     b"labels" => in_labels = false,
@@ -343,7 +352,7 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
                 current_tag.clear();
             }
             Ok(Event::Text(ref e)) => {
-                if in_label && current_tag == b"name" {
+                if in_label && label_depth == 1 && current_tag == b"name" {
                     let text = e
                         .decode()
                         .map_err(|err| ConvertError::XmlError(format!("invalid text: {err}")))?;

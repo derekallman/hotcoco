@@ -1649,7 +1649,8 @@ fn test_tide_cls_error() {
     // GT cat(1) at [0,0,50,50]; GT dog(2) at [60,0,50,50].
     // DT dog(2) at [0,0,50,50] (score=0.9): FP for dog category because no dog GT overlaps.
     // Cross-IoU with cat(1) GT = 1.0 ≥ pos_thr → Cls.
-    // dog(2) has 1 GT so it contributes to ΔAP: fixing Cls converts FP→TP, AP goes 0→1 for dog.
+    // Fixing Cls moves the DT to the cat GT's category as a TP (tidecv credits the GT's
+    // class): cat AP goes 0→1, and dog loses its FP but stays at 0 (its GT is unmatched).
     let coco_gt = COCO::from_dataset(dataset(
         vec![img(1)],
         vec![cat(1, "cat"), cat(2, "dog")],
@@ -1671,7 +1672,7 @@ fn test_tide_cls_error() {
     assert_eq!(te.counts["Bkg"], 0);
     assert!(
         te.delta_ap["Cls"] > 0.0,
-        "fixing Cls should improve AP (dog AP goes 0→1), got {}",
+        "fixing Cls should improve AP (cat AP goes 0→1), got {}",
         te.delta_ap["Cls"]
     );
 }
@@ -1776,25 +1777,29 @@ fn test_tide_bkg_error() {
 /// Test 7: GT with no DT → Miss error, ΔAP["Miss"] > 0.
 #[test]
 fn test_tide_miss_error() {
-    // GT: [0,0,50,50]; no DT at all
+    // GT1 detected by an exact TP, GT2 has no DT at all.
     let coco_gt = COCO::from_dataset(dataset(
         vec![img(1)],
         vec![cat(1, "cat")],
-        vec![ann(1, [0.0, 0.0, 50.0, 50.0])],
+        vec![
+            ann(1, [0.0, 0.0, 50.0, 50.0]),
+            ann(2, [100.0, 100.0, 50.0, 50.0]),
+        ],
     ));
-    let coco_dt = COCO::from_dataset(dataset(vec![img(1)], vec![cat(1, "cat")], vec![]));
+    let coco_dt = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "cat")],
+        vec![det(101, [0.0, 0.0, 50.0, 50.0], 0.9)],
+    ));
 
     let te = run_tide(coco_gt, coco_dt);
 
     assert_eq!(te.counts["Miss"], 1, "GT with no DT should be Miss");
+    // Fixing a Miss drops the GT from the denominator (tidecv's
+    // `MissedError.fix()`), not injects a TP: AP 0.504950 → 1.0. tidecv 1.0.1: 0.495050.
     assert!(
-        te.delta_ap["Miss"] > 0.0,
-        "fixing Miss should improve AP, got {}",
-        te.delta_ap["Miss"]
-    );
-    assert!(
-        (te.delta_ap["Miss"] - 1.0).abs() < 1e-6,
-        "injecting 1 perfect TP should give AP=1, delta=1.0, got {}",
+        (te.delta_ap["Miss"] - 0.495050).abs() < 1e-6,
+        "delta_ap[Miss] should be 0.495050, got {}",
         te.delta_ap["Miss"]
     );
 }
@@ -1871,7 +1876,11 @@ fn test_tide_priority_loc_over_both() {
     assert_eq!(te.counts["Both"], 0);
 }
 
-/// Test 10: ΔAP["FP"] ≥ max of individual FP ΔAPs.
+/// Test 10: ΔAP["FP"] ≥ every *suppressing* FP ΔAP (Both, Dupe, Bkg).
+///
+/// Not Cls or Loc: their fixes can turn an error into a TP for a GT that was
+/// otherwise missed, adding recall the FP oracle cannot. tidecv 1.0.1 on this
+/// scene: Cls 0.25, FalsePos 0.0 — the Cls fix credits the dog GT.
 #[test]
 fn test_tide_delta_ap_fp_ge_individuals() {
     // Multiple FP error types in one scene
@@ -1899,15 +1908,19 @@ fn test_tide_delta_ap_fp_ge_individuals() {
     let te = run_tide(coco_gt, coco_dt);
 
     let fp_delta = te.delta_ap["FP"];
-    let max_individual = te.delta_ap["Cls"]
-        .max(te.delta_ap["Loc"])
-        .max(te.delta_ap["Both"])
+    let max_individual = te.delta_ap["Both"]
         .max(te.delta_ap["Dupe"])
         .max(te.delta_ap["Bkg"]);
 
     assert!(
         fp_delta >= max_individual - 1e-9,
-        "ΔAP[FP]={fp_delta:.4} should be ≥ max individual={max_individual:.4}"
+        "ΔAP[FP]={fp_delta:.4} should be ≥ max suppressing individual={max_individual:.4}"
+    );
+    assert!((fp_delta - 0.0).abs() < 1e-9, "ΔAP[FP]={fp_delta}");
+    assert!(
+        (te.delta_ap["Cls"] - 0.25).abs() < 1e-9,
+        "ΔAP[Cls]={}",
+        te.delta_ap["Cls"]
     );
 }
 
@@ -1937,10 +1950,11 @@ fn test_tide_empty_category() {
             "delta_ap[{key}] should be non-negative, got {val}"
         );
     }
-    // Fixing Miss should recover to AP=1.0 from baseline AP=0.0 → delta=1.0
+    // Fixing Miss drops the only GT from the denominator, leaving a vacuous
+    // AP 0.0 → delta 0.0 (tidecv divides by zero on this scene).
     assert!(
-        (te.delta_ap["Miss"] - 1.0).abs() < 1e-6,
-        "delta_ap[Miss] should be 1.0, got {}",
+        te.delta_ap["Miss"].abs() < 1e-9,
+        "delta_ap[Miss] should be 0.0, got {}",
         te.delta_ap["Miss"]
     );
 }

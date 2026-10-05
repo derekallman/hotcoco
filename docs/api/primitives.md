@@ -26,9 +26,12 @@ rows, cols = primitives.lsap(sim, maximize=True)
 
 Nothing here scores — feed the pairs to [`metrics`](metrics.md) for that.
 
-`primitives.bbox_iou` and `primitives.mask_iou` are the same functions
-[`hotcoco.mask`](mask.md) exposes under their pycocotools names; both call one
-implementation, so they cannot disagree.
+This module is the strict layer: `bbox_iou` takes boxes and `mask_iou` takes
+RLEs, and neither guesses which it was handed. [`hotcoco.mask`](mask.md) is the
+pycocotools-shaped layer on top. Its [`iou`](mask.md#iou) accepts either kind
+and dispatches on type the way `pycocotools.mask.iou` does, then calls these
+kernels, so the two layers cannot disagree on a number. `mask.bbox_iou` is
+`primitives.bbox_iou` under a second name.
 
 These functions are additive-change-only through 1.x. The IoU kernels are the
 exception — they are frozen, since pycocotools parity depends on them.
@@ -93,9 +96,9 @@ Pairwise IoU between two sets of boxes.
 
     ```python
     bbox_iou(
-        dt: Sequence[Sequence[float]],
-        gt: Sequence[Sequence[float]],
-        iscrowd: Sequence[bool],
+        dt: numpy.ndarray | Sequence[Sequence[float]],
+        gt: numpy.ndarray | Sequence[Sequence[float]],
+        iscrowd: Sequence[bool] | numpy.ndarray,
     ) -> numpy.ndarray
     ```
 
@@ -105,15 +108,16 @@ Pairwise IoU between two sets of boxes.
     primitives::sim::bbox_iou(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<Vec<f64>>
     ```
 
-Boxes are `[x, y, width, height]`. Returns shape `(len(dt), len(gt))`.
+Boxes are `[x, y, width, height]`: an `(N, 4)` array or a sequence of 4-element
+rows. A `float64` array is read in one pass; anything else is converted element
+by element. Returns shape `(len(dt), len(gt))`.
 
 Where `iscrowd[j]` is true, the denominator is the detection area alone rather
 than the union — a detection fully inside a crowd region scores 1.0. That is
 pycocotools' convention, and it is why `iscrowd` is required rather than
 optional: silently defaulting it would change crowd-region numbers.
 
-See [`mask.bbox_iou`](mask.md) for the same function under its
-`pycocotools`-compatible name.
+[`mask.bbox_iou`](mask.md#bbox_iou) is this same function object.
 
 ---
 
@@ -124,7 +128,7 @@ Pairwise IoU between two sets of RLE masks.
 === "Python"
 
     ```python
-    mask_iou(dt, gt, iscrowd: Sequence[bool]) -> numpy.ndarray
+    mask_iou(dt: Sequence[dict], gt: Sequence[dict], iscrowd: Sequence[bool] | numpy.ndarray) -> numpy.ndarray
     ```
 
 === "Rust"
@@ -134,7 +138,9 @@ Pairwise IoU between two sets of RLE masks.
     ```
 
 Same crowd convention as `bbox_iou`. Inputs are RLE dicts as produced by
-[`mask.encode`](mask.md). Exposed as `mask.iou` under the `pycocotools` name.
+[`mask.encode`](mask.md#encode); boxes are not accepted. To pass either kind with
+pycocotools' type dispatch, call [`mask.iou`](mask.md#iou), which forwards RLEs
+here.
 
 ---
 

@@ -114,6 +114,25 @@ struct SameClassScan {
     best_gt_matched: bool,
 }
 
+/// The ground truth a `Loc` or `Cls` error would become a TP for, if fixed.
+///
+/// Recorded only when that GT is *usable* — unmatched at `pos_thr` and in the
+/// recall denominator. An error aimed at a GT some detection already claimed has
+/// no target: tidecv's `BestGTMatch` suppresses it instead of promoting it.
+#[derive(Clone, Copy)]
+struct FixTarget {
+    gt_id: u64,
+    /// The GT's category. Differs from the detection's for `Cls`, and a fixed
+    /// `Cls` error is a TP of *this* category, not its own.
+    gt_cat: u64,
+    /// Tie-break for [`resolve_fixes`]'s per-GT winner.
+    dt_id: u64,
+    /// Set by [`resolve_fixes`]: this error is its target GT's winner, so
+    /// fixing it yields a TP. Every other `Loc`/`Cls` error is suppressed by
+    /// the fix. `false` until resolved.
+    won: bool,
+}
+
 /// Per-category detection records, accumulated across every in-scope cell.
 struct CatData {
     scores: Vec<f64>,
@@ -121,6 +140,12 @@ struct CatData {
     ignored: Vec<bool>,
     /// Error type for each FP detection (`None` = TP or ignored).
     fp_types: Vec<Option<ErrType>>,
+    /// Usable GT each `Loc`/`Cls` error targets; `None` everywhere else.
+    fix_targets: Vec<Option<FixTarget>>,
+    /// Set by [`resolve_fixes`]: scores of promoted `Cls` errors from *other*
+    /// categories whose target GT is in this one, sorted descending. The `Cls`
+    /// fix scores them here as TPs.
+    incoming_cls: Vec<f64>,
     num_gt: usize,
 }
 
@@ -131,15 +156,17 @@ impl CatData {
             matched: Vec::new(),
             ignored: Vec::new(),
             fp_types: Vec::new(),
+            fix_targets: Vec::new(),
+            incoming_cls: Vec::new(),
             num_gt: 0,
         }
     }
 
     /// Permute every parallel array into score-descending order, once.
     ///
-    /// Each category is scored eight ways in [`COCOeval::category_deltas`] (a
-    /// baseline, five per-error-type fixes, and the FP/FN oracles) over the same
-    /// detections. Ranking once here lets all eight use
+    /// Each category is scored up to nine ways in [`COCOeval::category_deltas`]
+    /// (a baseline, five per-error-type fixes, Miss, and the FP/FN oracles) over
+    /// the same detections. Ranking once here lets all of them use
     /// [`average_precision_ranked`](crate::metrics::counts::average_precision_ranked)
     /// instead of re-sorting — 3285 sorts of up to 22k elements on Objects365.
     ///
@@ -157,6 +184,7 @@ impl CatData {
         self.matched = order.iter().map(|&i| self.matched[i]).collect();
         self.ignored = order.iter().map(|&i| self.ignored[i]).collect();
         self.fp_types = order.iter().map(|&i| self.fp_types[i]).collect();
+        self.fix_targets = order.iter().map(|&i| self.fix_targets[i]).collect();
     }
 
     /// Absorb another split's records for the same category, in order. Called
@@ -167,6 +195,7 @@ impl CatData {
         self.matched.append(&mut other.matched);
         self.ignored.append(&mut other.ignored);
         self.fp_types.append(&mut other.fp_types);
+        self.fix_targets.append(&mut other.fix_targets);
         self.num_gt += other.num_gt;
     }
 }
@@ -180,18 +209,11 @@ struct Classified {
     /// rather than a keyed map: this runs over every detection, and a keyed map
     /// costs a `String` allocation per false positive just to reach a counter.
     fp_counts: [u64; FP_TYPES.len()],
-    /// GTs with a `Loc` or `Cls` FP detection "targeting" them — these are not
-    /// Miss errors. A `Loc` detection targets the same-class GT with highest IoU
-    /// in the `Loc` window; a `Cls` detection targets the cross-class GT with
-    /// highest IoU >= `pos_thr`. Collected across all categories so cross-category
-    /// `Cls` coverage is captured.
-    covered_gts: HashSet<u64>,
 }
 
 impl Classified {
-    /// Combine two splits of the parallel fold. Every field is order-independent
-    /// on its own — `fp_counts` is elementwise integer addition and
-    /// `covered_gts` is a set union — **except** the per-category vectors inside
+    /// Combine two splits of the parallel fold. `fp_counts` is elementwise
+    /// integer addition, order-independent on its own; the per-category vectors inside
     /// `cat_data`, which `CatData::extend` appends in `self`-then-`other` order.
     /// That is safe only because rayon's `fold`/`reduce` always calls this with
     /// `self` covering the earlier contiguous range of `cells` and `other` the
@@ -216,7 +238,6 @@ impl Classified {
         for (slot, n) in self.fp_counts.iter_mut().zip(other.fp_counts) {
             *slot += n;
         }
-        self.covered_gts.extend(other.covered_gts);
         self
     }
 }
@@ -252,18 +273,17 @@ impl MissCounts {
     }
 }
 
-/// One category's ΔAP contributions, in report order.
 /// Per-category buffers the error fixes in pass 4 build their modified copy
 /// of a category's detections into, reused across the fixes instead of
 /// allocated per call. Kept apart from [`ApScratch`] so a ranked-AP call can
 /// read these while borrowing that one mutably.
 #[derive(Debug, Default)]
 struct FixScratch {
-    scores: Vec<f64>,
     matched: Vec<bool>,
     ignored: Vec<bool>,
 }
 
+/// One category's ΔAP contributions, in report order.
 struct CatDeltas {
     baseline: f64,
     /// Indexed like [`FP_TYPES`].
@@ -274,25 +294,6 @@ struct CatDeltas {
 }
 
 impl COCOeval {
-    /// Compute average precision from per-detection matched/ignored flags.
-    ///
-    /// Uses the same 101-point interpolation as [`accumulate`](COCOeval::accumulate),
-    /// via [`crate::metrics::counts::average_precision`].
-    ///
-    /// Returns `0.0` when `num_gt == 0`: TIDE's ΔAP compares corpus-level APs, so
-    /// a category with no ground truth contributes a vacuous `0.0`. (Per-image
-    /// diagnostics deliberately uses the opposite convention — see the
-    /// [`counts`](crate::metrics::counts) module note.)
-    pub(super) fn compute_ap_from_matched(
-        scores: &[f64],
-        matched: &[bool],
-        ignored: &[bool],
-        num_gt: usize,
-        rec_thrs: &[f64],
-    ) -> f64 {
-        crate::metrics::counts::average_precision(scores, matched, Some(ignored), num_gt, rec_thrs)
-    }
-
     /// Decompose detection errors into TIDE error types.
     ///
     /// Requires [`evaluate`](COCOeval::evaluate) to have been called first.
@@ -325,8 +326,10 @@ impl COCOeval {
         let cells: Vec<&EvalImg> = self.default_cells().collect();
 
         let cross_iou_map = self.cross_category_ious();
-        let classified = self.classify_detections(&cells, &cross_iou_map, t_idx, pos_thr, bg_thr);
-        let misses = count_misses(&cells, &classified.covered_gts, t_idx);
+        let mut classified =
+            self.classify_detections(&cells, &cross_iou_map, t_idx, pos_thr, bg_thr);
+        let covered_gts = resolve_fixes(&mut classified.cat_data);
+        let misses = count_misses(&cells, &covered_gts, t_idx);
         let per_cat = self.category_deltas(&classified.cat_data, &misses);
 
         Ok(assemble(
@@ -404,8 +407,9 @@ impl COCOeval {
     /// Pass 2 — sort every detection into TP, ignored, or one of the five FP
     /// types, accumulating the per-category arrays the ΔAP pass scores.
     ///
-    /// Also records which ground truths a `Loc` or `Cls` fix would recover; pass 3
-    /// subtracts those from Miss.
+    /// Also records the ground truth each `Loc` or `Cls` error targets;
+    /// [`resolve_fixes`] then derives which ground truths a fix would recover,
+    /// and pass 3 subtracts those from Miss.
     ///
     /// Fanned out with `fold`/`reduce`: each split walks a contiguous run of
     /// `cells` sequentially into its own `Classified`, and `Classified::merge`
@@ -418,8 +422,8 @@ impl COCOeval {
     /// small constant size no matter how much work built it, and the merge
     /// order genuinely does not matter. `Classified::merge` instead moves
     /// per-detection `Vec`s that grow with the input, and the merge order *does*
-    /// matter for one field. `fp_counts` and `covered_gts` are plainly
-    /// order-independent (integer addition, set union); the per-category
+    /// matter for one field. `fp_counts` is plainly order-independent
+    /// (integer addition); the per-category
     /// vectors in `cat_data` are only order-independent because rayon's
     /// split/merge tree preserves `cells` order — see `Classified::merge`'s doc
     /// for why that matters for `rank_by_score_desc`'s tie-breaking.
@@ -431,6 +435,24 @@ impl COCOeval {
         pos_thr: f64,
         bg_thr: f64,
     ) -> Classified {
+        // GT id → category, for every GT a fix could still turn into a TP:
+        // unmatched at this threshold and in the recall denominator. Built before
+        // the fan-out because a `Cls` error's target lives in another category's
+        // cell, which the error's own cell cannot see.
+        let usable_gts: HashMap<u64, u64> = cells
+            .par_iter()
+            .flat_map_iter(|eval_img| {
+                eval_img
+                    .gt_ids
+                    .iter()
+                    .enumerate()
+                    .filter(|&(gi, _)| {
+                        !eval_img.gt_matched[(t_idx, gi)] && eval_img.counts_as_miss(gi)
+                    })
+                    .map(|(_, &gt_id)| (gt_id, eval_img.category_id))
+            })
+            .collect();
+
         let mut classified = cells
             .par_iter()
             .fold(Classified::default, |mut acc, eval_img| {
@@ -465,12 +487,12 @@ impl COCOeval {
                 // entry lookup once per cell rather than once per detection.
                 let entry = acc.cat_data.entry(cat_id).or_insert_with(CatData::new);
                 entry.num_gt += eval_img.num_gt_in_denominator();
-                let covered_gts = &mut acc.covered_gts;
                 let fp_counts = &mut acc.fp_counts;
 
                 for (di, &dt_ann_id) in eval_img.dt_ids.iter().enumerate() {
                     let is_matched = eval_img.dt_matched[(t_idx, di)];
                     let is_ignored = eval_img.dt_ignore[(t_idx, di)];
+                    let mut fix_target = None;
 
                     let fp_type = (!is_matched && !is_ignored).then(|| {
                         let (max_cross_iou, argmax_cross_gt) = cross_map
@@ -502,15 +524,25 @@ impl COCOeval {
                         );
 
                         // Only `Loc` and `Cls` can be fixed into a TP for their target
-                        // GT, so only they cover it. `Bkg`/`Both`/`Dupe` fixes suppress
-                        // the detection instead, leaving the GT still missed.
+                        // GT, so only they cover it — and only if that GT is still
+                        // usable; an error aimed at an already-matched GT is
+                        // suppressed by its fix (tidecv's `BestGTMatch`).
+                        // `Bkg`/`Both`/`Dupe` fixes suppress the detection outright,
+                        // leaving the GT still missed.
                         let target = match err {
                             ErrType::Loc => same.argmax_gt_ann_id,
                             ErrType::Cls => argmax_cross_gt,
                             ErrType::Both | ErrType::Dupe | ErrType::Bkg => None,
                         };
-                        if let Some(gt_ann_id) = target {
-                            covered_gts.insert(gt_ann_id);
+                        if let Some((gt_id, &gt_cat)) =
+                            target.and_then(|id| usable_gts.get_key_value(&id))
+                        {
+                            fix_target = Some(FixTarget {
+                                gt_id: *gt_id,
+                                gt_cat,
+                                dt_id: dt_ann_id,
+                                won: false,
+                            });
                         }
 
                         fp_counts[err as usize] += 1;
@@ -521,6 +553,7 @@ impl COCOeval {
                     entry.matched.push(is_matched);
                     entry.ignored.push(is_ignored);
                     entry.fp_types.push(fp_type);
+                    entry.fix_targets.push(fix_target);
                 }
 
                 acc
@@ -538,9 +571,9 @@ impl COCOeval {
             .reduce_with(Classified::merge)
             .unwrap_or_default();
 
-        // Rank once per category, now that every cell has contributed; the eight
+        // Rank once per category, now that every cell has contributed; the nine
         // APs per category in `category_deltas` then read the presorted entry
-        // point instead of re-sorting the same detections eight times.
+        // point instead of re-sorting the same detections nine times.
         for data in classified.cat_data.values_mut() {
             data.rank_by_score_desc();
         }
@@ -548,7 +581,7 @@ impl COCOeval {
         classified
     }
 
-    /// Pass 4 — score each category eight ways and difference against its
+    /// Pass 4 — score each category up to nine ways and difference against its
     /// baseline AP.
     ///
     /// Fanned out over categories. `par_iter().map(..).collect()` is an *indexed*
@@ -572,11 +605,11 @@ impl COCOeval {
                     _ => return None,
                 };
 
-                // One AP scratch per category, reused across the ~8 ranked-AP calls
-                // below (baseline, one per `FP_TYPES` entry, FP oracle, FN oracle)
-                // instead of each allocating its own TP/FP and PR-curve buffers.
-                // `fix` holds the modified copies of `data` that `fix_fp`, the FP
-                // oracle, and the Miss fix build.
+                // One AP scratch per category, reused across the ranked-AP calls
+                // below (baseline, one per `FP_TYPES` entry, FP oracle, FN oracle,
+                // Miss) instead of each allocating its own TP/FP and PR-curve
+                // buffers. `fix` holds the modified copies of `data` that `fix_fp`
+                // and the FP oracle build.
                 let mut ap_scratch = ApScratch::default();
                 let mut fix = FixScratch::default();
 
@@ -588,27 +621,50 @@ impl COCOeval {
                     &mut ap_scratch,
                 );
 
-                // Fix one FP error type. Cls and Loc flip FP → TP (the detection
-                // would have been correct if the error were fixed). Bkg, Both and
-                // Dupe suppress the detection instead, matching tidecv's
-                // `fix()→None` behavior where these errors produce no corrected TP.
+                // Fix one FP error type, following tidecv's `fix_errors`. A `Loc`
+                // or `Cls` error that [`resolve_fixes`] promoted becomes a TP —
+                // here for `Loc`, in its target GT's category for `Cls` (scored
+                // there via `incoming_cls`). Every other error of the fixed type,
+                // and every `Bkg`/`Both`/`Dupe` error, is suppressed: tidecv's
+                // `fix()→None` drops the detection, neither TP nor FP.
                 //
                 // `mut` and captures `ap_scratch` and `fix` by unique reference:
                 // each call below reuses the same buffers rather than allocating.
                 let mut fix_fp = |fix_type: ErrType| -> f64 {
+                    let incoming: &[f64] = if fix_type == ErrType::Cls {
+                        &data.incoming_cls
+                    } else {
+                        &[]
+                    };
                     fix.matched.clear();
-                    fix.matched.extend_from_slice(&data.matched);
                     fix.ignored.clear();
-                    fix.ignored.extend_from_slice(&data.ignored);
+                    // Merge the incoming TPs into the ranked detections. Strictly
+                    // greater, so on a score tie the category's own detection
+                    // ranks first — the order a stable sort of (own ++ incoming)
+                    // would give.
+                    let mut next_in = 0;
                     for (i, fp_type) in data.fp_types.iter().enumerate() {
-                        if *fp_type != Some(fix_type) {
-                            continue;
+                        while next_in < incoming.len() && incoming[next_in] > data.scores[i] {
+                            fix.matched.push(true);
+                            fix.ignored.push(false);
+                            next_in += 1;
                         }
-                        match fix_type {
-                            ErrType::Cls | ErrType::Loc => fix.matched[i] = true,
-                            ErrType::Bkg | ErrType::Both | ErrType::Dupe => fix.ignored[i] = true,
+                        let (mut matched, mut ignored) = (data.matched[i], data.ignored[i]);
+                        if *fp_type == Some(fix_type) {
+                            if fix_type == ErrType::Loc
+                                && data.fix_targets[i].is_some_and(|t| t.won)
+                            {
+                                matched = true;
+                            } else {
+                                ignored = true;
+                            }
                         }
+                        fix.matched.push(matched);
+                        fix.ignored.push(ignored);
                     }
+                    let rest = incoming.len() - next_in;
+                    fix.matched.extend(std::iter::repeat_n(true, rest));
+                    fix.ignored.extend(std::iter::repeat_n(false, rest));
                     average_precision_ranked_into(
                         &fix.matched,
                         Some(&fix.ignored),
@@ -644,53 +700,33 @@ impl COCOeval {
                     ) - baseline
                 };
 
+                // Score with `n` ground truths out of the denominator and the
+                // detections untouched — the FN oracle and the Miss fix below.
+                let mut drop_gts = |n: usize| {
+                    average_precision_ranked_into(
+                        &data.matched,
+                        Some(&data.ignored),
+                        data.num_gt.saturating_sub(n),
+                        rec_thrs,
+                        &mut ap_scratch,
+                    ) - baseline
+                };
+
                 // FN: tidecv's FalseNegativeError oracle — perfect recall without
                 // affecting precision. Every unmatched in-denominator GT leaves
-                // the denominator; detections are untouched. A superset of Miss,
-                // which drops only the GTs no Loc/Cls fix could recover.
+                // the denominator. A superset of Miss, which drops only the GTs
+                // no Loc/Cls fix could recover.
                 let fn_count = misses.fn_per_cat.get(&cat_id).copied().unwrap_or(0);
                 debug_assert!(
                     fn_count <= data.num_gt,
                     "FN count exceeds the GT denominator it was counted from"
                 );
-                let fn_oracle = average_precision_ranked_into(
-                    &data.matched,
-                    Some(&data.ignored),
-                    data.num_gt.saturating_sub(fn_count),
-                    rec_thrs,
-                    &mut ap_scratch,
-                ) - baseline;
+                let fn_oracle = drop_gts(fn_count);
 
-                // Fix Miss: inject fake TPs for unmatched GTs.
-                //
-                // The sorting entry point, deliberately: the injected scores are
-                // 2.0, which sits above any real confidence in practice but is not
-                // *guaranteed* to — nothing rejects a score above 2.0 — and the old
-                // behavior was to sort the concatenation. One sort per category
-                // rather than eight is already the win. `compute_ap_from_matched`
-                // sorts and builds its own scratch internally, so it does not take
-                // `ap_scratch`.
-                let miss_count = misses.per_cat.get(&cat_id).copied().unwrap_or(0);
-                let miss = if miss_count > 0 {
-                    fix.scores.clear();
-                    fix.matched.clear();
-                    fix.ignored.clear();
-                    fix.scores.resize(miss_count, 2.0);
-                    fix.matched.resize(miss_count, true);
-                    fix.ignored.resize(miss_count, false);
-                    fix.scores.extend_from_slice(&data.scores);
-                    fix.matched.extend_from_slice(&data.matched);
-                    fix.ignored.extend_from_slice(&data.ignored);
-                    Self::compute_ap_from_matched(
-                        &fix.scores,
-                        &fix.matched,
-                        &fix.ignored,
-                        data.num_gt,
-                        rec_thrs,
-                    ) - baseline
-                } else {
-                    0.0
-                };
+                // Fix Miss: tidecv's `MissedError.fix()` returns `(class, -1)` —
+                // each missed GT no Loc/Cls fix could recover leaves the
+                // denominator.
+                let miss = drop_gts(misses.per_cat.get(&cat_id).copied().unwrap_or(0));
 
                 Some(CatDeltas {
                     baseline,
@@ -733,6 +769,72 @@ fn same_class_scan(
         }
     }
     scan
+}
+
+/// Decide which `Loc`/`Cls` errors their fix turns into a TP — tidecv's
+/// `BestGTMatch`.
+///
+/// A ground truth can be recovered once. Of all the `Loc` and `Cls` errors
+/// targeting the same usable GT, only the highest-scoring is promoted; the rest
+/// are suppressed by the fix. The contest spans both types (tidecv keeps
+/// `best_score` on the GT), so fixing `Loc` alone still suppresses a `Loc`
+/// error whose GT a higher-scoring `Cls` error claims.
+///
+/// On a score tie the lower detection id wins. tidecv keeps the first error it
+/// sees, walking each image's detections in a stable score-descending sort of
+/// their input order — the same order as ascending id whenever ids follow input
+/// order, as `load_res` assigns them.
+///
+/// Runs after ranking, so the `incoming_cls` scores it gathers come from the
+/// ranked arrays. Every comparison is a total order on `(score, dt_id)`, so the
+/// `HashMap` iteration order cannot change the outcome.
+///
+/// Returns the GTs some `Loc`/`Cls` error targets — tidecv's `usable` flag.
+/// Those are not Miss errors: a fix could recover them. A `Loc` detection
+/// targets the same-class GT with highest IoU in the `Loc` window; a `Cls`
+/// detection the cross-class GT with highest IoU >= `pos_thr`, which is why
+/// this needs every category at once.
+fn resolve_fixes(cat_data: &mut HashMap<u64, CatData>) -> HashSet<u64> {
+    let wins = |(s, id): (f64, u64), (best_s, best_id): (f64, u64)| {
+        s > best_s || (s == best_s && id < best_id)
+    };
+
+    let mut best: HashMap<u64, (f64, u64)> = HashMap::new();
+    for data in cat_data.values() {
+        for (t, &score) in data.fix_targets.iter().zip(&data.scores) {
+            let Some(t) = t else { continue };
+            let cand = (score, t.dt_id);
+            best.entry(t.gt_id)
+                .and_modify(|b| {
+                    if wins(cand, *b) {
+                        *b = cand;
+                    }
+                })
+                .or_insert(cand);
+        }
+    }
+
+    let mut incoming: HashMap<u64, Vec<f64>> = HashMap::new();
+    for (&cat_id, data) in cat_data.iter_mut() {
+        for (t, &score) in data.fix_targets.iter_mut().zip(&data.scores) {
+            let Some(t) = t else { continue };
+            t.won = best[&t.gt_id].1 == t.dt_id;
+            // Only a `Cls` error targets another category's GT.
+            if t.won && t.gt_cat != cat_id {
+                incoming.entry(t.gt_cat).or_default().push(score);
+            }
+        }
+    }
+    for (cat_id, mut scores) in incoming {
+        // Every incoming entry is a TP, so the order among equal scores is
+        // immaterial; descending is what the merge in `fix_fp` needs.
+        scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        cat_data
+            .entry(cat_id)
+            .or_insert_with(CatData::new)
+            .incoming_cls = scores;
+    }
+    best.into_keys().collect()
 }
 
 /// Pass 3 — count undetected ground truths, after every category has been

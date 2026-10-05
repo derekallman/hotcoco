@@ -371,3 +371,51 @@ class TestCOCODict:
         """COCO() with invalid type raises TypeError."""
         with pytest.raises(TypeError):
             COCO(42)
+
+
+# ---------------------------------------------------------------------------
+# CocoEvaluator.synchronize_between_processes — multi-rank gather
+# ---------------------------------------------------------------------------
+
+
+class TestCocoEvaluatorSynchronize:
+    """The gather must be an object gather: NCCL rejects the CPU tensors a byte gather needs."""
+
+    @pytest.fixture
+    def fake_dist(self, monkeypatch):
+        torch = pytest.importorskip("torch")
+        dist = torch.distributed
+        calls = {"all_gather_object": 0}
+        # What ranks 1 and 2 hold; rank 0 is this process.
+        other_ranks = [
+            [{"image_id": 2, "category_id": 1, "bbox": [1, 1, 5, 5], "score": 0.5}],
+            [{"image_id": 3, "category_id": 1, "bbox": [2, 2, 6, 6], "score": 0.4}],
+        ]
+
+        def all_gather_object(out, obj, group=None):
+            calls["all_gather_object"] += 1
+            assert len(out) == 3
+            for rank, value in enumerate([obj, *other_ranks]):
+                out[rank] = value
+
+        def all_gather(*args, **kwargs):
+            raise AssertionError("tensor all_gather fails under NCCL on CPU tensors")
+
+        monkeypatch.setattr(dist, "is_available", lambda: True, raising=False)
+        monkeypatch.setattr(dist, "is_initialized", lambda: True)
+        monkeypatch.setattr(dist, "get_world_size", lambda group=None: 3)
+        monkeypatch.setattr(dist, "all_gather_object", all_gather_object)
+        monkeypatch.setattr(dist, "all_gather", all_gather)
+        return calls
+
+    def test_gathers_objects_in_rank_order(self, fake_dist):
+        ev = CocoEvaluator(None, ["bbox"])
+        ev.results["bbox"] = [{"image_id": 1, "category_id": 1, "bbox": [0, 0, 10, 10], "score": 0.9}]
+        ev.synchronize_between_processes()
+        assert fake_dist["all_gather_object"] == 1
+        assert [r["image_id"] for r in ev.results["bbox"]] == [1, 2, 3]
+
+    def test_one_gather_per_iou_type(self, fake_dist):
+        ev = CocoEvaluator(None, ["bbox", "segm"])
+        ev.synchronize_between_processes()
+        assert fake_dist["all_gather_object"] == 2

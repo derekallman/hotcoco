@@ -37,6 +37,10 @@ pub(super) struct EvalGrouping<'a> {
     a: usize,
     /// Distinct `image_id` -> dense slot, over every cell in `grouped`.
     img_slots: HashMap<u64, u32>,
+    /// For each threshold of the T axis, its row in the grid the cells were
+    /// matched on — see the axis-resolution block in
+    /// [`build_chunked`](Self::build_chunked).
+    t_rows: Vec<Option<usize>>,
 }
 
 impl<'a> EvalGrouping<'a> {
@@ -81,10 +85,16 @@ impl<'a> EvalGrouping<'a> {
             .iter()
             .map(|ar| area_key(ar.range))
             .collect();
-        // Where each evaluate-time area range now sits in `params.area_ranges`,
-        // by value: the same range listed twice fills its last slot only, and a
-        // range no longer listed is skipped. Every pair's `areas` is indexed by
-        // the evaluate-time position, so this resolves once, not per cell.
+        // Evaluate-time axis resolution. The cells were matched under the
+        // params `evaluate()` saw; the axes `accumulate()` fills are `params` as
+        // they stand now. Each axis is resolved by value, once per grouping —
+        // not per cell, and not per `accumulate_impl` call, which bootstrap
+        // resamples make 2·n times.
+        //
+        // Area ranges: where each evaluate-time range now sits in
+        // `params.area_ranges`. The same range listed twice fills its last
+        // slot only, and a range no longer listed is skipped. Every pair's
+        // `areas` is indexed by the evaluate-time position.
         let remap: Vec<Option<usize>> = ev.eval_inputs.as_ref().map_or_else(Vec::new, |inputs| {
             inputs
                 .params
@@ -93,6 +103,22 @@ impl<'a> EvalGrouping<'a> {
                 .map(|ar| area_keys.iter().rposition(|key| *key == area_key(ar.range)))
                 .collect()
         });
+        // IoU thresholds: the opposite direction — for each threshold of the T
+        // axis, its row in the evaluate-time grid. The T axis is
+        // `params.iou_thrs` as it stands, since `summarize()`, `report()`, and
+        // the diagnostics name a row by its position there, but each cell holds
+        // one row per evaluate-time threshold. `Params::iou_thr_idx` owns the
+        // lookup: a reordered grid reads each row under its own label, and a
+        // threshold `evaluate()` never matched at keeps the `-1.0` "not
+        // computed" fill instead of reading a row it does not have.
+        let t_rows: Vec<Option<usize>> = match ev.eval_inputs.as_ref() {
+            Some(inputs) => params
+                .iou_thrs
+                .iter()
+                .map(|&thr| inputs.params.iou_thr_idx(thr))
+                .collect(),
+            None => vec![None; params.iou_thrs.len()],
+        };
 
         // Group the pairs by (k_idx, a_idx) — one pass over the cells, in parallel.
         //
@@ -207,6 +233,7 @@ impl<'a> EvalGrouping<'a> {
             grouped,
             a,
             img_slots,
+            t_rows,
         }
     }
 
@@ -269,6 +296,7 @@ pub(super) fn accumulate_impl(
     let cells = &grouping.eval().cells;
     let want_all_points = grouping.eval().eval_mode == EvalMode::OpenImages;
     let t = params.iou_thrs.len();
+    let t_rows = &grouping.t_rows;
     let r = params.rec_thrs.len();
     let k = if params.use_cats {
         params.cat_ids.len()
@@ -343,6 +371,11 @@ pub(super) fn accumulate_impl(
         ap_all_points: vec![-1.0; total_recall],
         scores: vec![-1.0; total],
         shape,
+        cat_ids: if params.use_cats {
+            params.cat_ids.clone()
+        } else {
+            Vec::new()
+        },
     });
 
     // Items are indexed as `grouped` is: `k_idx * a + a_idx`.
@@ -452,14 +485,24 @@ pub(super) fn accumulate_impl(
             // and ignore rows are live at a time.
             clear_with_capacity(&mut g.matched, n_gathered);
             clear_with_capacity(&mut g.ignore, n_gathered);
-            for t_idx in 0..t {
+            for (t_idx, &row) in t_rows.iter().enumerate() {
+                let Some(row) = row else {
+                    // Never evaluated at this threshold: "not computed", not
+                    // the 0.0 a category with ground truth starts from.
+                    for m_idx in 0..m {
+                        let base = (m_idx * t + t_idx) * r;
+                        staged.precision[base..base + r].fill(-1.0);
+                        staged.scores[base..base + r].fill(-1.0);
+                    }
+                    continue;
+                };
                 g.matched.clear();
                 g.ignore.clear();
                 for &cell in evals {
                     let nd = nd_of(cell);
                     let block = cells.block(cell);
-                    g.matched.extend(block.matched(t_idx).take(nd));
-                    g.ignore.extend(block.ignore(t_idx).take(nd));
+                    g.matched.extend(block.matched(row).take(nd));
+                    g.ignore.extend(block.ignore(row).take(nd));
                 }
 
                 for m_idx in 0..m {
@@ -551,6 +594,12 @@ pub(super) fn accumulate_impl(
 
 impl COCOeval {
     /// Accumulate per-image results into precision/recall arrays.
+    ///
+    /// The arrays follow `params` as they stand now, resolved against what
+    /// `evaluate()` matched: an IoU threshold, area range, or category that
+    /// `evaluate()` did not see is left at `-1.0` ("not computed") rather than
+    /// filled from another slot's matches. Run `evaluate()` again after changing
+    /// `params` to compute it.
     pub fn accumulate(&mut self) {
         // Scoped so the grouping's borrow of `self` ends before `self.eval` is written.
         let eval = accumulate_impl(&EvalGrouping::build(self), None);
@@ -612,6 +661,16 @@ pub struct AccumulatedEval {
     pub scores: Vec<f64>,
     /// Array dimensions — use to interpret the flat precision/recall/scores vectors.
     pub shape: EvalShape,
+    /// The K axis: the category id at each `k` position, in the order
+    /// `precision` and `recall` index them. Empty when `use_cats` was false and
+    /// every category was pooled into the single K slot.
+    ///
+    /// Recorded here because it is a fact about *this* accumulation, not about
+    /// `params` as they stand later: anything that names a K slot — a per-class
+    /// table, an LVIS frequency-group mean — reads it from here, so a
+    /// `params.cat_ids` edited after `accumulate()`, or a `use_cats = false`
+    /// run, cannot put one category's precision under another's name.
+    pub cat_ids: Vec<u64>,
 }
 
 impl AccumulatedEval {

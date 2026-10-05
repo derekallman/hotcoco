@@ -243,11 +243,11 @@ fn check_quality(dataset: &Dataset, warnings: &mut Vec<Finding>) {
                 }
             }
 
-            // Bbox out of bounds
+            // Bbox out of bounds — past any of the four image edges
             if let Some(&(img_w, img_h)) = img_dims.get(&ann.image_id) {
                 let x2 = bbox[0] + w;
                 let y2 = bbox[1] + h;
-                if x2 > img_w as f64 || y2 > img_h as f64 {
+                if bbox[0] < 0.0 || bbox[1] < 0.0 || x2 > img_w as f64 || y2 > img_h as f64 {
                     oob_ids.push(ann.id);
                 }
             }

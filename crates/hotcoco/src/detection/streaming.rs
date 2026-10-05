@@ -188,13 +188,16 @@ impl StreamingEval {
     /// `images` are the batch's image records — every annotation's `image_id`
     /// must name one of them, and in LVIS mode they carry `neg_category_ids`
     /// and `not_exhaustive_category_ids`. A batch of one is fine; a detector's
-    /// whole batch amortizes the per-call setup. Ground-truth ids need only be
-    /// unique within the batch. Detections are loaded the way
-    /// [`COCO::load_res_anns`] loads a results file: ids are assigned, `area`
-    /// and the geometry the result kind implies are derived, and `iscrowd` is
-    /// cleared — so raw predictions (`image_id`, `category_id`, `bbox`,
-    /// `score`) are what to pass. Within an image, detections with tied scores
-    /// rank in the order given, as they do in a results file.
+    /// whole batch amortizes the per-call setup. Ground-truth `id`s are
+    /// assigned here and `area` is derived where missing (the mask's pixel
+    /// count, or the box's `w × h` for an annotation without a mask), so
+    /// targets in the shape a data loader yields — `image_id`, `category_id`,
+    /// `bbox`, `iscrowd` — are enough; an authored `area` is kept. Detections are loaded the way [`COCO::load_res_anns`]
+    /// loads a results file: ids are assigned, `area` and the geometry the
+    /// result kind implies are derived, and `iscrowd` is cleared — so raw
+    /// predictions (`image_id`, `category_id`, `bbox`, `score`) are what to
+    /// pass. Within an image, detections with tied scores rank in the order
+    /// given, as they do in a results file.
     ///
     /// An image seen again in a later call replaces its earlier result. When
     /// `params.img_ids` is non-empty, images outside it are skipped.
@@ -208,10 +211,13 @@ impl StreamingEval {
     /// batch is rejected whole; the evaluator is as it was before the call.
     ///
     /// A detection with a NaN score is an error, as it is in `load_res`.
+    ///
+    /// In segm mode, a polygon or box on an image record without `height` and
+    /// `width` is an error — see [`COCOeval::check_inputs`].
     pub fn update(
         &mut self,
         images: Vec<Image>,
-        gt_anns: Vec<Annotation>,
+        mut gt_anns: Vec<Annotation>,
         dt_anns: Vec<Annotation>,
     ) -> crate::error::Result<()> {
         let unknown = self.unknown_category_ids(gt_anns.iter().chain(&dt_anns));
@@ -240,11 +246,23 @@ impl StreamingEval {
         // across, assigns ids, and derives the geometry. The result kind is
         // read off this batch's first detection rather than the file's, the
         // same answer for a homogeneous run.
-        let gt = COCO::from_dataset(Dataset {
+        //
+        // Ground truth gets the two fixups a results file gets, for the same
+        // reason: every `iscrowd`/area read goes through the id index, and
+        // targets from a data loader carry neither `id` (so they all collide
+        // on 0 and resolve to the batch's last annotation) nor `area` (so the
+        // matcher reads 0 and puts every object in `small`). Nothing after
+        // this call reads a ground-truth id — the cells keep counts and bits —
+        // so assigning them loses nothing.
+        for (i, ann) in gt_anns.iter_mut().enumerate() {
+            ann.id = (i + 1) as u64;
+        }
+        let mut gt = COCO::from_dataset(Dataset {
             images,
             annotations: gt_anns,
             ..Default::default()
         });
+        gt.fill_missing_areas();
         let dt = gt.load_res_anns(dt_anns)?;
 
         // This batch's ids are the run's scope: `evaluate()` keeps a non-empty
@@ -253,6 +271,7 @@ impl StreamingEval {
         let mut params = self.params.clone();
         params.img_ids.clone_from(&ids);
         let mut ev = COCOeval::with_mode(gt, dt, params, self.eval_mode, None);
+        ev.check_inputs()?;
         ev.evaluate();
         let cells = std::mem::take(&mut ev.cells);
 

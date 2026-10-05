@@ -25,7 +25,9 @@ pub struct CalibrationResult {
     pub mce: f64,
     /// Per-bin breakdown.
     pub bins: Vec<CalibrationBin>,
-    /// Per-category ECE, keyed by category ID.
+    /// Per-category ECE, keyed by category ID. A category with no counted
+    /// detection — ground truth only, or every detection ignored — has no
+    /// calibration to measure and is absent, not `0.0`.
     pub per_category: BTreeMap<u64, f64>,
     /// IoU threshold used to define "correct" (TP).
     pub iou_threshold: f64,
@@ -99,6 +101,13 @@ impl COCOeval {
                 .min(ignored.len())
                 .min(eval_img.dt_scores.len());
 
+            // A cell with no detection that counts — ground truth only, or every
+            // detection ignored — creates no entry. A category whose cells are
+            // all like that has no calibration error to report, and an entry
+            // over empty arrays would report a perfect 0.0 for it.
+            if !ignored[..n].contains(&false) {
+                continue;
+            }
             // Resolved once per image rather than once per detection — the entry
             // is the same for every detection in an eval_img, and on COCO val that
             // is ~500K hash lookups collapsed to ~20K.

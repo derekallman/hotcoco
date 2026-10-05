@@ -382,3 +382,93 @@ def test_explore_missing_browse_deps_exits_1(tmp_path, monkeypatch, capsys):
     # Exit 1 alone is ambiguous (the bogus x.json path also exits 1); the
     # message proves the *deps* branch fired.
     assert "browse dependencies required" in capsys.readouterr().err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Eval-aware server: dashboard and inlined JSON
+# ---------------------------------------------------------------------------
+
+
+def _eval_app(tmp_path, summarized=False):
+    """An app over an evaluator built the way browse() and `coco explore` build it: evaluate() only.
+
+    With ``summarized``, the caller also ran accumulate() and summarize() before browsing.
+    """
+    from hotcoco import COCOeval
+    from hotcoco.server import create_app
+
+    dataset, tmpdir = _minimal_dataset(tmp_path)
+    coco = COCO(dataset, image_dir=tmpdir)
+    dt = coco.load_res([{"image_id": 1, "category_id": 1, "bbox": [12, 11, 28, 20], "score": 0.9}])
+    ev = COCOeval(coco, dt, "bbox")
+    ev.evaluate()
+    if summarized:
+        ev.accumulate()
+        ev.summarize()
+    return create_app(coco, dt_coco=dt, coco_eval=ev)
+
+
+def test_dashboard_on_evaluate_only_eval(tmp_path):
+    pytest.importorskip("plotly")
+    app = _eval_app(tmp_path)
+    status, headers, body = _asgi_get(app, "/dashboard")
+    assert status == 200, body[:300]
+    assert "text/html" in headers.get("content-type", "")
+    # Second request is served from the cache and must not re-accumulate into an error.
+    status, _, _ = _asgi_get(app, "/dashboard")
+    assert status == 200
+
+
+def test_dashboard_on_summarized_eval(tmp_path):
+    # `stats` is a populated numpy array here, whose truth value is ambiguous.
+    pytest.importorskip("plotly")
+    app = _eval_app(tmp_path, summarized=True)
+    status, _, body = _asgi_get(app, "/dashboard")
+    assert status == 200, body[:300]
+
+
+def test_detail_query_values_cannot_close_script_tag(tmp_path):
+    import json
+    import re
+    from urllib.parse import parse_qs, quote
+
+    app = _eval_app(tmp_path)
+    payload = "</script><script>alert(1)</script>"
+    status, _, body = _asgi_get(app, "/detail/1", f"categories={quote(payload)}&slice={quote('a&b=c')}")
+    assert status == 200, body[:300]
+    html = body.decode()
+
+    # Exactly the one closing tag per JSON script block — the payload cannot add another.
+    m = re.search(r'<script type="application/json" id="nav-data">(.*?)</script>', html, re.S)
+    assert m is not None
+    raw = m.group(1)
+    assert "<" not in raw and ">" not in raw
+    assert "<script>alert(1)" not in html
+
+    # The escaped form round-trips: JSON.parse (json.loads) gives back a URL-encoded
+    # query whose values decode to exactly what was sent.
+    nav = json.loads(raw)
+    q = parse_qs(nav["query"])
+    assert q["categories"] == [payload]
+    assert q["slice"] == ["a&b=c"]
+
+
+def test_annotation_json_escapes_category_names(tmp_path):
+    # Dataset strings reach the inlined annotation JSON without passing through
+    # URL encoding, so this exercises the JSON escaping on its own.
+    import json
+    import re
+
+    from hotcoco.server import create_app
+
+    dataset, tmpdir = _minimal_dataset(tmp_path)
+    name = "</script><script>alert(1)</script> &"
+    dataset["categories"][0]["name"] = name
+    app = create_app(COCO(dataset, image_dir=tmpdir))
+    status, _, body = _asgi_get(app, "/detail/1")
+    assert status == 200, body[:300]
+    m = re.search(r'<script type="application/json" id="annotation-data">(.*?)</script>', body.decode(), re.S)
+    assert m is not None
+    raw = m.group(1)
+    assert "<" not in raw and ">" not in raw and "&" not in raw
+    assert name in json.dumps(json.loads(raw), ensure_ascii=False)

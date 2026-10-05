@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import collections
 import io
-import json
 import logging
 import os
 import random
@@ -13,6 +12,7 @@ import threading
 import webbrowser
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -245,22 +245,24 @@ def create_app(
     def _build_query(
         categories, shuffle_seed, min_score, sort=None, eval_filter=None, iou_thr=None, slice_name=None
     ) -> str:
-        parts = []
+        params: list[tuple[str, Any]] = []
         if categories:
-            parts.append(f"categories={categories}")
+            params.append(("categories", categories))
         if shuffle_seed is not None:
-            parts.append(f"shuffle_seed={shuffle_seed}")
+            params.append(("shuffle_seed", shuffle_seed))
         if min_score > 0:
-            parts.append(f"min_score={min_score}")
+            params.append(("min_score", min_score))
         if sort and sort != "default":
-            parts.append(f"sort={sort}")
+            params.append(("sort", sort))
         if eval_filter and eval_filter != "none":
-            parts.append(f"eval_filter={eval_filter}")
+            params.append(("eval_filter", eval_filter))
         if iou_thr is not None and iou_thr != 0.5:
-            parts.append(f"iou_thr={iou_thr}")
+            params.append(("iou_thr", iou_thr))
         if slice_name:
-            parts.append(f"slice={slice_name}")
-        return "&".join(parts)
+            params.append(("slice", slice_name))
+        # Values come straight from the request; encode them so a `&` or `=`
+        # inside one cannot inject a second parameter.
+        return urlencode(params)
 
     # ------------------------------------------------------------------
     # Routes
@@ -378,10 +380,10 @@ def create_app(
         html = template.render(
             image_id=image_id,
             img_info=img_info,
-            annotation_json=json.dumps(annotation_data),
+            annotation_data=annotation_data,
             nav=nav,
             nav_query=nav_query,
-            nav_json=json.dumps(nav_data),
+            nav_data=nav_data,
             has_dt=has_dt,
             has_eval=has_eval,
         )
@@ -435,6 +437,18 @@ def create_app(
             return HTMLResponse(html)
 
         from .dashboard import build_dashboard
+
+        # browse() and `coco explore` run only evaluate(): the gallery needs
+        # just the per-image matches, and accumulating up front would slow
+        # startup for a page that may never be opened. The dashboard plots
+        # the accumulated curves and reads the summary stats, so finish the
+        # pipeline here, once, on first request. summary_lines() fills the
+        # stats like summarize() but without printing into the server log.
+        # `stats` is an empty list until then and a numpy array after, so test
+        # its length; `.eval` would build the full precision/recall dict.
+        if len(coco_eval.stats) == 0:
+            coco_eval.accumulate()
+            coco_eval.summary_lines()
 
         # The 0.5 diagnostics are usually already in the LRU from the gallery;
         # the dashboard reads the same walk rather than paying for its own.

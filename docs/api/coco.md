@@ -26,12 +26,12 @@ Load and query COCO-format datasets.
 === "Python"
 
     ```python
-    COCO(annotation_file: str | dict | None = None, *, image_dir: str | None = None)
+    COCO(annotation_file: str | os.PathLike | dict | None = None, *, image_dir: str | None = None)
     ```
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
-    | `annotation_file` | <code>str &#124; dict &#124; None</code> | `None` | Path to a COCO JSON file, an in-memory dataset dict, or `None` for an empty instance. |
+    | `annotation_file` | <code>str &#124; os.PathLike &#124; dict &#124; None</code> | `None` | Path to a COCO JSON file (a `str` or a `pathlib.Path`), an in-memory dataset dict, or `None` for an empty instance. |
     | `image_dir` | <code>str &#124; None</code> | `None` | Root directory for image files. Used by `browse()` and `coco explore`. Can also be set afterwards via `coco.image_dir = "..."`. |
 
 === "Rust"
@@ -114,6 +114,10 @@ for w in coco.load_warnings:
 
 ## Methods
 
+The query and load methods take an id-list argument the way pycocotools does: a
+single `int`, or any iterable of ints — a list, tuple, `set`, `dict.keys()`
+view, or numpy array.
+
 ### `get_ann_ids`
 
 Get annotation IDs matching the given filters. All filters are ANDed together.
@@ -122,24 +126,29 @@ Get annotation IDs matching the given filters. All filters are ANDed together.
 
     ```python
     get_ann_ids(
-        img_ids: int | list[int] = [],
-        cat_ids: int | list[int] = [],
-        area_rng: list[float] | None = None,
+        img_ids: int | Iterable[int] = [],
+        cat_ids: int | Iterable[int] = [],
+        area_rng: Sequence[float] | None = None,
         iscrowd: bool | None = None,
     ) -> list[int]
     ```
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
-    | `img_ids` | <code>int &#124; list[int]</code> | `[]` | Filter by image IDs (empty = all) |
-    | `cat_ids` | <code>int &#124; list[int]</code> | `[]` | Filter by category IDs (empty = all) |
-    | `area_rng` | <code>list[float] &#124; None</code> | `None` | Filter by area range `[min, max]` |
+    | `img_ids` | <code>int &#124; Iterable[int]</code> | `[]` | Filter by image IDs (empty = all) |
+    | `cat_ids` | <code>int &#124; Iterable[int]</code> | `[]` | Filter by category IDs (empty = all) |
+    | `area_rng` | <code>Sequence[float] &#124; None</code> | `None` | Filter by area range `[min, max]` |
     | `iscrowd` | <code>bool &#124; None</code> | `None` | Filter by crowd flag |
 
     ```python
     ann_ids = coco.get_ann_ids(img_ids=[42], cat_ids=[1])
     ann_ids = coco.get_ann_ids(42)   # a bare id works, as in pycocotools
     ```
+
+    The camelCase `getAnnIds` also takes pycocotools' spellings:
+    `iscrowd=0` or `1` (a numpy int or bool works too), and `areaRng=[]` for no
+    area filter. `get_ann_ids` keeps the typed forms — `iscrowd` a `bool` or
+    `None`, `area_rng` two values or `None`.
 
 === "Rust"
 
@@ -176,7 +185,7 @@ Get category IDs matching the given filters.
     get_cat_ids(
         cat_nms: list[str] = [],
         sup_nms: list[str] = [],
-        cat_ids: list[int] = [],
+        cat_ids: int | Iterable[int] = [],
     ) -> list[int]
     ```
 
@@ -184,7 +193,7 @@ Get category IDs matching the given filters.
     |-----------|------|---------|-------------|
     | `cat_nms` | `list[str]` | `[]` | Filter by category names |
     | `sup_nms` | `list[str]` | `[]` | Filter by supercategory names |
-    | `cat_ids` | `list[int]` | `[]` | Filter by category IDs |
+    | `cat_ids` | <code>int &#124; Iterable[int]</code> | `[]` | Filter by category IDs |
 
     ```python
     cat_ids = coco.get_cat_ids(cat_nms=["person", "dog"])
@@ -210,15 +219,15 @@ Get image IDs matching the given filters.
 
     ```python
     get_img_ids(
-        img_ids: list[int] = [],
-        cat_ids: list[int] = [],
+        img_ids: int | Iterable[int] = [],
+        cat_ids: int | Iterable[int] = [],
     ) -> list[int]
     ```
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
-    | `img_ids` | `list[int]` | `[]` | Filter by image IDs |
-    | `cat_ids` | `list[int]` | `[]` | Filter by category IDs (images containing these categories) |
+    | `img_ids` | <code>int &#124; Iterable[int]</code> | `[]` | Filter by image IDs |
+    | `cat_ids` | <code>int &#124; Iterable[int]</code> | `[]` | Filter by category IDs (images containing these categories) |
 
     ```python
     img_ids = coco.get_img_ids(cat_ids=[1])
@@ -243,7 +252,7 @@ Load annotations by their IDs.
 === "Python"
 
     ```python
-    load_anns(ids: list[int]) -> list[dict]
+    load_anns(ids: int | Iterable[int]) -> list[dict]
     ```
 
     Returns annotation dicts with keys like `id`, `image_id`, `category_id`, `bbox`, `area`, `segmentation`, `iscrowd`.
@@ -275,7 +284,7 @@ Load categories by their IDs.
 === "Python"
 
     ```python
-    load_cats(ids: list[int]) -> list[dict]
+    load_cats(ids: int | Iterable[int]) -> list[dict]
     ```
 
     Returns category dicts with keys `id`, `name`, `supercategory`.
@@ -305,7 +314,7 @@ Load images by their IDs.
 === "Python"
 
     ```python
-    load_imgs(ids: list[int]) -> list[dict]
+    load_imgs(ids: int | Iterable[int]) -> list[dict]
     ```
 
     Returns image dicts with keys like `id`, `file_name`, `width`, `height`.
@@ -389,6 +398,16 @@ type:
 
 !!! tip
     A result carrying both `segmentation` and `keypoints` is treated as a segmentation result, matching pycocotools precedence.
+
+---
+
+### `cap_detections_per_image`
+
+```python
+coco_dt.cap_detections_per_image(max_det: int | None) -> COCO
+```
+
+Keep each image's `max_det` highest-scoring annotations across every category — lvis-api's per-image detection cap. `None` keeps every detection. Ties keep results-file order. Returns a new `COCO`, marked as capped: LVIS evaluation uses it as is, where it caps a plain `load_res()` result at 300 itself. It is the cap [`LVISResults`](cocoeval.md#lvisresults) applies, so call it to evaluate LVIS under a different cap, or none.
 
 ---
 
@@ -706,7 +725,7 @@ browse(
 | `dt` | <code>COCO &#124; str &#124; None</code> | `None` | Detection results to overlay. Pass a `COCO` object (from `load_res()`) or a path string (auto-loaded). |
 | `iou_type` | `str` | `"bbox"` | Similarity used to match detections against ground truth in the browser. |
 | `iou_thr` | `float` | `0.5` | IoU threshold for the TP/FP/FN coloring. |
-| `eval` | <code>COCOeval &#124; None</code> | `None` | An evaluated `COCOeval`. Enables the eval dashboard tab — PR curves, confusion matrix, TIDE errors, calibration, per-image F1. |
+| `eval` | <code>COCOeval &#124; None</code> | `None` | A `COCOeval` that has run `evaluate()`; the dashboard accumulates on first request. Enables the eval dashboard tab — PR curves, confusion matrix, TIDE errors, calibration, per-image F1. |
 | `slices` | <code>dict &#124; str &#124; None</code> | `None` | Named image subsets for the dashboard's slice breakdown, as a mapping or a path to a JSON file. |
 | `batch_size` | `int` | `12` | Number of images loaded per batch. |
 | `port` | `int` | `7860` | Local server port. |

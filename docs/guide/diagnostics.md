@@ -119,7 +119,7 @@ for rank, (name, delta) in enumerate(deltas, 1):
 
 ### Coming from tidecv
 
-If you have used [tidecv](https://github.com/dbolya/tide), the reference implementation, expect the five false-positive types to agree closely and `Miss` to read higher here. The side-by-side numbers on COCO val2017 are in [Benchmarks](../benchmarks.md#tide). The ranking — which error type is costing you the most AP — is the same, and that is what the metric is for.
+If you have used [tidecv](https://github.com/dbolya/tide), the reference implementation, expect every ΔAP to agree within ±0.005 on images without crowd regions. On all of COCO val2017, `Loc` reads about 0.01 lower here and `Miss` about 0.007 higher. The side-by-side numbers on COCO val2017 are in [Benchmarks](../benchmarks.md#tide). The ranking — which error type is costing you the most AP — is the same, and that is what the metric is for.
 
 The difference is crowd handling, explained under [TIDE parity](../benchmarks.md#tide).
 
@@ -160,7 +160,7 @@ for b in cal["bins"]:
 
 ### Per-category calibration
 
-`per_category` maps each category name to its ECE. Some categories are well calibrated while others are wildly off:
+`per_category` maps each category name to its ECE. A category with no counted detections is absent — there is no calibration to report, and `0.0` would read as perfect. Some categories are well calibrated while others are wildly off:
 
 ```python
 # Top 5 worst-calibrated categories
@@ -242,7 +242,7 @@ result = hotcoco.compare(ev_a, ev_b)
 
 ### Bootstrap confidence intervals
 
-Add `n_bootstrap` to get confidence intervals on the metric deltas. This resamples images with replacement and re-accumulates metrics for each sample — parallelized with rayon.
+Add `n_bootstrap` to get confidence intervals on the metric deltas. This resamples images with replacement and re-accumulates metrics for each sample — parallelized with rayon. The bounds are the resampled deltas' percentiles, computed as `numpy.quantile`'s default linear interpolation.
 
 ```python
 result = hotcoco.compare(ev_a, ev_b, n_bootstrap=1000, confidence=0.95)

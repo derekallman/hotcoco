@@ -556,6 +556,22 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
     Ok(Rle { h, w, counts })
 }
 
+/// One RLE dict from a Python object (`size` + `counts`, or `h` + `w` +
+/// `counts`).
+pub(crate) fn extract_coco_rle(obj: &Bound<'_, PyAny>) -> PyResult<Rle> {
+    py_to_rle(obj.cast::<PyDict>()?)
+}
+
+/// A list of RLE dicts, or a single dict as a list of one. Shared by
+/// `hotcoco.mask` and `hotcoco.primitives`.
+pub(crate) fn extract_rle_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Rle>> {
+    if let Ok(dict) = obj.cast::<PyDict>() {
+        return Ok(vec![py_to_rle(dict)?]);
+    }
+    let list: Vec<Bound<'_, PyAny>> = obj.extract()?;
+    list.iter().map(extract_coco_rle).collect()
+}
+
 pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
     let id: u64 = req_with!(dict, "id", extract_int);
     let file_name: String = opt!(dict, "file_name").unwrap_or_default();
@@ -806,13 +822,31 @@ pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
         .collect()
 }
 
-/// A 1-D flag argument: a bool array as is, an int array or sequence with
-/// non-zero meaning true — COCO spells `iscrowd` as 0/1.
+/// A 1-D flag argument — `iscrowd` for `from_arrays` and the IoU functions.
+///
+/// A numpy bool array is read as is and an `int64`/`int32` array as non-zero
+/// means true, each in one copy; anything else (a list of `0`/`1` or bools,
+/// a float array read back from pandas) goes through [`extract_flag`] item by
+/// item, so every flag spelling the API accepts elsewhere works here too.
+/// COCO JSON stores `iscrowd` as `0`/`1`, and pycocotools takes
+/// `maskUtils.iou(dt, gt, [a["iscrowd"] for a in anns])` straight through.
 pub fn flag_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
     if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<bool>>() {
         return Ok(arr.as_array().to_vec());
     }
-    Ok(u64_vec(obj, name)?.into_iter().map(|v| v != 0).collect())
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i64>>() {
+        return Ok(arr.as_array().iter().map(|&v| v != 0).collect());
+    }
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i32>>() {
+        return Ok(arr.as_array().iter().map(|&v| v != 0).collect());
+    }
+    let iter = obj.try_iter().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(format!(
+            "{name} must be a sequence of flags or a 1-D numpy array, got {}",
+            type_name(obj)
+        ))
+    })?;
+    iter.map(|item| extract_flag(&item?)).collect()
 }
 
 /// A 1-D bool argument — see [`f64_vec`]. The fast path matters even more
@@ -871,11 +905,13 @@ pub fn f64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<f64>,
     Ok((flat, nr, nc))
 }
 
-/// An id-list argument read the way pycocotools' `_isArrayLike` reads it: a
-/// bare int or any sequence of ints. torchvision's `CocoDetection` calls
+/// An id-list argument read the way pycocotools reads it: a bare int or any
+/// iterable of ints. torchvision's `CocoDetection` calls
 /// `coco.getAnnIds(img_id)` with a scalar — found by the 1.0
-/// third-party-consumer smoke test. One extractor shared by every query/load
-/// method and its camelCase twin, so the two surfaces cannot disagree.
+/// third-party-consumer smoke test — and pycocotools' `_isArrayLike` admits a
+/// `set` or a `dict.keys()` view as readily as a list. One extractor shared by
+/// every query/load method and its camelCase twin, so the two surfaces cannot
+/// disagree.
 #[derive(Default)]
 pub struct IdList(pub Vec<u64>);
 
@@ -886,8 +922,68 @@ impl FromPyObject<'_, '_> for IdList {
         if let Ok(one) = obj.extract::<u64>() {
             return Ok(IdList(vec![one]));
         }
-        Ok(IdList(obj.extract()?))
+        // A list, tuple, or numpy array takes the bulk path; a set, a
+        // `dict.keys()` view, or a generator is walked item by item.
+        if let Ok(ids) = obj.extract::<Vec<u64>>() {
+            return Ok(IdList(ids));
+        }
+        let not_ids = || {
+            pyo3::exceptions::PyTypeError::new_err(format!(
+                "expected an int or an iterable of ints, got {}",
+                type_name(&obj)
+            ))
+        };
+        let iter = obj.try_iter().map_err(|_| not_ids())?;
+        iter.map(|item| item?.extract::<u64>().map_err(|_| not_ids()))
+            .collect::<PyResult<_>>()
+            .map(IdList)
     }
+}
+
+/// A keyword flag on a pycocotools-compatible method, read by [`extract_flag`]:
+/// `getAnnIds(iscrowd=0)` and `mask.merge(rles, 1)` are how pycocotools callers
+/// spell them. The snake_case methods take a plain `bool`; only the
+/// compatibility surface is this lenient.
+pub struct Flag(pub bool);
+
+impl FromPyObject<'_, '_> for Flag {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        extract_flag(&obj).map(Flag)
+    }
+}
+
+/// pycocotools' `areaRng`: `[lo, hi]`, or an empty sequence for no range
+/// filter — `getAnnIds` tests `len(areaRng) == 0`, so `[]` is how callers
+/// spell "unset" as often as `None` is.
+pub struct AreaRng(pub Option<[f64; 2]>);
+
+impl FromPyObject<'_, '_> for AreaRng {
+    type Error = PyErr;
+
+    fn extract(obj: pyo3::Borrowed<'_, '_, PyAny>) -> PyResult<Self> {
+        if obj.len().is_ok_and(|n| n == 0) {
+            return Ok(AreaRng(None));
+        }
+        Ok(AreaRng(Some(obj.extract()?)))
+    }
+}
+
+/// An `(N, 4)` box argument, read by [`f64_matrix_arg`]: a numpy `float64`
+/// array in one copy, any other numeric array or a sequence of 4-element rows
+/// element by element. An empty input is zero boxes whatever its width.
+pub fn boxes_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<[f64; 4]>> {
+    let (flat, nrows, ncols) = f64_matrix_arg(obj, name)?;
+    if ncols != 4 && nrows != 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} must have shape (N, 4), got ({nrows}, {ncols})"
+        )));
+    }
+    Ok(flat
+        .chunks_exact(4)
+        .map(|b| [b[0], b[1], b[2], b[3]])
+        .collect())
 }
 
 /// A name-list argument — see [`IdList`]. The scalar check must come first:

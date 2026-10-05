@@ -38,6 +38,11 @@ pub struct COCO {
     /// Annotation ids by image and by (image, category), in JSON array
     /// order — see [`AnnIndex`] for why that order is contract.
     index: AnnIndex,
+    /// Set by [`cap_detections_per_image`](Self::cap_detections_per_image):
+    /// this results set is an lvis-api `LVISResults`, already capped (or
+    /// explicitly left uncapped), so LVIS evaluation takes it as is instead of
+    /// applying its default cap again.
+    per_image_capped: bool,
 }
 
 /// What kind of results a detection file holds, decided from its first
@@ -136,6 +141,7 @@ impl COCO {
             cats: FxHashMap::default(),
             cat_to_imgs: FxHashMap::default(),
             index: AnnIndex::default(),
+            per_image_capped: false,
         };
         coco.create_index();
         coco
@@ -563,6 +569,44 @@ impl COCO {
         Ok(res)
     }
 
+    /// Fill in `area` on every annotation that has none.
+    ///
+    /// The mask's pixel count when the annotation has a segmentation — COCO's
+    /// definition of instance `area`, and what [`load_res`](Self::load_res)
+    /// derives for mask results — otherwise the box's `w × h`. A mask that
+    /// cannot be rasterized (its image has no record, or no `height` and
+    /// `width`) falls back to the box. Annotations with an `area` are left as
+    /// they are, so a COCO file's authored areas survive; a record with neither
+    /// box nor mask stays without one.
+    ///
+    /// `area` places a ground truth in an area range, and the matcher reads a
+    /// missing one as 0 — every such object becomes `small`. pycocotools raises
+    /// `KeyError` instead; a caller feeding targets that never carried the field
+    /// (torchvision-style dicts) calls this first.
+    pub fn fill_missing_areas(&mut self) {
+        // Collected first: `ann_to_rle` borrows the whole `COCO` while the
+        // assignment below borrows the annotations mutably.
+        let derived: Vec<(usize, f64)> = self
+            .dataset
+            .annotations
+            .iter()
+            .enumerate()
+            .filter(|(_, ann)| ann.area.is_none())
+            .filter_map(|(i, ann)| {
+                let from_mask = ann
+                    .segmentation
+                    .as_ref()
+                    .and_then(|_| self.ann_to_rle(ann))
+                    .map(|rle| mask::area(&rle) as f64);
+                let area = from_mask.or_else(|| ann.bbox.map(|bb| bb[2] * bb[3]))?;
+                Some((i, area))
+            })
+            .collect();
+        for (i, area) in derived {
+            self.dataset.annotations[i].area = Some(area);
+        }
+    }
+
     /// Area from the box, and a rectangular segmentation when none was given.
     fn derive_from_bbox(ann: &mut Annotation) {
         let Some(bbox) = ann.bbox else {
@@ -632,11 +676,172 @@ impl COCO {
         ann.bbox = Some(crate::geometry::obb_to_aabb(obb));
     }
 
+    /// Whether this annotation's mask is rasterized onto the image's canvas.
+    ///
+    /// Polygons, rectangles, and bbox-only records take their raster size from
+    /// the image; either RLE form carries its own `size`.
+    fn needs_image_dims(ann: &Annotation) -> bool {
+        match &ann.segmentation {
+            Some(Segmentation::Polygon(_) | Segmentation::Rect(_)) => true,
+            Some(Segmentation::CompressedRle { .. } | Segmentation::UncompressedRle { .. }) => {
+                false
+            }
+            None => ann.bbox.is_some(),
+        }
+    }
+
+    /// Check that every mask an evaluation of `img_ids` would rasterize has a
+    /// canvas to land on.
+    ///
+    /// `height` and `width` are optional on an image record — box evaluation
+    /// never reads them — and default to 0. A polygon drawn onto a 0×0 canvas is
+    /// an empty mask, so a segm evaluation over such a dataset reports AP 0 with
+    /// nothing to say it went wrong; pycocotools raises `KeyError` instead. This
+    /// is the check the segm entry points run first, so the failure is an error
+    /// naming the images, not a plausible number.
+    ///
+    /// Only annotations on `img_ids` are checked — the images the evaluation
+    /// covers, as pycocotools reads `height` and `width` only for those. An
+    /// annotation on any other image, including one with no image record, is
+    /// never rasterized and never an error. [`COCOeval::check_inputs`](crate::COCOeval::check_inputs)
+    /// passes the evaluation's resolved image ids.
+    ///
+    /// # Errors
+    ///
+    /// An error when an annotation on one of `img_ids` whose mask comes from
+    /// the image size (a polygon, a rectangle, or a bbox-only record — see
+    /// [`ann_to_rle`](Self::ann_to_rle)) belongs to an image without `height`
+    /// and `width`, or an id in `img_ids` with no image record.
+    pub fn check_mask_dims(&self, img_ids: &[u64]) -> crate::error::Result<()> {
+        let scope: rustc_hash::FxHashSet<u64> = img_ids.iter().copied().collect();
+        let mut bad = std::collections::BTreeSet::new();
+        for ann in &self.dataset.annotations {
+            if !scope.contains(&ann.image_id) || !Self::needs_image_dims(ann) {
+                continue;
+            }
+            let ok = self
+                .get_img(ann.image_id)
+                .is_some_and(|img| img.height > 0 && img.width > 0);
+            if !ok {
+                bad.insert(ann.image_id);
+            }
+        }
+        if bad.is_empty() {
+            return Ok(());
+        }
+        let shown: Vec<String> = bad.iter().take(10).map(u64::to_string).collect();
+        let more = if bad.len() > 10 {
+            format!(", and {} more", bad.len() - 10)
+        } else {
+            String::new()
+        };
+        Err(crate::error::Error::Other(format!(
+            "segmentation evaluation needs `height` and `width` on every image whose \
+             annotations are polygons or boxes; {} image(s) lack them (ids {}{more}). \
+             Add the fields to the image records, or pass masks as RLE, which carries \
+             its own size.",
+            bad.len(),
+            shown.join(", "),
+        )))
+    }
+
+    /// Keep each image's `max_det` highest-scoring annotations, across every
+    /// category — lvis-api's per-image detection cap, as `LVISResults` applies it.
+    ///
+    /// lvis-api applies this once, when `LVISResults` loads the detections
+    /// (`limit_dets_per_image`, lvis-api 0.5.3 `lvis/results.py`): each image's
+    /// results are sorted by score and the top `max_dets` (300 by default)
+    /// kept before `LVISEval` sees them, so detections on categories the
+    /// federated rule later drops still spend the budget. `None` keeps every
+    /// detection, lvis-api's `max_dets=-1`.
+    ///
+    /// The returned set is marked as capped, and LVIS evaluation takes a
+    /// marked set as is — lvis-api's `LVISEval` likewise uses an
+    /// `LVISResults` unchanged and caps only results it loads itself. An
+    /// unmarked set, such as a plain [`load_res`](Self::load_res) result, gets
+    /// the default 300 cap from [`COCOeval::new_lvis`](crate::COCOeval::new_lvis).
+    /// So call this to evaluate under a different cap, or none.
+    ///
+    /// Ties keep dataset order — results-file order for a set loaded by
+    /// [`load_res`](Self::load_res) — as Python's stable `sorted` does in
+    /// lvis-api. A missing score sorts as 0.
+    ///
+    /// Takes `self` so that the common case, where no image holds more than
+    /// `max_det` annotations, copies nothing; otherwise the result is a new,
+    /// re-indexed `COCO` with the same images and categories.
+    #[must_use]
+    pub fn cap_detections_per_image(self, max_det: Option<usize>) -> COCO {
+        let mut capped = match max_det.and_then(|n| self.capped_copy(n)) {
+            Some(capped) => capped,
+            None => self,
+        };
+        capped.per_image_capped = true;
+        capped
+    }
+
+    /// Whether [`cap_detections_per_image`](Self::cap_detections_per_image)
+    /// produced this set, so LVIS evaluation must not cap it again.
+    pub(crate) fn is_per_image_capped(&self) -> bool {
+        self.per_image_capped
+    }
+
+    /// The per-image cap's working half: `None` when no image holds more than
+    /// `max_det` annotations, so a caller holding only a reference copies
+    /// nothing in the common case. The copy is not marked as capped.
+    pub(crate) fn capped_copy(&self, max_det: usize) -> Option<COCO> {
+        let anns = &self.dataset.annotations;
+        let mut per_img: FxHashMap<u64, usize> = FxHashMap::default();
+        for ann in anns {
+            *per_img.entry(ann.image_id).or_default() += 1;
+        }
+        per_img.retain(|_, &mut n| n > max_det);
+        if per_img.is_empty() {
+            return None;
+        }
+
+        // (score, position) for each over-cap image's annotations, in dataset
+        // order, so the stable sort below breaks ties by position.
+        let mut over: FxHashMap<u64, Vec<(f64, usize)>> =
+            per_img.into_keys().map(|id| (id, Vec::new())).collect();
+        for (pos, ann) in anns.iter().enumerate() {
+            if let Some(dets) = over.get_mut(&ann.image_id) {
+                dets.push((ann.score.unwrap_or(0.0), pos));
+            }
+        }
+        let mut keep = vec![true; anns.len()];
+        for dets in over.values_mut() {
+            dets.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            for &(_, pos) in &dets[max_det..] {
+                keep[pos] = false;
+            }
+        }
+        Some(COCO::from_dataset(Dataset {
+            info: self.dataset.info.clone(),
+            images: self.dataset.images.clone(),
+            annotations: anns
+                .iter()
+                .zip(&keep)
+                .filter(|&(_, &k)| k)
+                .map(|(ann, _)| ann.clone())
+                .collect(),
+            categories: self.dataset.categories.clone(),
+            licenses: self.dataset.licenses.clone(),
+        }))
+    }
+
     /// Convert an annotation's segmentation to RLE.
+    ///
+    /// `None` when the annotation's image is unknown, its RLE counts overrun the
+    /// mask, or its mask would be rasterized from an image with no `height` and
+    /// `width` — a 0×0 canvas holds no mask, and [`check_mask_dims`](Self::check_mask_dims)
+    /// is how a caller turns that into an error up front.
     pub fn ann_to_rle(&self, ann: &Annotation) -> Option<Rle> {
         let img = self.get_img(ann.image_id)?;
         let h = img.height;
         let w = img.width;
+        if (h == 0 || w == 0) && Self::needs_image_dims(ann) {
+            return None;
+        }
 
         match &ann.segmentation {
             Some(Segmentation::Polygon(polys)) => mask::fr_polys(polys, h, w).ok(),

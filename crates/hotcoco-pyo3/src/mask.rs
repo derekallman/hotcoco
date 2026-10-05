@@ -1,12 +1,21 @@
+//! Python bindings for `hotcoco.mask` — the `pycocotools.mask` mirror.
+//!
+//! This is the compatibility surface: pycocotools' leniency (type dispatch in
+//! `iou`, `0`/`1` for a flag) lives here and only here, as thin wrappers over
+//! the strict kernels in [`crate::primitives`]. `mask.bbox_iou` is the primitive
+//! itself, registered under a second name — one-way path sugar, never the
+//! definition.
+
 use hotcoco_core::mask as rmask;
 use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
-    bool_vec, extract_flag, f64_array, f64_matrix, numpy_dtype_name, py_to_rle, rle_to_coco_py,
-    type_name,
+    Flag, boxes_arg, extract_coco_rle, extract_rle_list, f64_array, numpy_dtype_name, py_to_rle,
+    rle_to_coco_py, type_name,
 };
+use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
 
 /// Transpose between row-major (numpy) and column-major (hotcoco) mask layouts.
@@ -22,24 +31,6 @@ pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
         }
     }
     dst
-}
-
-/// Extract a single RLE dict from a Python object (dict with "size"+"counts"
-/// or "h"+"w"+"counts").
-fn extract_coco_rle(obj: &Bound<'_, PyAny>) -> PyResult<hotcoco_core::Rle> {
-    let dict = obj.cast::<PyDict>()?;
-    py_to_rle(dict)
-}
-
-/// Extract a list of RLE dicts from a Python object. Accepts either a single
-/// dict or a list of dicts.
-fn extract_rle_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<hotcoco_core::Rle>> {
-    if let Ok(dict) = obj.cast::<PyDict>() {
-        Ok(vec![py_to_rle(dict)?])
-    } else {
-        let list: Vec<Bound<'_, PyAny>> = obj.extract()?;
-        list.iter().map(|item| extract_coco_rle(item)).collect()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -289,41 +280,79 @@ pub fn to_bbox_camel(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
-#[pyo3(signature = (rles, intersect = false))]
-pub fn merge(py: Python<'_>, rles: &Bound<'_, PyAny>, intersect: bool) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (rles, intersect = Flag(false)))]
+pub fn merge(py: Python<'_>, rles: &Bound<'_, PyAny>, intersect: Flag) -> PyResult<Py<PyAny>> {
     let rle_vec = extract_rle_list(rles)?;
-    let result = rmask::merge(&rle_vec, intersect).map_err(to_pyerr)?;
+    let result = rmask::merge(&rle_vec, intersect.0).map_err(to_pyerr)?;
     rle_to_coco_py(py, &result)
-}
-
-fn check_iscrowd_len(iscrowd_len: usize, gt_len: usize) -> PyResult<()> {
-    crate::convert::check_parallel(iscrowd_len, gt_len, "iscrowd", "gt")
-}
-
-/// Extract `iscrowd` from bools, ints, or a numpy array of either.
-///
-/// COCO JSON stores `iscrowd` as `0`/`1` integers, and pycocotools takes them
-/// straight through — `maskUtils.iou(dt, gt, [a["iscrowd"] for a in anns])` is the
-/// idiomatic call, as is passing a numpy array. A `Vec<bool>` parameter rejects
-/// both with a `TypeError`, which breaks the drop-in claim on a public API for a
-/// reason the caller cannot guess from the error.
-///
-/// The crate already accepts either spelling when deserializing annotations (see
-/// `types::deserialize_iscrowd`); this is the same convention at the Python edge.
-fn extract_iscrowd(obj: &Bound<'_, PyAny>) -> PyResult<Vec<bool>> {
-    // `bool_vec` covers bools (list or numpy bool array) with the same fast
-    // path COCOeval's own bool arguments get. Anything else goes through the
-    // one flag reader, element by element.
-    if let Ok(v) = bool_vec(obj, "iscrowd") {
-        return Ok(v);
-    }
-    obj.try_iter()?.map(|item| extract_flag(&item?)).collect()
 }
 
 // ---------------------------------------------------------------------------
 // iou
 // ---------------------------------------------------------------------------
 
+/// One side of a `pycocotools.mask.iou` call, after its type dispatch.
+enum IouInput {
+    Rles(Vec<hotcoco_core::Rle>),
+    Boxes(Vec<[f64; 4]>),
+}
+
+impl IouInput {
+    /// No inputs of the same kind — what an empty list becomes, since it has
+    /// no kind of its own and takes the other side's.
+    fn empty_like(&self) -> Self {
+        match self {
+            IouInput::Rles(_) => IouInput::Rles(Vec::new()),
+            IouInput::Boxes(_) => IouInput::Boxes(Vec::new()),
+        }
+    }
+}
+
+/// Sort an `iou` argument the way pycocotools' `_preproc` does: a numpy array
+/// is boxes (any numeric dtype), a list of dicts is RLEs, a list of 4-element
+/// rows is boxes. A single RLE dict is also taken, as it was before boxes
+/// were. `None` is an empty list, whose kind the caller takes from the other
+/// side.
+fn classify_iou_input(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<IouInput>> {
+    if obj.cast::<numpy::PyUntypedArray>().is_ok() {
+        return Ok(Some(IouInput::Boxes(boxes_arg(obj, name)?)));
+    }
+    if let Ok(dict) = obj.cast::<PyDict>() {
+        return Ok(Some(IouInput::Rles(vec![py_to_rle(dict)?])));
+    }
+    let unrecognized = || {
+        pyo3::exceptions::PyTypeError::new_err(format!(
+            "{name} must be a list of RLE dicts, a list of [x, y, w, h] boxes, \
+             or an (N, 4) array, got {}",
+            type_name(obj)
+        ))
+    };
+    // Collected once and parsed from here, so a generator argument works.
+    let items: Vec<Bound<'_, PyAny>> = obj
+        .try_iter()
+        .and_then(Iterator::collect)
+        .map_err(|_| unrecognized())?;
+    if items.is_empty() {
+        return Ok(None);
+    }
+    if items.iter().all(|item| item.cast::<PyDict>().is_ok()) {
+        let rles = items
+            .iter()
+            .map(extract_coco_rle)
+            .collect::<PyResult<_>>()?;
+        return Ok(Some(IouInput::Rles(rles)));
+    }
+    // A list that is neither RLEs nor 4-element rows is unrecognized input,
+    // as pycocotools' `_preproc` reports it — not a malformed box array.
+    let rows = PyList::new(obj.py(), &items)?;
+    let boxes = boxes_arg(&rows, name).map_err(|_| unrecognized())?;
+    Ok(Some(IouInput::Boxes(boxes)))
+}
+
+/// The `pycocotools.mask.iou` mirror: RLEs or boxes, decided by type.
+///
+/// The dispatch is pycocotools' and lives only here — `hotcoco.primitives`
+/// keeps one input type per kernel, and this forwards to those kernels.
 #[pyfunction]
 #[pyo3(text_signature = "(dt, gt, iscrowd)")]
 pub fn iou(
@@ -332,32 +361,18 @@ pub fn iou(
     gt: &Bound<'_, PyAny>,
     iscrowd: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    let dt_rles = extract_rle_list(dt)?;
-    let gt_rles = extract_rle_list(gt)?;
-    let iscrowd = extract_iscrowd(iscrowd)?;
-    check_iscrowd_len(iscrowd.len(), gt_rles.len())?;
-    // All inputs are owned by now; the O(D*G) kernel runs GIL-free like the
-    // COCOeval paths.
-    let result = py.detach(|| rmask::iou(&dt_rles, &gt_rles, &iscrowd));
-    let d = dt_rles.len();
-    let g = gt_rles.len();
-    f64_matrix(py, &result, [d, g])
-}
-
-#[pyfunction]
-#[pyo3(text_signature = "(dt, gt, iscrowd)")]
-pub fn bbox_iou(
-    py: Python<'_>,
-    dt: Vec<[f64; 4]>,
-    gt: Vec<[f64; 4]>,
-    iscrowd: &Bound<'_, PyAny>,
-) -> PyResult<Py<PyAny>> {
-    let iscrowd = extract_iscrowd(iscrowd)?;
-    check_iscrowd_len(iscrowd.len(), gt.len())?;
-    let result = rmask::bbox_iou(&dt, &gt, &iscrowd);
-    let d = dt.len();
-    let g = gt.len();
-    f64_matrix(py, &result, [d, g])
+    use IouInput::{Boxes, Rles};
+    let (dt, gt) = (classify_iou_input(dt, "dt")?, classify_iou_input(gt, "gt")?);
+    // Two empty lists take the RLE kernel; either kernel gives a (0, 0) result.
+    let dt = dt.unwrap_or_else(|| gt.as_ref().map_or(Rles(Vec::new()), IouInput::empty_like));
+    let gt = gt.unwrap_or_else(|| dt.empty_like());
+    match (dt, gt) {
+        (Rles(d), Rles(g)) => rle_iou_matrix(py, &d, &g, iscrowd),
+        (Boxes(d), Boxes(g)) => box_iou_matrix(py, &d, &g, iscrowd),
+        _ => Err(pyo3::exceptions::PyTypeError::new_err(
+            "dt and gt must be the same kind: both RLE dicts or both boxes",
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -426,8 +441,10 @@ pub fn rle_from_string(py: Python<'_>, s: &str, h: u32, w: u32) -> PyResult<Py<P
 /// seg : list[list[float]] | numpy.ndarray | dict | list[dict]
 ///     - List (or 2-D array) of boxes ``[x, y, w, h]`` → list of RLE dicts.
 ///     - List of flattened polygons ``[x1, y1, x2, y2, ...]`` → list of RLE dicts.
-///       Entries of exactly 4 values are boxes, more than 4 are polygons —
-///       the same length-based dispatch pycocotools uses.
+///       The first entry's length decides for the whole list, as in
+///       pycocotools: 4 values means every entry is a box, more than 4 means
+///       every entry is a polygon (a later 4-value entry is then a two-point
+///       polygon with area 0).
 ///     - Single RLE dict (compressed or uncompressed) → one RLE dict.
 ///     - List of uncompressed RLE dicts → list of RLE dicts.
 /// h : int
@@ -471,28 +488,43 @@ pub fn fr_py_objects(
         }
         Ok(list.into_any().unbind())
     } else {
-        // List (or ndarray) of coordinate sequences, dispatched on entry length like
-        // pycocotools: exactly 4 is a `[x, y, w, h]` box, more than 4 a flattened
-        // polygon. `fr_poly` returns an empty RLE below three points, so a box must
-        // not reach it.
+        // List (or ndarray) of coordinate sequences. pycocotools decides box vs
+        // polygon *once*, from the first entry's length, and applies that to every
+        // entry: `[[1,1,8,1,8,8], [5,5,6,6]]` is two polygons, the second a
+        // degenerate two-point one with area 0 — not a polygon and a box.
         //
-        // Deliberate deviation: pycocotools' box path requires a numpy array and
-        // raises `TypeError` on a list of lists. Accepting both is strictly more
-        // permissive.
+        // Deliberate deviations, both strictly more permissive: pycocotools' box
+        // path requires a numpy array and raises `TypeError` on a list of lists,
+        // and it sends *every* ndarray to the box path whatever its width (reading
+        // a wider array's raw memory four values at a time). Here a list of boxes
+        // works, and an ndarray dispatches on its row length like a list does.
+        let first_len = first.len()?;
+        let boxes = match first_len {
+            4 => true,
+            n if n > 4 => false,
+            n => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "frPyObjects: the first entry must be a box [x, y, w, h] (4 values) \
+                     or a flattened polygon [x1, y1, x2, y2, ...] (more than 4); got {n}"
+                )));
+            }
+        };
         let list = PyList::empty(py);
         for item in &items {
             let coords: Vec<f64> = item.extract()?;
-            let rle = match coords.len() {
-                4 => rmask::fr_bbox(&[coords[0], coords[1], coords[2], coords[3]], h, w)
-                    .map_err(to_pyerr)?,
-                n if n > 4 => rmask::fr_poly(&coords, h, w).map_err(to_pyerr)?,
-                n => {
-                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                        "frPyObjects: each entry must be a box [x, y, w, h] (4 values) \
-                         or a flattened polygon [x1, y1, x2, y2, ...] (more than 4, \
-                         even count); got {n}"
-                    )));
-                }
+            let rle = if boxes {
+                let bb: [f64; 4] = coords.as_slice().try_into().map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "frPyObjects: the first entry is a box, so every entry must be \
+                         [x, y, w, h] (4 values); got {}",
+                        coords.len()
+                    ))
+                })?;
+                rmask::fr_bbox(&bb, h, w).map_err(to_pyerr)?
+            } else {
+                // Polygon mode, as pycocotools' `frPoly`: any length, `len // 2`
+                // points; fewer than three rasterize to an empty mask.
+                rmask::fr_poly(&coords, h, w).map_err(to_pyerr)?
             };
             list.append(rle_to_coco_py(py, &rle)?)?;
         }

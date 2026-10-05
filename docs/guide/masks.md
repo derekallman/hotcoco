@@ -144,7 +144,8 @@ Compute pairwise IoU between two lists of masks:
     ious = mask.iou(dt_rles, gt_rles, [False] * len(gt_rles))
     print(f"IoU between dt[0] and gt[0]: {ious[0, 0]:.3f}")
 
-    # Bbox IoU — same interface, but with [x, y, w, h] lists
+    # Box IoU — same interface, with [x, y, w, h] rows or an (N, 4) array.
+    # mask.iou takes boxes too, as pycocotools does; bbox_iou takes only boxes.
     ious = mask.bbox_iou(dt_boxes, gt_boxes, [False] * len(gt_boxes))
     ```
 

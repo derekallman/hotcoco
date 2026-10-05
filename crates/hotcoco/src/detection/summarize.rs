@@ -82,7 +82,13 @@ pub(super) fn accumulate_and_summarize(
 ) -> (AccumulatedEval, Vec<f64>) {
     let ev = grouping.eval();
     let acc = accumulate_impl(grouping, img_filter);
-    let stats = summarize_impl(&acc, &ev.params, ev.eval_mode, ev.freq_groups(), metrics);
+    let stats = summarize_impl(
+        &acc,
+        &ev.params,
+        ev.eval_mode,
+        &ev.coco_gt.dataset.categories,
+        metrics,
+    );
     (acc, stats)
 }
 
@@ -117,20 +123,30 @@ fn ap_samples<'a>(
     })
 }
 
+/// Per-category mean AP — over every IoU and recall threshold, at area `"all"`
+/// and the M slot holding the detection cap ([`Params::max_det_idx`], not the
+/// last slot) — paired with its category id; `-1.0` for a category with no
+/// valid precision.
+///
+/// Ids come from the K axis this accumulation used
+/// ([`AccumulatedEval::cat_ids`]), paired here so no caller can zip the values
+/// against another list. A `use_cats = false` run yields nothing: its one K slot
+/// is the pool, not a category.
 pub(super) fn per_cat_ap_static(
     eval: &AccumulatedEval,
     params: &Params,
     eval_mode: EvalMode,
-) -> Vec<f64> {
+) -> Vec<(u64, f64)> {
     let a_idx = params.all_area_idx();
-    // `max_det_idx`, not `shape.m - 1` — see `Params::max_det_idx`.
     let m_idx = params.max_det_idx();
     let mut scratch = Vec::new();
-    (0..eval.shape.k)
-        .map(|k_idx| {
+    eval.cat_ids
+        .iter()
+        .enumerate()
+        .map(|(k_idx, &cat_id)| {
             let k_one = [k_idx];
             let samples = ap_samples(eval, eval_mode, 0..eval.shape.t, &k_one, a_idx, m_idx);
-            mean_of_valid(samples, &mut scratch)
+            (cat_id, mean_of_valid(samples, &mut scratch))
         })
         .collect()
 }
@@ -139,17 +155,28 @@ pub(super) fn per_cat_ap_static(
 ///
 /// Returns one `f64` per metric in the same order as the MetricDef vec for the
 /// current evaluation mode.
+///
+/// `categories` are the ground truth's, read for their LVIS frequency tags and
+/// bucketed over [`AccumulatedEval::cat_ids`] (see there for why not
+/// `params.cat_ids`). Only an LVIS run builds the buckets; no other catalog has
+/// a frequency-group metric, and this runs 2·n times inside a bootstrapped
+/// `compare()`.
 pub(super) fn summarize_impl(
     eval: &AccumulatedEval,
     params: &Params,
     eval_mode: EvalMode,
-    freq_groups: &FreqGroups,
+    categories: &[crate::types::Category],
     metrics: &[MetricDef],
 ) -> Vec<f64> {
     // One buffer for every mean below; see `mean_of_valid`. Sized for the
     // largest, AP over every IoU threshold and category.
     let mut scratch = Vec::with_capacity(eval.shape.t * eval.shape.r * eval.shape.k);
     let all_k: Vec<usize> = (0..eval.shape.k).collect();
+    let freq_groups = if eval_mode == EvalMode::Lvis {
+        FreqGroups::from_categories(categories, &eval.cat_ids)
+    } else {
+        FreqGroups::default()
+    };
     // `k_indices` is every category, or for an LVIS frequency-group AP, the
     // categories in that bucket.
     let summarize_stat = |m: &MetricDef, k_indices: &[usize], scratch: &mut Vec<f64>| {

@@ -99,6 +99,19 @@ fn warn_user(py: Python<'_>, msg: &str) -> PyResult<()> {
     )
 }
 
+/// Print each line through Python's `print`, so it lands on `sys.stdout`.
+///
+/// Rust's `println!` writes to fd 1 and skips `sys.stdout`, so
+/// `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells never
+/// see it. Every user-facing table the bindings print goes through here.
+fn print_lines(py: Python<'_>, lines: &[String]) -> PyResult<()> {
+    let print = py.import("builtins")?.getattr("print")?;
+    for line in lines {
+        print.call1((line,))?;
+    }
+    Ok(())
+}
+
 /// Hand Python a serde-serializable value as plain dicts and lists.
 ///
 /// The bindings return plain Python containers rather than wrapped Rust
@@ -127,7 +140,7 @@ fn freq_group_name(group: hotcoco_core::FreqGroup) -> &'static str {
 }
 
 use convert::{
-    IdList, NameList, annotation_to_py, category_to_py, confusion_counts_to_py,
+    AreaRng, Flag, IdList, NameList, annotation_to_py, category_to_py, confusion_counts_to_py,
     dataset_stats_to_py, dict_list, f64_array, image_to_py, map_to_dict, merge_ann_dict_checked,
     py_to_annotation, py_to_category, py_to_dataset, py_to_image, rle_to_coco_py,
 };
@@ -188,6 +201,31 @@ impl PyCOCO {
             image_dir: None,
         }
     }
+
+    /// `load_res`'s three input forms, returning the owned `COCO` so a caller
+    /// can transform it before wrapping.
+    fn load_res_core(&self, res: &Bound<'_, PyAny>) -> PyResult<hotcoco_core::COCO> {
+        // Case 1: file path (str)
+        if let Ok(path) = res.extract::<String>() {
+            return self.inner.load_res(Path::new(&path)).map_err(to_pyerr);
+        }
+
+        // Case 2: list of annotation dicts
+        if let Ok(list) = res.cast::<PyList>() {
+            let anns = dict_list(list, "load_res", py_to_annotation)?;
+            return self.inner.load_res_anns(anns).map_err(to_pyerr);
+        }
+
+        // Case 3: numpy float array, shape (N, 6) or (N, 7)
+        if let Some(anns) = anns_from_array(res, "load_res", None)? {
+            return self.inner.load_res_anns(anns).map_err(to_pyerr);
+        }
+
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "load_res expects a file path (str), list of annotation dicts, \
+             or numpy float array of shape (N, 6) or (N, 7)",
+        ))
+    }
 }
 
 #[pymethods]
@@ -200,15 +238,18 @@ impl PyCOCO {
     ) -> PyResult<Self> {
         let inner = match annotation_file {
             Some(obj) => {
-                if let Ok(path) = obj.extract::<String>() {
-                    hotcoco_core::COCO::new(Path::new(&path)).map_err(to_pyerr)?
-                } else if let Ok(dict) = obj.cast::<PyDict>() {
+                if let Ok(dict) = obj.cast::<PyDict>() {
                     let dataset = py_to_dataset(dict)?;
                     hotcoco_core::COCO::from_dataset(dataset)
+                } else if let Ok(path) = obj.extract::<std::path::PathBuf>() {
+                    // `PathBuf` extraction is `os.fspath`: a `str`, or any
+                    // `os.PathLike` — pycocotools opens a `pathlib.Path` as-is.
+                    hotcoco_core::COCO::new(&path).map_err(to_pyerr)?
                 } else {
-                    return Err(pyo3::exceptions::PyTypeError::new_err(
-                        "COCO() argument must be a file path (str) or dataset dict",
-                    ));
+                    return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                        "COCO() argument must be a file path (str or os.PathLike) or dataset dict, got {}",
+                        convert::type_name(obj)
+                    )));
                 }
             }
             None => hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset::default()),
@@ -294,38 +335,29 @@ impl PyCOCO {
     ///
     /// Also available as ``loadRes()`` (camelCase alias).
     fn load_res(&self, res: &Bound<'_, PyAny>) -> PyResult<PyCOCO> {
-        // Case 1: file path (str)
-        if let Ok(path) = res.extract::<String>() {
-            return self
-                .inner
-                .load_res(Path::new(&path))
-                .map(|inner| self.derived(inner))
-                .map_err(to_pyerr);
-        }
+        self.load_res_core(res).map(|inner| self.derived(inner))
+    }
 
-        // Case 2: list of annotation dicts
-        if let Ok(list) = res.cast::<PyList>() {
-            let anns = dict_list(list, "load_res", py_to_annotation)?;
-            return self
-                .inner
-                .load_res_anns(anns)
-                .map(|inner| self.derived(inner))
-                .map_err(to_pyerr);
-        }
+    /// ``LVISResults``' loader: ``load_res`` then the per-image cap, on a
+    /// ``COCO`` this call owns — so a results set no image of which exceeds
+    /// the cap is marked capped without the copy ``cap_detections_per_image``
+    /// makes of a shared one. ``None`` keeps every detection.
+    fn _load_res_capped(&self, res: &Bound<'_, PyAny>, max_det: Option<usize>) -> PyResult<PyCOCO> {
+        self.load_res_core(res)
+            .map(|inner| self.derived(inner.cap_detections_per_image(max_det)))
+    }
 
-        // Case 3: numpy float array, shape (N, 6) or (N, 7)
-        if let Some(anns) = anns_from_array(res, "load_res", None)? {
-            return self
-                .inner
-                .load_res_anns(anns)
-                .map(|inner| self.derived(inner))
-                .map_err(to_pyerr);
-        }
-
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "load_res expects a file path (str), list of annotation dicts, \
-             or numpy float array of shape (N, 6) or (N, 7)",
-        ))
+    /// Keep each image's ``max_det`` highest-scoring annotations, across every
+    /// category — lvis-api's per-image detection cap. ``None`` keeps every
+    /// detection, lvis-api's ``max_dets=-1``.
+    ///
+    /// Ties keep results-file order. Returns a new ``COCO``, marked as capped:
+    /// ``LVISeval`` evaluates it as is instead of applying its default
+    /// 300-per-image cap, as lvis-api's ``LVISEval`` takes an ``LVISResults``
+    /// unchanged. ``LVISResults(gt, results, max_dets=)`` is the same cap.
+    fn cap_detections_per_image(&self, py: Python<'_>, max_det: Option<usize>) -> PyCOCO {
+        let inner = Arc::clone(&self.inner);
+        self.derived(py.detach(|| Arc::unwrap_or_clone(inner).cap_detections_per_image(max_det)))
     }
 
     /// Build a dataset from columns, with no Python dict per annotation.
@@ -620,10 +652,17 @@ impl PyCOCO {
         &self,
         imgIds: IdList,
         catIds: IdList,
-        areaRng: Option<[f64; 2]>,
-        iscrowd: Option<bool>,
+        areaRng: Option<AreaRng>,
+        iscrowd: Option<Flag>,
     ) -> Vec<u64> {
-        self.get_ann_ids(imgIds, catIds, areaRng, iscrowd)
+        // pycocotools' spellings, accepted here and not on `get_ann_ids`:
+        // `areaRng=[]` for no filter, `iscrowd=0`/`1` for the flag.
+        self.get_ann_ids(
+            imgIds,
+            catIds,
+            areaRng.and_then(|r| r.0),
+            iscrowd.map(|f| f.0),
+        )
     }
 
     #[allow(non_snake_case)]
@@ -2073,9 +2112,19 @@ impl PyCOCOeval {
         Python::attach(|py| Self::from_inner(py, inner))
     }
 
-    fn evaluate(&mut self, py: Python<'_>) {
-        self.with_params(py, |ev| py.detach(|| ev.evaluate()));
+    fn evaluate(&mut self, py: Python<'_>) -> PyResult<()> {
+        // Checked here, not in the constructor: `params.iouType` can change
+        // in between, and only this sees the configuration that runs.
+        // A configuration that cannot be evaluated is a bad argument, so
+        // `ValueError` (pycocotools raises `KeyError` at the same point).
+        self.with_params(py, |ev| {
+            ev.check_inputs()?;
+            py.detach(|| ev.evaluate());
+            Ok::<_, hotcoco_core::Error>(())
+        })
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         self.eval_cache = None;
+        Ok(())
     }
 
     fn accumulate(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -2112,15 +2161,9 @@ impl PyCOCOeval {
             warn_user(py, &format!("hotcoco: {w}"))?;
         }
 
-        // Print through Python's own `print`, not Rust's `println!`: the latter
-        // writes to fd 1 and skips `sys.stdout`, so `contextlib.redirect_stdout`
-        // and notebook cells never see the table.
+        // Through Python's `print` — see `print_lines`.
         let lines = self.with_params(py, hotcoco_core::COCOeval::summarize_lines);
-        let print = py.import("builtins")?.getattr("print")?;
-        for line in &lines {
-            print.call1((line,))?;
-        }
-        Ok(())
+        print_lines(py, &lines)
     }
 
     #[doc = "Return summary metric lines as a list of strings without printing.
@@ -2147,10 +2190,12 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
 
 Equivalent to calling the three methods in sequence. Primarily used with
 LVIS pipelines (Detectron2, MMDetection) that expect a single ``run()`` call."]
-    fn run(&mut self, py: Python<'_>) {
-        self.with_params(py, |ev| py.detach(|| ev.run()));
-        self.eval_cache = None;
-        self.eval_params = Some(self.params.clone_ref(py));
+    fn run(&mut self, py: Python<'_>) -> PyResult<()> {
+        // The binding's own three steps, not the core `run()`, which prints
+        // with `println!` — see `print_lines`.
+        self.evaluate(py)?;
+        self.accumulate(py)?;
+        self.summarize(py)
     }
 
     #[getter]
@@ -2249,8 +2294,16 @@ per_class : bool
 
 For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
 ``summarize()`` (or ``run()``)."]
-    fn print_results(&self) {
-        self.inner.print_results();
+    fn print_results(&self, py: Python<'_>) -> PyResult<()> {
+        // Through Python's `print`, not the core `print_results` — see `print_lines`.
+        let lines = self.inner.print_results_lines();
+        if lines.is_empty() {
+            return warn_user(
+                py,
+                "hotcoco: No results to print. Run evaluate(), accumulate(), and summarize() first.",
+            );
+        }
+        print_lines(py, &lines)
     }
 
     #[doc = "Return a full evaluation report as a dict.
@@ -3436,8 +3489,19 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(init_as_lvis, m)?)?;
     m.add_function(wrap_pyfunction!(compare, m)?)?;
 
-    // mask submodule
+    // The functional layer — metric functions and matching kernels, callable
+    // without a COCOeval. `__init__.py` also registers these in sys.modules so
+    // `import hotcoco.metrics` works and not just `from hotcoco import metrics`;
+    // add_submodule only sets an attribute.
+    let metrics_mod = metrics::register(py)?;
+    m.add_submodule(&metrics_mod)?;
+    let primitives_mod = primitives::register(py)?;
+    m.add_submodule(&primitives_mod)?;
+
+    // mask submodule — the pycocotools.mask mirror. `bbox_iou` is the
+    // primitive object itself, not a second binding of the kernel.
     let mask_mod = PyModule::new(py, "mask")?;
+    mask_mod.add("bbox_iou", primitives_mod.getattr("bbox_iou")?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::encode, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::decode, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::area, &mask_mod)?)?;
@@ -3445,7 +3509,6 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     mask_mod.add_function(wrap_pyfunction!(mask::to_bbox_camel, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::merge, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::iou, &mask_mod)?)?;
-    mask_mod.add_function(wrap_pyfunction!(mask::bbox_iou, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::fr_poly, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::fr_poly_camel, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::fr_bbox, &mask_mod)?)?;
@@ -3455,15 +3518,6 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     mask_mod.add_function(wrap_pyfunction!(mask::fr_py_objects, &mask_mod)?)?;
     mask_mod.add_function(wrap_pyfunction!(mask::fr_py_objects_snake, &mask_mod)?)?;
     m.add_submodule(&mask_mod)?;
-
-    // The functional layer — metric functions and matching kernels, callable
-    // without a COCOeval. `__init__.py` also registers these in sys.modules so
-    // `import hotcoco.metrics` works and not just `from hotcoco import metrics`;
-    // add_submodule only sets an attribute.
-    let metrics_mod = metrics::register(py)?;
-    m.add_submodule(&metrics_mod)?;
-    let primitives_mod = primitives::register(py)?;
-    m.add_submodule(&primitives_mod)?;
 
     Ok(())
 }

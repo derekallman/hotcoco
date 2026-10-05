@@ -102,7 +102,37 @@ impl COCOeval {
         (gt_ids, dt_ids)
     }
 
+    /// Check that the inputs can be evaluated under the current `params`.
+    ///
+    /// Run it right before [`evaluate`](Self::evaluate), after any `params`
+    /// edit: today it covers mask geometry (segm), where a polygon on an image
+    /// without `height` and `width` rasterizes to an empty mask and AP comes
+    /// out 0 with nothing to say why — see [`COCO::check_mask_dims`](crate::COCO::check_mask_dims).
+    /// `evaluate()` itself stays infallible, so every entry point that can
+    /// surface an error calls this first.
+    ///
+    /// # Errors
+    ///
+    /// An error naming the offending images, from either the ground truth or
+    /// the detections. Only the images the evaluation covers are checked.
+    pub fn check_inputs(&self) -> crate::error::Result<()> {
+        use crate::primitives::sim::SimKind;
+        if SimKind::from(self.params.iou_type) == SimKind::Mask {
+            // Only the images `evaluate()` will visit: an annotation on an
+            // image outside `params.img_ids`, or with no image record, is
+            // never rasterized.
+            let (img_ids, _) = self.resolved_ids();
+            self.coco_gt.check_mask_dims(&img_ids)?;
+            self.coco_dt.check_mask_dims(&img_ids)?;
+        }
+        Ok(())
+    }
+
     /// Run per-image evaluation.
+    ///
+    /// LVIS's per-image detection cap is not applied here: [`new_lvis`](Self::new_lvis)
+    /// already replaced `coco_dt` with the capped copy, the same handle-replacing
+    /// pattern as Open Images below.
     ///
     /// # Open Images replaces `coco_gt` (and possibly `coco_dt`)
     ///
@@ -165,11 +195,6 @@ impl COCOeval {
         } else {
             (HashMap::new(), HashMap::new())
         };
-
-        // Now that cat_ids are established; empty outside LVIS, whose
-        // categories are the ones that carry frequency tags.
-        self.freq_groups =
-            super::mode::FreqGroups::from_categories(&self.coco_gt.dataset.categories, &cat_ids);
 
         let sparse_pairs = self.collect_sparse_pairs(&cat_ids, &neg_cats);
 

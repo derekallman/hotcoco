@@ -196,7 +196,7 @@ impl COCOeval {
             eval,
             &self.params,
             self.eval_mode,
-            self.freq_groups(),
+            &self.coco_gt.dataset.categories,
             &metrics,
         );
 
@@ -286,26 +286,19 @@ impl COCOeval {
         self.metric_defs().into_iter().map(|m| m.name).collect()
     }
 
-    /// Per-category mean AP (averaged over all IoU thresholds and recall thresholds,
-    /// at area="all" and the M slot holding the detection cap —
-    /// [`Params::max_det_idx`], not the last slot). Returns one value per
-    /// `params.cat_ids` entry; -1.0 for categories with no valid precision data.
-    pub(super) fn per_cat_ap(&self, eval: &AccumulatedEval) -> Vec<f64> {
-        per_cat_ap_static(eval, &self.params, self.eval_mode)
-    }
-
-    /// Per-category AP keyed by category *name*, in `params.cat_ids` order.
+    /// Per-category AP keyed by category *name*, in the accumulation's K-axis
+    /// order ([`AccumulatedEval::cat_ids`]).
     ///
     /// The one place the name→AP table is derived, so [`report`](Self::report)
     /// and [`get_results`](Self::get_results) agree on which classes exist.
     /// Categories reporting the `-1.0` "not computed" sentinel, and ids with no
-    /// category record to name them, are dropped.
+    /// category record to name them, are dropped. A `use_cats = false` run has
+    /// no per-class entries: its one K slot is the pool, not the first category.
     fn per_class_ap_named(&self, eval: &AccumulatedEval) -> Vec<(String, f64)> {
-        self.per_cat_ap(eval)
-            .iter()
-            .zip(self.params.cat_ids.iter())
-            .filter(|&(&ap, _)| ap >= 0.0)
-            .filter_map(|(&ap, &cat_id)| self.coco_gt.get_cat(cat_id).map(|c| (c.name.clone(), ap)))
+        per_cat_ap_static(eval, &self.params, self.eval_mode)
+            .into_iter()
+            .filter(|&(_, ap)| ap >= 0.0)
+            .filter_map(|(cat_id, ap)| self.coco_gt.get_cat(cat_id).map(|c| (c.name.clone(), ap)))
             .collect()
     }
 
@@ -441,24 +434,35 @@ impl COCOeval {
             .collect()
     }
 
+    /// The [`print_results`](Self::print_results) lines, without printing.
+    ///
+    /// Empty if [`summarize`](COCOeval::summarize) has not been run. Bindings
+    /// whose stdout is not fd 1 (Python's `sys.stdout`, a notebook cell) print
+    /// these themselves.
+    pub fn print_results_lines(&self) -> Vec<String> {
+        // Zipped straight against `stats`, which `metric_keys()` is parallel to.
+        // Round-tripping through a map would need an `unwrap_or(-1.0)` default
+        // that is indistinguishable from a real `-1.000`.
+        let stats = self.stats.as_deref().unwrap_or(&[]);
+        self.metric_keys()
+            .iter()
+            .zip(stats)
+            .map(|(&key, &val)| format!(" {:>10} = {}", key, Self::format_metric(val)))
+            .collect()
+    }
+
     /// Print results to stdout in a compact key=value format.
     ///
     /// Must be called after [`summarize`](COCOeval::summarize). Prints nothing if
     /// `summarize` has not been run (emits a warning to stderr instead).
     pub fn print_results(&self) {
-        // Zipped straight against `stats`, which `metric_keys()` is parallel to.
-        // Round-tripping through a map would need an `unwrap_or(-1.0)` default
-        // that is indistinguishable from a real `-1.000`.
-        let keys = self.metric_keys();
-        let stats = self.stats.as_deref().unwrap_or(&[]);
-
-        if keys.is_empty() || stats.is_empty() {
+        let lines = self.print_results_lines();
+        if lines.is_empty() {
             eprintln!("No results to print. Run evaluate(), accumulate(), and summarize() first.");
             return;
         }
-
-        for (&key, &val) in keys.iter().zip(stats) {
-            println!(" {:>10} = {}", key, Self::format_metric(val));
+        for line in lines {
+            println!("{line}");
         }
     }
 

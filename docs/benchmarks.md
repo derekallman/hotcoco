@@ -236,23 +236,25 @@ Keypoint metrics are exact. Keypoint evaluation reports 10 metrics — see
 ### TIDE
 
 **Reference:** [tidecv](https://github.com/dbolya/tide), on COCO val2017 at `pos_thr=0.5`.
-Expect the five false-positive types to agree closely and `Miss` to read higher here:
+On the 4,589 images without a crowd region, every ΔAP agrees within ±0.005 and
+every error count matches. On all 5,000 images, `Loc` reads about 0.01 lower here
+and `Miss` about 0.007 higher; the other types still agree within ±0.005:
 
-| Error | hotcoco ΔAP | tidecv ΔAP | hotcoco count | tidecv count |
-|---|---|---|---|---|
-| Cls | 0.0002 | 0.0000 | 13 | 13 |
-| Loc | 0.1115 | 0.1135 | 3,121 | 3,738 |
-| Both | 0.0007 | 0.0001 | 726 | 766 |
-| Dupe | 0.0001 | 0.0000 | 27 | 37 |
-| Bkg | 0.0109 | 0.0105 | 6,039 | 6,414 |
-| Miss | 0.0242 | 0.0075 | 1,102 | 529 |
+| Error | hotcoco ΔAP | tidecv ΔAP | hotcoco count | tidecv count | hotcoco ΔAP, crowd-free | tidecv ΔAP, crowd-free |
+|---|---|---|---|---|---|---|
+| Cls | 0.0000 | 0.0000 | 13 | 13 | 0.0000 | 0.0000 |
+| Loc | 0.1036 | 0.1135 | 3,121 | 3,738 | 0.0972 | 0.0974 |
+| Both | 0.0007 | 0.0001 | 726 | 766 | 0.0006 | 0.0001 |
+| Dupe | 0.0001 | 0.0000 | 27 | 37 | 0.0001 | 0.0000 |
+| Bkg | 0.0109 | 0.0105 | 6,039 | 6,414 | 0.0109 | 0.0104 |
+| Miss | 0.0148 | 0.0075 | 1,102 | 529 | 0.0065 | 0.0059 |
 
 The ranking — which error type is costing you the most AP — is the same, and that is
 what the metric is for. The difference comes from crowd handling: hotcoco builds TIDE
 on the same COCO-convention matching as its AP (so `tide_errors()` and `ev.stats`
 always agree about which detections exist), while tidecv removes crowd regions from
 matching entirely — its false-positive counts run higher and its `Miss` runs lower as
-a result.
+a result. `scripts/parity_tide.py` runs both comparisons.
 
 ### Open Images
 

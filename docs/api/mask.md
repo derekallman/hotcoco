@@ -188,13 +188,13 @@ Merge multiple RLE masks. Union by default, intersection if `intersect=True`.
 === "Python"
 
     ```python
-    merge(rles: list[dict], intersect: bool = False) -> dict
+    merge(rles: list[dict], intersect: int | bool = False) -> dict
     ```
 
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
     | `rles` | `list[dict]` | | List of RLE dicts to merge |
-    | `intersect` | `bool` | `False` | If `True`, compute intersection instead of union |
+    | `intersect` | `int \| bool` | `False` | If true (`True` or `1`), compute intersection instead of union |
 
     ```python
     merged = mask.merge([rle1, rle2])
@@ -216,25 +216,42 @@ Merge multiple RLE masks. Union by default, intersection if `intersect=True`.
 
 ### `iou`
 
-Compute pairwise IoU between two lists of RLE masks.
+Compute pairwise IoU between two lists of RLE masks, or two lists of boxes.
 
 === "Python"
 
     ```python
-    iou(dt: list[dict], gt: list[dict], iscrowd: list[bool]) -> numpy.ndarray
+    iou(
+        dt: list[dict] | numpy.ndarray | list[list[float]],
+        gt: list[dict] | numpy.ndarray | list[list[float]],
+        iscrowd: list[bool] | list[int] | numpy.ndarray,
+    ) -> numpy.ndarray
     ```
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `dt` | `list[dict]` | Detection RLE dicts |
-    | `gt` | `list[dict]` | Ground truth RLE dicts |
-    | `iscrowd` | `list[bool]` | Per-GT crowd flag |
+    | `dt` | `list[dict]` or boxes | Detection RLE dicts, or `[x, y, width, height]` boxes |
+    | `gt` | `list[dict]` or boxes | Ground truth RLE dicts, or boxes |
+    | `iscrowd` | `list[bool] \| list[int]` | Per-GT crowd flag; `0`/`1` and numpy arrays work |
 
     **Returns:** `numpy.ndarray` of shape `(len(dt), len(gt))`, dtype float64.
 
     ```python
     ious = mask.iou(dt_rles, gt_rles, [False] * len(gt_rles))
+    box_ious = mask.iou(dt_boxes, gt_boxes, [0] * len(gt_boxes))
     ```
+
+    `dt` and `gt` are sorted the way `pycocotools.mask.iou` sorts them:
+
+    - A numpy array is boxes, shape `(N, 4)`, of any numeric dtype.
+    - A list of dicts is RLEs. A single RLE dict is also accepted.
+    - A list of 4-element rows is boxes.
+    - An empty list takes the other side's kind.
+
+    `dt` and `gt` must be the same kind; one of each raises `TypeError`. Boxes
+    go to [`bbox_iou`](#bbox_iou) and RLEs to
+    [`primitives.mask_iou`](primitives.md#mask_iou) — this function only adds
+    the dispatch.
 
 === "Rust"
 
@@ -249,21 +266,25 @@ Compute pairwise IoU between two lists of RLE masks.
     ```
 
 `iscrowd` selects the crowd convention per GT — defined under
-[`primitives.bbox_iou`](primitives.md#bbox_iou).
+[`primitives.bbox_iou`](primitives.md#bbox_iou). Two masks of different sizes
+score `-1`, as in pycocotools.
 
 ---
 
 ### `bbox_iou`
 
-Compute pairwise IoU between two lists of bounding boxes.
+Compute pairwise IoU between two lists of bounding boxes. This is the same
+object as [`primitives.bbox_iou`](primitives.md#bbox_iou), which owns its
+reference; it has no pycocotools counterpart.
 
 === "Python"
 
     ```python
-    bbox_iou(dt: list[list[float]], gt: list[list[float]], iscrowd: list[bool]) -> numpy.ndarray
+    bbox_iou(dt: numpy.ndarray | list[list[float]], gt: numpy.ndarray | list[list[float]], iscrowd: list[bool]) -> numpy.ndarray
     ```
 
-    Bounding boxes are `[x, y, width, height]`.
+    Bounding boxes are `[x, y, width, height]`: an `(N, 4)` array or a list of
+    4-element rows.
 
     **Returns:** `numpy.ndarray` of shape `(len(dt), len(gt))`, dtype float64.
 
@@ -295,7 +316,8 @@ Encode segmentation objects to RLEs. This is pycocotools' universal entry point 
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `seg` | `list[list[float]]` | List of polygon coordinate lists → list of RLE dicts |
+    | `seg` | `list[list[float]]` | List of polygon coordinate lists → list of RLE dicts. The first entry decides, as in pycocotools: 4 values means every entry is an `[x, y, w, h]` box; more means every entry is a polygon, and a later 4-value entry is a degenerate polygon (area 0), not a box |
+    | | `ndarray` of shape `(N, 4)` | Boxes `[x, y, w, h]` → list of RLE dicts |
     | | `dict` | Single uncompressed RLE dict → single RLE dict |
     | | `list[dict]` | List of uncompressed RLE dicts → list of RLE dicts |
     | `h` | `int` | Image height |

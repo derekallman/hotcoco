@@ -41,7 +41,7 @@ Both camelCase and snake_case names are supported:
 
 | pycocotools (camelCase) | hotcoco (snake_case) | Notes |
 |------------------------|----------------------|-------|
-| `getAnnIds()` | `get_ann_ids()` | Both work |
+| `getAnnIds()` | `get_ann_ids()` | Both work; only `getAnnIds` takes `iscrowd=0`/`1` and `areaRng=[]` |
 | `getCatIds()` | `get_cat_ids()` | Both work |
 | `getImgIds()` | `get_img_ids()` | Both work |
 | `loadAnns()` | `load_anns()` | Both work |
@@ -66,6 +66,18 @@ print(type(anns[0]))  # <class 'dict'>
 ```
 
 Annotation dicts carry the same keys — `id`, `image_id`, `category_id`, `bbox`, `area`, `segmentation`, `iscrowd` — plus any custom fields your dataset defines.
+
+## Argument types
+
+The pycocotools-named functions accept the argument types pycocotools accepts:
+
+- `COCO()` takes a `str` or any `os.PathLike`, such as a `pathlib.Path` — see the [constructor](../api/coco.md#constructor).
+- Id-list arguments of the query and load methods take an `int` or any iterable of ints, such as a `set` or `dict.keys()` — see [Methods](../api/coco.md#methods).
+- `getAnnIds` takes `iscrowd=0`/`1` and `areaRng=[]` — see [`get_ann_ids`](../api/coco.md#get_ann_ids).
+- `mask.merge` takes `intersect=1` — see [`merge`](../api/mask.md#merge).
+- `mask.iou` takes boxes as well as RLEs, so a `COCOeval` subclass whose `computeIoU` calls `maskUtils.iou` on boxes works under `init_as_pycocotools()` — see [`iou`](../api/mask.md#iou).
+
+`get_ann_ids` and [`hotcoco.primitives`](../api/primitives.md) keep stricter, typed signatures.
 
 ## Getters return copies — assign back to apply
 
@@ -114,7 +126,7 @@ re-indexes.
 | Annotation IDs | Requires unique positive integers | Also accepts 0-based IDs |
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |
 | Mutating `coco.dataset` / `ev.params` internals in place | Mutates shared state | No-op on a copy — [assign back to apply](#getters-return-copies-assign-back-to-apply) |
-| `summarize()` with non-default params | Prints the table only | Also emits a `UserWarning` per deviation — filter with `warnings.filterwarnings` |
+| `summarize()` or `run()` with non-default params | Prints the table only | Also emits a `UserWarning` per deviation — filter with `warnings.filterwarnings` |
 | Performance | Single-threaded C + Python | Multi-threaded Rust |
 
 ## Metric parity

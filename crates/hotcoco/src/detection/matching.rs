@@ -645,9 +645,12 @@ pub(super) fn gather_pair<'a>(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     with_iou_idx.truncate(max_det);
-    // The index holds every annotation, so no id is dropped above:
+    // The index holds every annotation, so nothing above drops an id:
     // `lean_scores_len` sizes the cell arenas on that.
-    debug_assert_eq!(with_iou_idx.len(), dt_ids.len().min(max_det));
+    debug_assert_eq!(
+        Some(with_iou_idx.len()),
+        lean_scores_len(ctx, img_id, cat_id, max_det)
+    );
 
     let (dt_iou_indices, dt_anns): (Vec<usize>, Vec<&Annotation>) =
         with_iou_idx.into_iter().unzip();

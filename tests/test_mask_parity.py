@@ -399,3 +399,67 @@ def test_every_operation_matches_bit_for_bit(case):
     assert len(pb) == len(hb), f"frPyObjects/bbox {ctx}"
     for i, (a, b) in enumerate(zip(pb, hb)):
         assert norm_rle(a) == norm_rle(b), f"frPyObjects/bbox {ctx}[{i}] bbox={bbox}"
+
+
+# ---------------------------------------------------------------------------
+# frPyObjects: dispatch and far out-of-image polygons (2026-10 review)
+# ---------------------------------------------------------------------------
+
+
+class TestFrPyObjectsDispatch:
+    """pycocotools picks box vs polygon once, from ``len(pyobj[0])``."""
+
+    @pytest.mark.parametrize(
+        "polys",
+        [
+            # A 4-value entry after a polygon is a two-point polygon (area 0),
+            # not a box: pycocotools gives areas [21, 0].
+            [[1, 1, 8, 1, 8, 8], [5, 5, 6, 6]],
+            [[1, 1, 8, 1, 8, 8], [1, 1]],
+            [[1, 1, 8, 1, 8, 8], [1, 1, 8, 1, 8, 8, 1, 8]],
+            # Odd length: pycocotools takes len // 2 points.
+            [[1, 1, 8, 1, 8, 8], [1, 1, 8, 1, 8, 8, 1]],
+        ],
+    )
+    def test_first_entry_decides_for_the_list(self, polys):
+        rp = pm.frPyObjects(polys, 10, 10)
+        rh = hm.frPyObjects(polys, 10, 10)
+        assert [int(a) for a in pm.area(rp)] == [int(a) for a in hm.area(rh)]
+        assert [r["counts"] for r in rp] == [r["counts"] for r in rh]
+
+    def test_box_first_makes_every_entry_a_box(self):
+        # pycocotools' box path needs an ndarray (rows must then all be 4 wide);
+        # hotcoco also takes a list, and rejects a non-box entry in it.
+        boxes = [[1.0, 1.0, 3.0, 3.0], [2.0, 2.0, 4.0, 4.0]]
+        rp = pm.frPyObjects(np.array(boxes), 10, 10)
+        rh = hm.frPyObjects(boxes, 10, 10)
+        assert [r["counts"] for r in rp] == [r["counts"] for r in rh]
+        with pytest.raises(ValueError, match="every entry must be"):
+            hm.frPyObjects([[1.0, 1.0, 3.0, 3.0], [1, 1, 8, 1, 8, 8]], 10, 10)
+
+    def test_short_first_entry_is_rejected(self):
+        with pytest.raises(Exception):  # noqa: B017 - pycocotools raises bare Exception
+            pm.frPyObjects([[1, 1], [1, 1, 8, 1, 8, 8]], 10, 10)
+        with pytest.raises(ValueError):
+            hm.frPyObjects([[1, 1], [1, 1, 8, 1, 8, 8]], 10, 10)
+
+
+@pytest.mark.parametrize(
+    ("poly", "h", "w"),
+    [
+        ([0, 0, 300, 100, 0, 100], 100, 100),
+        ([-500, -20, 50, 40, 600, 90, 20, 130], 100, 100),
+        ([-250, 50, 50, -400, 350, 50, 50, 450], 100, 100),
+        ([10, 10, 5000, 20, 30, 5000], 64, 48),
+        ([-3000, -3000, 3000, -2900, -2950, 3000], 50, 80),
+        ([1, 1, 1e6, 2, 3, 1e6], 100, 100),
+        ([0, -200, 60, 90, -100, 90], 80, 60),
+        ([5, 5, 95, -295, 95, 95], 100, 100),
+    ],
+)
+def test_far_out_of_image_polygon_matches_pycocotools(poly, h, w):
+    """Vertices far outside the image are not clamped, so edge slopes hold."""
+    rp = pm.frPyObjects([poly], h, w)[0]
+    rh = hm.frPyObjects([poly], h, w)[0]
+    assert int(pm.area(rp)) == int(hm.area(rh))
+    assert rp["counts"] == rh["counts"]

@@ -165,7 +165,7 @@ for iou_type, metrics in results.items():
 
 ### Distributed training
 
-`CocoEvaluator.synchronize_between_processes()` gathers predictions across all ranks before evaluation. Call it after the last `update()` and before `accumulate()`:
+`CocoEvaluator.synchronize_between_processes()` gathers predictions across all ranks before evaluation, under either the gloo or the NCCL backend. Call it after the last `update()` and before `accumulate()`:
 
 ```python
 evaluator.update(predictions)              # last batch of the epoch

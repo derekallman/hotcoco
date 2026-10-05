@@ -142,39 +142,28 @@ class CocoEvaluator:
     def synchronize_between_processes(self):
         """Gather results across all distributed processes.
 
-        No-op when ``torch.distributed`` is not initialized.
+        No-op when ``torch.distributed`` is not initialized or the world
+        size is 1. Works with any backend, including NCCL.
         """
         try:
             import torch.distributed as dist
-
-            if not dist.is_initialized():
-                return
         except ImportError:
             return
-
-        import pickle
-
-        import torch
+        if not dist.is_available() or not dist.is_initialized():
+            return
+        world_size = dist.get_world_size()
+        if world_size == 1:
+            return
 
         for iou_type in self.iou_types:
-            local_data = pickle.dumps(self.results[iou_type])
-            local_tensor = torch.tensor(list(local_data), dtype=torch.uint8, device="cpu")
-            local_size = torch.tensor([len(local_data)], dtype=torch.long)
-
-            world_size = dist.get_world_size()
-            sizes = [torch.tensor([0], dtype=torch.long) for _ in range(world_size)]
-            dist.all_gather(sizes, local_size)
-            max_size = int(max(s.item() for s in sizes))
-
-            padded = torch.zeros(max_size, dtype=torch.uint8)
-            padded[: len(local_data)] = local_tensor
-            gathered = [torch.zeros(max_size, dtype=torch.uint8) for _ in range(world_size)]
-            dist.all_gather(gathered, padded)
-
+            # An object gather, not a byte-tensor gather: NCCL rejects CPU
+            # tensors, and all_gather_object stages through the current CUDA
+            # device itself under NCCL (torchvision's CocoEvaluator does the same).
+            gathered: list[list] = [[] for _ in range(world_size)]
+            dist.all_gather_object(gathered, self.results[iou_type])
             all_results = []
-            for buf, size in zip(gathered, sizes):
-                data = bytes(buf[: size.item()].tolist())
-                all_results.extend(pickle.loads(data))
+            for rank_results in gathered:
+                all_results.extend(rank_results)
             self.results[iou_type] = all_results
 
     def accumulate(self):

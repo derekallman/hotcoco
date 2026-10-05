@@ -204,6 +204,9 @@ Modify `ev.params` before calling `evaluate()`:
     ```
 
 !!! note
+    Set `params` before `evaluate()`. `accumulate()` follows `params` as they stand but can only read matches `evaluate()` made: an IoU threshold, area range, or category added afterwards reports `-1.000` ("not computed") until you run `evaluate()` again, and a reordered grid still reads each row under its own label.
+
+!!! note
     Changing `iou_thrs`, `max_dets`, or `area_rng` from their defaults affects what `summarize()` can display. The 12-metric output format is fixed — for example, AP50 looks for IoU=0.50 in your thresholds and shows `-1.000` if it's not there. A `UserWarning` is emitted when your parameters don't match the expected defaults. Filtering by `img_ids` or `cat_ids` is safe and won't trigger warnings; `use_cats=False` pools detections across categories, which marks the run as an extension and warns.
 
 See [Params](../api/params.md) for the full list of configurable parameters.

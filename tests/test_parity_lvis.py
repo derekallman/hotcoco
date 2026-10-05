@@ -21,7 +21,7 @@ from helpers import compare_metrics, written_json
 # patch what lvis actually needs; do NOT patch np.bool (breaks numpy.ma).
 np.float = float  # type: ignore[attr-defined]
 
-from hotcoco import COCO, LVISeval  # noqa: E402
+from hotcoco import COCO, LVISeval, LVISResults  # noqa: E402
 from lvis import LVIS, LVISEval  # noqa: E402
 from lvis import LVISResults as LVISResultsRef  # noqa: E402
 
@@ -53,22 +53,41 @@ def make_lvis_gt(images, annotations, categories):
     }
 
 
-def run_lvis_ref(gt_path, dt_list):
+def run_lvis_ref(gt_path, dt_list, max_dets=300):
     """Run lvis-api LVISEval and return results dict."""
     lvis_gt = LVIS(gt_path)
-    lvis_dt = LVISResultsRef(lvis_gt, dt_list)
+    lvis_dt = LVISResultsRef(lvis_gt, dt_list, max_dets=max_dets)
     ev = LVISEval(lvis_gt, lvis_dt, IOU_TYPE)
     ev.run()
     return ev.results
 
 
-def run_hotcoco(gt_path, dt_list):
-    """Run hotcoco LVISeval and return get_results() dict."""
+def run_hotcoco(gt_path, dt_list, max_dets=None):
+    """Run hotcoco LVISeval and return get_results() dict.
+
+    ``max_dets=None`` hands ``LVISeval`` a plain ``load_res`` result, the
+    analogue of lvis-api's path-or-list input; an int goes through
+    ``LVISResults(max_dets=)`` first.
+    """
     gt = COCO(gt_path)
-    dt = gt.load_res(dt_list)
+    dt = gt.load_res(dt_list) if max_dets is None else LVISResults(gt, dt_list, max_dets=max_dets)
     ev = LVISeval(gt, dt, IOU_TYPE)
     ev.run()
     return ev.get_results()
+
+
+def assert_matches_lvis_api(name, ref, got):
+    # lvis-api omits keys whose value is -1 (undefined); hotcoco reports -1.0.
+    # Both are read against the evaluator's own key list, so a key missing from
+    # both sides is a -1/-1 pair the comparison sees, not a metric it never meets.
+    unknown = (set(ref) | set(got)) - set(METRIC_NAMES)
+    assert not unknown, f"{name}: keys outside the LVIS metric list: {sorted(unknown)}"
+    ref_v = [ref.get(k, -1.0) for k in METRIC_NAMES]
+    got_v = [got.get(k, -1.0) for k in METRIC_NAMES]
+    mismatches = compare_metrics(ref_v, got_v, METRIC_NAMES, tolerance=TOL)
+    assert not mismatches, f"{name}: {len(mismatches)} metric(s) differ from lvis-api\n" + "\n".join(
+        m.line() for m in mismatches
+    )
 
 
 # ── dataset builders ─────────────────────────────────────────────────────────
@@ -403,7 +422,72 @@ def _build_edge_cases():
     return make_lvis_gt(images, gt_anns, categories), dts
 
 
-SCENARIOS = [("basic", _build_basic), ("three_freq", _build_three_freq), ("edge_cases", _build_edge_cases)]
+def _build_over_300_per_image():
+    """
+    One image with 302 detections across four categories, so lvis-api's
+    per-image cap (``LVISResults`` keeps the top 300 by score, all categories
+    together) drops two of them. A per-(image, category) cap would keep all.
+
+      cat 1 freq="r": GT box; its only detection ties the 300th-ranked score but
+                      comes later in the results, so the stable sort drops it
+                      → APr = 0 under the per-image cap, 1 under a per-cell cap.
+      cat 2 freq="c": confirmed absent (neg_category_ids) → 100 FPs, no GT.
+      cat 3 freq="f": GT box, matched by the top-scoring detection.
+      cat 4 freq="f": not in the image's GT or negative list, so the federated
+                      rule discards its 200 detections — after they have spent
+                      their share of the 300.
+    """
+    images = [
+        {
+            "id": 1,
+            "file_name": "img1.jpg",
+            "width": 200,
+            "height": 200,
+            "neg_category_ids": [2],
+            "not_exhaustive_category_ids": [],
+        },
+        # A second image so cat 4 has ground truth somewhere (else it has no AP).
+        {
+            "id": 2,
+            "file_name": "img2.jpg",
+            "width": 200,
+            "height": 200,
+            "neg_category_ids": [],
+            "not_exhaustive_category_ids": [],
+        },
+    ]
+    categories = [
+        {"id": 1, "name": "rare", "frequency": "r"},
+        {"id": 2, "name": "common", "frequency": "c"},
+        {"id": 3, "name": "freq_a", "frequency": "f"},
+        {"id": 4, "name": "freq_b", "frequency": "f"},
+    ]
+    gt_anns = [
+        {"id": 1, "image_id": 1, "category_id": 1, "bbox": bbox(10, 10, 40, 40), "area": 1600.0, "iscrowd": 0},
+        {"id": 2, "image_id": 1, "category_id": 3, "bbox": bbox(100, 100, 50, 50), "area": 2500.0, "iscrowd": 0},
+        {"id": 3, "image_id": 2, "category_id": 4, "bbox": bbox(20, 20, 60, 60), "area": 3600.0, "iscrowd": 0},
+    ]
+    for a in gt_anns:
+        a["segmentation"] = []
+
+    def det(cat, box, score, img=1):
+        return {"image_id": img, "category_id": cat, "bbox": box, "score": score, "segmentation": []}
+
+    dts = [det(3, bbox(100, 100, 50, 50), 0.995)]
+    dts += [det(4, bbox(i % 150, (i * 7) % 150, 20, 20), round(0.99 - i * 1e-4, 6)) for i in range(200)]
+    dts += [det(2, bbox((i * 3) % 150, i % 150, 15, 15), round(0.96 - i * 1e-4, 6)) for i in range(100)]
+    # Ties the 300th-ranked score (cat 2's 99th, 0.9502) and comes after it.
+    dts.append(det(1, bbox(10, 10, 40, 40), round(0.96 - 98 * 1e-4, 6)))
+    dts.append(det(4, bbox(20, 20, 60, 60), 0.9, img=2))
+    return make_lvis_gt(images, gt_anns, categories), dts
+
+
+SCENARIOS = [
+    ("basic", _build_basic),
+    ("three_freq", _build_three_freq),
+    ("edge_cases", _build_edge_cases),
+    ("over_300_per_image", _build_over_300_per_image),
+]
 
 
 @pytest.mark.parametrize(("name", "build"), SCENARIOS, ids=[s[0] for s in SCENARIOS])
@@ -413,14 +497,20 @@ def test_all_13_metrics_match_lvis_api(name, build):
         ref = run_lvis_ref(gt_path, dts)
         got = run_hotcoco(gt_path, dts)
 
-    # lvis-api omits keys whose value is -1 (undefined); hotcoco reports -1.0.
-    # Both are read against the evaluator's own key list, so a key missing from
-    # both sides is a -1/-1 pair the comparison sees, not a metric it never meets.
-    unknown = (set(ref) | set(got)) - set(METRIC_NAMES)
-    assert not unknown, f"{name}: keys outside the LVIS metric list: {sorted(unknown)}"
-    ref_v = [ref.get(k, -1.0) for k in METRIC_NAMES]
-    got_v = [got.get(k, -1.0) for k in METRIC_NAMES]
-    mismatches = compare_metrics(ref_v, got_v, METRIC_NAMES, tolerance=TOL)
-    assert not mismatches, f"{name}: {len(mismatches)} metric(s) differ from lvis-api\n" + "\n".join(
-        m.line() for m in mismatches
-    )
+    assert_matches_lvis_api(name, ref, got)
+
+
+@pytest.mark.parametrize("max_dets", [-1, 1000])
+def test_lvis_results_cap_is_not_reapplied(max_dets):
+    """A results set already capped by ``LVISResults`` is evaluated as is.
+
+    lvis-api's ``LVISEval`` takes an ``LVISResults`` instance unchanged and
+    caps only a path or list it loads itself, so ``max_dets=-1`` or ``1000``
+    keeps the over-300 image's tied cat-1 detection — APr is 1, not 0.
+    """
+    gt_data, dts = _build_over_300_per_image()
+    with written_json(gt_data, quiet=True) as (gt_path,):
+        ref = run_lvis_ref(gt_path, dts, max_dets=max_dets)
+        got = run_hotcoco(gt_path, dts, max_dets=max_dets)
+    assert ref["APr"] == pytest.approx(1.0), "the scenario must exercise the cap"
+    assert_matches_lvis_api(f"max_dets={max_dets}", ref, got)

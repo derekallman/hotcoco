@@ -1,16 +1,103 @@
 //! Python bindings for `hotcoco::primitives` — the matching kernels.
 //!
-//! The similarity kernels (`bbox_iou`, `iou`) already ship under `hotcoco.mask`
-//! for pycocotools compatibility; `python/hotcoco/primitives.py` re-exports them
-//! here under their kernel names. This module adds the assignment solver, which
-//! had no Python surface before.
+//! The strict, typed layer: `bbox_iou` takes boxes, `mask_iou` takes RLEs, and
+//! neither guesses which it was handed. `hotcoco.mask` mirrors
+//! `pycocotools.mask` on top of these — its `iou` dispatches on input type the
+//! way pycocotools does, then forwards here. The dispatch never moves down.
 
 use numpy::PyArray1;
 use pyo3::prelude::*;
 
-use hotcoco_core::primitives::assign;
+use hotcoco_core::Rle;
+use hotcoco_core::primitives::{assign, sim};
 
-use crate::convert::f64_matrix_arg;
+use crate::convert::{
+    boxes_arg, check_parallel, extract_rle_list, f64_matrix, f64_matrix_arg, flag_vec,
+};
+
+/// `iscrowd` as one flag per ground truth — see [`flag_vec`] for the accepted
+/// spellings.
+fn extract_iscrowd(obj: &Bound<'_, PyAny>, gt_len: usize) -> PyResult<Vec<bool>> {
+    let crowd = flag_vec(obj, "iscrowd")?;
+    check_parallel(crowd.len(), gt_len, "iscrowd", "gt")?;
+    Ok(crowd)
+}
+
+/// The RLE IoU kernel as a `(D, G)` `float64` array. Shared by
+/// `primitives.mask_iou` and the RLE branch of `mask.iou`.
+pub(crate) fn rle_iou_matrix(
+    py: Python<'_>,
+    dt: &[Rle],
+    gt: &[Rle],
+    iscrowd: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
+    // All inputs are owned by now; the O(D*G) kernel runs GIL-free like the
+    // COCOeval paths.
+    let result = py.detach(|| sim::mask_iou(dt, gt, &iscrowd));
+    f64_matrix(py, &result, [dt.len(), gt.len()])
+}
+
+/// The box IoU kernel as a `(D, G)` `float64` array. Shared by
+/// `primitives.bbox_iou` and the box branch of `mask.iou`.
+pub(crate) fn box_iou_matrix(
+    py: Python<'_>,
+    dt: &[[f64; 4]],
+    gt: &[[f64; 4]],
+    iscrowd: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
+    let result = sim::bbox_iou(dt, gt, &iscrowd);
+    f64_matrix(py, &result, [dt.len(), gt.len()])
+}
+
+#[pyfunction]
+#[pyo3(text_signature = "(dt, gt, iscrowd)")]
+#[doc = "Pairwise IoU between two sets of ``[x, y, w, h]`` boxes.
+
+Args:
+    dt: ``(D, 4)`` ``float64`` array, or a sequence of 4-element rows.
+    gt: ``(G, 4)`` ``float64`` array, or a sequence of 4-element rows.
+    iscrowd: One flag per ``gt`` box. A crowd box scores intersection over the
+        detection's area (IoA) instead of IoU.
+
+Returns:
+    numpy.ndarray: ``float64``, shape ``(D, G)``.
+"]
+pub fn bbox_iou(
+    py: Python<'_>,
+    dt: &Bound<'_, PyAny>,
+    gt: &Bound<'_, PyAny>,
+    iscrowd: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let dt = boxes_arg(dt, "dt")?;
+    let gt = boxes_arg(gt, "gt")?;
+    box_iou_matrix(py, &dt, &gt, iscrowd)
+}
+
+#[pyfunction]
+#[pyo3(text_signature = "(dt, gt, iscrowd)")]
+#[doc = "Pairwise IoU between two sets of RLE masks.
+
+Args:
+    dt: Sequence of RLE dicts.
+    gt: Sequence of RLE dicts.
+    iscrowd: One flag per ``gt`` mask. A crowd mask scores intersection over
+        the detection's area (IoA) instead of IoU.
+
+Returns:
+    numpy.ndarray: ``float64``, shape ``(D, G)``.
+"]
+pub fn mask_iou(
+    py: Python<'_>,
+    dt: &Bound<'_, PyAny>,
+    gt: &Bound<'_, PyAny>,
+    iscrowd: &Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let dt = extract_rle_list(dt)?;
+    let gt = extract_rle_list(gt)?;
+    rle_iou_matrix(py, &dt, &gt, iscrowd)
+}
 
 /// Reject a cost matrix holding a NaN — an unsolvable matrix is an error
 /// rather than an arbitrary assignment. `lsap`-specific: whether NaN is
@@ -79,5 +166,7 @@ fn lsap(py: Python<'_>, cost: &Bound<'_, PyAny>, maximize: bool) -> PyResult<Py<
 pub fn register(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     let m = PyModule::new(py, "primitives")?;
     m.add_function(wrap_pyfunction!(lsap, &m)?)?;
+    m.add_function(wrap_pyfunction!(bbox_iou, &m)?)?;
+    m.add_function(wrap_pyfunction!(mask_iou, &m)?)?;
     Ok(m)
 }
