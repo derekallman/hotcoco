@@ -3,9 +3,9 @@
 Unlike ``detection.pyi``, these names are *not* re-exported from the top level —
 they exist only under ``hotcoco.metrics`` — so the real signatures live here.
 
-Float and bool inputs accept lists or numpy arrays. A ``float64`` / ``bool``
-ndarray takes a fast path in the bindings; anything else falls back to
-per-element extraction but still works.
+Float and bool inputs accept lists or numpy arrays. A ``bool`` ndarray, or a
+float input as an ndarray of any integer or float dtype, is read in one pass;
+anything else falls back to per-element extraction but still works.
 """
 
 from typing import Any, Sequence, TypeAlias

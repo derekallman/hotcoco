@@ -54,7 +54,7 @@ Optimal one-to-one assignment on a rectangular cost matrix.
 
     | Parameter | Type | Description |
     |-----------|------|-------------|
-    | `cost` | `numpy.ndarray \| Sequence[Sequence[float]]` | 2-D costs; `cost[i][j]` for row `i`, column `j`. A `float64` array is read in one pass; anything else is converted element by element |
+    | `cost` | `numpy.ndarray \| Sequence[Sequence[float]]` | 2-D costs; `cost[i][j]` for row `i`, column `j`. A numpy array of any integer or float dtype is read in one pass; anything else is converted element by element |
     | `maximize` | `bool` | Maximize value instead of minimizing cost. Pass `True` for similarities |
 
 === "Rust"
@@ -109,8 +109,8 @@ Pairwise IoU between two sets of boxes.
     ```
 
 Boxes are `[x, y, width, height]`: an `(N, 4)` array or a sequence of 4-element
-rows. A `float64` array is read in one pass; anything else is converted element
-by element. Returns shape `(len(dt), len(gt))`.
+rows. A numpy array of any integer or float dtype is read in one pass; anything
+else is converted element by element. Returns shape `(len(dt), len(gt))`.
 
 Where `iscrowd[j]` is true, the denominator is the detection area alone rather
 than the union — a detection fully inside a crowd region scores 1.0. That is

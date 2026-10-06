@@ -216,14 +216,14 @@ impl PyCOCO {
             return self.inner.load_res_anns(anns).map_err(to_pyerr);
         }
 
-        // Case 3: numpy float array, shape (N, 6) or (N, 7)
+        // Case 3: numpy array, shape (N, 6) or (N, 7)
         if let Some(anns) = anns_from_array(res, "load_res", None)? {
             return self.inner.load_res_anns(anns).map_err(to_pyerr);
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
             "load_res expects a file path (str), list of annotation dicts, \
-             or numpy float array of shape (N, 6) or (N, 7)",
+             or numpy array of shape (N, 6) or (N, 7)",
         ))
     }
 }
@@ -324,7 +324,7 @@ impl PyCOCO {
     ///
     /// - **str** — path to a JSON file containing a list of detection dicts.
     /// - **list[dict]** — detection dicts already in memory.
-    /// - **numpy.ndarray** — float64 or float32 array of shape ``(N, 6)`` or ``(N, 7)``,
+    /// - **numpy.ndarray** — any integer or float dtype, shape ``(N, 6)`` or ``(N, 7)``,
     ///   with columns ``[image_id, x, y, w, h, score]`` or
     ///   ``[image_id, x, y, w, h, score, category_id]``.
     ///   Matches pycocotools ``loadNumpyAnnotations`` convention.
@@ -367,7 +367,8 @@ impl PyCOCO {
     /// annotation. The annotations are parallel arrays of length ``N``:
     ///
     /// - ``image_ids``, ``category_ids``: integers.
-    /// - ``boxes``: float array of shape ``(N, 4)``, COCO ``[x, y, w, h]``.
+    /// - ``boxes``: array of shape ``(N, 4)``, COCO ``[x, y, w, h]``, any
+    ///   integer or float dtype.
     /// - ``ids``: integer annotation ids. Default: ``1`` to ``N``.
     /// - ``area``: floats. Default: the box's ``w * h``.
     /// - ``iscrowd``: ints or bools. Default: all false.
@@ -1530,8 +1531,9 @@ impl PyCOCO {
     }
 }
 
-/// Detections from the array `load_res` accepts: `float64`, or `float32` as
-/// detectors emit it, shape `(N, 6)` or `(N, 7)`, columns
+/// Detections from the array `load_res` accepts: any integer or float dtype
+/// ([`convert::numeric_array`]), `float32` as detectors emit it included,
+/// shape `(N, 6)` or `(N, 7)`, columns
 /// `[image_id, x, y, w, h, score[, category_id]]` — the pycocotools
 /// `loadNumpyAnnotations` convention. A six-column array has no category
 /// column, so every row gets category 1, as in pycocotools. `segmentation`,
@@ -1544,16 +1546,10 @@ fn anns_from_array(
     what: &str,
     segmentation: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Option<Vec<Annotation>>> {
-    // `float64` is read in place; `float32` is widened once, which is exact.
-    if let Ok(arr) = obj.cast::<PyArray2<f64>>() {
-        let arr = arr.readonly();
-        return anns_from_rows(arr.as_array(), what, segmentation).map(Some);
+    match convert::numeric_array::<numpy::Ix2>(obj)? {
+        Some(arr) => anns_from_rows(arr.as_array(), what, segmentation).map(Some),
+        None => Ok(None),
     }
-    if let Ok(arr) = obj.cast::<PyArray2<f32>>() {
-        let wide = arr.readonly().as_array().mapv(f64::from);
-        return anns_from_rows(wide.view(), what, segmentation).map(Some);
-    }
-    Ok(None)
 }
 
 fn anns_from_rows(
@@ -3103,7 +3099,7 @@ impl PyStreamingEval {
 ``images``: the batch's image dicts, each with at least ``id``.
 ``gt_anns``: their annotations, in the shape ``COCO(dict)`` accepts.
 ``dt_anns``: their raw predictions, in the shape ``load_res()`` accepts and
-loaded the same way: a list of dicts, or a float array of shape ``(N, 7)``
+loaded the same way: a list of dicts, or a numpy array of shape ``(N, 7)``
 with columns ``[image_id, x, y, w, h, score, category_id]`` (an ``(N, 6)``
 array has no category column and puts every row in category 1, as
 ``load_res()`` does). The array skips building a dict per detection.
@@ -3138,7 +3134,7 @@ after ``finalize()``."]
             anns
         } else {
             return Err(pyo3::exceptions::PyTypeError::new_err(
-                "update expects dt_anns as a list of dicts or a numpy float array \
+                "update expects dt_anns as a list of dicts or a numpy array \
                  of shape (N, 6) or (N, 7)",
             ));
         };

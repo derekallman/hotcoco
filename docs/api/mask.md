@@ -174,12 +174,16 @@ Convert RLE mask(s) to bounding box(es).
 
     ```rust
     fn to_bbox(rle: &Rle) -> [f64; 4]
+    fn area_and_bbox_from_string(s: &str, h: u32, w: u32) -> Result<(u64, [f64; 4])>
     ```
 
     **Returns:** `[x, y, width, height]`
 
     ```rust
     let bbox = mask::to_bbox(&rle);
+    // Area and box from a compressed `counts` string in one pass,
+    // without building the run list
+    let (area, bbox) = mask::area_and_bbox_from_string(counts, 480, 640)?;
     ```
 
 ---

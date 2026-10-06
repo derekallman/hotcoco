@@ -291,6 +291,12 @@ def _circular_dict():
     return value
 
 
+# Python 3.14's json adds notes ("when serializing ...") to the error, and
+# pytest matches against the message and its notes, so the anchor ends at the
+# first line.
+_CIRCULAR = r"^Circular reference detected(\n|$)"
+
+
 # Containers the direct conversion takes: a tuple is an array, as json.dumps
 # writes it, and a dict's keys come back in the order the json.dumps path
 # gives them, whatever order they were inserted in. 32 levels is the deepest
@@ -363,9 +369,9 @@ REJECTED_VALUES = [
     ({"a": np.int64(3)}, TypeError, "not JSON serializable"),
     ([np.float32(1.5)], TypeError, "not JSON serializable"),
     ((object(),), TypeError, "not JSON serializable"),
-    (_circular_list(), ValueError, "^Circular reference detected$"),
-    (_circular_dict(), ValueError, "^Circular reference detected$"),
-    ([{"a": _circular_list()}], ValueError, "^Circular reference detected$"),
+    (_circular_list(), ValueError, _CIRCULAR),
+    (_circular_dict(), ValueError, _CIRCULAR),
+    ([{"a": _circular_list()}], ValueError, _CIRCULAR),
     (_nested(200, 1), ValueError, "did not round-trip through JSON: recursion limit exceeded"),
 ]
 
@@ -724,12 +730,11 @@ class TestTorchMetricsShapedAnnotations:
 # ---------------------------------------------------------------------------
 # Every known dict key survives decode and read-back
 #
-# convert.rs names each schema key with a string literal: through
-# pyo3::intern! in the decode macros (opt!/req!/opt_with!/req_with!), the
-# get_item calls in py_to_annotation/py_to_segmentation/py_to_rle, and the
-# record builders (annotation_to_py and the rest), and as a match arm in
-# set_ann_field. A typo in one breaks silently: a required key (id, image_id)
-# raises "dict missing '<real name>'", an optional key on the way in vanishes
+# convert.rs names each schema key with a string literal: as a match arm in
+# set_ann_field, set_image_field, and set_category_field, through
+# pyo3::intern! in req! and the get_item calls in read_rle_dict, and in the
+# record builders (annotation_to_py and the rest). A typo in one breaks
+# silently: a required key (id, image_id) raises "dict missing '<real name>'", an optional key on the way in vanishes
 # or lands among the custom keys, and one on the way out comes back misspelled.
 # Each record below carries every schema key of its type, and some of other
 # record types' schema keys, which are custom keys on it.
@@ -806,6 +811,73 @@ class TestKnownKeysRoundTrip:
         want = _exact({**src, "is_group_of": True} if record == "annotations" else src)
         for out in _reads(COCO(ds), record, src["id"]):
             assert _exact(out) == want
+
+
+class TestRecordErrors:
+    """What a malformed image or category dict raises, the same whichever key
+    the reader meets first."""
+
+    @pytest.mark.parametrize("record", ["images", "categories"])
+    @pytest.mark.parametrize("first", [True, False], ids=["bad_value_first", "bad_value_last"])
+    def test_missing_id(self, record, first):
+        # The record also holds a value `test_wrong_type` shows raising
+        # `TypeError`; the missing id is still what is reported.
+        ds = tiny_dataset()
+        bad_key, bad_value = ("height", -1) if record == "images" else ("name", 3)
+        rest = {k: v for k, v in ds[record][0].items() if k not in ("id", bad_key)}
+        ds[record][0] = {bad_key: bad_value, **rest} if first else {**rest, bad_key: bad_value}
+        with pytest.raises(ValueError, match="^dict missing 'id'$"):
+            COCO(ds)
+
+    @pytest.mark.parametrize(
+        ("record", "key", "value", "error"),
+        [
+            ("images", "id", "1", TypeError),
+            ("images", "file_name", 3, TypeError),
+            ("images", "height", -1, TypeError),
+            ("images", "license", "a", TypeError),
+            ("images", "coco_url", 3, TypeError),
+            ("images", "neg_category_ids", [1, "b"], TypeError),
+            ("categories", "id", -1, TypeError),
+            ("categories", "name", 3, TypeError),
+            ("categories", "skeleton", [[1, 2, 3]], ValueError),
+            ("categories", "keypoints", "nose", TypeError),
+        ],
+    )
+    def test_wrong_type(self, record, key, value, error):
+        ds = tiny_dataset()
+        ds[record][0][key] = value
+        with pytest.raises(error):
+            COCO(ds)
+
+
+_OPTIONAL_FIELDS = (
+    [("images", k) for k in ("license", "coco_url", "flickr_url", "date_captured")]
+    + [("categories", k) for k in ("supercategory", "skeleton", "keypoints", "frequency")]
+    + [
+        ("annotations", k)
+        for k in ("bbox", "area", "segmentation", "keypoints", "num_keypoints", "obb", "score", "is_group_of")
+    ]
+)
+
+
+class TestNoneIsAbsent:
+    """`None` on an optional field reads as `null` does from a file: absent."""
+
+    @pytest.mark.parametrize(("record", "key"), _OPTIONAL_FIELDS)
+    def test_dict_loads_like_its_file(self, record, key, tmp_path):
+        ds = tiny_dataset()
+        ds[record][0][key] = None
+        path = tmp_path / "ds.json"
+        path.write_text(json.dumps(ds))
+        by_dict = COCO(ds)
+        assert by_dict.dataset == COCO(str(path)).dataset
+        assert key not in next(r for r in by_dict.dataset[record] if r["id"] == 1)
+
+    def test_update_anns_none_clears_the_field(self):
+        coco = COCO(tiny_dataset())
+        coco.update_anns([{"id": 1, "bbox": None}])
+        assert "bbox" not in coco.load_anns(1)[0]
 
 
 # ---------------------------------------------------------------------------

@@ -56,8 +56,10 @@ pub(crate) fn box_iou_matrix(
 #[doc = "Pairwise IoU between two sets of ``[x, y, w, h]`` boxes.
 
 Args:
-    dt: ``(D, 4)`` ``float64`` array, or a sequence of 4-element rows.
-    gt: ``(G, 4)`` ``float64`` array, or a sequence of 4-element rows.
+    dt: ``(D, 4)`` array of any integer or float dtype, or a sequence of
+        4-element rows.
+    gt: ``(G, 4)`` array of any integer or float dtype, or a sequence of
+        4-element rows.
     iscrowd: One flag per ``gt`` box. A crowd box scores intersection over the
         detection's area (IoA) instead of IoU.
 
@@ -128,9 +130,10 @@ are defined against.
 Args:
     cost: 2-D ``numpy.ndarray`` of costs, or a nested sequence (list of
         lists), ``cost[i][j]`` for row ``i`` and column ``j``. Rows need not
-        equal columns; the smaller side bounds the assignment. A ``float64``
-        array is the fast path — it is read in one pass, any strides; other
-        dtypes and nested sequences are converted element by element.
+        equal columns; the smaller side bounds the assignment. An array of
+        any integer or float dtype is the fast path — it is read in one
+        pass, any strides; other arrays and nested sequences are converted
+        element by element.
     maximize: Maximize total value instead of minimizing total cost. Pass
         ``True`` when the matrix holds similarities (IoU) rather than costs.
 

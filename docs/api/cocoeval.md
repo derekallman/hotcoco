@@ -950,7 +950,7 @@ tied scores rank in the order given, as they do in a results file, so keep a
 batch's predictions in the order the detector emitted them. An image seen
 again in a later call replaces its earlier result.
 
-`dt_anns` can also be the `float64` or `float32` array `load_res()` accepts, shape `(N, 7)`
+`dt_anns` can also be the numpy array `load_res()` accepts, shape `(N, 7)`
 with columns `[image_id, x, y, w, h, score, category_id]`, which skips
 building a dict per detection. An `(N, 6)` array has no category column and
 puts every row in category 1, as `load_res()` does. An id that is NaN or

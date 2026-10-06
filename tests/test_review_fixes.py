@@ -230,7 +230,12 @@ class TestMaskAgainstPycocotools:
     def test_short_run_list_reads_as_pycocotools_does(self):
         runs = {"size": [2, 2], "counts": [1, 2]}
         ref = pm.frPyObjects(runs, 2, 2)
-        assert mask.decode(runs).tolist() == pm.decode(ref).tolist() == [[0, 1], [1, 0]]
+        # pycocotools mallocs decode's output and writes only the pixels the
+        # runs cover, so its last pixel here is uninitialized memory. hotcoco
+        # fills the rest with background.
+        got = mask.decode(runs)
+        assert got.tolist() == [[0, 1], [1, 0]]
+        assert got.ravel(order="F")[:3].tolist() == pm.decode(ref).ravel(order="F")[:3].tolist()
         assert mask.area(runs) == pm.area(ref) == 2
         assert mask.toBbox(runs).tolist() == pm.toBbox(ref).tolist()
 

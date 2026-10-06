@@ -282,9 +282,10 @@ def test_functional_layer_needs_no_evaluator():
 def test_metric_functions_accept_numpy_arrays():
     """The module docstring advertises "lists or numpy arrays" — hold it to that.
 
-    float64/bool arrays take the fast path in the bindings; float32 and strided
-    views take the per-element fallback. All four must produce exactly the
-    answer the list path produces.
+    float64/bool arrays take the fast path in the bindings, and other numeric
+    arrays (float32 from a detector) are cast by numpy in one pass. Strided
+    views must be read too. Each must produce exactly the answer the list
+    path produces for the same values.
     """
     from hotcoco import metrics
 
@@ -299,8 +300,11 @@ def test_metric_functions_accept_numpy_arrays():
     assert metrics.average_precision(np_scores, np_matched, num_gt=4) == expected_ap
     assert metrics.calibration_error(np_scores, np_matched) == expected_cal
 
-    # Fallback path: float32 still works, at the old per-element cost.
-    assert metrics.average_precision(np_scores.astype(np.float32), np_matched, num_gt=4) == expected_ap
+    # float32 is cast by numpy. The calibration error reads the scores'
+    # values, not only their order, so a lossy cast would show.
+    f32 = np_scores.astype(np.float32)
+    assert metrics.average_precision(f32, np_matched, num_gt=4) == expected_ap
+    assert metrics.calibration_error(f32, np_matched) == metrics.calibration_error(f32.tolist(), matched)
 
     # Strided views must be read honestly, not rejected or miscopied.
     every_other = metrics.average_precision(np_scores[::2], np_matched[::2], num_gt=2)
@@ -332,6 +336,15 @@ def test_metric_functions_reject_mismatched_arrays():
         metrics.calibration_error([0.9, 0.8], [True])
     with pytest.raises(ValueError):
         metrics.confusion_matrix([0, 1], [0], num_classes=2)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.int64])
+def test_lsap_takes_any_numeric_array(dtype):
+    from hotcoco import primitives
+
+    cost = np.array([[3.0, 1.0, 9.0], [2.0, 8.0, 4.0]])
+    for got, want in zip(primitives.lsap(cost.astype(dtype)), primitives.lsap(cost)):
+        np.testing.assert_array_equal(got, want)
 
 
 def test_lsap_rejects_ragged_and_nan():

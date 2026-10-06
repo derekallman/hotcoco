@@ -371,9 +371,9 @@ type:
     ```
 
     **NumPy array** — shape `(N, 7)` with columns `[image_id, x, y, w, h, score, category_id]`,
-    or `(N, 6)` with `category_id` defaulting to `1`, as `float64` or `float32`
-    (a `float32` id is exact only up to 2^24, a property of the array, not of the
-    parser).
+    or `(N, 6)` with `category_id` defaulting to `1`, of any integer or float dtype,
+    `float32` straight from a detector included (a `float32` id is exact only up to
+    2^24, a property of the array, not of the parser).
     An `image_id` or `category_id` that is NaN or negative raises `ValueError`.
     Matches pycocotools `loadNumpyAnnotations` convention:
     ```python
@@ -440,7 +440,7 @@ same annotations.
     |---|---|---|
     | `images`, `categories` | `list[dict]` | Image and category dicts, as `COCO(dict)` takes them. There is one per image and category, not per annotation. |
     | `image_ids`, `category_ids` | `ArrayLike` | One integer per annotation. numpy `int64` and `int32` arrays are read without a per-element cost. |
-    | `boxes` | `ArrayLike` | Shape `(N, 4)`, COCO `[x, y, w, h]`. |
+    | `boxes` | `ArrayLike` | Shape `(N, 4)`, COCO `[x, y, w, h]`. A numpy array of any integer or float dtype is read without a per-element cost. |
     | `ids` | <code>ArrayLike &#124; None</code> | Annotation ids. Default: `1` to `N`. |
     | `area` | <code>ArrayLike &#124; None</code> | Default: each box's `w * h`. |
     | `iscrowd` | <code>ArrayLike &#124; None</code> | Ints or bools. Default: none are crowds. |

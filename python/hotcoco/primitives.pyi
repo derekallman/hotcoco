@@ -7,6 +7,7 @@ definition.
 """
 
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -14,11 +15,11 @@ import numpy.typing as npt
 from .mask import _Rle
 
 def lsap(
-    cost: npt.NDArray[np.float64] | Sequence[Sequence[float]], maximize: bool = False
+    cost: npt.NDArray[np.number[Any]] | Sequence[Sequence[float]], maximize: bool = False
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def bbox_iou(
-    dt: npt.NDArray[np.float64] | Sequence[Sequence[float]],
-    gt: npt.NDArray[np.float64] | Sequence[Sequence[float]],
+    dt: npt.NDArray[np.number[Any]] | Sequence[Sequence[float]],
+    gt: npt.NDArray[np.number[Any]] | Sequence[Sequence[float]],
     iscrowd: Sequence[bool] | npt.NDArray[np.bool_],
 ) -> npt.NDArray[np.float64]:
     """Pairwise IoU of ``[x, y, w, h]`` boxes, shape ``(D, G)``; ``dt``/``gt`` are ``(N, 4)``."""

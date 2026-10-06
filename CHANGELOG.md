@@ -72,9 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   which CPython keeps on the string object for as long as the string lives.
   Python 3.9 reached end of life in October 2025. The wheel is `cp310-abi3`,
   and pip on Python 3.9 installs 1.1.x.
-- **`load_res()` takes a `float32` array as well as `float64`,** widened once on
-  the way in; so does `StreamingEval.update()`. Detectors emit `float32`, and
-  every caller had to convert first.
+- **`load_res()` takes an array of any integer or float dtype, not only
+  `float64`,** cast once on the way in; so does `StreamingEval.update()`.
+  Detectors emit `float32`, and every caller had to convert first.
 - **`load_res()` raises `ValueError` for an array row whose `image_id` or
   `category_id` is NaN or negative.** The float was cast to an integer that
   saturated at 0, so such a row became image or category 0, which is a real id
@@ -148,6 +148,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `json.loads`, and reuses one key object per field: `load_anns` of the
     46,000 annotations with two custom keys takes about 75 ms where it took
     about 140 ms.
+  - Image and category dicts are read in one pass over their keys, as
+    annotation dicts are: 50,000 COCO val2017 image dicts load in about
+    19 ms where they took about 39 ms, and 50,000 bare `{"id": n}` images,
+    as TorchMetrics builds them, in about 5 ms where they took about 9 ms.
+- **`mask.toBbox`, and `load_res` of mask results without a `bbox`, read
+  the box straight off a compressed `counts` string.** The area and the box
+  come out of one pass as the string decodes, with no run list built. On
+  COCO val2017's 43,691 segm results as compressed RLEs, `toBbox` takes about
+  27 ms where it took about 67 ms, and `load_res` without boxes about 19 ms
+  where it took about 27 ms. *Rust API:* `mask::area_and_bbox_from_string`.
+- **Every other array argument reads any integer or float dtype in one pass
+  too:** the boxes of `COCO.from_arrays`, `mask.iou`, `primitives.bbox_iou`,
+  and `mask.frPyObjects`, the cost matrix of `primitives.lsap`, the `area`
+  column, and the scores and curves the `hotcoco.metrics` functions take.
+  numpy casts the array to `float64` once. Before, any array but `float64`,
+  `float32` straight from a detector included, went through Python one
+  element at a time: `COCO.from_arrays` with 100,000 `float32` boxes takes
+  about 5 ms where it took about 45 ms. The cast is exact for `float32` and
+  for integers up to 2^53, so the results are unchanged.
 - **`mask.encode` holds the GIL while it reads the numpy buffer.** Releasing
   it for a scan of about 10 µs cost about 2.5 ms per mask whenever another
   Python thread was busy, waiting out the switch interval to get it back;
@@ -368,7 +387,14 @@ Each entry below has a regression test that fails on the old code.
   numbers, `decode` raises, and `iou` and `merge` loop forever. hotcoco's
   `frPyObjects` raises instead. Runs that stop short of `h × w` are still
   accepted.
-
+- **`None` in an optional field reads as absent in `COCO(dict)`,
+  `load_res()`, and `update_anns()`,** as `null` does when the same JSON is
+  loaded from its path. These are `license`, `coco_url`, `flickr_url`, and
+  `date_captured` on an image; `supercategory`, `skeleton`, `keypoints`, and
+  `frequency` on a category; and `bbox`, `area`, `segmentation`, `keypoints`,
+  `num_keypoints`, `obb`, `score`, and `is_group_of` on an annotation. A
+  `json.load`-ed file with `null` in one raised `TypeError`; pycocotools
+  takes it. In `update_anns()`, `None` clears the field.
 
 ## [1.1.0] - 2026-10-01
 

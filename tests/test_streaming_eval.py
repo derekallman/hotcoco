@@ -233,7 +233,7 @@ class TestArrayDetections:
         with pytest.raises(TypeError, match="list of dicts or a numpy"):
             se.update(images()[:1], [], "detections")
         with pytest.raises(TypeError, match="list of dicts or a numpy"):
-            se.update(images()[:1], [], np.zeros((1, 7), dtype=np.int64))
+            se.update(images()[:1], [], np.full((1, 7), "1"))
 
     def test_float32_array_equals_float64(self):
         """Detectors emit float32; widening it is exact, so nothing has to convert first."""

@@ -158,69 +158,100 @@ pub fn decode(rle: &Rle) -> Vec<u8> {
 /// Only sums the odd-indexed runs (which represent 1s).
 #[inline]
 pub fn area(rle: &Rle) -> u64 {
-    rle.counts
+    counts_area(&rle.counts)
+}
+
+/// [`area`] of a run list that is not in an [`Rle`], so a caller holding
+/// only the counts does not copy them into one.
+#[inline]
+pub(crate) fn counts_area(counts: &[u32]) -> u64 {
+    counts
         .iter()
         .skip(1)
         .step_by(2)
-        .map(|&c| c as u64)
+        .map(|&c| u64::from(c))
         .sum()
 }
 
 /// Compute the bounding box `[x, y, w, h]` of an RLE mask.
 #[inline]
 pub fn to_bbox(rle: &Rle) -> [f64; 4] {
-    let h = rle.h as usize;
-    if h == 0 || rle.w == 0 || rle.counts.is_empty() {
+    if rle.h == 0 || rle.w == 0 {
         return [0.0, 0.0, 0.0, 0.0];
     }
+    let mut extent = Extent::new(rle.h, rle.w);
+    for &count in &rle.counts {
+        extent.push(count);
+    }
+    extent.bbox()
+}
 
-    let mut xs = rle.w as usize;
-    let mut xe: usize = 0;
-    let mut ys = rle.h as usize;
-    let mut ye: usize = 0;
-    let mut has_any = false;
+/// The area and bounding box of a mask, folded one run at a time: the one
+/// implementation behind [`to_bbox`] on a run list and
+/// [`area_and_bbox_from_string`] on a compressed string. `h` must be nonzero.
+struct Extent {
+    h: usize,
+    /// Column-major index of the next run's first pixel.
+    pos: usize,
+    foreground: bool,
+    area: u64,
+    xs: usize,
+    xe: usize,
+    ys: usize,
+    ye: usize,
+}
 
-    let mut cc = 0usize; // cumulative pixel count (column-major flat index)
-    for (i, &c) in rle.counts.iter().enumerate() {
-        let c = c as usize;
+impl Extent {
+    fn new(h: u32, w: u32) -> Self {
+        Extent {
+            h: h as usize,
+            pos: 0,
+            foreground: false,
+            area: 0,
+            xs: w as usize,
+            xe: 0,
+            ys: h as usize,
+            ye: 0,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, count: u32) {
+        let c = count as usize;
         // Skip zero-length foreground runs: they contribute no pixels, and
-        // `cc + c - 1` below would underflow on one (untrusted RLE strings can
+        // `pos + c - 1` below would underflow on one (untrusted RLE strings can
         // legally decode to zero-length runs).
-        if i % 2 == 1 && c > 0 {
-            // Foreground run: convert flat indices to (column, row) coordinates
-            has_any = true;
-            let x1 = cc / h; // start column
-            let y1 = cc % h; // start row
-            let end = cc + c - 1; // last pixel (inclusive)
-            let x2 = end / h; // end column
-            let y2 = end % h; // end row
-
-            if x1 < xs {
-                xs = x1;
-            }
-            if x2 >= xe {
-                xe = x2 + 1;
-            }
-            if y1 < ys {
-                ys = y1;
-            }
-            // If the run spans multiple columns, it covers all rows in between
+        if self.foreground && c > 0 {
+            let h = self.h;
+            self.area += u64::from(count);
+            let (x1, y1) = (self.pos / h, self.pos % h);
+            let end = self.pos + c - 1; // last pixel (inclusive)
+            let (x2, y2) = (end / h, end % h);
+            self.xs = self.xs.min(x1);
+            self.xe = self.xe.max(x2 + 1);
+            self.ys = self.ys.min(y1);
+            self.ye = self.ye.max(y2 + 1);
+            // A run that spans columns covers every row in between.
             if x1 != x2 {
-                ys = 0;
-                ye = h;
-            }
-            if y2 >= ye {
-                ye = y2 + 1;
+                self.ys = 0;
+                self.ye = h;
             }
         }
-        cc += c;
+        self.pos += c;
+        self.foreground = !self.foreground;
     }
 
-    if !has_any {
-        return [0.0, 0.0, 0.0, 0.0];
+    fn bbox(&self) -> [f64; 4] {
+        if self.area == 0 {
+            return [0.0, 0.0, 0.0, 0.0];
+        }
+        [
+            self.xs as f64,
+            self.ys as f64,
+            (self.xe - self.xs) as f64,
+            (self.ye - self.ys) as f64,
+        ]
     }
-
-    [xs as f64, ys as f64, (xe - xs) as f64, (ye - ys) as f64]
 }
 
 /// Merge multiple RLE masks with union (intersect=false) or intersection (intersect=true).
@@ -839,6 +870,23 @@ pub fn area_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<u64> {
         foreground = !foreground;
     })?;
     Ok(area)
+}
+
+/// The area and bounding box `[x, y, w, h]` of the RLE a compressed `counts`
+/// string encodes, in one pass and without decoding it into a run list first.
+///
+/// Equal to `(area(&rle), to_bbox(&rle))` for `rle = rle_from_string(s, h, w)?`,
+/// and fails on exactly the strings `rle_from_string` rejects. When the area
+/// is all you need, [`area_from_string`] is cheaper.
+pub fn area_and_bbox_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<(u64, [f64; 4])> {
+    if h == 0 || w == 0 {
+        // `to_bbox`'s empty box. Any foreground pixel overruns a 0-pixel mask,
+        // so the area is 0 or the string is rejected.
+        return Ok((area_from_string(s, h, w)?, [0.0; 4]));
+    }
+    let mut extent = Extent::new(h, w);
+    fr_string_runs(s, h, w, |count| extent.push(count))?;
+    Ok((extent.area, extent.bbox()))
 }
 
 /// Check that a run list fits an `h × w` mask: an error when the runs sum past
@@ -1571,6 +1619,58 @@ mod tests {
                 area(&rle),
                 "case {case}: {s}"
             );
+            assert_eq!(
+                area_and_bbox_from_string(&s, rle.h, rle.w).unwrap(),
+                (area(&rle), to_bbox(&rle)),
+                "case {case}: {s}"
+            );
+        }
+    }
+
+    /// The box the run fold finds against the one read off the decoded
+    /// pixels, on small random masks whose runs include zero-length ones.
+    #[test]
+    fn test_bbox_matches_pixel_scan() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xB0B0_0001);
+        for case in 0..5000 {
+            let (h, w) = (rng.random_range(1..=12u32), rng.random_range(1..=12u32));
+            let hw = h * w;
+            let max_run = rng.random_range(1..=hw.min(30));
+            let mut counts = Vec::new();
+            let mut total = 0;
+            while total < hw {
+                let c = rng.random_range(0..=max_run).min(hw - total);
+                counts.push(c);
+                total += c;
+            }
+            let rle = Rle { h, w, counts };
+
+            let (h, w) = (h as usize, w as usize);
+            let pixels = decode(&rle);
+            let (mut xs, mut ys, mut xe, mut ye) = (w, h, 0, 0);
+            for (i, _) in pixels.iter().enumerate().filter(|&(_, &p)| p != 0) {
+                let (x, y) = (i / h, i % h);
+                (xs, ys, xe, ye) = (xs.min(x), ys.min(y), xe.max(x + 1), ye.max(y + 1));
+            }
+            let want = if xe == 0 {
+                [0.0; 4]
+            } else {
+                [xs as f64, ys as f64, (xe - xs) as f64, (ye - ys) as f64]
+            };
+            assert_eq!(
+                to_bbox(&rle),
+                want,
+                "case {case}: {:?} at {h}x{w}",
+                rle.counts
+            );
+            let s = rle_to_string(&rle);
+            assert_eq!(
+                area_and_bbox_from_string(&s, rle.h, rle.w).unwrap(),
+                (area(&rle), want),
+                "case {case}: {:?} at {h}x{w}",
+                rle.counts
+            );
         }
     }
 
@@ -1653,6 +1753,13 @@ mod tests {
                 .map_err(|e| e.to_string());
             assert_eq!(got, want, "{s:?} at {h}x{w}");
             let got_area = area_from_string(s, h, w).map_err(|e| e.to_string());
+            assert_eq!(
+                area_and_bbox_from_string(s, h, w)
+                    .map(|(area, _)| area)
+                    .map_err(|e| e.to_string()),
+                got_area,
+                "{s:?} at {h}x{w}"
+            );
             let want_area = want
                 .as_ref()
                 .map(|c| c.iter().skip(1).step_by(2).map(|&c| u64::from(c)).sum());

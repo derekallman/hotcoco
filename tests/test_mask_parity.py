@@ -4,10 +4,14 @@ Every function in hotcoco.mask that has a pycocotools equivalent must produce
 identical output (same types, same values).
 """
 
+import copy
+
 import numpy as np
 import pycocotools.mask as pm
 import pytest
+from hotcoco import COCO
 from hotcoco import mask as hm
+from pycocotools.coco import COCO as PyCOCO
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -209,6 +213,27 @@ def test_area_from_compressed_counts_matches_pycocotools(name):
         got = hm.area(spelling)
         assert type(got) is int
         assert got == want
+        np.testing.assert_array_equal(hm.toBbox(spelling), pm.toBbox(rle))
+
+
+def test_load_res_derives_area_and_bbox_as_pycocotools():
+    """Mask-only results: `loadRes` takes the area and the box from the mask."""
+    rles = [pm.encode(m) for m in AREA_MASKS.values()]
+    images = [{"id": i + 1, "height": r["size"][0], "width": r["size"][1]} for i, r in enumerate(rles)]
+    dataset = {"images": images, "annotations": [], "categories": [{"id": 1, "name": "a"}]}
+    results = [
+        {"image_id": i + 1, "category_id": 1, "score": 0.5, "segmentation": {**r, "counts": r["counts"].decode()}}
+        for i, r in enumerate(rles)
+    ]
+    ref = PyCOCO()
+    ref.dataset = copy.deepcopy(dataset)
+    ref.createIndex()
+    want = ref.loadRes(copy.deepcopy(results))
+    got = COCO(dataset).load_res(results)
+    for ann_id in want.getAnnIds():
+        w, g = want.anns[ann_id], got.load_anns(ann_id)[0]
+        assert g["area"] == float(w["area"]), ann_id
+        assert g["bbox"] == [float(v) for v in w["bbox"]], ann_id
 
 
 @pytest.mark.parametrize("name", list(AREA_MASKS))
@@ -381,6 +406,14 @@ class TestFrPyObjects:
         assert len(rp) == len(rh) == 2
         for i, (a, b) in enumerate(zip(rp, rh)):
             assert a["counts"] == b["counts"], f"polygon {i}"
+
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32, np.int64])
+    def test_array_of_boxes(self, dtype):
+        # pycocotools' box path takes only float64, so it gets the same values
+        # widened; hotcoco takes any numeric array.
+        boxes = np.array([[2.5, 5.0, 61.5, 24.25], [11.0, 11.0, 8.0, 8.0], [0.0, 0.0, 14.6, 18.2]]).astype(dtype)
+        want = pm.frPyObjects(boxes.astype(np.float64), 40, 50)
+        assert [r["counts"] for r in hm.frPyObjects(boxes, 40, 50)] == [r["counts"] for r in want]
 
 
 # ---------------------------------------------------------------------------

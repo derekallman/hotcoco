@@ -141,10 +141,11 @@ BOXES = [[0.0, 0.0, 10.0, 10.0], [5.0, 5.0, 10.0, 10.0], [50.0, 50.0, 4.0, 4.0]]
         (BOXES, BOXES[:2]),
         (np.array(BOXES), np.array(BOXES[:2])),
         (np.array(BOXES, dtype=np.int64), np.array(BOXES[:2], dtype=np.int64)),
+        (np.array(BOXES, dtype=np.float32), np.array(BOXES[:2], dtype=np.float32)),
         (np.array(BOXES), BOXES[:2]),  # pycocotools converts a box list to an array first
         ([np.array(b) for b in BOXES], BOXES[:2]),
     ],
-    ids=["lists", "float-arrays", "int-arrays", "array-and-list", "list-of-arrays"],
+    ids=["lists", "float-arrays", "int-arrays", "float32-arrays", "array-and-list", "list-of-arrays"],
 )
 @pytest.mark.parametrize("iscrowd", [[0, 0], [0, 1], [False, True], np.array([1, 0])])
 def test_mask_iou_on_boxes(dt, gt, iscrowd):
@@ -281,8 +282,9 @@ class TestPrimitivesStayStrict:
         with pytest.raises(TypeError):
             primitives.mask_iou(BOXES, BOXES, [False] * 3)
 
-    def test_bbox_iou_takes_arrays(self):
-        out = primitives.bbox_iou(np.array(BOXES), np.array(BOXES[:2]), [False, True])
+    @pytest.mark.parametrize("dtype", [np.float64, np.float32, np.int64])
+    def test_bbox_iou_takes_arrays(self, dtype):
+        out = primitives.bbox_iou(np.array(BOXES, dtype=dtype), np.array(BOXES[:2], dtype=dtype), [False, True])
         np.testing.assert_array_equal(out, pm.iou(BOXES, BOXES[:2], [0, 1]))
 
     def test_bbox_iou_rejects_rles(self):

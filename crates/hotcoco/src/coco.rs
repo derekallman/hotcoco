@@ -631,15 +631,23 @@ impl COCO {
     /// Image lookups go through the GT `COCO` (`self`), since detection results
     /// share its images and therefore its dimensions.
     fn derive_from_segmentation(&self, ann: &mut Annotation) {
-        if !matches!(ann.segmentation, Some(Segmentation::CompressedRle { .. })) {
-            return;
-        }
-        let Some(rle) = self.ann_to_rle(ann) else {
+        let Some(Segmentation::CompressedRle { size, counts }) = &ann.segmentation else {
             return;
         };
-        ann.area = Some(mask::area(&rle) as f64);
-        if ann.bbox.is_none() {
-            ann.bbox = Some(mask::to_bbox(&rle));
+        // `ann_to_rle`'s gate: no mask for an image with no record.
+        if self.raster_dims(ann).is_none() {
+            return;
+        }
+        let (h, w) = (size[0], size[1]);
+        // A given box is kept, as pycocotools keeps it; only the area comes
+        // from the mask.
+        if ann.bbox.is_some() {
+            if let Ok(area) = mask::area_from_string(counts, h, w) {
+                ann.area = Some(area as f64);
+            }
+        } else if let Ok((area, bbox)) = mask::area_and_bbox_from_string(counts, h, w) {
+            ann.area = Some(area as f64);
+            ann.bbox = Some(bbox);
         }
     }
 
@@ -923,18 +931,25 @@ impl COCO {
     }
 
     /// The pixel count of `ann`'s mask:
-    /// `ann_to_rle(ann).map(|rle| mask::area(&rle))`, with a compressed RLE
-    /// summed straight off its `counts` string.
+    /// `ann_to_rle(ann).map(|rle| mask::area(&rle))`, with an RLE summed
+    /// where it is — a compressed one straight off its `counts` string, a run
+    /// list without the copy `ann_to_rle` makes of it.
     ///
+    /// Each RLE arm applies `ann_to_rle`'s gate and validation:
     /// [`mask::area_from_string`] fails on exactly the strings
-    /// `ann_to_rle`'s decode rejects, so a malformed string is `None` here
-    /// too. It skips allocating and filling a run list only to sum it.
+    /// `ann_to_rle`'s decode rejects, and [`mask::check_counts`] is its check
+    /// on a run list, so a malformed RLE is `None` here too.
     fn mask_area(&self, ann: &Annotation) -> Option<u64> {
         match &ann.segmentation {
+            // `ann_to_rle`'s gate on both: no mask for an image with no record.
             Some(Segmentation::CompressedRle { size, counts }) => {
-                // `ann_to_rle`'s gate: no mask for an image with no record.
                 self.raster_dims(ann)?;
                 mask::area_from_string(counts, size[0], size[1]).ok()
+            }
+            Some(Segmentation::UncompressedRle { size, counts }) => {
+                self.raster_dims(ann)?;
+                mask::check_counts(counts, size[0], size[1]).ok()?;
+                Some(mask::counts_area(counts))
             }
             _ => self.ann_to_rle(ann).map(|rle| mask::area(&rle)),
         }

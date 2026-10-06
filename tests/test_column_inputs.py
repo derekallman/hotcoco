@@ -80,6 +80,11 @@ class TestFromArrays:
         gt = COCO.from_arrays(IMAGES, CATEGORIES, make(IMAGE_IDS), make(CATEGORY_IDS), BOXES.tolist())
         assert gt.dataset == COCO(dict_dataset()).dataset
 
+    @pytest.mark.parametrize("dtype", [np.float32, np.int64, np.int32])
+    def test_other_box_dtypes(self, dtype):
+        gt = COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES.astype(dtype))
+        assert gt.dataset == COCO(dict_dataset()).dataset
+
     def test_rles_equal_dict_form(self):
         def rle(box):
             m = np.zeros((100, 100), dtype=np.uint8, order="F")
@@ -213,6 +218,12 @@ class TestUpdateAnnsColumns:
 
 class TestLoadResArrayIds:
     """``load_res`` and ``StreamingEval.update`` share the array parser, so this covers both."""
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.int64])
+    def test_other_dtypes_read_as_float64(self, dtype):
+        arr = np.array([[1, 10, 10, 30, 30, 1, 1], [2, 50, 50, 20, 20, 0, 2]])
+        gt = COCO(dict_dataset())
+        assert gt.load_res(arr.astype(dtype)).dataset == gt.load_res(arr.astype(np.float64)).dataset
 
     @pytest.mark.parametrize(("col", "value"), [(0, np.nan), (0, -1.0), (6, np.nan), (6, -2.0)])
     def test_nan_or_negative_id_raises(self, col, value):

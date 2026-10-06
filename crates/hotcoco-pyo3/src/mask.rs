@@ -467,19 +467,26 @@ fn rle_dict_area(dict: &Bound<'_, PyDict>) -> PyResult<u64> {
 #[pyo3(text_signature = "(rle)")]
 pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
-        let r = py_to_rle(dict)?;
-        let bb = rmask::to_bbox(&r);
-        let arr = PyArray1::from_vec(py, bb.to_vec());
+        let arr = PyArray1::from_vec(py, rle_dict_bbox(dict)?.to_vec());
         Ok(arr.into_any().unbind())
     } else {
-        let rles = extract_rle_list(rle)?;
-        let n = rles.len();
-        let mut data = Vec::with_capacity(n * 4);
-        for r in &rles {
-            data.extend_from_slice(&rmask::to_bbox(r));
+        let items: Vec<Bound<'_, PyAny>> = rle.extract()?;
+        let mut data = Vec::with_capacity(items.len() * 4);
+        for item in &items {
+            data.extend_from_slice(&rle_dict_bbox(item.cast::<PyDict>()?)?);
         }
-        f64_array(py, data, [n, 4])
+        f64_array(py, data, [items.len(), 4])
     }
+}
+
+/// One RLE dict's box, read off a compressed `counts` string as it decodes,
+/// like [`rle_dict_area`].
+fn rle_dict_bbox(dict: &Bound<'_, PyDict>) -> PyResult<[f64; 4]> {
+    read_rle_dict(
+        dict,
+        |s, h, w| rmask::area_and_bbox_from_string(s, h, w).map(|(_, bbox)| bbox),
+        |rle| rmask::to_bbox(&rle),
+    )
 }
 
 /// Alias for `to_bbox` matching pycocotools naming.
@@ -724,23 +731,35 @@ pub fn fr_py_objects(
             }
         };
         let list = PyList::empty(py);
-        for item in &items {
-            let coords: Vec<f64> = item.extract()?;
-            let rle = if boxes {
-                let bb: [f64; 4] = coords.as_slice().try_into().map_err(|_| {
-                    pyo3::exceptions::PyValueError::new_err(format!(
+        if boxes {
+            // One read of the whole list or array. When it fails on an entry
+            // that is not 4 values, the error says so in pycocotools' terms.
+            let bbs = boxes_arg(seg, "seg").map_err(|err| {
+                match items
+                    .iter()
+                    .find_map(|item| item.len().ok().filter(|&n| n != 4))
+                {
+                    Some(n) => pyo3::exceptions::PyValueError::new_err(format!(
                         "frPyObjects: the first entry is a box, so every entry must be \
-                         [x, y, w, h] (4 values); got {}",
-                        coords.len()
-                    ))
-                })?;
-                rmask::fr_bbox(&bb, h, w).map_err(to_pyerr)?
-            } else {
+                         [x, y, w, h] (4 values); got {n}"
+                    )),
+                    None => err,
+                }
+            })?;
+            for bb in &bbs {
+                list.append(rle_to_coco_py(
+                    py,
+                    &rmask::fr_bbox(bb, h, w).map_err(to_pyerr)?,
+                )?)?;
+            }
+        } else {
+            for item in &items {
                 // Polygon mode, as pycocotools' `frPoly`: any length, `len // 2`
                 // points; fewer than three rasterize to an empty mask.
-                rmask::fr_poly(&coords, h, w).map_err(to_pyerr)?
-            };
-            list.append(rle_to_coco_py(py, &rle)?)?;
+                let coords: Vec<f64> = item.extract()?;
+                let rle = rmask::fr_poly(&coords, h, w).map_err(to_pyerr)?;
+                list.append(rle_to_coco_py(py, &rle)?)?;
+            }
         }
         Ok(list.into_any().unbind())
     }

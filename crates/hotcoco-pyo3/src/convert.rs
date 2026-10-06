@@ -1,28 +1,19 @@
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
-use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyArrayDescrMethods, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{
     PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString, PyTuple,
 };
 
-/// Extract an optional field from a Python dict.
+/// A required field of a Python dict, raising `ValueError("dict missing
+/// '<key>'")` when it is absent.
 ///
 /// `$key` is interned (`pyo3::intern!`) rather than passed as a bare `&str`:
 /// `get_item` takes anything `IntoPyObject`, and for a plain `&str` that means
-/// allocating a fresh `PyString` on every call. This macro and its siblings
-/// read the fields of image and category dicts and an RLE's `size`, once per
-/// key per record; interning builds each key's `PyString` once per process.
-/// Annotation fields do not come through here: [`set_ann_field`] reads them.
-macro_rules! opt {
-    ($dict:expr, $key:literal) => {
-        $dict
-            .get_item(pyo3::intern!($dict.py(), $key))?
-            .map(|v| v.extract())
-            .transpose()?
-    };
-}
-
-/// Extract a required field from a Python dict, raising `PyValueError` if missing.
+/// allocating a fresh `PyString` on every call. Record fields are read in one
+/// pass over the dict by [`set_ann_field`], [`set_image_field`], and
+/// [`set_category_field`]; their converters call this first only to check
+/// the one required key.
 macro_rules! req {
     ($dict:expr, $key:literal) => {
         $dict
@@ -30,7 +21,6 @@ macro_rules! req {
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(concat!("dict missing '", $key, "'"))
             })?
-            .extract()?
     };
 }
 
@@ -151,56 +141,6 @@ fn counts_type_error(counts: &Bound<'_, PyAny>) -> PyErr {
     ))
 }
 
-/// `req!` with an explicit reader such as [`extract_int`]. The key is interned
-/// for the reason `opt!` gives.
-macro_rules! req_with {
-    ($dict:expr, $key:literal, $read:expr) => {
-        $read(
-            &$dict
-                .get_item(pyo3::intern!($dict.py(), $key))?
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(concat!("dict missing '", $key, "'"))
-                })?,
-        )?
-    };
-}
-
-/// `opt!` with an explicit reader such as [`extract_int`]. The key is interned
-/// for the reason `opt!` gives.
-macro_rules! opt_with {
-    ($dict:expr, $key:literal, $read:expr) => {
-        $dict
-            .get_item(pyo3::intern!($dict.py(), $key))?
-            .map(|v| $read(&v))
-            .transpose()?
-    };
-}
-
-/// The dict keys each record type owns. Any other key on an incoming dict is
-/// a custom key, preserved through the `extra` map (serde-flattened in the
-/// core types) so `load → filter → save` keeps user metadata the way
-/// pycocotools does. An annotation's keys are the arms of [`set_ann_field`].
-const IMAGE_KEYS: &[&str] = &[
-    "id",
-    "file_name",
-    "height",
-    "width",
-    "license",
-    "coco_url",
-    "flickr_url",
-    "date_captured",
-    "neg_category_ids",
-    "not_exhaustive_category_ids",
-];
-const CATEGORY_KEYS: &[&str] = &[
-    "id",
-    "name",
-    "supercategory",
-    "skeleton",
-    "keypoints",
-    "frequency",
-];
-
 /// Collect every key of `dict` not in `known` into a JSON map, in dict order.
 ///
 /// Plain values, the common case (TorchMetrics adds a float `area_bbox` and an
@@ -209,8 +149,8 @@ const CATEGORY_KEYS: &[&str] = &[
 /// whole record through `json.dumps` ([`extra_from_dict`]), so a value JSON
 /// cannot hold raises exactly what it always did, message included.
 ///
-/// `known` says whether a key is a schema key, and may consume it: the record
-/// converters pass their key list, the annotation merge passes the setter.
+/// `known` says whether a key is a schema key, and may consume it: every
+/// caller passes its record type's field setter, such as [`set_ann_field`].
 fn extract_extra(
     dict: &Bound<'_, PyDict>,
     mut known: impl FnMut(&str, &Bound<'_, PyAny>) -> PyResult<bool>,
@@ -495,24 +435,40 @@ fn polygons_to_py<P: AsRef<[f64]>>(py: Python<'_>, polys: &[P]) -> PyResult<Py<P
 ///
 /// The one place a dict key becomes an annotation field, for a whole record
 /// ([`py_to_annotation`]) and for a partial edit ([`merge_ann_dict`]) alike,
-/// so both read a value by the same rules.
+/// so both read a value by the same rules. A `None` on an optional field
+/// reads as absent, as `null` does in a file ([`optional`]).
 fn set_ann_field(ann: &mut Annotation, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
     match key {
         "id" => ann.id = extract_int(value)?,
         "image_id" => ann.image_id = extract_int(value)?,
         "category_id" => ann.category_id = extract_int(value)?,
-        "bbox" => ann.bbox = Some(value.extract()?),
-        "area" => ann.area = Some(value.extract()?),
-        "segmentation" => ann.segmentation = Some(py_to_segmentation(value)?),
+        "bbox" => ann.bbox = value.extract()?,
+        "area" => ann.area = value.extract()?,
+        "segmentation" => ann.segmentation = optional(value, py_to_segmentation)?,
         "iscrowd" => ann.iscrowd = extract_flag(value)?,
-        "keypoints" => ann.keypoints = Some(py_to_keypoints(value)?),
-        "num_keypoints" => ann.num_keypoints = Some(extract_int(value)?),
-        "obb" => ann.obb = Some(Box::new(value.extract()?)),
-        "score" => ann.score = Some(value.extract()?),
-        "is_group_of" => ann.is_group_of = Some(extract_flag(value)?),
+        "keypoints" => ann.keypoints = optional(value, py_to_keypoints)?,
+        "num_keypoints" => ann.num_keypoints = optional(value, extract_int)?,
+        "obb" => ann.obb = value.extract::<Option<[f64; 5]>>()?.map(Box::new),
+        "score" => ann.score = value.extract()?,
+        "is_group_of" => ann.is_group_of = optional(value, extract_flag)?,
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// An optional field read with `read`, or `None` for a Python `None` — what
+/// the JSON loader makes of `null`, so a dict and the file it came from load
+/// alike. A field PyO3 extracts directly gets the same rule from extracting
+/// an `Option`.
+fn optional<'py, T>(
+    value: &Bound<'py, PyAny>,
+    read: impl FnOnce(&Bound<'py, PyAny>) -> PyResult<T>,
+) -> PyResult<Option<T>> {
+    if value.is_none() {
+        Ok(None)
+    } else {
+        read(value).map(Some)
+    }
 }
 
 /// Flat `[x, y, v, …]` is the COCO spelling; an `(N, 3)` array is how the
@@ -571,12 +527,7 @@ pub(crate) fn merge_ann_dict_checked(
 }
 
 pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
-    // The one required key; the message matches `req!`.
-    if !dict.contains(pyo3::intern!(dict.py(), "image_id"))? {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "dict missing 'image_id'",
-        ));
-    }
+    req!(dict, "image_id");
     let mut ann = Annotation::default();
     merge_ann_dict(&mut ann, dict)?;
     Ok(ann)
@@ -585,10 +536,8 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
 pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     // Try as dict (CompressedRle or UncompressedRle)
     if let Ok(dict) = obj.cast::<PyDict>() {
-        let size: [u32; 2] = req!(dict, "size");
-        let counts_obj = dict
-            .get_item(pyo3::intern!(dict.py(), "counts"))?
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("dict missing 'counts'"))?;
+        let size: [u32; 2] = req!(dict, "size").extract()?;
+        let counts_obj = req!(dict, "counts");
         if let Some(counts) = counts_str(&counts_obj)? {
             return Ok(Segmentation::CompressedRle {
                 size,
@@ -786,60 +735,65 @@ pub(crate) fn extract_rle_list(obj: &Bound<'_, PyAny>) -> PyResult<Vec<Rle>> {
     list.iter().map(extract_coco_rle).collect()
 }
 
-pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
-    let id: u64 = req_with!(dict, "id", extract_int);
-    let file_name: String = opt!(dict, "file_name").unwrap_or_default();
-    // Default rather than require: pycocotools' assignment flow (`coco.dataset
-    // = d; coco.createIndex()`) builds images as bare `{"id": …}` — that is
-    // what torchmetrics' pycocotools backend passes. Dimensions are only
-    // consumed by mask operations, which pycocotools equally cannot perform
-    // without them.
-    let height: u32 = opt_with!(dict, "height", extract_int).unwrap_or_default();
-    let width: u32 = opt_with!(dict, "width", extract_int).unwrap_or_default();
-    let license: Option<u64> = opt_with!(dict, "license", extract_int);
-    let coco_url: Option<String> = opt!(dict, "coco_url");
-    let flickr_url: Option<String> = opt!(dict, "flickr_url");
-    let date_captured: Option<String> = opt!(dict, "date_captured");
-    let neg_category_ids: Vec<u64> = opt!(dict, "neg_category_ids").unwrap_or_default();
-    let not_exhaustive_category_ids: Vec<u64> =
-        opt!(dict, "not_exhaustive_category_ids").unwrap_or_default();
-    let extra = extract_extra(dict, |key, _| Ok(IMAGE_KEYS.contains(&key)))?;
-
-    Ok(Image {
-        id,
-        file_name,
-        height,
-        width,
-        license,
-        coco_url,
-        flickr_url,
-        date_captured,
-        neg_category_ids,
-        not_exhaustive_category_ids,
-        extra,
-    })
+/// Set the image field a schema key names; `false` for any other key, which
+/// is a custom key for `extra`. The one place a dict key becomes an image
+/// field, as [`set_ann_field`] is for annotations, with the same rule for
+/// `None`.
+fn set_image_field(img: &mut Image, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    match key {
+        "id" => img.id = extract_int(value)?,
+        "file_name" => img.file_name = value.extract()?,
+        "height" => img.height = extract_int(value)?,
+        "width" => img.width = extract_int(value)?,
+        "license" => img.license = optional(value, extract_int)?,
+        "coco_url" => img.coco_url = value.extract()?,
+        "flickr_url" => img.flickr_url = value.extract()?,
+        "date_captured" => img.date_captured = value.extract()?,
+        "neg_category_ids" => img.neg_category_ids = value.extract()?,
+        "not_exhaustive_category_ids" => img.not_exhaustive_category_ids = value.extract()?,
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
-pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
-    let id: u64 = req_with!(dict, "id", extract_int);
-    // Missing `name` is tolerated the way pycocotools tolerates it (it stores
-    // raw dicts); `COCO::create_index` fills the placeholder.
-    let name: String = opt!(dict, "name").unwrap_or_default();
-    let supercategory: Option<String> = opt!(dict, "supercategory");
-    let skeleton: Option<Vec<[u32; 2]>> = opt!(dict, "skeleton");
-    let keypoints: Option<Vec<String>> = opt!(dict, "keypoints");
-    let frequency: Option<String> = opt!(dict, "frequency");
-    let extra = extract_extra(dict, |key, _| Ok(CATEGORY_KEYS.contains(&key)))?;
+/// Set the category field a schema key names; `false` for any other key.
+/// See [`set_image_field`].
+fn set_category_field(cat: &mut Category, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
+    match key {
+        "id" => cat.id = extract_int(value)?,
+        "name" => cat.name = value.extract()?,
+        "supercategory" => cat.supercategory = value.extract()?,
+        "skeleton" => cat.skeleton = value.extract()?,
+        "keypoints" => cat.keypoints = value.extract()?,
+        "frequency" => cat.frequency = value.extract()?,
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
 
-    Ok(Category {
-        id,
-        name,
-        supercategory,
-        skeleton,
-        keypoints,
-        frequency,
-        extra,
-    })
+/// Read every key of `dict` in one pass: schema keys set their fields, the
+/// rest are the image's custom keys.
+pub fn py_to_image(dict: &Bound<'_, PyDict>) -> PyResult<Image> {
+    // Only `id` is required. pycocotools' assignment flow (`coco.dataset = d;
+    // coco.createIndex()`) builds images as bare `{"id": …}` — that is what
+    // torchmetrics' pycocotools backend passes. Dimensions are only consumed
+    // by mask operations, which pycocotools equally cannot perform without
+    // them.
+    req!(dict, "id");
+    let mut img = Image::default();
+    img.extra = extract_extra(dict, |key, value| set_image_field(&mut img, key, value))?;
+    Ok(img)
+}
+
+/// [`py_to_image`] for a category.
+pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
+    // Only `id` is required. A missing `name` is tolerated the way pycocotools
+    // tolerates it (it stores raw dicts); `COCO::create_index` fills the
+    // placeholder.
+    req!(dict, "id");
+    let mut cat = Category::default();
+    cat.extra = extract_extra(dict, |key, value| set_category_field(&mut cat, key, value))?;
+    Ok(cat)
 }
 
 /// Convert a list of dicts element by element. `what` names the list in the
@@ -988,18 +942,42 @@ where
     Ok(d)
 }
 
-/// A 1-D float argument: numpy `float64` in one copy, anything else via the
-/// list path.
+/// A numpy array of any integer or float dtype as a `float64` array of `D`
+/// dimensions: the array itself when it is `float64`, otherwise numpy's
+/// `astype` copy of it, one pass in C. The cast is the conversion a Python
+/// `float()` of each element makes, so it is exact for every `float32` and
+/// `float16`, and for every integer up to 2^53. `None` for anything else —
+/// a list, a bool or object array, an array of other dimensions — which the
+/// caller reads element by element.
+pub(crate) fn numeric_array<'py, D: numpy::ndarray::Dimension>(
+    obj: &Bound<'py, PyAny>,
+) -> PyResult<Option<numpy::PyReadonlyArray<'py, f64, D>>> {
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, f64, D>>() {
+        return Ok(Some(arr));
+    }
+    let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
+        return Ok(None);
+    };
+    if D::NDIM.is_some_and(|ndim| ndim != arr.ndim())
+        || !matches!(arr.dtype().kind(), b'i' | b'u' | b'f')
+    {
+        return Ok(None);
+    }
+    let py = obj.py();
+    let wide = obj.call_method1(pyo3::intern!(py, "astype"), (numpy::dtype::<f64>(py),))?;
+    Ok(Some(wide.extract()?))
+}
+
+/// A 1-D float argument: a numpy array of any integer or float dtype in one
+/// pass ([`numeric_array`]), anything else via the list path.
 ///
 /// The metrics docstrings advertise "lists or numpy arrays", but PyO3's
 /// `Vec<f64>` fast path fires only for list/tuple, leaving a numpy array to
 /// per-element iteration — one boxed `extract` per element, ~500K calls per
-/// argument on a full val2017 run. `PyReadonlyArray1` is a dtype check plus a
-/// memcpy; `to_vec` goes through ndarray, so strided views (`scores[::2]`)
-/// copy correctly instead of being rejected. Other dtypes (`float32`, object
-/// arrays) still work through the fallback, at per-element cost.
+/// argument on a full val2017 run. `to_vec` goes through ndarray, so strided
+/// views (`scores[::2]`) copy correctly instead of being rejected.
 pub fn f64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<f64>>() {
+    if let Some(arr) = numeric_array::<numpy::Ix1>(obj)? {
         return Ok(arr.as_array().to_vec());
     }
     obj.extract::<Vec<f64>>().map_err(|_| {
@@ -1079,9 +1057,9 @@ pub fn bool_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
 }
 
 /// A 2-D float argument — the 2-D member of the [`f64_vec`]/[`bool_vec`]
-/// family: numpy `float64` in one copy, a nested sequence (list of lists,
-/// tuple of tuples, ...) otherwise, with a named `TypeError` on either
-/// failing. Returns a row-major `(flat, nr, nc)` triple, matching
+/// family: a numpy array of any integer or float dtype in one pass
+/// ([`numeric_array`]), a nested sequence (list of lists, tuple of tuples,
+/// ...) otherwise, with a named `TypeError` on either failing. Returns a row-major `(flat, nr, nc)` triple, matching
 /// `assign::lsap`'s contract even for a Fortran-order or otherwise strided
 /// numpy input, since `.as_array().iter()` always yields row-major order.
 ///
@@ -1091,11 +1069,10 @@ pub fn bool_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
 /// locally; whether NaN is meaningful is caller-specific, not a property of
 /// extracting a 2-D array.
 pub fn f64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<f64>, usize, usize)> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray2<f64>>() {
-        let shape = arr.shape();
-        let (nr, nc) = (shape[0], shape[1]);
-        let flat: Vec<f64> = arr.as_array().iter().copied().collect();
-        return Ok((flat, nr, nc));
+    if let Some(arr) = numeric_array::<numpy::Ix2>(obj)? {
+        let view = arr.as_array();
+        let (nr, nc) = view.dim();
+        return Ok((view.iter().copied().collect(), nr, nc));
     }
 
     let rows: Vec<Vec<f64>> = obj.extract().map_err(|_| {
@@ -1184,8 +1161,8 @@ impl FromPyObject<'_, '_> for AreaRng {
     }
 }
 
-/// An `(N, 4)` box argument, read by [`f64_matrix_arg`]: a numpy `float64`
-/// array in one copy, any other numeric array or a sequence of 4-element rows
+/// An `(N, 4)` box argument, read by [`f64_matrix_arg`]: a numpy array of
+/// any integer or float dtype in one pass, a sequence of 4-element rows
 /// element by element. An empty input is zero boxes whatever its width.
 pub fn boxes_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<[f64; 4]>> {
     let (flat, nrows, ncols) = f64_matrix_arg(obj, name)?;
