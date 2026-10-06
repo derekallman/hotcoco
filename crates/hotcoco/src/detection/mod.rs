@@ -52,7 +52,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::coco::COCO;
+use crate::coco::{AreaRule, COCO};
 use crate::detection::hierarchy::Hierarchy;
 use crate::params::{IouType, Params};
 
@@ -132,6 +132,15 @@ pub struct COCOeval {
     pub hierarchy: Option<Hierarchy>,
 }
 
+/// [`COCO::fill_missing_areas`] on an evaluator's dataset, by `rule`, copying a
+/// shared dataset only when there is an area to fill.
+fn fill_areas(coco: &mut Arc<COCO>, rule: AreaRule) {
+    let derived = coco.missing_areas(rule);
+    if !derived.is_empty() {
+        Arc::make_mut(coco).set_areas_at(derived);
+    }
+}
+
 impl COCOeval {
     /// The one struct literal behind all three public constructors. What they
     /// differ in is a parameter here; everything else is the same empty
@@ -150,14 +159,18 @@ impl COCOeval {
         eval_mode: EvalMode,
         hierarchy: Option<Hierarchy>,
     ) -> Self {
+        let mut coco_gt: Arc<COCO> = coco_gt.into();
         let mut coco_dt: Arc<COCO> = coco_dt.into();
         if eval_mode == EvalMode::Lvis && !coco_dt.is_per_image_capped() {
             if let Some(capped) = coco_dt.capped_copy(crate::coco::LVIS_MAX_DETS_PER_IMAGE) {
                 coco_dt = Arc::new(capped);
             }
         }
+        // A missing area would read as 0 and put the object in `small`.
+        fill_areas(&mut coco_gt, AreaRule::Instance);
+        fill_areas(&mut coco_dt, AreaRule::Result);
         COCOeval {
-            coco_gt: coco_gt.into(),
+            coco_gt,
             coco_dt,
             params,
             eval_imgs: std::sync::OnceLock::new(),
@@ -222,8 +235,9 @@ impl COCOeval {
     }
 
     /// The ground-truth dataset this evaluator reads. The evaluator never
-    /// writes through it; Open Images [`evaluate`](Self::evaluate) replaces it
-    /// with an expanded copy.
+    /// writes through it: an annotation without an `area` gets one in the
+    /// evaluator's own copy ([`COCO::fill_missing_areas`]), and Open Images
+    /// [`evaluate`](Self::evaluate) replaces it with an expanded copy.
     pub fn coco_gt(&self) -> &Arc<COCO> {
         &self.coco_gt
     }

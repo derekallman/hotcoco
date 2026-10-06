@@ -249,6 +249,41 @@ def reference_stats(gt_file, dt_file, iou_type):
     return [float(v) for v in ev.stats]
 
 
+def float32_grids():
+    """The default IoU and recall grids rounded through float32, as torchmetrics'
+    ``torch.linspace(...).tolist()`` returns them: up to 4e-8 from the default."""
+    import numpy as np  # noqa: PLC0415
+
+    iou = np.linspace(0.5, 0.95, 10, dtype=np.float32).astype(np.float64).tolist()
+    rec = np.linspace(0.0, 1.0, 101, dtype=np.float32).astype(np.float64).tolist()
+    return iou, rec
+
+
+def grid_sensitive_records(n_gt=20):
+    """One category, ``n_gt`` ground truths on as many images, and a detection
+    per image with the true positives at triangular-number ranks. Recall climbs
+    in exact steps of ``1 / n_gt``, which land on recall-grid points, while
+    precision falls, so a grid point one ulp off picks another precision. A flat
+    precision curve would hide that. Returns ``(images, annotations,
+    detections)`` as plain dicts."""
+    images = [{"id": i, "width": 200, "height": 200, "file_name": f"{i}.jpg"} for i in range(1, n_gt + 1)]
+    anns = [
+        {"id": i, "image_id": i, "category_id": 1, "bbox": [10.0, 10.0, 20.0, 20.0], "area": 400.0, "iscrowd": 0}
+        for i in range(1, n_gt + 1)
+    ]
+    tp_ranks = {k * (k + 1) // 2 for k in range(1, n_gt) if k * (k + 1) // 2 <= n_gt}
+    dets = [
+        {
+            "image_id": rank,
+            "category_id": 1,
+            "bbox": [10.0, 10.0, 20.0, 20.0] if rank in tp_ranks else [150.0, 150.0, 20.0, 20.0],
+            "score": 1.0 - 0.001 * rank,
+        }
+        for rank in range(1, n_gt + 1)
+    ]
+    return images, anns, dets
+
+
 def run_both(gt_dataset, dt_results, iou_type):
     """Evaluate one (GT dict, DT list) pair through both implementations.
 

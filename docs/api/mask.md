@@ -133,11 +133,14 @@ Compute the area (number of foreground pixels) of RLE mask(s).
     areas = mask.area(rles)   # array
     ```
 
+    A list of 1,024 RLEs or more is decoded across threads.
+
 === "Rust"
 
     ```rust
     fn area(rle: &Rle) -> u64
     fn area_from_string(s: &str, h: u32, w: u32) -> Result<u64>
+    fn areas(rles: &[RleRef]) -> Vec<Result<u64>>
     ```
 
     ```rust
@@ -145,6 +148,12 @@ Compute the area (number of foreground pixels) of RLE mask(s).
     // From a compressed `counts` string, without building the run list
     let a = mask::area_from_string(counts, 480, 640)?;
     ```
+
+    `RleRef` borrows an RLE in either spelling, a compressed `counts` string
+    or a run list, and has `area()`, `to_bbox()`, and `to_rle()`, each of
+    which rejects a string that does not decode or runs that overrun the
+    mask. `Segmentation::rle_ref()` gives one for an RLE segmentation.
+    `areas` takes a batch, in order, decoding in parallel past 1,024.
 
 ---
 
@@ -163,7 +172,8 @@ Convert RLE mask(s) to bounding box(es).
     | Single dict | `numpy.ndarray` of shape `(4,)`, float64 |
     | List of *N* dicts | `numpy.ndarray` of shape `(N, 4)`, float64 |
 
-    Values are `[x, y, width, height]`.
+    Values are `[x, y, width, height]`. A list is decoded across threads, as
+    [`area`](#area) does.
 
     ```python
     bbox = mask.to_bbox(rle)      # shape (4,)
@@ -175,6 +185,7 @@ Convert RLE mask(s) to bounding box(es).
     ```rust
     fn to_bbox(rle: &Rle) -> [f64; 4]
     fn area_and_bbox_from_string(s: &str, h: u32, w: u32) -> Result<(u64, [f64; 4])>
+    fn bboxes(rles: &[RleRef]) -> Vec<Result<[f64; 4]>>
     ```
 
     **Returns:** `[x, y, width, height]`

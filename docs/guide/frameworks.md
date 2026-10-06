@@ -13,7 +13,7 @@ This patches `sys.modules` so that `pycocotools`, `pycocotools.coco`, `pycocotoo
 |-----------|------|------------------------|
 | Detectron2 | pycocotools | Yes |
 | MMDetection | pycocotools (default) | Yes (default path) |
-| RF-DETR | hotcoco (native, 1.10+) | Not needed — see [RF-DETR](#rf-detr) |
+| RF-DETR | hotcoco with `eval_backend="hotcoco"` (1.11+) | Not needed — see [RF-DETR](#rf-detr) |
 | Ultralytics YOLO | Internal (custom) | No — see [Ultralytics YOLO](#ultralytics-yolo) |
 
 ---
@@ -73,7 +73,7 @@ from mmengine.runner import Runner
 
 ## RF-DETR
 
-RF-DETR 1.10.0 (2026-09-04) evaluates on hotcoco natively. The `train` extra installs it, and `TrainConfig.eval_backend` defaults to `"hotcoco"`, so no patching is needed:
+RF-DETR 1.11.0 and later evaluate on hotcoco when you select it. The `train` extra installs hotcoco with RF-DETR's other evaluation backends, so no patching is needed:
 
 ```bash
 pip install "rfdetr[train]"
@@ -83,13 +83,13 @@ pip install "rfdetr[train]"
 from rfdetr import RFDETRSmall
 
 model = RFDETRSmall()
-model.train(dataset_dir="coco/", epochs=12)
+model.train(dataset_dir="coco/", epochs=12, eval_backend="hotcoco")
 ```
 
-Pass `eval_backend="faster_coco_eval"` to `model.train()` to restore the previous evaluator. Both backends report identical metrics; hotcoco is several times faster at `compute()` time.
+RF-DETR's default backend is `"vernier"`. Its parity tests require every backend to report identical metrics, so switching changes the time evaluation takes, not the numbers.
 
 !!! note
-    RF-DETR releases before 1.10 evaluate with `faster-coco-eval`, not pycocotools, so `init_as_pycocotools()` has no effect there. Upgrade to 1.10 or later to evaluate with hotcoco.
+    RF-DETR 1.10 and earlier evaluate with `faster-coco-eval`, not pycocotools, so `init_as_pycocotools()` has no effect there. Upgrade to 1.11 or later to evaluate with hotcoco.
 
 ---
 

@@ -17,7 +17,16 @@ import warnings
 
 import numpy as np
 import pytest
-from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, assert_metrics_match, run_both, suppress_output, written_json
+from helpers import (
+    COCO_KEYPOINT_NAMES,
+    COCO_SKELETON,
+    assert_metrics_match,
+    float32_grids,
+    grid_sensitive_records,
+    run_both,
+    suppress_output,
+    written_json,
+)
 from hotcoco import COCO, COCOeval, Hierarchy, mask
 
 # ---------------------------------------------------------------------------
@@ -246,11 +255,12 @@ def _tie_heavy_dataset():
     return _make_minimal_gt("bbox", images=images, categories=categories, annotations=anns), dts
 
 
-def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None):
+def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec_thrs=None):
     """Run evaluate + accumulate through both tools and return the two ``eval``
     dicts. ``acc_max_dets`` re-assigns the caps between the two calls — the
     pycocotools ``accumulate(p)`` idiom, which leaves cells holding more
-    detections than the current cap."""
+    detections than the current cap. ``iou_thrs`` and ``rec_thrs`` replace the
+    default grids in both tools."""
     from pycocotools.coco import COCO as PyCOCO  # noqa: PLC0415
     from pycocotools.cocoeval import COCOeval as PyCOCOeval  # noqa: PLC0415
 
@@ -259,6 +269,10 @@ def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None):
             py_gt = PyCOCO(gt_path)
             py_ev = PyCOCOeval(py_gt, py_gt.loadRes(dt_path), "bbox")
             py_ev.params.maxDets = list(max_dets)
+            if iou_thrs is not None:
+                py_ev.params.iouThrs = np.array(iou_thrs)
+            if rec_thrs is not None:
+                py_ev.params.recThrs = np.array(rec_thrs)
             py_ev.evaluate()
             if acc_max_dets is not None:
                 py_ev.params.maxDets = list(acc_max_dets)
@@ -267,6 +281,10 @@ def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None):
         rs_gt = COCO(gt_path)
         rs_ev = COCOeval(rs_gt, rs_gt.load_res(dt_path), "bbox")
         rs_ev.params.max_dets = list(max_dets)
+        if iou_thrs is not None:
+            rs_ev.params.iou_thrs = list(iou_thrs)
+        if rec_thrs is not None:
+            rs_ev.params.rec_thrs = list(rec_thrs)
         rs_ev.evaluate()
         if acc_max_dets is not None:
             rs_ev.params.max_dets = list(acc_max_dets)
@@ -341,6 +359,31 @@ def test_accumulated_arrays_match_pycocotools_bit_for_bit():
     py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100], acc_max_dets=lowered)
     assert np.asarray(rs_eval["precision"]).shape[-1] == len(lowered)
     _assert_arrays_bit_equal(py_eval, rs_eval, "evaluate maxDets=[1, 10, 100], accumulate maxDets=[10, 1]")
+
+
+def _grid_sensitive_dataset(n_gt=20):
+    """``helpers.grid_sensitive_records``, plus an image whose detection sits at
+    IoU exactly 0.55 (an 11 x 10 box inside a 20 x 10 one), on an IoU-grid point."""
+    images, anns, dts = grid_sensitive_records(n_gt)
+    images.append(_img(n_gt + 1))
+    anns.append(_make_bbox_ann(n_gt + 1, n_gt + 1, bbox=[0.0, 0.0, 20.0, 10.0]))
+    dts.append(_make_bbox_det(n_gt + 1, bbox=[0.0, 0.0, 11.0, 10.0], score=0.5))
+    return _make_minimal_gt("bbox", images=images, categories=[_cat(1, "a")], annotations=anns), dts
+
+
+def test_float32_grids_match_pycocotools_bit_for_bit():
+    """A threshold grid rounded through float32 is evaluated as given, as
+    pycocotools evaluates it. torchmetrics builds both grids with
+    ``torch.linspace``, so every COCO backend it drives sees this grid, and
+    RF-DETR requires them all to give the same numbers."""
+    iou_f32, rec_f32 = float32_grids()
+    gt, dts = _grid_sensitive_dataset()
+
+    py_default, _ = _accumulated_arrays(gt, dts, [1, 10, 100])
+    py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100], iou_thrs=iou_f32, rec_thrs=rec_f32)
+    for key in ("precision", "recall"):
+        assert not np.array_equal(py_eval[key], py_default[key]), f"fixture must make the float32 grid move {key}"
+    _assert_arrays_bit_equal(py_eval, rs_eval, "float32 grids")
 
 
 def test_kpt_no_visible():

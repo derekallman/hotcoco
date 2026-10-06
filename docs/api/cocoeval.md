@@ -956,7 +956,10 @@ building a dict per detection. An `(N, 6)` array has no category column and
 puts every row in category 1, as `load_res()` does. An id that is NaN or
 negative raises `ValueError`. For `segm`, `segmentation` is a list of `N` RLE
 or polygon entries, one per row; it goes only with an array, since a dict
-carries its own.
+carries its own. Every row has a box, so each detection's `area` is the box's
+`w × h`, as `load_res()` gives a result that has a `bbox`, and that area
+decides the `small`, `medium`, and `large` buckets. For mask area, as
+torchmetrics computes it, pass dicts that carry `segmentation` and no `bbox`.
 
 Loading and matching run without the GIL; converting the dicts does not.
 The guide has [what `update()` costs](../guide/evaluation.md#what-update-costs).

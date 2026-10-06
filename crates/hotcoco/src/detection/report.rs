@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::params::{IouType, Params};
+use crate::params::{IouType, Params, is_rounded_default};
 use crate::report::{EvalReport, Provenance};
 
 use super::accumulate::AccumulatedEval;
@@ -75,7 +75,16 @@ impl COCOeval {
 
         let defaults = Params::new(self.params.iou_type);
 
-        if self.params.iou_thrs != defaults.iou_thrs {
+        // A grid that is the default rounded through `f32` is evaluated as given,
+        // so it is still a deviation, but the generic messages below would
+        // misdescribe it: `AP50` and `AP75` are found, since 0.5 and 0.75 are
+        // exact in `f32`. It gets one message of its own, after the recall check.
+        let iou_off = self.params.iou_thrs != defaults.iou_thrs;
+        let rec_off = self.params.rec_thrs != defaults.rec_thrs;
+        let iou_rounded = iou_off && is_rounded_default(&self.params.iou_thrs, &defaults.iou_thrs);
+        let rec_rounded = rec_off && is_rounded_default(&self.params.rec_thrs, &defaults.rec_thrs);
+
+        if iou_off && !iou_rounded {
             out.push(
                 "iou_thrs differ from default (0.50:0.05:0.95). AP50/AP75 lines might show -1.000."
                     .to_string(),
@@ -133,11 +142,27 @@ impl COCOeval {
         // The 101-point recall grid defines what AP *means*: it is the x-axis the
         // precision curve is averaged over. A different grid is a different metric
         // wearing the same name.
-        if self.params.rec_thrs != defaults.rec_thrs {
+        if rec_off && !rec_rounded {
             out.push(format!(
                 "rec_thrs differ from the default {}-point grid. AP is averaged over a \
                  different recall axis than the reference.",
                 defaults.rec_thrs.len()
+            ));
+        }
+
+        // torchmetrics builds both grids with `torch.linspace`, in `f32`.
+        let rounded = match (iou_rounded, rec_rounded) {
+            (true, true) => Some(("iou_thrs and rec_thrs are the default grids", "them")),
+            (true, false) => Some(("iou_thrs is the default grid", "it")),
+            (false, true) => Some(("rec_thrs is the default grid", "it")),
+            (false, false) => None,
+        };
+        if let Some((subject, them)) = rounded {
+            out.push(format!(
+                "{subject} rounded through float32, as torch.linspace builds {them}. \
+                 hotcoco evaluates {them} as given, as pycocotools does, so an IoU or \
+                 recall that lands exactly on a grid point can score differently than \
+                 on the default grid. Pass a float64 grid for the reference numbers."
             ));
         }
 

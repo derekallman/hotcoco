@@ -247,13 +247,13 @@ impl StreamingEval {
         // read off this batch's first detection rather than the file's, the
         // same answer for a homogeneous run.
         //
-        // Ground truth gets the two fixups a results file gets, for the same
-        // reason: every `iscrowd`/area read goes through the id index, and
-        // targets from a data loader carry neither `id` (so they all collide
-        // on 0 and resolve to the batch's last annotation) nor `area` (so the
-        // matcher reads 0 and puts every object in `small`). Nothing after
-        // this call reads a ground-truth id — the cells keep counts and bits —
-        // so assigning them loses nothing.
+        // Ground truth gets ids, as a results file does, because every
+        // `iscrowd`/area read goes through the id index and targets from a
+        // data loader carry no `id`: they would all collide on 0 and resolve
+        // to the batch's last annotation. Nothing after this call reads a
+        // ground-truth id — the cells keep counts and bits — so assigning
+        // them loses nothing. A missing `area` is filled by the evaluator
+        // built below, as every `COCOeval` fills it.
         for (i, ann) in gt_anns.iter_mut().enumerate() {
             ann.id = (i + 1) as u64;
         }
@@ -267,7 +267,6 @@ impl StreamingEval {
         {
             keep_rasterized_masks_of_arealess(&mut gt);
         }
-        gt.fill_missing_areas();
         let dt = gt.load_res_anns(dt_anns)?;
 
         // This batch's ids are the run's scope: `evaluate()` keeps a non-empty
@@ -501,7 +500,7 @@ impl StreamingEval {
 
 /// Swap each area-less polygon or rectangle ground truth's segmentation for
 /// the RLE it rasterizes to, so it is rasterized once per batch instead of
-/// twice: `fill_missing_areas` needs the mask for the area, and
+/// twice: the evaluator's area fill needs the mask for the area, and
 /// `evaluate()`'s `SegmRles::prepare` needs it again for the IoUs. Both read
 /// the RLE back through `ann_to_rle` unchanged — the same mask, a copy rather
 /// than a rasterization. An annotation that cannot be rasterized (no image

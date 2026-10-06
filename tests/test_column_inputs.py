@@ -6,6 +6,7 @@ needed.
 """
 
 import inspect
+import json
 
 import hotcoco
 import numpy as np
@@ -231,3 +232,59 @@ class TestLoadResArrayIds:
         arr[0, col] = value
         with pytest.raises(ValueError, match="ids must be finite and non-negative"):
             COCO(dict_dataset()).load_res(arr)
+
+
+class TestLoadResSegmentation:
+    """``load_res(array, segmentation=)``: the array route for segm, as ``StreamingEval.update`` has it."""
+
+    ARRAY = np.array([[1, 10, 10, 30, 30, 0.9, 1], [2, 50, 50, 20, 20, 0.8, 2]], dtype=np.float64)
+
+    @staticmethod
+    def masks():
+        rles = []
+        for x in (10, 50):
+            m = np.zeros((100, 100), np.uint8, order="F")
+            m[x : x + 10, x : x + 5] = 1
+            rles.append(hotcoco.mask.encode(m))
+        return rles
+
+    def as_dicts(self, rles):
+        return [
+            {
+                "image_id": int(r[0]),
+                "bbox": r[1:5].tolist(),
+                "score": float(r[5]),
+                "category_id": int(r[6]),
+                "segmentation": rle,
+            }
+            for r, rle in zip(self.ARRAY, rles)
+        ]
+
+    def test_equals_dicts_with_a_box_and_a_mask(self):
+        gt, rles = COCO(dict_dataset()), self.masks()
+        want = gt.load_res(self.as_dicts(rles)).dataset
+        assert gt.load_res(self.ARRAY, segmentation=rles).dataset == want
+        assert gt.loadRes(self.ARRAY, segmentation=rles).dataset == want
+
+    def test_area_is_the_box_until_update_anns_sets_the_mask(self):
+        """Each row has a box, so its area is the box's, as pycocotools' ``loadRes``
+        gives a result with a ``bbox``. The column ``update_anns`` switches it."""
+        dt = COCO(dict_dataset()).load_res(self.ARRAY, segmentation=self.masks())
+        assert [a["area"] for a in dt.dataset["annotations"]] == [900.0, 400.0]
+        dt.update_anns(ids=[1, 2], area=hotcoco.mask.area(self.masks()))
+        assert [a["area"] for a in dt.dataset["annotations"]] == [50.0, 50.0]
+        assert dt.dataset["annotations"][0]["segmentation"]["size"] == [100, 100]
+
+    def test_only_with_an_array(self, tmp_path):
+        gt, rles = COCO(dict_dataset()), self.masks()
+        dicts = self.as_dicts(rles)
+        with pytest.raises(TypeError, match="segmentation goes with a detection array"):
+            gt.load_res(dicts, segmentation=rles)
+        path = tmp_path / "dt.json"
+        path.write_text(json.dumps([{k: v for k, v in d.items() if k != "segmentation"} for d in dicts]))
+        with pytest.raises(TypeError, match="segmentation goes with a detection array"):
+            gt.load_res(str(path), segmentation=rles)
+
+    def test_one_entry_per_row(self):
+        with pytest.raises(ValueError, match="segmentation has 2 entries for 1 rows"):
+            COCO(dict_dataset()).load_res(self.ARRAY[:1], segmentation=self.masks())

@@ -178,6 +178,7 @@ scripts regenerate them. What each reference comparison checks:
 | `test_parity_lvis.py` | lvis-api, all 13 metrics |
 | `test_parity_oid.py` | frozen output of the TensorFlow Object Detection API (`just gen-oid-fixtures` regenerates it) |
 | `fuzz_obb.py` | Shapely, for oriented-box IoU (not collected by default) |
+| `scripts/fuzz_torchmetrics.py` | torchmetrics' `MeanAveragePrecision` on its pycocotools backend, with hotcoco swapped in the way RF-DETR runs it (`just fuzz-torchmetrics`) |
 
 Oriented-box *evaluation* has no reference protocol, so `report()` marks it
 `Provenance::Extension`. Two checks need the gitignored `data/`: `just parity`

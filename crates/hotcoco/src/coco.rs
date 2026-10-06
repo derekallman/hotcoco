@@ -90,14 +90,29 @@ impl ResultKind {
     }
 }
 
+/// How a missing `area` is derived: COCO's instance area for ground truth, or
+/// `load_res`'s precedence for results.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AreaRule {
+    /// The mask's pixel count when it has any, then the rotated box's `w × h`,
+    /// then the box's, then the extent of the labeled keypoints.
+    Instance,
+    /// The order `load_res` derives a result's area in ([`ResultKind::of`]):
+    /// the box's `w × h`, then the mask's pixel count, then the extent of every
+    /// keypoint, as pycocotools' `loadRes` takes it, then the rotated box's.
+    Result,
+}
+
 /// Inclusive area-range predicate shared by [`COCO::get_ann_ids`] and
-/// [`COCO::filter`] — the one owner of the missing-`area` convention.
+/// [`COCO::filter`].
 ///
 /// An annotation without an `area` value never matches an explicit range.
 /// pycocotools' `getAnnIds` reads `ann['area']` unconditionally and raises
 /// `KeyError` on a missing key; a filter cannot raise, so exclusion is the
 /// closest faithful behavior (it never fabricates an area of 0.0, which used
-/// to make area-less annotations match any range starting at 0).
+/// to make area-less annotations match any range starting at 0). An evaluator
+/// derives the area instead ([`COCO::fill_missing_areas`]), because it has to
+/// place every annotation in an area range.
 fn area_in_range(ann: &Annotation, rng: [f64; 2]) -> bool {
     ann.area.is_some_and(|a| a >= rng[0] && a <= rng[1])
 }
@@ -229,17 +244,7 @@ impl COCO {
     /// *last* occurrence (pycocotools parity — see
     /// [`create_index`](Self::create_index)), so that is the one replaced.
     pub fn update_anns(&mut self, anns: Vec<Annotation>) -> crate::error::Result<()> {
-        let mut targets = Vec::with_capacity(anns.len());
-        let mut missing = Vec::new();
-        for ann in &anns {
-            match self.anns.position(ann.id) {
-                Some(i) => targets.push(i),
-                None => missing.push(ann.id),
-            }
-        }
-        if !missing.is_empty() {
-            return Err(Error::UnknownAnnIds(missing));
-        }
+        let targets = self.ann_positions(anns.iter().map(|ann| ann.id))?;
 
         let mut moved = false;
         for (i, ann) in targets.into_iter().zip(anns) {
@@ -251,6 +256,58 @@ impl COCO {
             self.index_annotations();
         }
         Ok(())
+    }
+
+    /// Set the `area` of annotations by id, in place: `areas[i]` goes to the
+    /// annotation with id `ids[i]`.
+    ///
+    /// [`update_anns`](Self::update_anns) for one field, without building a
+    /// replacement annotation, and so without copying an annotation's
+    /// segmentation to change one number. An area moves no annotation, so
+    /// nothing is re-indexed. Every id is checked before anything is written,
+    /// as in `update_anns`; the ids that are not in the dataset come back as
+    /// [`Error::UnknownAnnIds`]. Errors when `ids` and `areas` differ in
+    /// length.
+    pub fn update_ann_areas(&mut self, ids: &[u64], areas: &[f64]) -> crate::error::Result<()> {
+        if ids.len() != areas.len() {
+            return Err(Error::from(format!(
+                "update_ann_areas: {} areas for {} ids",
+                areas.len(),
+                ids.len()
+            )));
+        }
+        let targets = self.ann_positions(ids.iter().copied())?;
+        for (i, &area) in targets.into_iter().zip(areas) {
+            self.dataset.annotations[i].area = Some(area);
+        }
+        Ok(())
+    }
+
+    /// Every id in `ids` is an annotation of this dataset, or the ones that are
+    /// not as [`Error::UnknownAnnIds`]: the check
+    /// [`update_ann_areas`](Self::update_ann_areas) makes before it writes,
+    /// for a caller that wants it before paying for a copy to write into.
+    pub fn check_ann_ids(&self, ids: &[u64]) -> crate::error::Result<()> {
+        self.ann_positions(ids.iter().copied()).map(drop)
+    }
+
+    /// The position of each id's annotation, or every id the dataset does not
+    /// have as [`Error::UnknownAnnIds`]: the check an edit by id makes before
+    /// it writes anything.
+    fn ann_positions(&self, ids: impl Iterator<Item = u64>) -> crate::error::Result<Vec<usize>> {
+        let mut targets = Vec::with_capacity(ids.size_hint().0);
+        let mut missing = Vec::new();
+        for id in ids {
+            match self.anns.position(id) {
+                Some(i) => targets.push(i),
+                None => missing.push(id),
+            }
+        }
+        if missing.is_empty() {
+            Ok(targets)
+        } else {
+            Err(Error::UnknownAnnIds(missing))
+        }
     }
 
     /// Get annotation IDs matching the given filters.
@@ -575,39 +632,69 @@ impl COCO {
         Ok(res)
     }
 
-    /// Fill in `area` on every annotation that has none.
+    /// Fill in `area` on every annotation that has none, by
+    /// [`AreaRule::Instance`]: the mask's pixel count, then the box's `w × h`,
+    /// then the keypoints' extent. Annotations with an `area` are left as they
+    /// are, so a COCO file's authored areas survive; one with nothing to derive
+    /// an area from stays without one.
     ///
-    /// The mask's pixel count when the annotation has a segmentation — COCO's
-    /// definition of instance `area`, and what [`load_res`](Self::load_res)
-    /// derives for mask results — otherwise the box's `w × h`. A mask that
-    /// cannot be rasterized (its image has no record, or no `height` and
-    /// `width`) falls back to the box. Annotations with an `area` are left as
-    /// they are, so a COCO file's authored areas survive; a record with neither
-    /// box nor mask stays without one.
-    ///
-    /// `area` places a ground truth in an area range, and the matcher reads a
-    /// missing one as 0 — every such object becomes `small`. pycocotools raises
-    /// `KeyError` instead; a caller feeding targets that never carried the field
-    /// (torchvision-style dicts) calls this first.
+    /// `area` places an annotation in an area range, and the matcher would read
+    /// a missing one as 0, putting every such object in `small`; pycocotools
+    /// raises `KeyError` instead. [`COCOeval`](crate::COCOeval) and
+    /// [`StreamingEval`](crate::StreamingEval) fill their own copies of the
+    /// datasets they evaluate, the ground truth by this rule and the detections
+    /// by `load_res`'s, so targets that never carried the field
+    /// (torchvision-style dicts) evaluate as if they had.
     pub fn fill_missing_areas(&mut self) {
-        // Collected first: `ann_to_rle` borrows the whole `COCO` while the
-        // assignment below borrows the annotations mutably.
-        let derived: Vec<(usize, f64)> = self
-            .dataset
-            .annotations
-            .iter()
-            .enumerate()
-            .filter(|(_, ann)| ann.area.is_none())
-            .filter_map(|(i, ann)| {
-                let from_mask = ann
-                    .segmentation
+        let derived = self.missing_areas(AreaRule::Instance);
+        self.set_areas_at(derived);
+    }
+
+    /// The `area` each annotation without one would get by `rule`, as
+    /// `(index, area)` pairs, computed without writing anything, so a caller
+    /// holding a shared `COCO` copies it only when there is something to fill.
+    /// Masks are drawn in parallel past the shared fan-out threshold.
+    pub(crate) fn missing_areas(&self, rule: AreaRule) -> Vec<(usize, f64)> {
+        let anns = &self.dataset.annotations;
+        let missing: Vec<usize> = (0..anns.len())
+            .filter(|&i| anns[i].area.is_none())
+            .collect();
+        let derive = |&i: &usize| {
+            let ann = &anns[i];
+            let from_box = || ann.bbox.map(|bb| bb[2] * bb[3]);
+            let from_obb = || ann.obb.as_deref().map(|obb| obb[2] * obb[3]);
+            // A mask of no pixels, such as `"segmentation": []` beside a box,
+            // says nothing about the object's size.
+            let from_mask = || {
+                ann.segmentation
                     .as_ref()
                     .and_then(|_| self.mask_area(ann))
-                    .map(|area| area as f64);
-                let area = from_mask.or_else(|| ann.bbox.map(|bb| bb[2] * bb[3]))?;
-                Some((i, area))
-            })
-            .collect();
+                    .filter(|&area| area > 0)
+                    .map(|area| area as f64)
+            };
+            let from_keypoints =
+                |labeled_only| Self::keypoint_extent(ann, labeled_only).map(|bb| bb[2] * bb[3]);
+            let area = match rule {
+                AreaRule::Instance => from_mask()
+                    .or_else(from_obb)
+                    .or_else(from_box)
+                    .or_else(|| from_keypoints(true)),
+                AreaRule::Result => from_box()
+                    .or_else(from_mask)
+                    .or_else(|| from_keypoints(false))
+                    .or_else(from_obb),
+            }?;
+            Some((i, area))
+        };
+        if worth_parallel(missing.len()) {
+            missing.par_iter().filter_map(derive).collect()
+        } else {
+            missing.iter().filter_map(derive).collect()
+        }
+    }
+
+    /// Write the pairs [`missing_areas`](Self::missing_areas) returned.
+    pub(crate) fn set_areas_at(&mut self, derived: Vec<(usize, f64)>) {
         for (i, area) in derived {
             self.dataset.annotations[i].area = Some(area);
         }
@@ -631,23 +718,29 @@ impl COCO {
     /// Image lookups go through the GT `COCO` (`self`), since detection results
     /// share its images and therefore its dimensions.
     fn derive_from_segmentation(&self, ann: &mut Annotation) {
-        let Some(Segmentation::CompressedRle { size, counts }) = &ann.segmentation else {
+        let Some(rle @ mask::RleRef::Compressed { .. }) =
+            ann.segmentation.as_ref().and_then(Segmentation::rle_ref)
+        else {
             return;
         };
         // `ann_to_rle`'s gate: no mask for an image with no record.
         if self.raster_dims(ann).is_none() {
             return;
         }
-        let (h, w) = (size[0], size[1]);
         // A given box is kept, as pycocotools keeps it; only the area comes
         // from the mask.
-        if ann.bbox.is_some() {
-            if let Ok(area) = mask::area_from_string(counts, h, w) {
-                ann.area = Some(area as f64);
-            }
-        } else if let Ok((area, bbox)) = mask::area_and_bbox_from_string(counts, h, w) {
+        let derived = if ann.bbox.is_some() {
+            rle.area().ok().map(|area| (area, None))
+        } else {
+            rle.area_and_bbox()
+                .ok()
+                .map(|(area, bbox)| (area, Some(bbox)))
+        };
+        if let Some((area, bbox)) = derived {
             ann.area = Some(area as f64);
-            ann.bbox = Some(bbox);
+            if bbox.is_some() {
+                ann.bbox = bbox;
+            }
         }
     }
 
@@ -659,26 +752,34 @@ impl COCO {
     /// evaluation unflagged. (pycocotools errors outright on an empty
     /// keypoints array here.)
     fn derive_from_keypoints(ann: &mut Annotation) {
-        let Some(kpts) = ann.keypoints.as_ref() else {
-            return;
-        };
-        if kpts.len() < 2 {
-            return;
+        if let Some(bbox) = Self::keypoint_extent(ann, false) {
+            ann.area = Some(bbox[2] * bbox[3]);
+            ann.bbox = Some(bbox);
         }
-        // Keypoints are flat (x, y, visibility) triples.
-        let extent = |offset: usize| {
-            kpts.iter()
-                .skip(offset)
-                .step_by(3)
-                .copied()
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
-                    (mn.min(v), mx.max(v))
-                })
-        };
-        let (x0, x1) = extent(0);
-        let (y0, y1) = extent(1);
-        ann.area = Some((x1 - x0) * (y1 - y0));
-        ann.bbox = Some([x0, y0, x1 - x0, y1 - y0]);
+    }
+
+    /// The `[x, y, w, h]` extent of an annotation's keypoints, or of the
+    /// labeled ones (visibility above 0) with `labeled_only`; `None` with no
+    /// such point. A result's extent takes every point, as pycocotools'
+    /// `loadRes` does; a ground truth's unlabeled points sit at `(0, 0)` and
+    /// would stretch it to the image origin.
+    fn keypoint_extent(ann: &Annotation, labeled_only: bool) -> Option<[f64; 4]> {
+        let kpts = ann.keypoints.as_ref()?;
+        // Keypoints are flat (x, y, visibility) triples; a trailing pair
+        // without its visibility still counts as a point.
+        let points = kpts
+            .chunks(3)
+            .filter(|p| p.len() >= 2)
+            .filter(|p| !labeled_only || p.get(2).is_some_and(|&v| v > 0.0));
+        let (mut x0, mut y0) = (f64::INFINITY, f64::INFINITY);
+        let (mut x1, mut y1) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        let mut any = false;
+        for p in points {
+            (x0, x1) = (x0.min(p[0]), x1.max(p[0]));
+            (y0, y1) = (y0.min(p[1]), y1.max(p[1]));
+            any = true;
+        }
+        any.then_some([x0, y0, x1 - x0, y1 - y0])
     }
 
     /// Area from the rotated box, and its axis-aligned envelope as the bbox.
@@ -894,20 +995,9 @@ impl COCO {
         match &ann.segmentation {
             Some(Segmentation::Polygon(polys)) => mask::fr_polys(polys, h, w).ok(),
             Some(Segmentation::Rect(bbox)) => mask::fr_bbox(bbox, h, w).ok(),
-            Some(Segmentation::CompressedRle { size, counts }) => {
-                mask::rle_from_string(counts, size[0], size[1]).ok()
-            }
-            Some(Segmentation::UncompressedRle { size, counts }) => {
-                // Same untrusted boundary as the compressed form, same
-                // validation: counts must fit the image (`rle_from_string`
-                // checks this for compressed input).
-                mask::check_counts(counts, size[0], size[1]).ok()?;
-                Some(Rle {
-                    h: size[0],
-                    w: size[1],
-                    counts: counts.clone(),
-                })
-            }
+            // Either RLE spelling, validated the same way: a string that does
+            // not decode, or runs past `h * w`, is no mask.
+            Some(seg) => seg.rle_ref()?.to_rle().ok(),
             None => {
                 // For bbox-only annotations, convert bbox to RLE
                 ann.bbox
@@ -935,23 +1025,20 @@ impl COCO {
     /// where it is — a compressed one straight off its `counts` string, a run
     /// list without the copy `ann_to_rle` makes of it.
     ///
-    /// Each RLE arm applies `ann_to_rle`'s gate and validation:
-    /// [`mask::area_from_string`] fails on exactly the strings
-    /// `ann_to_rle`'s decode rejects, and [`mask::check_counts`] is its check
-    /// on a run list, so a malformed RLE is `None` here too.
+    /// An RLE gets `ann_to_rle`'s gate and validation: [`RleRef::area`]
+    /// rejects exactly what [`RleRef::to_rle`] does, so a malformed RLE is
+    /// `None` here too.
+    ///
+    /// [`RleRef::area`]: mask::RleRef::area
+    /// [`RleRef::to_rle`]: mask::RleRef::to_rle
     fn mask_area(&self, ann: &Annotation) -> Option<u64> {
-        match &ann.segmentation {
-            // `ann_to_rle`'s gate on both: no mask for an image with no record.
-            Some(Segmentation::CompressedRle { size, counts }) => {
+        match ann.segmentation.as_ref().and_then(Segmentation::rle_ref) {
+            // `ann_to_rle`'s gate: no mask for an image with no record.
+            Some(rle) => {
                 self.raster_dims(ann)?;
-                mask::area_from_string(counts, size[0], size[1]).ok()
+                rle.area().ok()
             }
-            Some(Segmentation::UncompressedRle { size, counts }) => {
-                self.raster_dims(ann)?;
-                mask::check_counts(counts, size[0], size[1]).ok()?;
-                Some(mask::counts_area(counts))
-            }
-            _ => self.ann_to_rle(ann).map(|rle| mask::area(&rle)),
+            None => self.ann_to_rle(ann).map(|rle| mask::area(&rle)),
         }
     }
 

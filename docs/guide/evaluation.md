@@ -303,7 +303,9 @@ if dist.get_rank() == 0:
     ev = merged.finalize()
 ```
 
-A `StreamingEval` also pickles, so a metric object that holds one can be checkpointed or sent to another process as it is. The [API reference](../api/cocoeval.md#merge) has the merge rules.
+A `StreamingEval` also pickles, so a metric object that holds one can be checkpointed or sent to another process as it is.
+
+hotcoco runs its parallel work on one thread pool per process, sized the first time it is used from the `RAYON_NUM_THREADS` environment variable, or from the CPU count when that is unset. Under DDP every rank on a node evaluates at the same time, each with a pool the size of the whole node. Set `RAYON_NUM_THREADS` to the node's cores divided by its ranks before the first evaluation to split them between the ranks. The [API reference](../api/cocoeval.md#merge) has the merge rules.
 
 Analyses that need per-image records — TIDE, the confusion matrix, calibration, per-image diagnostics — need a batch `COCOeval`; the [API reference](../api/cocoeval.md#streamingeval) has what the finalized evaluator supports and the restrictions.
 

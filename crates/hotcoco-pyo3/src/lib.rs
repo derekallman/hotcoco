@@ -203,21 +203,31 @@ impl PyCOCO {
     }
 
     /// `load_res`'s three input forms, returning the owned `COCO` so a caller
-    /// can transform it before wrapping.
-    fn load_res_core(&self, res: &Bound<'_, PyAny>) -> PyResult<hotcoco_core::COCO> {
+    /// can transform it before wrapping. `segmentation` goes only with an array.
+    fn load_res_core(
+        &self,
+        res: &Bound<'_, PyAny>,
+        segmentation: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<hotcoco_core::COCO> {
         // Case 1: file path (str)
         if let Ok(path) = res.extract::<String>() {
+            if segmentation.is_some() {
+                return Err(segmentation_needs_array("load_res"));
+            }
             return self.inner.load_res(Path::new(&path)).map_err(to_pyerr);
         }
 
         // Case 2: list of annotation dicts
         if let Ok(list) = res.cast::<PyList>() {
+            if segmentation.is_some() {
+                return Err(segmentation_needs_array("load_res"));
+            }
             let anns = dict_list(list, "load_res", py_to_annotation)?;
             return self.inner.load_res_anns(anns).map_err(to_pyerr);
         }
 
         // Case 3: numpy array, shape (N, 6) or (N, 7)
-        if let Some(anns) = anns_from_array(res, "load_res", None)? {
+        if let Some(anns) = anns_from_array(res, "load_res", segmentation)? {
             return self.inner.load_res_anns(anns).map_err(to_pyerr);
         }
 
@@ -329,13 +339,24 @@ impl PyCOCO {
     ///   ``[image_id, x, y, w, h, score, category_id]``.
     ///   Matches pycocotools ``loadNumpyAnnotations`` convention.
     ///
+    /// ``segmentation``, with an array only: a list of ``N`` RLE or polygon
+    /// entries, one per row, for segm evaluation without a dict per detection.
+    /// Each row has a box, so its ``area`` is the box's, as for a dict that has
+    /// a ``bbox``; :meth:`update_anns` can replace it with the mask's.
+    ///
     /// Returns a new ``COCO`` object containing the detections, with images and
     /// categories copied from the ground truth. Missing fields (``area``,
     /// ``segmentation``) are computed automatically.
     ///
     /// Also available as ``loadRes()`` (camelCase alias).
-    fn load_res(&self, res: &Bound<'_, PyAny>) -> PyResult<PyCOCO> {
-        self.load_res_core(res).map(|inner| self.derived(inner))
+    #[pyo3(signature = (res, *, segmentation=None))]
+    fn load_res(
+        &self,
+        res: &Bound<'_, PyAny>,
+        segmentation: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyCOCO> {
+        self.load_res_core(res, segmentation)
+            .map(|inner| self.derived(inner))
     }
 
     /// ``LVISResults``' loader: ``load_res`` then the per-image cap, on a
@@ -343,7 +364,7 @@ impl PyCOCO {
     /// the cap is marked capped without the copy ``cap_detections_per_image``
     /// makes of a shared one. ``None`` keeps every detection.
     fn _load_res_capped(&self, res: &Bound<'_, PyAny>, max_det: Option<usize>) -> PyResult<PyCOCO> {
-        self.load_res_core(res)
+        self.load_res_core(res, None)
             .map(|inner| self.derived(inner.cap_detections_per_image(max_det)))
     }
 
@@ -695,9 +716,13 @@ impl PyCOCO {
         self.load_imgs(py, ids)
     }
 
-    #[pyo3(name = "loadRes")]
-    fn load_res_camel(&self, res: &Bound<'_, PyAny>) -> PyResult<PyCOCO> {
-        self.load_res(res)
+    #[pyo3(name = "loadRes", signature = (res, *, segmentation=None))]
+    fn load_res_camel(
+        &self,
+        res: &Bound<'_, PyAny>,
+        segmentation: Option<&Bound<'_, PyList>>,
+    ) -> PyResult<PyCOCO> {
+        self.load_res(res, segmentation)
     }
 
     #[pyo3(name = "annToRLE")]
@@ -1276,7 +1301,6 @@ impl PyCOCO {
         ids: Option<&Bound<'_, PyAny>>,
         area: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let mut missing = Vec::new();
         let updated = match (anns, ids) {
             (Some(_), Some(_)) => {
                 return Err(pyo3::exceptions::PyTypeError::new_err(
@@ -1294,7 +1318,7 @@ impl PyCOCO {
                         "update_anns: area= goes with ids=, not with a list of dicts",
                     ));
                 }
-                self.merged_from_dicts(anns, create, &mut missing)?
+                self.merged_from_dicts(anns, create)?
             }
             (None, Some(ids)) => {
                 if create {
@@ -1302,12 +1326,20 @@ impl PyCOCO {
                         "update_anns: create= goes with a list of dicts, not with ids=",
                     ));
                 }
-                self.edited_from_columns(ids, area, &mut missing)?
+                let (ids, area) = area_column(ids, area)?;
+                // A shared dataset is checked before `make_mut` copies it, so
+                // it is not copied just to fail.
+                if Arc::get_mut(&mut self.inner).is_none() {
+                    self.inner.check_ann_ids(&ids).map_err(to_pyerr)?;
+                }
+                if ids.is_empty() {
+                    return Ok(());
+                }
+                return Arc::make_mut(&mut self.inner)
+                    .update_ann_areas(&ids, &area)
+                    .map_err(to_pyerr);
             }
         };
-        if !missing.is_empty() {
-            return Err(to_pyerr(hotcoco_core::Error::UnknownAnnIds(missing)));
-        }
         // A shared dataset is copied on its first edit; an empty edit is none.
         if updated.is_empty() {
             return Ok(());
@@ -1459,18 +1491,18 @@ impl PyCOCO {
     }
 }
 
-/// `update_anns`'s two forms, kept out of `#[pymethods]`.
+/// `update_anns`'s dict form, kept out of `#[pymethods]`.
 impl PyCOCO {
     /// The annotations `anns` edits, each merged into a copy of the stored
     /// one, so a bad value further down the list leaves the dataset
-    /// untouched; unknown ids are collected into `missing`.
+    /// untouched; every unknown id is raised at once, as the core reports them.
     fn merged_from_dicts(
         &self,
         anns: &Bound<'_, PyList>,
         create: bool,
-        missing: &mut Vec<u64>,
     ) -> PyResult<Vec<Annotation>> {
         let mut updated = Vec::with_capacity(anns.len());
+        let mut missing = Vec::new();
         for item in anns {
             let dict = item.cast::<PyDict>().map_err(|_| {
                 pyo3::exceptions::PyTypeError::new_err("update_anns: list elements must be dicts")
@@ -1481,9 +1513,6 @@ impl PyCOCO {
                 ));
             };
             let id: u64 = convert::extract_int(&id)?;
-            // Merged into a copy, so a bad value further down the list leaves
-            // the dataset untouched; every unknown id is reported at once, as
-            // the core reports them.
             let Some(mut ann) = self.inner.get_ann(id).cloned() else {
                 missing.push(id);
                 continue;
@@ -1491,44 +1520,42 @@ impl PyCOCO {
             merge_ann_dict_checked(&mut ann, dict, create)?;
             updated.push(ann);
         }
+        if !missing.is_empty() {
+            return Err(to_pyerr(hotcoco_core::Error::UnknownAnnIds(missing)));
+        }
         Ok(updated)
     }
+}
 
-    /// The column form: `area[i]` is written to annotation `ids[i]`. Nothing
-    /// is applied here, so an unknown id leaves the dataset untouched.
-    fn edited_from_columns(
-        &self,
-        ids: &Bound<'_, PyAny>,
-        area: Option<&Bound<'_, PyAny>>,
-        missing: &mut Vec<u64>,
-    ) -> PyResult<Vec<Annotation>> {
-        let ids = convert::u64_vec(ids, "ids")?;
-        let Some(area) = area else {
-            return Err(pyo3::exceptions::PyTypeError::new_err(
-                "update_anns: ids= needs a column to write, such as area=",
-            ));
-        };
-        let area = convert::f64_vec(area, "area")?;
-        if area.len() != ids.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "update_anns: area has {} entries but ids has {}",
-                area.len(),
-                ids.len()
-            )));
-        }
-        let mut updated = Vec::with_capacity(ids.len());
-        for (id, area) in ids.into_iter().zip(area) {
-            match self.inner.get_ann(id) {
-                Some(ann) => {
-                    let mut ann = ann.clone();
-                    ann.area = Some(area);
-                    updated.push(ann);
-                }
-                None => missing.push(id),
-            }
-        }
-        Ok(updated)
+/// The `ids=` / `area=` columns of `update_anns`, read and checked to be the
+/// same length.
+fn area_column(
+    ids: &Bound<'_, PyAny>,
+    area: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(Vec<u64>, Vec<f64>)> {
+    let ids = convert::u64_vec(ids, "ids")?;
+    let Some(area) = area else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(
+            "update_anns: ids= needs a column to write, such as area=",
+        ));
+    };
+    let area = convert::f64_vec(area, "area")?;
+    if area.len() != ids.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "update_anns: area has {} entries but ids has {}",
+            area.len(),
+            ids.len()
+        )));
     }
+    Ok((ids, area))
+}
+
+/// The `TypeError` for `segmentation=` with detections that are not an array:
+/// a file or a list of dicts carries its own masks.
+fn segmentation_needs_array(what: &str) -> PyErr {
+    pyo3::exceptions::PyTypeError::new_err(format!(
+        "{what}: segmentation goes with a detection array; dicts carry their own"
+    ))
 }
 
 /// Detections from the array `load_res` accepts: any integer or float dtype
@@ -1666,20 +1693,17 @@ impl PyParams {
     fn iou_thrs(&self) -> Vec<f64> {
         self.inner.iou_thrs.clone()
     }
-    /// Assigning a grid that is the default rounded through ``float32``
-    /// stores the default grid exactly; see ``Params::set_iou_thrs``.
     #[setter]
     fn set_iou_thrs(&mut self, val: Vec<f64>) {
-        self.inner.set_iou_thrs(val);
+        self.inner.iou_thrs = val;
     }
     #[getter]
     fn rec_thrs(&self) -> Vec<f64> {
         self.inner.rec_thrs.clone()
     }
-    /// Same snapping rule as ``iou_thrs``, against the 101-point recall grid.
     #[setter]
     fn set_rec_thrs(&mut self, val: Vec<f64>) {
-        self.inner.set_rec_thrs(val);
+        self.inner.rec_thrs = val;
     }
     #[getter]
     fn max_dets(&self) -> Vec<usize> {
@@ -3104,8 +3128,10 @@ with columns ``[image_id, x, y, w, h, score, category_id]`` (an ``(N, 6)``
 array has no category column and puts every row in category 1, as
 ``load_res()`` does). The array skips building a dict per detection.
 ``segmentation``: with an array, a list of ``N`` RLE or polygon entries, one
-per row, for segm evaluation. Pass the detector's whole batch; a batch of
-one works.
+per row, for segm evaluation. Each row's ``area`` is its box's, as
+``load_res()`` gives a result that has a ``bbox``; for mask area, pass dicts
+with ``segmentation`` and no ``bbox``. Pass the detector's whole batch; a
+batch of one works.
 
 Raises ``KeyError`` naming every category id in the batch that ``categories``
 does not list, ground truth or detection, and leaves the evaluator as it was.
@@ -3124,10 +3150,7 @@ after ``finalize()``."]
         let gt = dict_list(gt_anns, "gt_anns", py_to_annotation)?;
         let dt = if let Ok(list) = dt_anns.cast::<PyList>() {
             if segmentation.is_some() {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    "update: segmentation goes with a detection array; a list of dicts \
-                     carries its own",
-                ));
+                return Err(segmentation_needs_array("update"));
             }
             dict_list(list, "dt_anns", py_to_annotation)?
         } else if let Some(anns) = anns_from_array(dt_anns, "update", segmentation)? {

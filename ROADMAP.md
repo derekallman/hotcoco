@@ -60,7 +60,10 @@ at the moment.
   matches, RefCOCO-style accuracy) to follow only if demand shows up.
 - **Ecosystem backends** — a FiftyOne evaluation backend surfacing TIDE errors
   and confusion matrices in its UI; `MeanAveragePrecision(backend="hotcoco")`
-  for torchmetrics; a Hugging Face `evaluate` metric module.
+  for torchmetrics; a Hugging Face `evaluate` metric module. The torchmetrics
+  backend needs a live `COCO.dataset` first: for bbox+segm, torchmetrics
+  switches each prediction's `area` by editing `coco_preds.dataset` in place,
+  and hotcoco's `dataset` is a copy.
 - **Bounded-memory evaluation** — a chunked results-file reader for
   `StreamingEval`, and an `accumulate()` whose working set does not scale with
   total detections, for evaluation sets past Objects365 scale.

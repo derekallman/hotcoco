@@ -125,8 +125,10 @@ re-indexes.
 | `COCO()` with no args | Creates empty instance with print statements | Creates empty instance silently |
 | Annotation IDs | Requires unique positive integers | Also accepts 0-based IDs |
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |
+| Evaluating annotations missing `area` | Raises `KeyError` | Derives it in the evaluator's copy: the mask's pixel count, then the box's `w × h`, for ground truth; the box first for detections, as `load_res` does. The dataset keeps its missing areas |
 | Mutating `coco.dataset` / `ev.params` internals in place | Mutates shared state | No-op on a copy — [assign back to apply](#getters-return-copies-assign-back-to-apply) |
 | `summarize()` or `run()` with non-default params | Prints the table only | Also emits a `UserWarning` per deviation — filter with `warnings.filterwarnings` |
+| Summary stats when `maxDets` is not `[1, 10, 100]` | Reads AP (`stats[0]`) at 100, or reports `-1` when 100 is not a cap; reads the other AP lines and the last four AR lines at the third cap | Reads every AP line and the last four AR lines at the largest cap, as faster-coco-eval does. With three caps only `stats[0]` differs: `maxDets=[1, 10, 500]` reports AP at 500 where pycocotools reports `-1` |
 | A key or string holding a lone surrogate, such as `"\ud800"` | Kept; `json.dump` writes it back escaped | Raises `UnicodeEncodeError` or `ValueError` — text is stored as UTF-8, which has no form for a lone surrogate |
 | Performance | Single-threaded C + Python | Multi-threaded Rust |
 

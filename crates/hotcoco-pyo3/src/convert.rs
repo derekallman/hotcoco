@@ -1,3 +1,4 @@
+use hotcoco_core::mask::RleRef;
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -536,18 +537,7 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
 pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     // Try as dict (CompressedRle or UncompressedRle)
     if let Ok(dict) = obj.cast::<PyDict>() {
-        let size: [u32; 2] = req!(dict, "size").extract()?;
-        let counts_obj = req!(dict, "counts");
-        if let Some(counts) = counts_str(&counts_obj)? {
-            return Ok(Segmentation::CompressedRle {
-                size,
-                counts: counts.to_owned(),
-            });
-        }
-        let counts: Vec<u32> = counts_obj
-            .extract()
-            .map_err(|_| counts_type_error(&counts_obj))?;
-        return Ok(Segmentation::UncompressedRle { size, counts });
+        return RleDict::read(dict)?.into_segmentation();
     }
     // Otherwise it's a polygon (list of lists)
     let polys: Vec<Vec<f64>> = obj.extract()?;
@@ -669,54 +659,123 @@ pub(crate) fn compressed_rle_to_py(
 }
 
 pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
-    read_rle_dict(dict, hotcoco_core::mask::rle_from_string, |rle| rle)
+    RleDict::read(dict)?.into_rle()
 }
 
-/// Read one RLE dict, handing a compressed `counts` string to `compressed`
-/// while it is still borrowed from the dict, or a run list to
-/// `uncompressed` as an [`Rle`].
+/// A core RLE error as the `ValueError` every RLE reader raises for a string
+/// that does not decode or runs that overrun the mask.
+pub(crate) fn rle_result<T>(result: Result<T, hotcoco_core::Error>) -> PyResult<T> {
+    result.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// An RLE dict, read: the one reader every RLE dict from Python goes through,
+/// a record's `segmentation` and every `hotcoco.mask` function alike, so the
+/// spellings they take and the errors they raise cannot drift apart.
 ///
-/// The split lets a caller that needs less than the decoded runs — `mask.area`
-/// needs only their sum — read them straight off the string. Takes the
-/// pycocotools spelling `{"size": [h, w], "counts": ...}` and
+/// Takes the pycocotools spelling `{"size": [h, w], "counts": ...}` and
 /// `{"h": h, "w": w, "counts": ...}`, with `counts` as `bytes`, `str`, or a
-/// list of ints in either. A string that does not decode is a `ValueError`,
-/// and so is a list whose runs sum past `h * w`, with the message the same
-/// runs give as a string.
-pub(crate) fn read_rle_dict<R>(
-    dict: &Bound<'_, PyDict>,
-    compressed: impl FnOnce(&str, u32, u32) -> Result<R, hotcoco_core::Error>,
-    uncompressed: impl FnOnce(Rle) -> R,
-) -> PyResult<R> {
-    let py = dict.py();
-    let (h, w, counts_obj) = if let Some(size_obj) = dict.get_item(pyo3::intern!(py, "size"))? {
-        let [h, w]: [u32; 2] = size_obj.extract()?;
-        let counts = dict.get_item(pyo3::intern!(py, "counts"))?.ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err("RLE dict has 'size' but missing 'counts'")
-        })?;
-        (h, w, counts)
-    } else {
-        let h: u32 = dict
-            .get_item(pyo3::intern!(py, "h"))?
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'h'"))?
-            .extract()?;
-        let w: u32 = dict
-            .get_item(pyo3::intern!(py, "w"))?
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'w'"))?
-            .extract()?;
+/// list of ints in either. A compressed `counts` stays in its Python object
+/// and [`view`](Self::view) borrows it; a run list is read here.
+pub(crate) struct RleDict<'py> {
+    h: u32,
+    w: u32,
+    counts: Counts<'py>,
+}
+
+enum Counts<'py> {
+    /// `bytes` or `str`, as [`counts_str`] reads it.
+    Compressed(Bound<'py, PyAny>),
+    Runs(Vec<u32>),
+}
+
+impl<'py> RleDict<'py> {
+    pub(crate) fn read(dict: &Bound<'py, PyDict>) -> PyResult<Self> {
+        let py = dict.py();
+        let missing = |key: &str| {
+            pyo3::exceptions::PyValueError::new_err(format!("RLE dict missing '{key}'"))
+        };
+        let (h, w) = if let Some(size) = dict.get_item(pyo3::intern!(py, "size"))? {
+            let [h, w]: [u32; 2] = size.extract()?;
+            (h, w)
+        } else if let Some(h) = dict.get_item(pyo3::intern!(py, "h"))? {
+            let w = dict
+                .get_item(pyo3::intern!(py, "w"))?
+                .ok_or_else(|| missing("w"))?;
+            (h.extract()?, w.extract()?)
+        } else {
+            return Err(missing("size"));
+        };
         let counts = dict
             .get_item(pyo3::intern!(py, "counts"))?
-            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'counts'"))?;
-        (h, w, counts)
-    };
-    let invalid = |e: hotcoco_core::Error| pyo3::exceptions::PyValueError::new_err(e.to_string());
-    if let Some(s) = counts_str(&counts_obj)? {
-        return compressed(s, h, w).map_err(invalid);
+            .ok_or_else(|| missing("counts"))?;
+        let counts = if is_compressed(&counts)? {
+            Counts::Compressed(counts)
+        } else {
+            Counts::Runs(counts.extract().map_err(|_| counts_type_error(&counts))?)
+        };
+        Ok(RleDict { h, w, counts })
     }
-    // Uncompressed RLE: a list of ints, held to the bound a string is.
-    let counts: Vec<u32> = counts_obj.extract()?;
-    hotcoco_core::mask::check_counts(&counts, h, w).map_err(invalid)?;
-    Ok(uncompressed(Rle { h, w, counts }))
+
+    /// The RLE as the core's borrowed view, for its area, box, or run list.
+    pub(crate) fn view(&self) -> PyResult<RleRef<'_>> {
+        let (h, w) = (self.h, self.w);
+        Ok(match &self.counts {
+            Counts::Compressed(obj) => RleRef::Compressed {
+                counts: compressed_counts(obj)?,
+                h,
+                w,
+            },
+            Counts::Runs(runs) => RleRef::Runs { counts: runs, h, w },
+        })
+    }
+
+    /// The RLE's run list, validated as [`view`](Self::view) validates it,
+    /// keeping a run list that was read rather than copying it.
+    pub(crate) fn into_rle(self) -> PyResult<Rle> {
+        let (h, w) = (self.h, self.w);
+        match self.counts {
+            Counts::Compressed(obj) => rle_result(hotcoco_core::mask::rle_from_string(
+                compressed_counts(&obj)?,
+                h,
+                w,
+            )),
+            Counts::Runs(counts) => {
+                rle_result(hotcoco_core::mask::check_counts(&counts, h, w))?;
+                Ok(Rle { h, w, counts })
+            }
+        }
+    }
+
+    /// The RLE as a record's `segmentation`. Not validated: a loaded dataset
+    /// keeps an RLE as given until a mask is drawn from it.
+    pub(crate) fn into_segmentation(self) -> PyResult<Segmentation> {
+        let size = [self.h, self.w];
+        Ok(match self.counts {
+            Counts::Compressed(obj) => Segmentation::CompressedRle {
+                size,
+                counts: compressed_counts(&obj)?.to_owned(),
+            },
+            Counts::Runs(counts) => Segmentation::UncompressedRle { size, counts },
+        })
+    }
+}
+
+/// Whether `counts` is a compressed string, `bytes` or `str`, judged by type
+/// alone: [`counts_str`] validates it when the string is read. A byte buffer
+/// it rejects is the same `TypeError` here.
+fn is_compressed(counts: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if counts.is_instance_of::<PyBytes>() || counts.is_instance_of::<PyString>() {
+        return Ok(true);
+    }
+    if counts.is_instance_of::<PyByteArray>() || counts.is_instance_of::<PyMemoryView>() {
+        return Err(counts_type_error(counts));
+    }
+    Ok(false)
+}
+
+/// The string of a `counts` that [`RleDict::read`] found compressed.
+fn compressed_counts<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<&'a str> {
+    counts_str(obj)?.ok_or_else(|| counts_type_error(obj))
 }
 
 /// One RLE dict from a Python object (`size` + `counts`, or `h` + `w` +

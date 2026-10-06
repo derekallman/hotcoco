@@ -16,8 +16,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
-    Flag, boxes_arg, compressed_rle_to_py, extract_coco_rle, extract_rle_list, f64_array,
-    py_to_rle, read_rle_dict, rle_to_coco_py, type_name,
+    Flag, RleDict, boxes_arg, compressed_rle_to_py, extract_coco_rle, extract_rle_list, f64_array,
+    py_to_rle, rle_result, rle_to_coco_py, type_name,
 };
 use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
@@ -429,27 +429,37 @@ pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 #[pyo3(text_signature = "(rle)")]
 pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
-        let a = rle_dict_area(dict)?;
-        Ok(a.into_pyobject(py)?.into_any().unbind())
-    } else {
-        let items: Vec<Bound<'_, PyAny>> = rle.extract()?;
-        // `uint32`, matching pycocotools' array dtype exactly — the parity
-        // suite checks dtypes, not just values. (The scalar path above hands
-        // back a Python int, which has no dtype to match.)
-        let areas = items
-            .iter()
-            .map(|item| rle_dict_area(item.cast::<PyDict>()?).map(|a| a as u32))
-            .collect::<PyResult<Vec<u32>>>()?;
-        let arr = PyArray1::from_vec(py, areas);
-        Ok(arr.into_any().unbind())
+        let a = rle_result(RleDict::read(dict)?.view()?.area())?;
+        return Ok(a.into_pyobject(py)?.into_any().unbind());
     }
+    // `uint32`, matching pycocotools' array dtype exactly — the parity suite
+    // checks dtypes, not just values. (The scalar path above hands back a
+    // Python int, which has no dtype to match.)
+    let areas = each_rle(rle, rmask::areas)?;
+    let arr = PyArray1::from_vec(py, areas.into_iter().map(|a| a as u32).collect());
+    Ok(arr.into_any().unbind())
 }
 
-/// One RLE dict's area. A compressed `counts` string is summed as it decodes,
-/// never expanded into a run list — torchmetrics calls `mask.area` twice per
-/// detection, one dict at a time, so this is a hot path.
-fn rle_dict_area(dict: &Bound<'_, PyDict>) -> PyResult<u64> {
-    read_rle_dict(dict, rmask::area_from_string, |rle| rmask::area(&rle))
+/// Run a core batch over a list of RLE dicts, in order, raising the first
+/// RLE's error.
+///
+/// The views borrow `counts` strings from the Python objects, which this call
+/// keeps alive and holds the GIL over, so the batch can decode them on
+/// rayon's workers: they read the bytes and never touch the interpreter.
+fn each_rle<T>(
+    obj: &Bound<'_, PyAny>,
+    batch: impl FnOnce(&[rmask::RleRef<'_>]) -> Vec<Result<T, hotcoco_core::Error>>,
+) -> PyResult<Vec<T>> {
+    let items: Vec<Bound<'_, PyAny>> = obj.extract()?;
+    let read = items
+        .iter()
+        .map(|item| RleDict::read(item.cast::<PyDict>()?))
+        .collect::<PyResult<Vec<_>>>()?;
+    let views = read
+        .iter()
+        .map(RleDict::view)
+        .collect::<PyResult<Vec<_>>>()?;
+    batch(&views).into_iter().map(rle_result).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -467,26 +477,12 @@ fn rle_dict_area(dict: &Bound<'_, PyDict>) -> PyResult<u64> {
 #[pyo3(text_signature = "(rle)")]
 pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
-        let arr = PyArray1::from_vec(py, rle_dict_bbox(dict)?.to_vec());
-        Ok(arr.into_any().unbind())
-    } else {
-        let items: Vec<Bound<'_, PyAny>> = rle.extract()?;
-        let mut data = Vec::with_capacity(items.len() * 4);
-        for item in &items {
-            data.extend_from_slice(&rle_dict_bbox(item.cast::<PyDict>()?)?);
-        }
-        f64_array(py, data, [items.len(), 4])
+        let bbox = rle_result(RleDict::read(dict)?.view()?.to_bbox())?;
+        return Ok(PyArray1::from_vec(py, bbox.to_vec()).into_any().unbind());
     }
-}
-
-/// One RLE dict's box, read off a compressed `counts` string as it decodes,
-/// like [`rle_dict_area`].
-fn rle_dict_bbox(dict: &Bound<'_, PyDict>) -> PyResult<[f64; 4]> {
-    read_rle_dict(
-        dict,
-        |s, h, w| rmask::area_and_bbox_from_string(s, h, w).map(|(_, bbox)| bbox),
-        |rle| rmask::to_bbox(&rle),
-    )
+    let boxes = each_rle(rle, rmask::bboxes)?;
+    let n = boxes.len();
+    f64_array(py, boxes.into_iter().flatten().collect(), [n, 4])
 }
 
 /// Alias for `to_bbox` matching pycocotools naming.
@@ -646,8 +642,7 @@ pub fn rle_to_string(rle: &Bound<'_, PyDict>) -> PyResult<String> {
 #[pyfunction]
 #[pyo3(text_signature = "(s, h, w)")]
 pub fn rle_from_string(py: Python<'_>, s: &str, h: u32, w: u32) -> PyResult<Py<PyAny>> {
-    let rle = rmask::rle_from_string(s, h, w)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let rle = rle_result(rmask::rle_from_string(s, h, w))?;
     rle_to_coco_py(py, &rle)
 }
 

@@ -5,6 +5,7 @@ identical output (same types, same values).
 """
 
 import copy
+import json
 
 import numpy as np
 import pycocotools.mask as pm
@@ -283,6 +284,55 @@ class TestCountsSpellings:
         hw = {"h": 10, "w": 10, "counts": counts}
         assert hm.area(hw) == int(m.sum())
         np.testing.assert_array_equal(hm.decode(hw), m)
+
+    def test_a_record_reads_its_segmentation_the_same_way(self, tmp_path):
+        """A record's ``segmentation`` takes the spellings the ``mask`` functions
+        take, from a dict and from a JSON file alike."""
+        m, rle = self._mask_and_rle()
+        counts = rle["counts"].decode("ascii")
+        spellings = [{"size": [10, 10], "counts": counts}, {"h": 10, "w": 10, "counts": counts}]
+        anns = [
+            {"id": i, "image_id": 1, "category_id": 1, "iscrowd": 0, "segmentation": seg}
+            for i, seg in enumerate(spellings, start=1)
+        ]
+        dataset = {
+            "images": [{"id": 1, "height": 10, "width": 10}],
+            "annotations": anns,
+            "categories": [{"id": 1, "name": "a"}],
+        }
+        path = tmp_path / "gt.json"
+        path.write_text(json.dumps(dataset))
+        for coco in (COCO(dataset), COCO(str(path))):
+            for ann in coco.load_anns([1, 2]):
+                np.testing.assert_array_equal(coco.ann_to_mask(ann), m)
+
+
+def test_lists_past_the_parallel_threshold_match_pycocotools():
+    """``area`` and ``toBbox`` on a list decode in parallel once it is long enough;
+    the results must still be pycocotools', in order, and a bad RLE must raise
+    its own error, the first in the list."""
+    rng = np.random.default_rng(7)
+    masks = [
+        np.asfortranarray(rng.random(tuple(rng.integers(1, 40, 2))) < rng.random()).astype(np.uint8)
+        for _ in range(1500)
+    ]
+    rles = [pm.encode(m) for m in masks]
+    # pycocotools' own list form overflows a uint8 past 255 RLEs, so the
+    # reference is taken one RLE at a time.
+    want_area = np.array([pm.area(r) for r in rles], dtype=np.uint32)
+    want_bbox = np.array([pm.toBbox(r) for r in rles])
+    np.testing.assert_array_equal(hm.area(rles), want_area)
+    np.testing.assert_array_equal(hm.toBbox(rles), want_bbox)
+    # Run lists alongside strings: the same numbers through the other spelling.
+    runs = [{"size": r["size"], "counts": _runs_of(m)} if i % 3 else r for i, (m, r) in enumerate(zip(masks, rles))]
+    np.testing.assert_array_equal(hm.area(runs), want_area)
+    np.testing.assert_array_equal(hm.toBbox(runs), want_bbox)
+    bad = list(rles)
+    bad[1200] = {"size": [2, 2], "counts": [0, 5]}
+    bad[1300] = {"size": [2, 2], "counts": [0, 9]}
+    for fn in (hm.area, hm.toBbox):
+        with pytest.raises(ValueError, match="total counts 5 exceed"):
+            fn(bad)
 
 
 @pytest.mark.parametrize(

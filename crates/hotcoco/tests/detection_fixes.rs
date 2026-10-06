@@ -9,10 +9,11 @@
 #![allow(clippy::unwrap_used)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use hotcoco::detection::{CompareOpts, compare};
 use hotcoco::params::IouType;
-use hotcoco::types::{Annotation, Category, Dataset, Image};
+use hotcoco::types::{Annotation, Category, Dataset, Image, Segmentation};
 use hotcoco::{AreaRange, COCO, COCOeval};
 
 fn fixtures_dir() -> PathBuf {
@@ -332,6 +333,155 @@ fn eval_params_archive_is_self_explaining() {
         results.params.reference_deviations,
         ev.reference_deviations()
     );
+}
+
+// ---------------------------------------------------------------------------
+// F — a float32-rounded threshold grid is evaluated as given
+// ---------------------------------------------------------------------------
+
+/// The default grid as `torch.linspace` builds it, read back as `f64`.
+fn through_f32(grid: &[f64]) -> Vec<f64> {
+    grid.iter().map(|&x| f64::from(x as f32)).collect()
+}
+
+/// torchmetrics hands every COCO backend `f32` grids, and pycocotools evaluates
+/// them as given. Replacing them with the default grid made hotcoco the one
+/// backend that disagreed. The grid stays as set, and the run reports one
+/// deviation that names the rounding: `AP50` and `AP75` are found, since 0.5
+/// and 0.75 are exact in `f32`, so the generic `iou_thrs` message would be wrong.
+#[test]
+fn float32_grids_are_kept_and_named_once() {
+    let mut ev = fixture_eval();
+    let iou = through_f32(&ev.params.iou_thrs);
+    let rec = through_f32(&ev.params.rec_thrs);
+    assert_ne!(iou, ev.params.iou_thrs, "fixture must drift");
+    ev.params.iou_thrs = iou.clone();
+    ev.params.rec_thrs = rec.clone();
+    ev.run();
+
+    assert_eq!(ev.params.iou_thrs, iou);
+    assert_eq!(ev.params.rec_thrs, rec);
+    let deviations = ev.reference_deviations();
+    assert_eq!(deviations.len(), 1, "{deviations:?}");
+    assert!(
+        deviations[0]
+            .starts_with("iou_thrs and rec_thrs are the default grids rounded through float32"),
+        "{deviations:?}"
+    );
+    assert_eq!(ev.provenance(), hotcoco::Provenance::Extension);
+    let stats = ev.stats().unwrap();
+    assert!(
+        stats[1] >= 0.0 && stats[2] >= 0.0,
+        "AP50/AP75 found: {stats:?}"
+    );
+}
+
+/// One rounded grid is named alone; a grid off by more than rounding keeps the
+/// generic message.
+#[test]
+fn rounding_and_real_deviations_are_told_apart() {
+    let mut ev = fixture_eval();
+    ev.params.rec_thrs = through_f32(&ev.params.rec_thrs);
+    let deviations = ev.reference_deviations();
+    assert_eq!(deviations.len(), 1, "{deviations:?}");
+    assert!(
+        deviations[0].starts_with("rec_thrs is the default grid rounded through float32"),
+        "{deviations:?}"
+    );
+
+    let mut ev = fixture_eval();
+    ev.params.iou_thrs[3] += 2e-6;
+    let deviations = ev.reference_deviations();
+    assert_eq!(deviations.len(), 1, "{deviations:?}");
+    assert!(
+        deviations[0].starts_with("iou_thrs differ from default"),
+        "{deviations:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G — an annotation without `area` is evaluated with a derived one
+// ---------------------------------------------------------------------------
+
+/// A ground truth with no `area` used to read as 0, so every one landed in
+/// `small`, while `StreamingEval` derived it. Batch evaluation now derives it
+/// too: the mask's pixel count, or the box's `w × h` without a mask. The
+/// caller's dataset keeps its missing areas; the evaluator fills its own copy.
+#[test]
+fn missing_areas_are_derived_and_the_callers_dataset_is_untouched() {
+    let polygon = vec![vec![10.0, 10.0, 20.0, 10.0, 20.0, 20.0, 10.0, 20.0]];
+    let gt_anns = |with_area: Option<(f64, f64)>| {
+        let mut small = ann(1, Some([10.0, 10.0, 10.0, 10.0]));
+        small.segmentation = Some(Segmentation::Polygon(polygon.clone()));
+        let mut medium = ann(2, Some([100.0, 100.0, 50.0, 50.0]));
+        small.area = with_area.map(|a| a.0);
+        medium.area = with_area.map(|a| a.1);
+        vec![small, medium]
+    };
+    let dets = vec![
+        det(1, Some([10.0, 10.0, 10.0, 10.0]), 0.9),
+        det(2, Some([101.0, 101.0, 50.0, 50.0]), 0.8),
+    ];
+    let run = |gt: Arc<COCO>| {
+        let dt = gt.load_res_anns(dets.clone()).unwrap();
+        let mut ev = COCOeval::new(Arc::clone(&gt), dt, IouType::Bbox);
+        ev.run();
+        ev.stats().unwrap().to_vec()
+    };
+
+    let missing = Arc::new(coco_from(gt_anns(None)));
+    let mask_area = missing
+        .ann_to_rle(&missing.dataset.annotations[0])
+        .map(|rle| hotcoco::mask::area(&rle) as f64)
+        .unwrap();
+    let derived = run(Arc::clone(&missing));
+    let given = run(Arc::new(coco_from(gt_anns(Some((mask_area, 2500.0))))));
+
+    assert_eq!(derived, given);
+    assert!(derived[4] >= 0.0, "the 50 x 50 box is medium: {derived:?}");
+    assert!(missing.dataset.annotations.iter().all(|a| a.area.is_none()));
+}
+
+/// A detection with no `area` takes its box's first, the order `load_res`
+/// derives a result's area in, not the mask-first order a ground truth takes.
+/// A ground truth's fallbacks: a mask of no pixels does not count, a rotated
+/// box counts as itself, not its envelope, and keypoints count only where
+/// labeled — an unlabeled one sits at `(0, 0)`.
+#[test]
+fn missing_areas_follow_each_side_of_the_rule() {
+    let mut boxed = det(1, Some([0.0, 0.0, 20.0, 20.0]), 0.9);
+    boxed.area = None;
+    boxed.segmentation = Some(Segmentation::Polygon(vec![vec![
+        0.0, 0.0, 5.0, 0.0, 5.0, 5.0, 0.0, 5.0,
+    ]]));
+    let mut keypoints_only = ann(2, None);
+    keypoints_only.keypoints = Some(vec![10.0, 10.0, 2.0, 30.0, 50.0, 2.0, 0.0, 0.0, 0.0]);
+    let mut empty_polygon = ann(3, Some([100.0, 100.0, 50.0, 50.0]));
+    empty_polygon.area = None;
+    empty_polygon.segmentation = Some(Segmentation::Polygon(vec![]));
+    let mut rotated = ann(4, Some([0.0, 0.0, 42.0, 42.0]));
+    rotated.area = None;
+    rotated.obb = Some(Box::new([
+        21.0,
+        21.0,
+        30.0,
+        30.0,
+        std::f64::consts::FRAC_PI_4,
+    ]));
+
+    let gt = coco_from(vec![
+        ann(1, Some([0.0, 0.0, 20.0, 20.0])),
+        keypoints_only,
+        empty_polygon,
+        rotated,
+    ]);
+    let ev = COCOeval::new(gt, coco_from(vec![boxed]), IouType::Bbox);
+
+    assert_eq!(ev.coco_dt().dataset.annotations[0].area, Some(400.0));
+    let area = |id| ev.coco_gt().get_ann(id).unwrap().area;
+    assert_eq!(area(2), Some(20.0 * 40.0));
+    assert_eq!(area(3), Some(2500.0));
+    assert_eq!(area(4), Some(900.0));
 }
 
 // ---------------------------------------------------------------------------

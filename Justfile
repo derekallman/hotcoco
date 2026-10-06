@@ -26,6 +26,11 @@ fuzz: build
 fuzz-dropin: build
     uv run pytest tests/fuzz_dropin.py -x -q -p no:cacheprovider
 
+# Fuzz torchmetrics' MeanAveragePrecision with hotcoco swapped in, as RF-DETR
+# runs it, against the pycocotools backend (~2 min)
+fuzz-torchmetrics: build
+    uv run --group torchmetrics python scripts/fuzz_torchmetrics.py
+
 # Verify metric parity vs pycocotools on COCO val2017
 parity: build
     uv run python scripts/parity.py

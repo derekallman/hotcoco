@@ -497,6 +497,24 @@ pub enum Segmentation {
 }
 
 impl Segmentation {
+    /// Either RLE spelling as a [`RleRef`](crate::mask::RleRef); `None` for a
+    /// polygon or a box.
+    pub fn rle_ref(&self) -> Option<crate::mask::RleRef<'_>> {
+        match self {
+            Segmentation::CompressedRle { size, counts } => Some(crate::mask::RleRef::Compressed {
+                counts,
+                h: size[0],
+                w: size[1],
+            }),
+            Segmentation::UncompressedRle { size, counts } => Some(crate::mask::RleRef::Runs {
+                counts,
+                h: size[0],
+                w: size[1],
+            }),
+            Segmentation::Polygon(_) | Segmentation::Rect(_) => None,
+        }
+    }
+
     /// The polygon list of a `Polygon` or `Rect` segmentation; `None` for an RLE.
     pub fn polygons(&self) -> Option<Cow<'_, [Vec<f64>]>> {
         match self {
@@ -589,17 +607,27 @@ impl<'de> Deserialize<'de> for Segmentation {
                 mut map: A,
             ) -> Result<Segmentation, A::Error> {
                 let mut size: Option<[u32; 2]> = None;
+                let (mut h, mut w): (Option<u32>, Option<u32>) = (None, None);
                 let mut counts: Option<Counts> = None;
                 while let Some(key) = map.next_key::<std::borrow::Cow<'_, str>>()? {
                     match key.as_ref() {
                         "size" => size = Some(map.next_value()?),
+                        // The `{"h", "w", "counts"}` spelling the Python
+                        // readers take too.
+                        "h" => h = Some(map.next_value()?),
+                        "w" => w = Some(map.next_value()?),
                         "counts" => counts = Some(map.next_value()?),
                         _ => {
                             map.next_value::<serde::de::IgnoredAny>()?;
                         }
                     }
                 }
-                let size = size.ok_or_else(|| serde::de::Error::missing_field("size"))?;
+                let size = match (size, h, w) {
+                    (Some(size), _, _) => size,
+                    (None, Some(h), Some(w)) => [h, w],
+                    (None, Some(_), None) => return Err(serde::de::Error::missing_field("w")),
+                    (None, None, _) => return Err(serde::de::Error::missing_field("size")),
+                };
                 match counts.ok_or_else(|| serde::de::Error::missing_field("counts"))? {
                     Counts::Str(counts) => Ok(Segmentation::CompressedRle { size, counts }),
                     Counts::Ints(counts) => Ok(Segmentation::UncompressedRle { size, counts }),

@@ -12,6 +12,9 @@
 //! `pycocotools.mask.*`. The re-export is one-way path sugar, never the
 //! definition.
 
+use rayon::prelude::*;
+
+use crate::primitives::sim::worth_parallel;
 use crate::types::Rle;
 
 pub use crate::primitives::sim::{bbox_iou, mask_iou as iou};
@@ -164,7 +167,7 @@ pub fn area(rle: &Rle) -> u64 {
 /// [`area`] of a run list that is not in an [`Rle`], so a caller holding
 /// only the counts does not copy them into one.
 #[inline]
-pub(crate) fn counts_area(counts: &[u32]) -> u64 {
+fn counts_area(counts: &[u32]) -> u64 {
     counts
         .iter()
         .skip(1)
@@ -176,11 +179,16 @@ pub(crate) fn counts_area(counts: &[u32]) -> u64 {
 /// Compute the bounding box `[x, y, w, h]` of an RLE mask.
 #[inline]
 pub fn to_bbox(rle: &Rle) -> [f64; 4] {
-    if rle.h == 0 || rle.w == 0 {
+    runs_bbox(&rle.counts, rle.h, rle.w)
+}
+
+/// [`to_bbox`] of a run list that is not in an [`Rle`].
+fn runs_bbox(counts: &[u32], h: u32, w: u32) -> [f64; 4] {
+    if h == 0 || w == 0 {
         return [0.0, 0.0, 0.0, 0.0];
     }
-    let mut extent = Extent::new(rle.h, rle.w);
-    for &count in &rle.counts {
+    let mut extent = Extent::new(h, w);
+    for &count in counts {
         extent.push(count);
     }
     extent.bbox()
@@ -902,6 +910,91 @@ pub fn check_counts(counts: &[u32], h: u32, w: u32) -> crate::error::Result<()> 
         return Err(FrStringError::Overrun { total, hw }.into());
     }
     Ok(())
+}
+
+/// One RLE in either of COCO's spellings, borrowed from wherever it is held:
+/// a compressed `counts` string or a run list, with the mask's `h` and `w`.
+///
+/// The one owner of what both spellings mean. A
+/// [`Segmentation`](crate::types::Segmentation) RLE
+/// ([`Segmentation::rle_ref`](crate::types::Segmentation::rle_ref)) and an RLE
+/// dict read from Python both become one of these, so the area, box, and run
+/// list of either spelling come from one place. Every method validates as
+/// [`rle_from_string`] does: a string that does not decode, or runs that sum
+/// past `h * w` ([`check_counts`]), is an error.
+#[derive(Clone, Copy, Debug)]
+pub enum RleRef<'a> {
+    /// The LEB128-like `counts` string of a compressed RLE.
+    Compressed { counts: &'a str, h: u32, w: u32 },
+    /// The run list of an uncompressed RLE.
+    Runs { counts: &'a [u32], h: u32, w: u32 },
+}
+
+impl RleRef<'_> {
+    /// The foreground pixel count, read straight off either spelling.
+    pub fn area(self) -> crate::error::Result<u64> {
+        match self {
+            RleRef::Compressed { counts, h, w } => area_from_string(counts, h, w),
+            RleRef::Runs { counts, h, w } => {
+                check_counts(counts, h, w)?;
+                Ok(counts_area(counts))
+            }
+        }
+    }
+
+    /// The bounding box `[x, y, w, h]`, as [`to_bbox`] gives it.
+    pub fn to_bbox(self) -> crate::error::Result<[f64; 4]> {
+        self.area_and_bbox().map(|(_, bbox)| bbox)
+    }
+
+    /// The area and the bounding box, from one pass over a compressed string
+    /// ([`area_and_bbox_from_string`]).
+    pub fn area_and_bbox(self) -> crate::error::Result<(u64, [f64; 4])> {
+        match self {
+            RleRef::Compressed { counts, h, w } => area_and_bbox_from_string(counts, h, w),
+            RleRef::Runs { counts, h, w } => {
+                check_counts(counts, h, w)?;
+                Ok((counts_area(counts), runs_bbox(counts, h, w)))
+            }
+        }
+    }
+
+    /// The run list, as an owned [`Rle`].
+    pub fn to_rle(self) -> crate::error::Result<Rle> {
+        match self {
+            RleRef::Compressed { counts, h, w } => rle_from_string(counts, h, w),
+            RleRef::Runs { counts, h, w } => {
+                check_counts(counts, h, w)?;
+                Ok(Rle {
+                    h,
+                    w,
+                    counts: counts.to_vec(),
+                })
+            }
+        }
+    }
+}
+
+/// [`RleRef::area`] of every RLE, in order. Each mask decodes on its own, so a
+/// batch past the crate's fan-out threshold decodes in parallel.
+pub fn areas(rles: &[RleRef<'_>]) -> Vec<crate::error::Result<u64>> {
+    each(rles, RleRef::area)
+}
+
+/// [`RleRef::to_bbox`] of every RLE, in order, in parallel as [`areas`] is.
+pub fn bboxes(rles: &[RleRef<'_>]) -> Vec<crate::error::Result<[f64; 4]>> {
+    each(rles, RleRef::to_bbox)
+}
+
+fn each<'a, T: Send>(
+    rles: &[RleRef<'a>],
+    f: impl Fn(RleRef<'a>) -> crate::error::Result<T> + Sync + Send,
+) -> Vec<crate::error::Result<T>> {
+    if worth_parallel(rles.len()) {
+        rles.par_iter().map(|&rle| f(rle)).collect()
+    } else {
+        rles.iter().map(|&rle| f(rle)).collect()
+    }
 }
 
 /// Why a compressed `counts` string failed to decode, or a run list
@@ -1672,6 +1765,56 @@ mod tests {
                 rle.counts
             );
         }
+    }
+
+    /// Both spellings of one RLE give the same area, box, and runs through
+    /// [`RleRef`], and the batches keep their order on both sides of the
+    /// parallel threshold, with each RLE's error at its own index.
+    #[test]
+    fn test_rle_ref_spellings_agree_and_batches_keep_order() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x0BE0_11EF);
+        let rles: Vec<Rle> = (0..2000).map(|_| random_rle(&mut rng)).collect();
+        let strings: Vec<String> = rles.iter().map(rle_to_string).collect();
+        let mut views = Vec::new();
+        for (rle, s) in rles.iter().zip(&strings) {
+            let (h, w) = (rle.h, rle.w);
+            let runs = RleRef::Runs {
+                counts: &rle.counts,
+                h,
+                w,
+            };
+            let compressed = RleRef::Compressed { counts: s, h, w };
+            for view in [runs, compressed] {
+                assert_eq!(view.area().unwrap(), area(rle));
+                assert_eq!(view.to_bbox().unwrap(), to_bbox(rle));
+                assert_eq!(view.to_rle().unwrap().counts, rle.counts);
+            }
+            views.extend([runs, compressed]);
+        }
+        // Runs past h * w, at a known index of each batch.
+        let overrun = [5u32, 5];
+        let bad = RleRef::Runs {
+            counts: &overrun,
+            h: 2,
+            w: 2,
+        };
+        views.insert(1500, bad);
+
+        for n in [10, views.len()] {
+            let got = areas(&views[..n]);
+            let boxes = bboxes(&views[..n]);
+            assert_eq!(got.len(), n);
+            for (i, view) in views[..n].iter().enumerate() {
+                assert_eq!(got[i].is_err(), i == 1500, "area at {i}");
+                assert_eq!(boxes[i].is_err(), i == 1500, "bbox at {i}");
+                if i != 1500 {
+                    assert_eq!(*got[i].as_ref().unwrap(), view.area().unwrap());
+                    assert_eq!(*boxes[i].as_ref().unwrap(), view.to_bbox().unwrap());
+                }
+            }
+        }
+        assert!(bad.to_rle().is_err());
     }
 
     #[test]

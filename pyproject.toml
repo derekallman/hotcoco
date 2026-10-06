@@ -131,5 +131,16 @@ typeCheckingMode = "basic"
 venvPath = "."
 venv = ".venv"
 
+[dependency-groups]
+# scripts/fuzz_torchmetrics.py: torchmetrics' MeanAveragePrecision with hotcoco
+# swapped in, the way RF-DETR evaluates. A group, not an extra, so it is not
+# published and `just setup` does not install it.
+torchmetrics = [
+    "torchmetrics[detection]>=1.8.2",
+    # The torchvision release paired with the torch the lock holds; a newer one
+    # requires a newer torch and moves it for the `torch` extra too.
+    "torchvision<0.26",
+]
+
 [tool.uv]
 package = false

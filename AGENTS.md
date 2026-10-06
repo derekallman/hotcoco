@@ -46,6 +46,7 @@ All COCO evaluation metrics must match pycocotools: 12 for bbox/segm, 10 for key
 - `just test` runs `cargo test` + the whole Python suite (bare `pytest`) — the same set CI runs, no `data/` needed, under 30s.
 - `just fuzz` runs the hypothesis-based fuzzer (`tests/fuzz_parity.py`) — use to hunt for parity bugs, not in CI. Takes several minutes.
 - `just fuzz-dropin` runs `tests/fuzz_dropin.py` — one dataset under many in-memory spellings (bytes `counts`, numpy scalars, tuples, missing optional keys) versus pycocotools. `fuzz_parity.py` goes through JSON files and cannot see any of those; this is the fuzzer that finds the issue #5 class. It fails only on a spelling that changes the numbers and prints loud gaps as a summary.
+- `just fuzz-torchmetrics` runs `scripts/fuzz_torchmetrics.py` — torchmetrics' `MeanAveragePrecision` with hotcoco swapped in, the way RF-DETR evaluates, versus the pycocotools backend. It is the only fuzzer that sees what torchmetrics does around the evaluator: `float32` threshold grids, `mask.encode` per predicted mask, `mask.area` per annotation, `COCO()` + `dataset =` + `createIndex()`. Its dependencies are the `torchmetrics` dependency group, which `just setup` does not install.
 - Model: use the fuzzer to *find* bugs, then prove fixes with Rust integration tests in `crates/hotcoco/tests/`.
 
 ### What CI does and does not check

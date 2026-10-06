@@ -353,7 +353,9 @@ type:
 === "Python"
 
     ```python
-    load_res(res: str | list[dict] | np.ndarray) -> COCO
+    load_res(
+        res: str | list[dict] | np.ndarray, *, segmentation: list | None = None
+    ) -> COCO
     ```
 
     Three input formats are accepted:
@@ -379,6 +381,18 @@ type:
     ```python
     arr = np.array([[42, 10, 20, 100, 80, 0.95, 1]], dtype=np.float64)
     coco_dt = coco_gt.load_res(arr)
+    ```
+
+    With an array, `segmentation` is a list of `N` RLE or polygon entries, one per
+    row, for segm evaluation without a dict per detection; with a file or a list
+    of dicts it raises `TypeError`, since each dict carries its own. Every row has
+    a box, so each detection's `area` is the box's `w × h`, as for a result dict
+    that has a `bbox`. For mask-area size buckets, as torchmetrics computes them,
+    write the mask areas with [`update_anns`](#update_anns) before evaluating;
+    with RLE masks, [`mask.area`](mask.md#area) gives them in one call:
+    ```python
+    coco_dt = coco_gt.load_res(arr, segmentation=rles)
+    coco_dt.update_anns(ids=range(1, len(arr) + 1), area=mask.area(rles))  # rows are ids 1..N
     ```
 
 === "Rust"
@@ -512,10 +526,13 @@ shape: assign [`dataset`](#dataset) for those.
 
     ```rust
     fn update_anns(&mut self, anns: Vec<Annotation>) -> Result<()>
+    fn update_ann_areas(&mut self, ids: &[u64], areas: &[f64]) -> Result<()>
     ```
 
-    Replaces whole records by `id`; an unknown id is `Error::UnknownAnnIds`
-    and nothing is written. For a partial edit, change the record in
+    `update_anns` replaces whole records by `id`; `update_ann_areas` writes
+    `areas[i]` to annotation `ids[i]` in place, the column form, without
+    copying each record. An unknown id is `Error::UnknownAnnIds` and nothing
+    is written. For another partial edit, change the record in
     `coco.dataset.annotations` and call `create_index()`.
 
 Raises `KeyError` if a dict has no `id`, for the ids the dataset does not

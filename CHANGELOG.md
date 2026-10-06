@@ -16,8 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka Borovec.
 - *Rust API:* `StreamingEval::unknown_category_ids` returns the category ids in
   a set of annotations that the evaluator was not built with, the same check
-  `update()` makes, and `Params::set_iou_thrs` / `Params::set_rec_thrs` store a
-  threshold grid with the snapping rule described under Changed.
+  `update()` makes.
 - **Column-form inputs, with no Python dict per annotation.** Building dicts
   had become the dominant cost on the caller's side: about two thirds of
   `StreamingEval.update()`. Three additions, all additive:
@@ -26,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     optional list of `N` RLE or polygon entries for `segm`. On 3,000 images of
     300 detections, `update()` takes about a third as long with arrays as with
     dicts. `load_res()` and `update()` read the array through one parser, so an
-    `(N, 6)` array means category 1 in both.
+    `(N, 6)` array means category 1 in both. Every row has a box, so a
+    detection's area is the box's, as `load_res()` gives a result with a
+    `bbox`, even for `segm`; for mask-area size buckets, pass dicts.
   - `COCO.from_arrays(images, categories, image_ids, category_ids, boxes, *,
     ids, area, iscrowd, rles)` builds a dataset equal to `COCO(dict)` over the
     same annotations. On 300,000 annotations it takes 0.015 s where building
@@ -63,6 +64,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - *Rust API:* `hotcoco::mask::check_counts(counts, h, w)` rejects a run
   list that sums past `h * w`, with the message `rle_from_string` gives for
   a compressed string that does.
+- **`just fuzz-torchmetrics`** runs `scripts/fuzz_torchmetrics.py`:
+  torchmetrics' `MeanAveragePrecision` with hotcoco swapped in, the way
+  RF-DETR evaluates, against its pycocotools backend, requiring every output
+  to match exactly. It found the `float32` grid divergence described under
+  Changed. Its dependencies are a new `torchmetrics` dependency group, which
+  is not published and which `just setup` does not install.
+- **`load_res(array, segmentation=rles)` takes masks with the detection
+  array,** one RLE or polygon per row, as `StreamingEval.update()` does, so
+  segm results load with no dict per detection. Each row has a box, so its
+  `area` is the box's, as for a result dict with a `bbox`; the column form of
+  `update_anns` writes mask areas in its place. On 500 COCO val2017 images
+  with 46,000 mask detections, an RF-DETR-style bbox+segm evaluation from
+  arrays takes about 92 ms where the same evaluation from torchmetrics' dicts
+  takes about 310 ms, with identical metrics. *Rust API:* `mask::RleRef`
+  borrows an RLE in either spelling, with `area()`, `to_bbox()`,
+  `area_and_bbox()`, and `to_rle()`; `Segmentation::rle_ref()`;
+  `mask::areas` and `mask::bboxes` for batches; `COCO::update_ann_areas`
+  and `COCO::check_ann_ids`.
 
 ### Changed
 
@@ -89,17 +108,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `params.cat_ids` is not an error, and with `use_cats` false nothing is
   checked. Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by
   Jirka Borovec.
-- **Assigning a `float32` threshold grid to `Params.iou_thrs` or
-  `Params.rec_thrs` stores the default grid.** A grid built with
-  `torch.linspace` and read back as `float64` sits up to 4e-8 from the
-  default, and every `summarize()` warned that the grid differed. It was not
-  only noise: on a category with 20 ground truths the `float32` recall grid
-  changed 240 of 12,120 precision cells, by up to 0.33, because recall `k / n`
-  lands exactly on a grid point that is one ulp too high to include it. A
-  grid of the same length with every point within 1e-6 of the default now
-  becomes the default exactly, so the numbers are the default grid's and the
-  warning goes away. Any other grid is stored as given and still warns. Based
-  on [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka Borovec.
+- **A `float32` threshold grid gets one warning that says what it is.**
+  torchmetrics builds both grids with `torch.linspace`, and read back as
+  `float64` they sit up to 4e-8 from the default. `summarize()` gave two
+  warnings for them, and one was wrong: it said the AP50 and AP75 lines might
+  show -1.000, but 0.5 and 0.75 are exact in `float32`. It now gives one
+  warning, saying the grid is the default rounded through `float32`, is
+  evaluated as given as pycocotools evaluates it, and should be `float64` for
+  the reference numbers. The rounding is not only noise: on a category with
+  20 ground truths a `float32` recall grid moves 240 of 12,120 precision
+  cells, by up to 0.33, because recall `k / n` lands exactly on a grid point
+  that is one ulp too high to include it. A grid counts as rounded when it
+  has the default's length and every point is within 1e-6 of the default.
+  Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka
+  Borovec.
 - **Coding-agent instructions live in `AGENTS.md`,** which Codex and Claude
   Code both read; `CLAUDE.md` is a one-line import of it. The core-crate
   architecture rules moved to `crates/hotcoco/AGENTS.md`, and the docs owner
@@ -167,6 +189,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   element at a time: `COCO.from_arrays` with 100,000 `float32` boxes takes
   about 5 ms where it took about 45 ms. The cast is exact for `float32` and
   for integers up to 2^53, so the results are unchanged.
+- **`mask.area` and `mask.toBbox` decode a list of 1,024 RLEs or more across
+  threads,** and `update_anns(ids=, area=)` writes the areas in place instead
+  of copying each annotation, segmentation included. On 46,000 detection
+  masks from COCO val2017, `mask.area` takes about 12 ms where it took about
+  27 ms, and `update_anns` of their areas about 0.4 ms where it took about
+  6 ms.
+- **One reader for every RLE dict.** A record's `segmentation` and the
+  `hotcoco.mask` functions read RLE dicts through the same code, so they take
+  the same spellings and raise the same errors: a record now also takes
+  `{"h": h, "w": w, "counts": ...}`, from a dict or a JSON file, a missing
+  key raises `ValueError: RLE dict missing 'size'` from either, and a
+  `counts` that is not a string or a list of ints raises the same
+  `TypeError` from either.
 - **`mask.encode` holds the GIL while it reads the numpy buffer.** Releasing
   it for a scan of about 10 µs cost about 2.5 ms per mask whenever another
   Python thread was busy, waiting out the switch interval to get it back;
@@ -395,6 +430,16 @@ Each entry below has a regression test that fails on the old code.
   `num_keypoints`, `obb`, `score`, and `is_group_of` on an annotation. A
   `json.load`-ed file with `null` in one raised `TypeError`; pycocotools
   takes it. In `update_anns()`, `None` clears the field.
+- **`COCOeval` derives a missing `area`, as `StreamingEval` does.** An
+  annotation with no `area` read as 0, so every such object landed in
+  `small`, while `StreamingEval` derived it: the same annotations gave two
+  answers. Both evaluators now fill in their own copy of the datasets, and
+  the dataset you pass keeps its missing areas. A ground truth takes its
+  mask's pixel count, then its rotated box's `w × h`, then its box's, then
+  the extent of its labeled keypoints; a mask of no pixels, such as
+  `"segmentation": []`, does not count. A detection takes the order
+  `load_res` derives a result's area in: box, mask, keypoints, rotated box.
+  pycocotools raises `KeyError` here instead.
 
 ## [1.1.0] - 2026-10-01
 

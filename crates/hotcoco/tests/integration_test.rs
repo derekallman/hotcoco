@@ -7181,6 +7181,35 @@ fn update_anns_unknown_id_errors_and_writes_nothing() {
     assert_eq!(coco.dataset.annotations.len(), 1);
 }
 
+/// The column form of an area edit writes in place, checks every id before
+/// it writes, and leaves the rest of each annotation alone.
+#[test]
+fn update_ann_areas_writes_in_place_and_checks_every_id_first() {
+    let mut masked = ann(2, [0.0, 0.0, 4.0, 4.0]);
+    masked.segmentation = Some(Segmentation::CompressedRle {
+        size: [4, 4],
+        counts: "04".to_string(),
+    });
+    let mut coco = COCO::from_dataset(dataset(
+        vec![img(1)],
+        vec![cat(1, "thing")],
+        vec![ann(1, [0.0, 0.0, 10.0, 10.0]), masked],
+    ));
+
+    coco.update_ann_areas(&[2, 1], &[16.0, 7.0]).unwrap();
+    assert_eq!(coco.get_ann(1).unwrap().area, Some(7.0));
+    assert_eq!(coco.get_ann(2).unwrap().area, Some(16.0));
+    assert!(matches!(
+        &coco.get_ann(2).unwrap().segmentation,
+        Some(Segmentation::CompressedRle { counts, .. }) if counts == "04"
+    ));
+
+    let err = coco.update_ann_areas(&[1, 9], &[1.0, 2.0]).unwrap_err();
+    assert!(matches!(err, hotcoco::Error::UnknownAnnIds(ref ids) if ids == &[9]));
+    assert_eq!(coco.get_ann(1).unwrap().area, Some(7.0), "nothing written");
+    assert!(coco.update_ann_areas(&[1], &[1.0, 2.0]).is_err());
+}
+
 #[test]
 fn update_anns_keeps_the_last_of_duplicate_ids() {
     // pycocotools parity: the id lookup holds the last occurrence, so that is

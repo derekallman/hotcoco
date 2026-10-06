@@ -732,7 +732,7 @@ class TestTorchMetricsShapedAnnotations:
 #
 # convert.rs names each schema key with a string literal: as a match arm in
 # set_ann_field, set_image_field, and set_category_field, through
-# pyo3::intern! in req! and the get_item calls in read_rle_dict, and in the
+# pyo3::intern! in req! and the get_item calls in RleDict::read, and in the
 # record builders (annotation_to_py and the rest). A typo in one breaks
 # silently: a required key (id, image_id) raises "dict missing '<real name>'", an optional key on the way in vanishes
 # or lands among the custom keys, and one on the way out comes back misspelled.
@@ -1313,3 +1313,62 @@ class TestFuzzDropinFindings:
         ds["annotations"][0]["iscrowd"] = value
         with pytest.raises(TypeError, match=f"^expected a bool or 0/1 flag, got {re.escape(repr(value))}"):
             COCO(ds)
+
+
+class TestMissingArea:
+    """An annotation with no ``area`` is evaluated with a derived one: the mask's
+    pixel count, or the box's ``w * h`` without a mask. pycocotools raises
+    ``KeyError``; hotcoco used to read it as 0, putting every such object in
+    ``small``, while ``StreamingEval`` derived it, so the two disagreed."""
+
+    POLYGON = [[10.0, 10.0, 20.0, 10.0, 20.0, 20.0, 10.0, 20.0]]
+
+    def gt(self, areas=None):
+        anns = [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                "bbox": [10, 10, 10, 10],
+                "iscrowd": 0,
+                "segmentation": self.POLYGON,
+            },
+            {"id": 2, "image_id": 1, "category_id": 1, "bbox": [100, 100, 50, 50], "iscrowd": 0},
+        ]
+        if areas is not None:
+            for ann, area in zip(anns, areas):
+                ann["area"] = area
+        return {
+            "images": [{"id": 1, "width": 200, "height": 200}],
+            "annotations": anns,
+            "categories": [{"id": 1, "name": "a"}],
+        }
+
+    DTS = [
+        {"image_id": 1, "category_id": 1, "bbox": [10, 10, 10, 10], "score": 0.9},
+        {"image_id": 1, "category_id": 1, "bbox": [101, 101, 50, 50], "score": 0.8},
+    ]
+
+    def stats(self, dataset):
+        gt = COCO(dataset)
+        ev = COCOeval(gt, gt.load_res(self.DTS), "bbox")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ev.evaluate()
+            ev.accumulate()
+            ev.summary_lines()
+        return list(ev.stats)
+
+    def test_batch_equals_the_derived_areas_and_streaming(self):
+        missing = COCO(self.gt())
+        mask_area = float(mask.area(missing.ann_to_rle(missing.load_anns(1)[0])))
+        derived = self.stats(self.gt())
+        assert derived == self.stats(self.gt(areas=[mask_area, 2500.0]))
+        assert derived[4] >= 0, "the 50 x 50 box is medium"
+
+        se = hotcoco.StreamingEval([{"id": 1, "name": "a"}])
+        se.update(self.gt()["images"], self.gt()["annotations"], self.DTS)
+        ev = se.finalize()
+        ev.accumulate()
+        ev.summary_lines()
+        assert list(ev.stats) == derived
