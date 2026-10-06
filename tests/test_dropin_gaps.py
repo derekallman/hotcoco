@@ -6,7 +6,9 @@ pycocotools stats semantics, real Python warnings, and error types. None of
 them need the gitignored data/ directory.
 """
 
+import enum
 import json
+import re
 import sys
 import warnings
 
@@ -113,31 +115,118 @@ class TestCustomKeysRoundTrip:
 
 
 # ---------------------------------------------------------------------------
-# Plain-scalar custom keys skip json.dumps and land exactly where it would
+# Plain custom values skip json.dumps and land exactly where it would
 #
-# convert.rs converts a record whose custom values are all exact None, bool,
-# int, float, or str in Rust; one value of any other kind sends the whole
-# record through json.dumps as before. The oracle is that old path itself:
-# every check compares a record against the same record with one extra
-# list-valued key, which forces it through json.dumps. Python's own
-# json.loads(json.dumps(v)) is a second, independent oracle for the scalars.
+# convert.rs converts a record whose custom values are all None, bool, int,
+# float, or str (subclasses included), or exact list, tuple, or str-keyed dict
+# of those, in Rust; one value of any other kind sends the whole record
+# through json.dumps. The oracle is that path itself: every check compares a
+# record against the same record with one extra key whose value the direct
+# conversion declines, which forces it through json.dumps. Python's own
+# json.loads(json.dumps(v)) is a second, independent oracle.
 # ---------------------------------------------------------------------------
 
-# A list value, so the record carrying it takes the json.dumps path.
 FORCE_JSON_PATH = "zz_force_json_path"
 
 
+class _ListSub(list):
+    """json reads a list subclass through `__iter__`."""
+
+    def __iter__(self):
+        return iter(["from __iter__"])
+
+
+class _DictSub(dict):
+    """json reads a dict subclass through `items()`."""
+
+    def items(self):
+        return [("from_items", 1)]
+
+
 class _FloatSub(float):
+    """json writes `float.__repr__` of the value; none of these count."""
+
     def __repr__(self):
         return "not a float literal"
+
+    def __str__(self):
+        return "not a float literal"
+
+    def __float__(self):
+        return 99.0
 
 
 class _IntSub(int):
     pass
 
 
+class _IntOverrides(int):
+    """json writes `int.__repr__` of the value; none of these count."""
+
+    def __repr__(self):
+        return "not an int literal"
+
+    def __str__(self):
+        return "not an int literal"
+
+    def __int__(self):
+        return 99
+
+    def __index__(self):
+        return 99
+
+    def __float__(self):
+        return 99.0
+
+
 class _StrSub(str):
-    pass
+    """json writes the string itself; neither of these counts."""
+
+    def __repr__(self):
+        return "'not this string'"
+
+    def __str__(self):
+        return "not this string"
+
+
+class _HashOverride(str):
+    """A key that a lookup by its plain text misses: its hash is not `str`'s."""
+
+    def __hash__(self):
+        return 12345
+
+
+class _EqOverride(str):
+    """A key that a lookup by its plain text misses: it equals only itself."""
+
+    def __eq__(self, other):
+        return self is other
+
+    __hash__ = str.__hash__
+
+
+class _Level(enum.IntEnum):
+    HIGH = 3
+
+
+# json.dumps writes a list subclass by its own rules; the direct conversion
+# takes exact containers only, so a record carrying this goes through json.dumps.
+_FORCING_VALUE = _ListSub()
+_FORCE = {FORCE_JSON_PATH: _FORCING_VALUE}
+
+
+@pytest.fixture
+def dumps_calls(monkeypatch):
+    """The values convert.rs hands to json.dumps, one per call."""
+    calls = []
+    real = json.dumps
+
+    def counting(obj, *args, **kwargs):
+        calls.append(obj)
+        return real(obj, *args, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", counting)
+    return calls
 
 
 # What the Rust conversion accepts, at the edges where serde_json's reading
@@ -171,35 +260,117 @@ FAST_SCALARS = {
     "str_ascii": "human",
     "str_unicode": "café ☕ 😀 中文",
     "str_escapes": 'quote " backslash \\ newline \n tab \t nul \x00 unit-sep \x1f del \x7f',
+    # Subclasses: json writes the base value, whatever the subclass overrides.
+    "np_float64": np.float64(1.5),
+    "np_str": np.str_("numpy str"),
+    "float_sub": _FloatSub(2.5),
+    "int_sub": _IntSub(7),
+    "int_sub_u64_max": _IntSub(2**64 - 1),
+    "int_overrides": _IntOverrides(-7),
+    "int_enum": _Level.HIGH,
+    "str_sub": _StrSub("sub"),
+}
+
+
+def _nested(levels, leaf=None):
+    """`leaf` inside `levels` nested lists."""
+    for _ in range(levels):
+        leaf = [leaf]
+    return leaf
+
+
+def _circular_list():
+    value = [1]
+    value.append(value)
+    return value
+
+
+def _circular_dict():
+    value = {"a": 1}
+    value["self"] = value
+    return value
+
+
+# Containers the direct conversion takes: a tuple is an array, as json.dumps
+# writes it, and a dict's keys come back in the order the json.dumps path
+# gives them, whatever order they were inserted in. 32 levels is the deepest
+# it follows (MAX_JSON_DEPTH in convert.rs).
+NESTED_VALUES = {
+    "empty_list": [],
+    "empty_tuple": (),
+    "empty_dict": {},
+    "list": [1, 2.0, "x", None, True],
+    "dict": {"b": 1, "a": [0.5, {"c": None}]},
+    "list_of_scalars": list(FAST_SCALARS.values()),
+    "tuple_of_scalars": tuple(FAST_SCALARS.values()),
+    "dict_of_scalars": dict(reversed(FAST_SCALARS.items())),
+    "unsorted_keys": {"zeta": 1, "alpha": 2.0, "Mid": None, "_": "x", "é": True, "": [], "10": 0, "9": -0.0},
+    "cvat_attributes": {"occluded": False, "truncated": True, "tags": ["a", "b"]},
+    "mixed": {"z": [(), {}, [[]]], "a": ({"y": (1, 2**64 - 1)}, [-(2**63), 5e-324]), "m": {"k": {"j": "deep"}}},
+    "depth_32": _nested(30, {"leaf": (1.0, -0.0)}),  # 30 lists, a dict, and a tuple
+    "depth_32_lists": _nested(32, 1e16),
+    # Subclasses of float, int, and str, one or more containers down.
+    "np_float64_in_dict": {"a": np.float64(1.5)},
+    "float_sub_in_tuple": (_FloatSub(2.5),),
+    "int_subs_in_list": [1, _IntOverrides(7), _Level.HIGH],
+    "str_subs_in_dict": {"a": _StrSub("sub"), "b": np.str_("np")},
+    "str_sub_keys": {_StrSub("k"): 1, np.str_("j"): 2},  # json writes the base string
 }
 
 # Values the direct conversion does not take. Whichever path a value goes
-# down, what comes back must equal what json.dumps gives: for a subclass or
-# numpy scalar the two would agree anyway, so only the result is checked.
+# down, what comes back must equal what json.dumps gives.
 JSON_PATH_VALUES = {
-    "list": [1, 2.0, "x", None, True],
-    "dict": {"b": 1, "a": [0.5, {"c": None}]},
-    "np_float64": np.float64(1.5),  # a float subclass, so json accepts it
-    "float_sub": _FloatSub(2.5),  # json ignores the overridden __repr__
-    "int_sub": _IntSub(7),
-    "str_sub": _StrSub("sub"),
     "int_over_u64": 2**64,  # serde_json reads it back as a float
     "int_under_i64": -(2**63) - 1,
+    "int_sub_over_u64": _IntSub(2**64),
     "surrogate_pair": chr(0xD83D) + chr(0xDE00),  # json escapes both halves; serde_json joins them
+    # json reads a container subclass through methods the subclass can override.
+    "list_sub": _ListSub([1, 2]),
+    "dict_sub": _DictSub({"real": 1}),
+    # The same, one or more containers down.
+    "list_sub_in_dict": {"a": _ListSub([1, 2])},
+    "dict_sub_in_list": [_DictSub({"real": 1})],
+    "int_over_u64_in_list": [2**64],
+    "int_under_i64_in_dict": {"a": -(2**63) - 1},
+    "surrogate_pair_in_list": [chr(0xD83D) + chr(0xDE00)],
+    # json.dumps spells a non-str key its own way: 1 -> "1", True -> "true".
+    "int_key": {1: "a"},
+    "float_key": {1.5: "a", 2.0: "b"},
+    "bool_key": {True: "a", False: "b"},
+    "none_key": {None: "a"},
+    "colliding_keys": {"1": "str", 1: "int"},  # two "1" keys in the JSON; the last one wins
+    "non_str_key_deep_down": {"a": [{"b": {2: None}}]},
+    "depth_33": _nested(33, 1),
+    "depth_100": _nested(100, 1),  # still within serde_json's limit of 128
 }
 
-# What the json.dumps path rejects, and so must still reject.
+# What the json.dumps path rejects, and so must still reject. numpy's float32
+# and int64 subclass neither float nor int, so json does not take them.
 REJECTED_VALUES = [
     (float("nan"), ValueError, "did not round-trip through JSON"),
     (float("inf"), ValueError, "did not round-trip through JSON"),
     (float("-inf"), ValueError, "did not round-trip through JSON"),
+    (np.float64("nan"), ValueError, "did not round-trip through JSON"),
     (chr(0xD800), ValueError, "did not round-trip through JSON"),  # a lone surrogate
     (object(), TypeError, "not JSON serializable"),
     (np.float32(1.5), TypeError, "not JSON serializable"),
     (np.int64(3), TypeError, "not JSON serializable"),
+    # The same, one or more containers down.
+    ([1.0, float("nan")], ValueError, "did not round-trip through JSON"),
+    ({"a": (float("inf"),)}, ValueError, "did not round-trip through JSON"),
+    ({"a": [chr(0xD800)]}, ValueError, "did not round-trip through JSON"),
+    ({chr(0xD800): 1}, ValueError, "did not round-trip through JSON"),  # a lone surrogate key
+    ({"a": np.int64(3)}, TypeError, "not JSON serializable"),
+    ([np.float32(1.5)], TypeError, "not JSON serializable"),
+    ((object(),), TypeError, "not JSON serializable"),
+    (_circular_list(), ValueError, "^Circular reference detected$"),
+    (_circular_dict(), ValueError, "^Circular reference detected$"),
+    ([{"a": _circular_list()}], ValueError, "^Circular reference detected$"),
+    (_nested(200, 1), ValueError, "did not round-trip through JSON: recursion limit exceeded"),
 ]
 
-_LOADERS = {"annotations": "load_anns", "images": "load_imgs", "categories": "load_cats"}
+# Each record type's `load_*` method and index attribute.
+_READERS = {"annotations": ("load_anns", "anns"), "images": ("load_imgs", "imgs"), "categories": ("load_cats", "cats")}
 
 
 def _typed(value):
@@ -224,55 +395,123 @@ def _raw_json(path):
     )
 
 
+def _reads(coco, record, record_id=1):
+    """Record `record_id` of `record` as `dataset`, the `load_*` method, and the index show it."""
+    load, index = _READERS[record]
+    return [
+        next(r for r in coco.dataset[record] if r["id"] == record_id),
+        getattr(coco, load)(record_id)[0],
+        getattr(coco, index)[record_id],
+    ]
+
+
 def _views(ds, record, path):
-    """Record id 1 of `record` as `dataset`, the `load_*` method, and `save` show it."""
+    """Record id 1 of `record` from every read of it, and as `save` writes it."""
     coco = COCO(ds)
-    from_dataset = next(r for r in coco.dataset[record] if r["id"] == 1)
-    from_load = getattr(coco, _LOADERS[record])(1)[0]
     coco.save(str(path))
     saved = next(r for r in dict(_raw_json(path))[record] if ("id", ("int", "1")) in r)
-    return from_dataset, from_load, saved
+    return _reads(coco, record), saved
 
 
 def _assert_matches_json_path(record, custom, tmp_path):
     """`custom` comes back from every view exactly as it does when the record
     is forced through json.dumps."""
-    got = _views(_with_custom(record, custom), record, tmp_path / "direct.json")
-    want = _views(_with_custom(record, {**custom, FORCE_JSON_PATH: []}), record, tmp_path / "json.json")
-    for got_dict, want_dict in zip(got[:2], want[:2]):
+    got, got_saved = _views(_with_custom(record, custom), record, tmp_path / "direct.json")
+    want, want_saved = _views(_with_custom(record, {**custom, **_FORCE}), record, tmp_path / "json.json")
+    for got_dict, want_dict in zip(got, want):
         want_dict = {k: v for k, v in want_dict.items() if k != FORCE_JSON_PATH}
         assert list(got_dict) == list(want_dict)  # the same keys, in the same order
         assert {k: _typed(v) for k, v in got_dict.items()} == {k: _typed(v) for k, v in want_dict.items()}
-    assert got[2] == [pair for pair in want[2] if pair[0] != FORCE_JSON_PATH]
+    assert got_saved == [pair for pair in want_saved if pair[0] != FORCE_JSON_PATH]
     return got[0]
 
 
+def _random_scalars(rng):
+    """Finite floats from random bit patterns, and ints across the i64 and
+    u64 ranges."""
+    bits = rng.integers(0, 2**64, size=4000, dtype=np.uint64, endpoint=False)
+    values = [float(f) for f in bits.view(np.float64) if np.isfinite(f)]
+    values += [int(i) for i in rng.integers(-(2**63), 2**63 - 1, size=1000, endpoint=True)]
+    values += [2**63 + int(i) for i in rng.integers(0, 2**63 - 1, size=1000, endpoint=True)]
+    return values
+
+
+def _random_nested(rng, depth=0):
+    """A random exact list, tuple, or str-keyed dict of FAST_SCALARS values."""
+    scalars = list(FAST_SCALARS.values())
+    kind = int(rng.integers(0, 9 if depth < 4 else 5))
+    if kind < 5:
+        return scalars[int(rng.integers(len(scalars)))]
+    items = [_random_nested(rng, depth + 1) for _ in range(int(rng.integers(0, 4)))]
+    if kind == 5:
+        return items
+    if kind == 6:
+        return tuple(items)
+    keys = rng.permutation(["b", "a", "zz", "é", "", "10", "9", "B"])
+    return {str(k): v for k, v in zip(keys, items)}
+
+
 class TestCustomScalarsMatchJsonPath:
-    @pytest.mark.parametrize("record", list(_LOADERS))
+    @pytest.mark.parametrize("record", list(_READERS))
     def test_scalars_match_json_path(self, record, tmp_path):
         out = _assert_matches_json_path(record, FAST_SCALARS, tmp_path)
         assert [k for k in out if k in FAST_SCALARS] == list(FAST_SCALARS)
         for key, value in FAST_SCALARS.items():
             assert _typed(out[key]) == _typed(json.loads(json.dumps(value))), key
 
-    @pytest.mark.parametrize("record", list(_LOADERS))
+    @pytest.mark.parametrize("record", list(_READERS))
     @pytest.mark.parametrize("key", list(JSON_PATH_VALUES))
     def test_other_values_match_json_path(self, record, key, tmp_path):
         # One per record, between scalars, so the record leaves the direct
         # path after converting some of them.
         _assert_matches_json_path(record, {"a": 1.0, key: JSON_PATH_VALUES[key], "z": "s"}, tmp_path)
 
+    @pytest.mark.parametrize("record", list(_READERS))
+    @pytest.mark.parametrize("key_type", [_HashOverride, _EqOverride])
+    def test_str_subclass_key_matches_json_path(self, record, key_type, tmp_path):
+        # Converted directly here; forced, the entry is converted first and
+        # then handed to json.dumps with the forcing value.
+        out = _assert_matches_json_path(record, {key_type("tag"): 1.0, "z": "s"}, tmp_path)
+        assert out["tag"] == 1.0
+
+    @pytest.mark.parametrize("key_type", [_HashOverride, _EqOverride])
+    def test_json_path_gets_the_original_entries(self, key_type, dumps_calls):
+        """A record that leaves the direct path partway hands json.dumps its
+        custom entries in order, as the objects it holds. Looking the entries
+        converted so far up again by name misses a key whose hash or equality
+        is not `str`'s, and drops its value."""
+        tag, later = key_type("tag"), {1: "x"}
+        coco = COCO(_with_custom("annotations", {tag: 1.0, "later": later}))
+        (call,) = dumps_calls
+        assert [str(k) for k in call] == ["tag", "later"]
+        (k0, v0), (_, v1) = call.items()
+        assert type(k0) is key_type and k0 is tag and v0 == 1.0 and v1 is later
+        ann = coco.load_anns(1)[0]
+        assert ann["tag"] == 1.0 and ann["later"] == {"1": "x"}
+
+    def test_each_value_takes_the_path_compared(self, dumps_calls):
+        """The comparisons here are not vacuous. Every value they treat as
+        converted directly makes no json.dumps call, each record carrying one
+        declined value makes exactly one, and so does the forced record."""
+        COCO(_with_custom("annotations", {**FAST_SCALARS, **NESTED_VALUES}))
+        assert dumps_calls == []
+        ds = tiny_dataset()
+        ds["annotations"] = [
+            {"id": i + 1, "image_id": 1, "category_id": 1, "a": 1.0, "v": v, "z": "s"}
+            for i, v in enumerate(JSON_PATH_VALUES.values())
+        ]
+        COCO(ds)
+        assert [call["v"] for call in dumps_calls] == list(JSON_PATH_VALUES.values())
+        dumps_calls.clear()
+        COCO(_with_custom("annotations", _FORCE))
+        assert len(dumps_calls) == 1
+
     def test_random_floats_and_ints_match_json_path(self, tmp_path):
-        rng = np.random.default_rng(0)
-        bits = rng.integers(0, 2**64, size=4000, dtype=np.uint64, endpoint=False)
-        floats = [float(f) for f in bits.view(np.float64) if np.isfinite(f)]
-        ints = [int(i) for i in rng.integers(-(2**63), 2**63 - 1, size=500)]
-        ints += [2**63 + int(i) for i in rng.integers(0, 2**63 - 1, size=500)]
-        values = floats + ints
+        values = _random_scalars(np.random.default_rng(0))
 
         def build(force):
             ds = tiny_dataset()
-            extra = {FORCE_JSON_PATH: []} if force else {}
+            extra = _FORCE if force else {}
             ds["annotations"] = [
                 {"id": i + 1, "image_id": 1, "category_id": 1, "v": v, **extra} for i, v in enumerate(values)
             ]
@@ -281,7 +520,6 @@ class TestCustomScalarsMatchJsonPath:
         direct, via_json = COCO(build(False)), COCO(build(True))
         got = [_typed(a["v"]) for a in direct.dataset["annotations"]]
         assert got == [_typed(a["v"]) for a in via_json.dataset["annotations"]]
-        assert got == [_typed(json.loads(json.dumps(v))) for v in values]
         direct.save(str(tmp_path / "direct.json"))
         via_json.save(str(tmp_path / "json.json"))
         saved = [dict(a)["v"] for a in dict(_raw_json(tmp_path / "direct.json"))["annotations"]]
@@ -302,8 +540,8 @@ class TestCustomScalarsMatchJsonPath:
     def test_update_anns_matches_json_path(self):
         def updated(force):
             coco = COCO(tiny_dataset())
-            extra = {FORCE_JSON_PATH: []} if force else {}
-            coco.update_anns([{"id": 1, **FAST_SCALARS, **extra}], create=True)
+            extra = _FORCE if force else {}
+            coco.update_anns([{"id": 1, **FAST_SCALARS, **NESTED_VALUES, **extra}], create=True)
             out = coco.load_anns(1)[0]
             return {k: _typed(v) for k, v in out.items() if k != FORCE_JSON_PATH}, list(out)
 
@@ -319,6 +557,95 @@ class TestCustomScalarsMatchJsonPath:
         assert coco.load_anns(1)[0]["score_source"] == "human"
         with pytest.raises(KeyError, match="not an annotation field"):
             coco.update_anns([{"id": 1, "score_src": 1.0}])
+
+
+# ---------------------------------------------------------------------------
+# Custom values read back as json.loads gives them
+#
+# Every read (dataset, load_*, anns/imgs/cats) builds a record's custom values
+# in Rust from the stored JSON. The tests above compare two ingest paths that
+# share that read, so a bug in it would pass them; these check it against
+# Python's json module instead, with the two ways serde_json's storage differs
+# from json.loads applied by hand: a nested dict is sorted by key (no
+# preserve_order feature; sorting UTF-8 bytes and sorting code points agree),
+# and an int outside i64 and u64 is the nearest float.
+# ---------------------------------------------------------------------------
+
+
+def _exact(value):
+    """`_typed` all the way down, keeping dict order and key types."""
+    if type(value) is dict:
+        return "dict", [(_typed(k), _exact(v)) for k, v in value.items()]
+    if type(value) is list:
+        return "list", [_exact(v) for v in value]
+    return _typed(value)
+
+
+def _serde_int(text):
+    i = int(text)
+    return i if -(2**63) <= i < 2**64 else float(i)
+
+
+def _sorted_dicts(value):
+    if type(value) is dict:
+        return {k: _sorted_dicts(value[k]) for k in sorted(value)}
+    if type(value) is list:
+        return [_sorted_dicts(v) for v in value]
+    return value
+
+
+def _expected(value):
+    """What a custom value reads back as."""
+    return _exact(_sorted_dicts(json.loads(json.dumps(value), parse_int=_serde_int)))
+
+
+def _load(ds, source, tmp_path):
+    if source == "dict":
+        return COCO(ds)
+    path = tmp_path / "ds.json"
+    path.write_text(json.dumps(ds))
+    return COCO(str(path))
+
+
+_READ_BACK_CASES = {
+    "direct": {**FAST_SCALARS, **NESTED_VALUES},
+    # One declined value sends a COCO(dict) record through json.dumps.
+    "json_dumps": {**FAST_SCALARS, **NESTED_VALUES, **JSON_PATH_VALUES},
+}
+
+
+class TestCustomValuesReadBackAsJsonLoads:
+    @pytest.mark.parametrize("source", ["dict", "file"])
+    @pytest.mark.parametrize("record", list(_READERS))
+    @pytest.mark.parametrize("case", list(_READ_BACK_CASES))
+    def test_every_value_kind(self, case, record, source, tmp_path):
+        custom = _READ_BACK_CASES[case]
+        coco = _load(_with_custom(record, custom), source, tmp_path)
+        want = [(k, _expected(v)) for k, v in custom.items()]
+        for out in _reads(coco, record):
+            assert list(out)[-len(custom) :] == list(custom)  # after the schema keys, in file order
+            assert [(k, _exact(out[k])) for k in custom] == want
+
+    @pytest.mark.parametrize("source", ["dict", "file"])
+    def test_random_values(self, source, tmp_path):
+        rng = np.random.default_rng(2)
+        values = _random_scalars(rng)
+        values += [-0.0, 0.0, 1.0, -1.0, 2.0**53, 2.0**63, 2.0**64, 1e16, 5e-324, sys.float_info.max]
+        bounds = [0, 1, 2**53, 2**53 + 1, 2**63 - 1, 2**63, 2**64 - 1, 2**64, 2**64 + 1]
+        bounds += [2**64 + 2**11, 2**64 + 3 * 2**11]  # halfway between two floats: ties to even
+        values += bounds + [-b for b in bounds]
+        # Wider than u64, so stored as the nearest float.
+        values += [int(rng.integers(1, 2**62)) << int(s) for s in rng.integers(64, 960, size=500)]
+        values += [-int(rng.integers(1, 2**62)) << int(s) for s in rng.integers(64, 960, size=500)]
+        values += [_random_nested(rng) for _ in range(500)]
+        ds = tiny_dataset()
+        ds["annotations"] = [{"id": i + 1, "image_id": 1, "category_id": 1, "v": v} for i, v in enumerate(values)]
+        coco = _load(ds, source, tmp_path)
+        want = [_expected(v) for v in values]
+        assert [_exact(a["v"]) for a in coco.dataset["annotations"]] == want
+        assert [_exact(a["v"]) for a in coco.load_anns(list(range(1, len(values) + 1)))] == want
+        anns = coco.anns
+        assert [_exact(anns[i + 1]["v"]) for i in range(len(values))] == want
 
 
 def _torchmetrics_dataset(predictions):
@@ -395,108 +722,142 @@ class TestTorchMetricsShapedAnnotations:
 
 
 # ---------------------------------------------------------------------------
-# Every known dict key survives decode (candidate G: interned get_item keys)
+# Every known dict key survives decode and read-back
 #
-# convert.rs's decode macros (opt!/req!/opt_with!/req_with!) and the standalone
-# get_item calls in py_to_annotation/py_to_segmentation/py_to_rle now fetch
-# each key through pyo3::intern! instead of a bare `&str` literal, to avoid
-# allocating a fresh PyString per key per record. A typo in one of those
-# literals breaks silently: a required key (id, image_id) raises "dict missing
-# '<real name>'" because the interned typo never matches, and an optional key
-# (score, is_group_of, ...) just vanishes instead of raising. This round-trips
-# every field of every record type through COCO to catch either failure mode.
+# convert.rs names each schema key with a string literal: through
+# pyo3::intern! in the decode macros (opt!/req!/opt_with!/req_with!), the
+# get_item calls in py_to_annotation/py_to_segmentation/py_to_rle, and the
+# record builders (annotation_to_py and the rest), and as a match arm in
+# set_ann_field. A typo in one breaks silently: a required key (id, image_id)
+# raises "dict missing '<real name>'", an optional key on the way in vanishes
+# or lands among the custom keys, and one on the way out comes back misspelled.
+# Each record below carries every schema key of its type, and some of other
+# record types' schema keys, which are custom keys on it.
 # ---------------------------------------------------------------------------
 
 
+def _schema_records():
+    """One record of each type, with every schema key of that type in the
+    order the binding writes them."""
+    return {
+        "images": {
+            "id": 9,
+            "file_name": "x.jpg",
+            "height": 100,
+            "width": 100,
+            "license": 3,
+            "coco_url": "http://a",
+            "flickr_url": "http://b",
+            "date_captured": "2020-01-01",
+            "neg_category_ids": [5, 6],
+            "not_exhaustive_category_ids": [7],
+        },
+        "annotations": {
+            "id": 7,
+            "image_id": 9,
+            "category_id": 1,
+            "bbox": [1.0, 2.0, 3.0, 4.0],
+            "area": 12.5,
+            "segmentation": {"size": [10, 10], "counts": [100]},
+            "iscrowd": 1,
+            "keypoints": [1.0, 2.0, 2.0],
+            "num_keypoints": 1,
+            "obb": [5.0, 5.0, 2.0, 2.0, 0.3],
+            "score": 0.75,
+            "is_group_of": 1,
+        },
+        "categories": {
+            "id": 1,
+            "name": "person",
+            "supercategory": "animal",
+            "skeleton": [[0, 1], [1, 2]],
+            "keypoints": ["nose", "eye"],
+            "frequency": "f",
+        },
+    }
+
+
+def _every_key_dataset():
+    custom = {
+        "images": {
+            "bbox": [1, 2, 3, 4],
+            "score": 0.5,
+            "name": "an image",
+            "skeleton": {"custom": True},
+            "weather": "rainy",
+        },
+        "annotations": {
+            "file_name": "an annotation",
+            "height": 7,
+            "frequency": "r",
+            "supercategory": None,
+            "attributes": {"occluded": False, "tags": ["a", "b"]},
+        },
+        "categories": {"iscrowd": 1, "width": 3.0, "coco_url": "http://c", "taxonomy_id": 42},
+    }
+    return {record: [{**fields, **custom[record]}] for record, fields in _schema_records().items()}
+
+
 class TestKnownKeysRoundTrip:
-    def test_every_annotation_field_survives(self):
-        ds = tiny_dataset()
-        ds["annotations"] = [
-            {
-                "id": 7,
-                "image_id": 1,
-                "category_id": 1,
-                "bbox": [1.0, 2.0, 3.0, 4.0],
-                "area": 12.5,
-                "segmentation": {"size": [10, 10], "counts": [100]},
-                "iscrowd": 1,
-                "keypoints": [1.0, 2.0, 2.0],
-                "num_keypoints": 1,
-                "obb": [5.0, 5.0, 2.0, 2.0, 0.3],
-                "score": 0.75,
-                "is_group_of": 1,
-            }
-        ]
-        coco = COCO(ds)
+    @pytest.mark.parametrize("record", list(_READERS))
+    def test_every_field_survives(self, record):
+        ds = _every_key_dataset()
+        src = ds[record][0]
+        want = _exact({**src, "is_group_of": True} if record == "annotations" else src)
+        for out in _reads(COCO(ds), record, src["id"]):
+            assert _exact(out) == want
 
-        ann = coco.dataset["annotations"][0]
 
-        assert ann["id"] == 7
-        assert ann["image_id"] == 1
-        assert ann["category_id"] == 1
-        assert ann["bbox"] == [1.0, 2.0, 3.0, 4.0]
-        assert ann["area"] == 12.5
-        assert ann["segmentation"] == {"size": [10, 10], "counts": [100]}
-        assert ann["iscrowd"] == 1
-        assert ann["keypoints"] == [1.0, 2.0, 2.0]
-        assert ann["num_keypoints"] == 1
-        assert ann["obb"] == [5.0, 5.0, 2.0, 2.0, 0.3]
-        assert ann["score"] == 0.75
-        assert ann["is_group_of"] is True
+# ---------------------------------------------------------------------------
+# A key reads the same whichever str object spells it
+#
+# convert.rs names a schema key by comparing it, as an object, with interned
+# copies of the schema key names: a dict literal's keys are those objects, and
+# so are the schema keys of a record the binding returns. json.loads returns
+# equal keys that are other objects, which are decoded instead. All of them
+# must give the same records.
+# ---------------------------------------------------------------------------
 
-    def test_every_image_field_survives(self):
-        ds = tiny_dataset()
-        ds["images"] = [
-            {
-                "id": 9,
-                "file_name": "x.jpg",
-                "height": 100,
-                "width": 100,
-                "license": 3,
-                "coco_url": "http://a",
-                "flickr_url": "http://b",
-                "date_captured": "2020-01-01",
-                "neg_category_ids": [5, 6],
-                "not_exhaustive_category_ids": [7],
-            }
-        ]
-        ds["annotations"] = [ds["annotations"][0] | {"image_id": 9}]
-        coco = COCO(ds)
 
-        img = next(i for i in coco.dataset["images"] if i["id"] == 9)
+class TestKeyObjectsDoNotMatter:
+    def test_loaded_keys_read_like_literal_keys(self, tmp_path):
+        literal = _every_key_dataset()
+        loaded = json.loads(json.dumps(literal))
+        for record in _READERS:
+            # The premise: literal keys are the interned objects, loaded ones are not.
+            assert all(k is sys.intern(k) for k in literal[record][0])
+            assert not any(k is sys.intern(k) for k in loaded[record][0])
 
-        assert img["file_name"] == "x.jpg"
-        assert img["height"] == 100
-        assert img["width"] == 100
-        assert img["license"] == 3
-        assert img["coco_url"] == "http://a"
-        assert img["flickr_url"] == "http://b"
-        assert img["date_captured"] == "2020-01-01"
-        assert img["neg_category_ids"] == [5, 6]
-        assert img["not_exhaustive_category_ids"] == [7]
+        views = []
+        for ds, name in ((literal, "literal.json"), (loaded, "loaded.json")):
+            coco = COCO(ds)
+            coco.save(str(tmp_path / name))
+            views.append((_exact(coco.dataset), _raw_json(tmp_path / name)))
+        assert views[0] == views[1]
 
-    def test_every_category_field_survives(self):
-        ds = tiny_dataset()
-        ds["categories"] = [
-            {
-                "id": 1,
-                "name": "person",
-                "supercategory": "animal",
-                "skeleton": [[0, 1], [1, 2]],
-                "keypoints": ["nose", "eye"],
-                "frequency": "f",
-            },
-            ds["categories"][1],
-        ]
-        coco = COCO(ds)
+    def test_read_back_records_round_trip(self, tmp_path):
+        coco = COCO(_every_key_dataset())
+        for record, fields in _schema_records().items():
+            # The premise: a record read back carries the interned schema keys.
+            for out in _reads(coco, record, fields["id"]):
+                assert all(k is sys.intern(k) for k in out if k in fields)
+        want = _exact(coco.dataset)
+        again = COCO(coco.dataset)
+        assert _exact(again.dataset) == want
+        again.update_anns(again.load_anns(again.get_ann_ids()))
+        assert _exact(again.dataset) == want
+        coco.save(str(tmp_path / "first.json"))
+        again.save(str(tmp_path / "again.json"))
+        assert _raw_json(tmp_path / "first.json") == _raw_json(tmp_path / "again.json")
 
-        cat = next(c for c in coco.dataset["categories"] if c["id"] == 1)
+    def test_update_anns_loaded_keys_read_like_literal_keys(self):
+        def updated(ann):
+            coco = COCO(_every_key_dataset())
+            coco.update_anns([ann], create=True)
+            return _exact(coco.load_anns(7)[0])
 
-        assert cat["name"] == "person"
-        assert cat["supercategory"] == "animal"
-        assert cat["skeleton"] == [[0, 1], [1, 2]]
-        assert cat["keypoints"] == ["nose", "eye"]
-        assert cat["frequency"] == "f"
+        literal = {"id": 7, "score": 0.25, "iscrowd": 0, "bbox": [0.0, 0.0, 1.0, 1.0], "name": "renamed", "new": [1]}
+        assert updated(literal) == updated(json.loads(json.dumps(literal)))
 
 
 # ---------------------------------------------------------------------------
@@ -721,7 +1082,9 @@ class TestIssue5BytesCounts:
 
 
 class TestIssue5MaskEncodeDtype:
-    """What `tests/test_parity.py` does not pin: sliced views and `int8`."""
+    """The issue #5 cases end to end. `TestEncodeScan` in
+    `tests/test_mask_parity.py` checks every layout and one-byte dtype against
+    pycocotools."""
 
     def test_sliced_view_matches_contiguous(self):
         f_order = _square_mask()
@@ -847,7 +1210,12 @@ class TestFuzzDropinFindings:
         with pytest.raises(OverflowError, match="out of range"):
             COCO(ds)
 
-    @pytest.mark.parametrize("value", [0, 1, 0.0, 1.0, np.int64(1), np.bool_(True)])
+    # convert.rs reads an exact bool or an int in the i64 range first, and
+    # everything else by the generic path; the two must agree everywhere.
+    FLAGS = [True, False, 0, 1, 2, -1, -(2**63), 2**63 - 1, 2**63, 2**64, -(2**63) - 1, 0.0, 1.0, -0.0]
+    FLAGS += [np.bool_(True), np.bool_(False), np.int64(1), np.int64(0), np.float64(1.0), _IntSub(0), _IntSub(3)]
+
+    @pytest.mark.parametrize("value", FLAGS)
     def test_flags_share_one_reader(self, value):
         ds = tiny_dataset()
         ds["annotations"][0]["iscrowd"] = value
@@ -861,3 +1229,13 @@ class TestFuzzDropinFindings:
         assert ev.params.useCats is bool(value)
         ev.params.use_cats = value
         assert ev.params.use_cats is bool(value)
+        assert gt.getAnnIds(iscrowd=value) == ([] if value else [1, 2])
+
+    # One reader is enough: test_flags_share_one_reader pins that every flag
+    # goes through the same one.
+    @pytest.mark.parametrize("value", [0.5, -0.5, float("nan"), float("inf"), np.float32(0.5), 2**1024, "0", None, [1]])
+    def test_non_flags_are_rejected(self, value):
+        ds = tiny_dataset()
+        ds["annotations"][0]["iscrowd"] = value
+        with pytest.raises(TypeError, match=f"^expected a bool or 0/1 flag, got {re.escape(repr(value))}"):
+            COCO(ds)

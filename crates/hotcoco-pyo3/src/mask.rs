@@ -8,13 +8,16 @@
 
 use hotcoco_core::mask as rmask;
 use numpy::ndarray::{ArrayView2, Axis};
-use numpy::{PyArray1, PyArrayMethods, PyReadonlyArray2, PyReadonlyArray3};
+use numpy::{
+    PyArray1, PyArray2, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
+    PyUntypedArrayMethods,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
-    Flag, boxes_arg, extract_coco_rle, extract_rle_list, f64_array, numpy_dtype_name, py_to_rle,
-    read_rle_dict, rle_to_coco_py, type_name,
+    Flag, boxes_arg, compressed_rle_to_py, extract_coco_rle, extract_rle_list, f64_array,
+    py_to_rle, read_rle_dict, rle_to_coco_py, type_name,
 };
 use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
@@ -51,47 +54,63 @@ pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
 #[pyfunction]
 #[pyo3(text_signature = "(mask)")]
 pub fn encode(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let mask = &as_uint8(mask)?;
-    let ndim: usize = mask.getattr("ndim")?.extract()?;
-    match ndim {
-        2 => encode_2d(py, mask),
-        3 => encode_3d(py, mask),
+    let mask = as_uint8(mask)?;
+    match mask.ndim() {
+        2 => encode_2d(py, mask.cast()?),
+        3 => encode_3d(py, mask.cast()?),
         _ => Err(pyo3::exceptions::PyValueError::new_err(
             "mask must be 2-D (H, W) or 3-D (H, W, N)",
         )),
     }
 }
 
-/// The `TypeError` for a mask that is not a one-byte numpy array.
+/// The mask as a numpy `uint8` array, or the `TypeError` naming what it is
+/// instead.
+///
+/// `uint8` passes through. `bool` and `int8` are one byte wide too, so a
+/// `view` relabels them without a copy — shape and strides carry over, a
+/// sliced view stays a view — and the core encoder's own rule, any nonzero
+/// byte is foreground, does the rest (`-1` is `255`). The one-byte limit is
+/// deliberate: a wider dtype is an error naming the dtype and the cast, so
+/// nothing is silently truncated.
 ///
 /// numpy's own extraction failure reads `'ndarray' object is not an instance
 /// of 'ndarray'`, which names the same type twice and never mentions the
-/// dtype — the one thing the caller has to change. A list, or a torch tensor
-/// passed by mistake, has no numpy `dtype` and is named by its type instead.
-fn mask_dtype_error(mask: &Bound<'_, PyAny>) -> PyErr {
-    let got = numpy_dtype_name(mask).map_or_else(
-        || type_name(mask),
-        |dtype| format!("{dtype}; cast it with mask.astype(numpy.uint8)"),
-    );
-    pyo3::exceptions::PyTypeError::new_err(format!(
+/// dtype — the one thing the caller has to change. Anything that is not a
+/// numpy array (a list, or a torch tensor passed by mistake) is named by its
+/// type instead. That includes an array-like with a numpy dtype, such as a
+/// JAX or CuPy array, which a cast would not help.
+fn as_uint8<'py>(mask: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyUntypedArray>> {
+    let py = mask.py();
+    let got = match mask.cast::<PyUntypedArray>() {
+        Ok(arr) => {
+            // Kind and item size are fields of the dtype struct. `dtype.name`
+            // is a Python function several frames deep: reading it cost
+            // 0.5–0.9 µs a call, more than encoding an 8×8 mask takes without
+            // it, and TorchMetrics calls `encode` once per mask. Among numpy's
+            // dtypes, only uint8 is kind `u` at one byte, and only bool and
+            // int8 are kinds `b` and `i` at one byte.
+            let dtype = arr.dtype();
+            match (dtype.kind(), dtype.itemsize()) {
+                (b'u', 1) => return Ok(arr.clone()),
+                // A dtype object, not the string `"uint8"`, which numpy would
+                // parse on every call.
+                (b'b' | b'i', 1) => {
+                    let view =
+                        arr.call_method1(pyo3::intern!(py, "view"), (numpy::dtype::<u8>(py),))?;
+                    return Ok(view.cast_into()?);
+                }
+                _ => format!(
+                    "{}; cast it with mask.astype(numpy.uint8)",
+                    dtype.getattr(pyo3::intern!(py, "name"))?
+                ),
+            }
+        }
+        Err(_) => type_name(mask),
+    };
+    Err(pyo3::exceptions::PyTypeError::new_err(format!(
         "encode(): mask must be a numpy array with dtype uint8, bool, or int8, got {got}"
-    ))
-}
-
-/// The mask as a `uint8` array object.
-///
-/// `uint8` passes through. `bool` and `int8` are one byte wide too, so a
-/// `view("uint8")` relabels them without a copy — shape and strides carry
-/// over, a sliced view stays a view — and the core encoder's own rule, any
-/// nonzero byte is foreground, does the rest (`-1` is `255`). The one-byte
-/// limit is deliberate: a wider dtype is an error naming the dtype and the
-/// cast, so nothing is silently truncated.
-fn as_uint8<'py>(mask: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    match numpy_dtype_name(mask).as_deref() {
-        Some("uint8") => Ok(mask.clone()),
-        Some("bool" | "int8") => mask.call_method1("view", ("uint8",)),
-        _ => Err(mask_dtype_error(mask)),
-    }
+    )))
 }
 
 /// Column-major (Fortran-order) bytes of one `(H, W)` view that is not
@@ -185,13 +204,34 @@ fn transpose_8x8(mut m: [u64; 8]) -> [u64; 8] {
     m
 }
 
-// The encoders below hold the GIL. Fortran-order input is encoded straight
-// from the numpy buffer, and a buffer read without the GIL can be written by
-// another Python thread mid-scan. The scan is also short (about 10 µs for a
-// 426×640 mask), so a release buys nothing and risks the convoy effect: with
-// one busy Python thread alongside, releasing it measured about 2.5 ms per
-// mask, waiting out switch intervals to get the GIL back. pycocotools holds
-// it too.
+// The GIL rule for the encoders below: whatever reads numpy memory holds the
+// GIL, because a buffer read without it can be written by another Python
+// thread mid-scan. That covers every 2-D mask, a Fortran-order or strided
+// stack (each encoded straight from the numpy buffer), and the transpose that
+// copies a C-order stack out. The only release is for encoding and
+// compressing that copy, which no Python code can reach, from
+// `DETACH_MIN_BYTES` up.
+//
+// For one mask a release would buy nothing and risk the convoy effect: it
+// scans in about 10 µs (426×640), while getting the GIL back from a busy
+// Python thread after a release measured about 2.5 ms per mask, waiting out
+// switch intervals. pycocotools holds the GIL too.
+
+/// The stack size in bytes (`h * w * n`) from which a C-order `(H, W, N)`
+/// encode releases the GIL to encode and compress its transposed copy.
+///
+/// A release costs the caller a wait only when the call would otherwise end
+/// within CPython's switch interval (5 ms by default). A thread kept waiting
+/// longer has already asked for the GIL, and the caller hands it over on
+/// return either way. On an M1, the transpose alone holds the GIL for 8–14 ms
+/// at 16 MiB, across mask sizes from 128×128 to 1024×1024, so from here a
+/// release adds no wait and lets that thread run during the encode. A smaller
+/// stack can finish within the interval: 8 MiB of 1024×1024 masks takes 3 ms,
+/// and releasing for it cost a waiting caller 6.6 ms more. The encode is a few
+/// percent of the call for typical masks but most of it for masks with many
+/// runs: a 1024×1024×100 noise stack held the GIL for 318 ms before this
+/// release and 82 ms after.
+const DETACH_MIN_BYTES: usize = 16 << 20;
 
 /// Encode one `(H, W)` view, from its own buffer when it is Fortran-contiguous
 /// — TorchMetrics' call, one `np.asfortranarray` mask at a time — and through
@@ -206,18 +246,18 @@ fn encode_view(view: ArrayView2<'_, u8>) -> hotcoco_core::error::Result<hotcoco_
     }
 }
 
-fn encode_2d(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr: PyReadonlyArray2<u8> = mask.extract()?;
+fn encode_2d(py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<Py<PyAny>> {
+    let arr = mask.readonly();
     let rle = encode_view(arr.as_array()).map_err(to_pyerr)?;
     rle_to_coco_py(py, &rle)
 }
 
-fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    let arr: PyReadonlyArray3<u8> = mask.extract()?;
+fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAny>> {
+    let arr = mask.readonly();
     let view = arr.as_array();
     let (h, w, n) = view.dim();
     let hw = h * w;
-    let rles = if let Some(stack) = view.reversed_axes().to_slice() {
+    let counts = if let Some(stack) = view.reversed_axes().to_slice() {
         // Fortran order: slice `i` is the contiguous block `i * h * w ..`,
         // already column-major. ndarray counts every zero-size array as
         // contiguous, so those all land here and the C-order offsets below
@@ -236,30 +276,42 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         for x in 0..w {
             transpose_into(&row_major[x * n..], w * n, &mut stack[x * h..], hw, h, n);
         }
-        encode_slices(&stack, h, w, n)
+        if stack.len() >= DETACH_MIN_BYTES {
+            py.detach(|| encode_slices(&stack, h, w, n))
+        } else {
+            encode_slices(&stack, h, w, n)
+        }
     } else {
         (0..n)
-            .map(|i| encode_view(view.index_axis(Axis(2), i)))
+            .map(|i| {
+                let rle = encode_view(view.index_axis(Axis(2), i))?;
+                Ok(rmask::rle_to_string(&rle))
+            })
             .collect()
     }
     .map_err(to_pyerr)?;
     let list = PyList::empty(py);
-    for rle in &rles {
-        list.append(rle_to_coco_py(py, rle)?)?;
+    for counts in &counts {
+        list.append(compressed_rle_to_py(py, h as u32, w as u32, counts)?)?;
     }
     Ok(list.into_any().unbind())
 }
 
-/// Encode each `h × w` column-major block of a Fortran-order `(h, w, n)` stack.
+/// The compressed `counts` string of each `h × w` column-major block of a
+/// Fortran-order `(h, w, n)` stack. Each block's run list is dropped as soon
+/// as it is compressed, so the runs of only one mask are held at a time.
 fn encode_slices(
     stack: &[u8],
     h: usize,
     w: usize,
     n: usize,
-) -> hotcoco_core::error::Result<Vec<hotcoco_core::Rle>> {
+) -> hotcoco_core::error::Result<Vec<String>> {
     let hw = h * w;
     (0..n)
-        .map(|i| rmask::encode(&stack[i * hw..(i + 1) * hw], h as u32, w as u32))
+        .map(|i| {
+            let rle = rmask::encode(&stack[i * hw..(i + 1) * hw], h as u32, w as u32)?;
+            Ok(rmask::rle_to_string(&rle))
+        })
         .collect()
 }
 

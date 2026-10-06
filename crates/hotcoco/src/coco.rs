@@ -602,8 +602,8 @@ impl COCO {
                 let from_mask = ann
                     .segmentation
                     .as_ref()
-                    .and_then(|_| self.ann_to_rle(ann))
-                    .map(|rle| mask::area(&rle) as f64);
+                    .and_then(|_| self.mask_area(ann))
+                    .map(|area| area as f64);
                 let area = from_mask.or_else(|| ann.bbox.map(|bb| bb[2] * bb[3]))?;
                 Some((i, area))
             })
@@ -735,10 +735,7 @@ impl COCO {
             if !in_scope || !Self::needs_image_dims(ann) {
                 continue;
             }
-            let ok = self
-                .get_img(ann.image_id)
-                .is_some_and(|img| img.height > 0 && img.width > 0);
-            if !ok {
+            if self.raster_dims(ann).is_none() {
                 bad.insert(ann.image_id);
             }
         }
@@ -885,13 +882,7 @@ impl COCO {
     /// `width` — a 0×0 canvas holds no mask, and [`check_mask_dims`](Self::check_mask_dims)
     /// is how a caller turns that into an error up front.
     pub fn ann_to_rle(&self, ann: &Annotation) -> Option<Rle> {
-        let img = self.get_img(ann.image_id)?;
-        let h = img.height;
-        let w = img.width;
-        if (h == 0 || w == 0) && Self::needs_image_dims(ann) {
-            return None;
-        }
-
+        let (h, w) = self.raster_dims(ann)?;
         match &ann.segmentation {
             Some(Segmentation::Polygon(polys)) => mask::fr_polys(polys, h, w).ok(),
             Some(Segmentation::Rect(bbox)) => mask::fr_bbox(bbox, h, w).ok(),
@@ -902,10 +893,7 @@ impl COCO {
                 // Same untrusted boundary as the compressed form, same
                 // validation: counts must fit the image (`rle_from_string`
                 // checks this for compressed input).
-                let total: u64 = counts.iter().map(|&c| c as u64).sum();
-                if total > size[0] as u64 * size[1] as u64 {
-                    return None;
-                }
+                mask::check_counts(counts, size[0], size[1]).ok()?;
                 Some(Rle {
                     h: size[0],
                     w: size[1],
@@ -918,6 +906,37 @@ impl COCO {
                     .as_ref()
                     .and_then(|bb| mask::fr_bbox(bb, h, w).ok())
             }
+        }
+    }
+
+    /// The `(height, width)` [`ann_to_rle`](Self::ann_to_rle) rasterizes
+    /// `ann` at, or `None` when it returns `None` before looking at the mask:
+    /// the image is unknown, or the mask is drawn on the image's canvas and
+    /// the image has no size. [`check_mask_dims`](Self::check_mask_dims)
+    /// reports the second case up front.
+    fn raster_dims(&self, ann: &Annotation) -> Option<(u32, u32)> {
+        let img = self.get_img(ann.image_id)?;
+        if (img.height == 0 || img.width == 0) && Self::needs_image_dims(ann) {
+            return None;
+        }
+        Some((img.height, img.width))
+    }
+
+    /// The pixel count of `ann`'s mask:
+    /// `ann_to_rle(ann).map(|rle| mask::area(&rle))`, with a compressed RLE
+    /// summed straight off its `counts` string.
+    ///
+    /// [`mask::area_from_string`] fails on exactly the strings
+    /// `ann_to_rle`'s decode rejects, so a malformed string is `None` here
+    /// too. It skips allocating and filling a run list only to sum it.
+    fn mask_area(&self, ann: &Annotation) -> Option<u64> {
+        match &ann.segmentation {
+            Some(Segmentation::CompressedRle { size, counts }) => {
+                // `ann_to_rle`'s gate: no mask for an image with no record.
+                self.raster_dims(ann)?;
+                mask::area_from_string(counts, size[0], size[1]).ok()
+            }
+            _ => self.ann_to_rle(ann).map(|rle| mask::area(&rle)),
         }
     }
 

@@ -181,6 +181,59 @@ class TestMaskAgainstPycocotools:
         union = mask.merge([short, full], intersect=False)
         assert mask.decode(union).tolist() == mask.decode(full).tolist()
 
+    # Every reader of an RLE dict, each called on a 2×2 one.
+    RLE_READERS = {
+        "area": lambda r: mask.area(r),
+        "area_list": lambda r: mask.area([r]),
+        "decode": lambda r: mask.decode(r),
+        "decode_list": lambda r: mask.decode([r]),
+        "toBbox": lambda r: mask.toBbox(r),
+        "iou": lambda r: mask.iou([r], [{"size": [2, 2], "counts": [0, 4]}], [False]),
+        "merge": lambda r: mask.merge([r, {"size": [2, 2], "counts": [4]}]),
+        "frPyObjects": lambda r: mask.frPyObjects(r, 2, 2),
+    }
+
+    @pytest.mark.parametrize("reader", list(RLE_READERS))
+    @pytest.mark.parametrize(
+        "counts, total",
+        [([0, 100], 100), ([2**32 - 1, 2], 2**32 + 1)],  # the second wraps to 1 in u32
+        ids=["overrun", "u32_wrap"],
+    )
+    def test_overrun_run_list_raises_as_its_string_does(self, reader, counts, total):
+        """Runs summing past h·w are rejected, with the message the same runs
+        give as a compressed string. They used to pass unchecked: ``area``
+        returned 100 for a 4-pixel mask. pycocotools has no one answer to
+        match — its ``frPyObjects`` takes these runs, ``area`` then returns
+        100 and ``toBbox`` a box 50 pixels wide, ``decode`` raises, and
+        ``iou`` and ``merge`` never return."""
+        read = self.RLE_READERS[reader]
+        runs = {"size": [2, 2], "counts": counts}
+        string = {"size": [2, 2], "counts": pm.frPyObjects(runs, 2, 2)["counts"]}
+        message = f"^invalid RLE: total counts {total} exceed h\\*w=4$"
+        with pytest.raises(ValueError, match=message):
+            read(runs)
+        with pytest.raises(ValueError, match=message):
+            read(string)
+
+    @pytest.mark.parametrize("reader", list(RLE_READERS))
+    @pytest.mark.parametrize("counts", [[0, 2], [1, 2], [0, 4], [4]], ids=["short", "short_odd", "exact", "exact_bg"])
+    def test_run_list_within_bounds_reads_as_its_string_does(self, reader, counts):
+        """Runs that stop short of h·w, or fill it, are still read, exactly as
+        the same runs given as a compressed string are."""
+        read = self.RLE_READERS[reader]
+        runs = {"size": [2, 2], "counts": counts}
+        string = {"size": [2, 2], "counts": pm.frPyObjects(runs, 2, 2)["counts"]}
+        got, want = read(runs), read(string)
+        assert type(got) is type(want)
+        assert np.asarray(got).tolist() == np.asarray(want).tolist()
+
+    def test_short_run_list_reads_as_pycocotools_does(self):
+        runs = {"size": [2, 2], "counts": [1, 2]}
+        ref = pm.frPyObjects(runs, 2, 2)
+        assert mask.decode(runs).tolist() == pm.decode(ref).tolist() == [[0, 1], [1, 0]]
+        assert mask.area(runs) == pm.area(ref) == 2
+        assert mask.toBbox(runs).tolist() == pm.toBbox(ref).tolist()
+
     def test_mismatched_dims_is_minus_one(self):
         a = dict(pm.encode(np.asfortranarray(np.ones((4, 6), dtype=np.uint8))))
         b = dict(pm.encode(np.asfortranarray(np.ones((6, 4), dtype=np.uint8))))

@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - *Rust API:* `hotcoco::mask::area_from_string(s, h, w)` returns the area
   of the RLE a compressed `counts` string encodes without building its run
   list, and fails on exactly the strings `rle_from_string` rejects.
+- *Rust API:* `hotcoco::mask::check_counts(counts, h, w)` rejects a run
+  list that sums past `h * w`, with the message `rle_from_string` gives for
+  a compressed string that does.
 
 ### Changed
 
@@ -108,28 +111,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `COCOeval::print_results_lines()` returns the lines `print_results()`
   prints.
 
-- **`mask.encode`, `mask.area`, and `COCO(dict)` are faster on the calls
-  TorchMetrics makes for every validation batch.** Measured on 46,000
-  full-image masks from COCO val2017 on an M1:
+- **`mask.encode`, `mask.area`, and reading and writing `COCO` records are
+  faster on the calls TorchMetrics makes for every validation batch.**
+  Measured on 46,000 full-image masks and their detections from COCO val2017
+  on an M1:
   - `mask.encode` of one Fortran-order mask, TorchMetrics' `update()` call,
-    takes about 10 µs where it took about 220 µs; pycocotools takes about
+    takes about 8 µs where it took about 220 µs; pycocotools takes about
     120 µs. A Fortran-order mask is read in place, runs are found 32 and 8
     bytes at a time, and a C-order mask goes through an 8×8-block transpose,
-    which `COCO.ann_to_mask` now uses as well.
+    which `COCO.ann_to_mask` now uses as well. The dtype is checked without
+    calling into Python, so an 8×8 mask takes about 0.3 µs a call where it
+    took about 1.5 µs.
   - `mask.area` of one RLE dict takes about 0.7 µs where it took about
     1.5 µs. It sums the runs as the `counts` string decodes, and every other
     reader of a compressed `counts` string (`decode`, `toBbox`, `iou`,
     `merge`, `frPyObjects`, segm evaluation) shares the faster decoder.
-  - `COCO(dict)` converts a custom key whose value is a plain `None`, `bool`,
-    `int`, `float`, or `str` without `json.dumps`. TorchMetrics adds two such
-    keys, `area_bbox` and `area_segm`, to every detection: 46,000 of them
-    took about 130 ms to load and now take about 60 ms. A record with any
-    other custom value goes through `json.dumps` as before, so what is
-    stored, and any error raised, is unchanged.
-- **`mask.encode` holds the GIL while it runs.** Releasing it for a scan of
-  about 10 µs cost about 2.5 ms per mask whenever another Python thread was
-  busy, waiting out the switch interval to get it back. pycocotools holds it
-  too.
+  - `COCO(dict)` of TorchMetrics' 46,000 prediction dicts takes about 35 ms
+    where it took about 130 ms. A key written as a string literal is matched
+    without being decoded, and a custom value converts in Rust when it is a
+    `None`, `bool`, `int`, `float`, or `str` (a subclass such as
+    `numpy.float64` or an `IntEnum` member included), or a `list`, `tuple`, or
+    `str`-keyed `dict` of those, up to 32 levels deep. 46,000 annotations
+    with an `attributes` dict each load in about 40 ms instead of about
+    120 ms. A record with any other custom value goes through `json.dumps`
+    as before, so what is stored, and any error raised, is unchanged.
+  - Reading records back (`dataset`, `load_anns`, `anns`, and the image and
+    category forms) builds custom values directly instead of through
+    `json.loads`, and reuses one key object per field: `load_anns` of the
+    46,000 annotations with two custom keys takes about 75 ms where it took
+    about 140 ms. A dict read back and passed to `COCO()` again is matched by
+    key object as well.
+- **`mask.encode` holds the GIL while it reads the numpy buffer.** Releasing
+  it for a scan of about 10 µs cost about 2.5 ms per mask whenever another
+  Python thread was busy, waiting out the switch interval to get it back;
+  pycocotools holds it too. A C-order `(H, W, N)` stack of 16 MiB or more is
+  encoded with the GIL released once it has been transposed into hotcoco's
+  own buffer: a 1024×1024×100 stack held it for about 80 ms instead of about
+  320 ms.
+- **`mask.encode` names the type of an array-like that is not a numpy
+  array,** such as a pandas `Series`, instead of an error about its numpy
+  dtype or dimensions.
 
 ### Fixed
 
@@ -330,6 +351,15 @@ Each entry below has a regression test that fails on the old code.
   `counts`.** `bytes` counts in that spelling were read as a list of ints,
   the same silently wrong mask, and `str` counts raised `TypeError`. Both now
   decode as they do in the `{"size": [h, w], "counts": ...}` spelling.
+- **A run list (`counts` as a list of ints) that sums past `h × w` raises
+  `ValueError` in every `mask` function,** as the same runs as a compressed
+  string already did. `mask.area({"size": [2, 2], "counts": [0, 100]})`
+  returned 100 for a 4-pixel mask. pycocotools has no consistent answer:
+  its `frPyObjects` accepts the list, `area` and `toBbox` then return
+  numbers, `decode` raises, and `iou` and `merge` loop forever. hotcoco's
+  `frPyObjects` raises instead. Runs that stop short of `h × w` are still
+  accepted.
+
 
 ## [1.1.0] - 2026-10-01
 

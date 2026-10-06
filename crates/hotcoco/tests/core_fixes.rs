@@ -40,14 +40,16 @@ fn gt_dataset() -> Dataset {
 
 // ── RLE string decoding ──────────────────────────────────────────────────────
 
+/// Unbounded continuation characters: a string `rle_from_string` rejects.
+/// Each 'P' (48 + 32) is payload 0 with the continuation bit set; 20 of them
+/// would push the shift to 100.
+const MALFORMED_COUNTS: &str = "PPPPPPPPPPPPPPPPPPPP";
+
 /// A LEB-style run with endless continuation bits used to grow the shift past
 /// 63 and overflow `<<` (debug panic, masked shift in release).
 #[test]
 fn rle_from_string_unbounded_continuation_errors() {
-    // 'P' = 48 + 32: payload 0, continuation bit set. 20 of them would push
-    // the shift to 100.
-    let s = "P".repeat(20);
-    assert!(mask::rle_from_string(&s, 10, 10).is_err());
+    assert!(mask::rle_from_string(MALFORMED_COUNTS, 10, 10).is_err());
 }
 
 /// A decoded count above u32::MAX was truncated by `as u32` *before* the
@@ -60,6 +62,32 @@ fn rle_from_string_count_above_u32_max_errors() {
     let res = mask::rle_from_string(s, 10, 10);
     let err = res.unwrap_err().to_string();
     assert!(err.contains("u32::MAX"), "unexpected error: {err}");
+}
+
+/// A run list is held to the bound a compressed string is, with the same
+/// message. The runs are summed in `u64`: `u32::MAX + 2` wraps to 1 in `u32`
+/// and would pass. Runs that stop short pass, as `decode` reads the rest as
+/// background.
+#[test]
+fn check_counts_bounds_a_run_list_like_a_string() {
+    let runs = Rle {
+        h: 2,
+        w: 2,
+        counts: vec![0, 100],
+    };
+    let as_string = mask::rle_from_string(&mask::rle_to_string(&runs), 2, 2);
+    let as_list = mask::check_counts(&runs.counts, 2, 2);
+    let message = as_list.unwrap_err().to_string();
+    assert_eq!(message, as_string.unwrap_err().to_string());
+    assert_eq!(message, "invalid RLE: total counts 100 exceed h*w=4");
+    let wrapping = mask::check_counts(&[u32::MAX, 2], 2, 2).unwrap_err();
+    assert_eq!(
+        wrapping.to_string(),
+        "invalid RLE: total counts 4294967297 exceed h*w=4"
+    );
+    for short_or_exact in [&[][..], &[0, 2], &[1, 2], &[0, 4], &[4]] {
+        assert!(mask::check_counts(short_or_exact, 2, 2).is_ok());
+    }
 }
 
 /// Still accepts everything a valid encoder produces.
@@ -268,6 +296,65 @@ fn load_res_empty_keypoints_derives_nothing() {
     assert_eq!(
         ann.area, None,
         "no area may be derived from empty keypoints"
+    );
+}
+
+// ── Mask area straight from compressed counts ────────────────────────────────
+
+/// Two disjoint boxes, 4×4 and 3×3, on the 20×20 image as compressed counts,
+/// and their 25-pixel area.
+fn two_box_counts() -> (String, f64) {
+    let rle = mask::merge(
+        &[
+            mask::fr_bbox(&[2.0, 2.0, 4.0, 4.0], 20, 20).unwrap(),
+            mask::fr_bbox(&[10.0, 12.0, 3.0, 3.0], 20, 20).unwrap(),
+        ],
+        false,
+    )
+    .unwrap();
+    (mask::rle_to_string(&rle), 25.0)
+}
+
+fn compressed(counts: &str) -> Segmentation {
+    Segmentation::CompressedRle {
+        size: [20, 20],
+        counts: counts.to_owned(),
+    }
+}
+
+/// `fill_missing_areas` takes a compressed mask's pixel count from its string.
+/// Where `ann_to_rle` has no mask — a malformed string, an image with no
+/// record — it falls back to the box. An RLE carries its own size, so an
+/// image record without `height`/`width` does not stop it.
+#[test]
+fn fill_missing_areas_from_compressed_counts() {
+    let (counts, pixels) = two_box_counts();
+    let mut ds = gt_dataset();
+    ds.images.push(Image {
+        id: 2,
+        ..Default::default()
+    });
+    let ann = |id, image_id, counts: &str, bbox| Annotation {
+        id,
+        image_id,
+        category_id: 1,
+        segmentation: Some(compressed(counts)),
+        bbox,
+        ..Default::default()
+    };
+    ds.annotations = vec![
+        ann(1, 1, &counts, Some([0.0, 0.0, 20.0, 20.0])),
+        ann(2, 1, MALFORMED_COUNTS, Some([0.0, 0.0, 3.0, 7.0])),
+        ann(3, 1, MALFORMED_COUNTS, None),
+        ann(4, 99, &counts, Some([0.0, 0.0, 2.0, 3.0])),
+        ann(5, 2, &counts, None),
+    ];
+    let mut coco = COCO::from_dataset(ds);
+    coco.fill_missing_areas();
+    let areas: Vec<_> = coco.dataset.annotations.iter().map(|a| a.area).collect();
+    assert_eq!(
+        areas,
+        vec![Some(pixels), Some(21.0), None, Some(6.0), Some(pixels)]
     );
 }
 

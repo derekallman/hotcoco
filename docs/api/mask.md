@@ -455,3 +455,18 @@ Decode an LEB128 string to an RLE.
     ```rust
     let rle = mask::rle_from_string(&s, 100, 100).unwrap();
     ```
+
+Runs that sum past `h × w` are an error: a `ValueError` in Python, an `Err` in
+Rust. The same holds for a run list (`counts` as a list of ints) passed to any
+function on this page. Runs that stop short of `h × w` are accepted; the pixels
+they leave out are background.
+
+=== "Rust"
+
+    ```rust
+    fn check_counts(counts: &[u32], h: u32, w: u32) -> Result<()>
+    ```
+
+    ```rust
+    mask::check_counts(&rle.counts, rle.h, rle.w)?;
+    ```

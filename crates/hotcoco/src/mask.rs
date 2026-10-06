@@ -841,7 +841,23 @@ pub fn area_from_string(s: &str, h: u32, w: u32) -> crate::error::Result<u64> {
     Ok(area)
 }
 
-/// Why a compressed `counts` string failed to decode.
+/// Check that a run list fits an `h × w` mask: an error when the runs sum past
+/// `h * w`, with the message [`rle_from_string`] gives for a compressed string
+/// that does.
+///
+/// Runs that stop short of `h * w` pass. The pixels they leave out are
+/// background, as `pycocotools.mask.decode` reads them.
+pub fn check_counts(counts: &[u32], h: u32, w: u32) -> crate::error::Result<()> {
+    let total: u64 = counts.iter().map(|&c| u64::from(c)).sum();
+    let hw = u64::from(h) * u64::from(w);
+    if total > hw {
+        return Err(FrStringError::Overrun { total, hw }.into());
+    }
+    Ok(())
+}
+
+/// Why a compressed `counts` string failed to decode, or a run list
+/// overran its mask ([`check_counts`]).
 ///
 /// [`fr_string_runs`] only records what went wrong; the message is formatted
 /// after it returns. A `format!` inside the decode loop borrows the loop's

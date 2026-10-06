@@ -596,6 +596,24 @@ def layouts_2d(m: np.ndarray):
     yield "fortran_rows_sliced", tall[1 : h + 1]
 
 
+def read_only(arr: np.ndarray) -> np.ndarray:
+    """A read-only copy of `arr`, in its layout. A copy keeps a `bool` array's
+    raw bytes, 2 and 255 included."""
+    arr = arr.copy(order="K")
+    arr.setflags(write=False)
+    return arr
+
+
+# The layouts the one-byte dtypes are checked in. encode takes no mutable
+# borrow, so a read-only array encodes too.
+DTYPE_LAYOUTS = {
+    "fortran": np.asfortranarray,
+    "c_order": np.ascontiguousarray,
+    "read_only_fortran": lambda m: read_only(np.asfortranarray(m)),
+    "read_only_c_order": lambda m: read_only(np.ascontiguousarray(m)),
+}
+
+
 class TestEncodeScan:
     @pytest.mark.parametrize("shape", SCAN_SHAPES)
     def test_2d_every_layout_matches_pycocotools(self, shape):
@@ -611,20 +629,24 @@ class TestEncodeScan:
         rng = np.random.default_rng(shape[0] * 100 + shape[1] + 1)
         for name, m in scan_patterns(*shape, rng):
             fg = m != 0
+            mixed = np.where(fg, rng.integers(1, 256, m.shape), 0).astype(np.uint8)
             variants = {
                 "bool": fg,
+                # A bool array viewed from uint8 holds whatever bytes it had:
+                # any nonzero one is foreground.
+                "bool_bytes_mixed": mixed.view(bool),
                 "uint8_2": fg.astype(np.uint8) * 2,
                 "uint8_255": fg.astype(np.uint8) * 255,
                 # int8 has no pycocotools path (it rejects the dtype), and -1
                 # reaches the scan as 255.
                 "int8_minus_one": fg.astype(np.int8) * -1,
                 "int8_mixed": np.where(fg, rng.choice(np.array([1, -1, 127, -128], dtype=np.int8), m.shape), 0),
-                "uint8_mixed": np.where(fg, rng.integers(1, 256, m.shape), 0).astype(np.uint8),
+                "uint8_mixed": mixed,
             }
             ref = norm_rle(reference_rle(m))
             for dtype_name, raw in variants.items():
-                for layout in (np.asfortranarray, np.ascontiguousarray):
-                    assert norm_rle(hm.encode(layout(raw))) == ref, f"{shape} {name} {dtype_name} {layout.__name__}"
+                for layout, make in DTYPE_LAYOUTS.items():
+                    assert norm_rle(hm.encode(make(raw))) == ref, f"{shape} {name} {dtype_name} {layout}"
 
     @pytest.mark.parametrize("n", [1, 3, 8, 9, 17])
     @pytest.mark.parametrize("shape", [(1, 1), (7, 3), (8, 8), (9, 5), (17, 2)])
@@ -640,11 +662,17 @@ class TestEncodeScan:
             "c_order": np.ascontiguousarray(stack),
             "strided_n": wide[:, :, ::2],
             "c_order_bool": np.ascontiguousarray(stack != 0),
+            "c_order_bool_bytes": np.ascontiguousarray(stack * 7).view(bool),
             "fortran_uint8_255": np.asfortranarray(stack * 255),
+            "fortran_int8_minus_one": np.asfortranarray(stack.astype(np.int8) * -1),
+            "read_only_fortran_bool": read_only(np.asfortranarray(stack * 2).view(bool)),
+            "read_only_c_order_int8": read_only(np.ascontiguousarray(stack.astype(np.int8) * -1)),
         }.items():
             got = hm.encode(view)
             assert isinstance(got, list) and len(got) == n
             assert [norm_rle(r) for r in got] == ref, f"{shape}x{n} {layout}"
+            # Each (H, W) slice on its own: a strided view of the stack.
+            assert [norm_rle(hm.encode(view[:, :, i])) for i in range(n)] == ref, f"{shape}x{n} {layout} slices"
 
     def test_full_size_stack_matches_pycocotools(self):
         """Realistic size, with H (426) and N (10) off the 8x8 block grid."""

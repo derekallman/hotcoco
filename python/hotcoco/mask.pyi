@@ -18,7 +18,7 @@ _Rle = dict[str, Any]
 #: ``[x, y, w, h]`` boxes: an ``(N, 4)`` array or a sequence of 4-element rows.
 _Boxes = npt.NDArray[Any] | Sequence[Sequence[float]] | Sequence[npt.NDArray[Any]]
 
-_MaskDtype = np.dtype[np.uint8] | np.dtype[np.bool_]
+_MaskDtype = np.dtype[np.uint8] | np.dtype[np.int8] | np.dtype[np.bool_]
 
 @overload
 def encode(mask: np.ndarray[tuple[int, int], _MaskDtype]) -> _Rle:

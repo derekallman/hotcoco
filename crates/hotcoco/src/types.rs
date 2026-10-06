@@ -91,6 +91,10 @@ fn upsert(
     match entries.iter_mut().find(|(k, _)| *k == key) {
         Some(slot) => Some(std::mem::replace(&mut slot.1, value)),
         None => {
+            // Exact for a few keys, so boxing needs no shrink; amortized past that, to stay linear.
+            if entries.len() < 4 {
+                entries.reserve_exact(1);
+            }
             entries.push((key, value));
             None
         }

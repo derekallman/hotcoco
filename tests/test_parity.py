@@ -943,17 +943,45 @@ def test_encode_accepts_bool_mask_stacks():
     assert mask.encode(stack) == mask.encode(stack.astype(np.uint8))
 
 
-def test_encode_rejects_wide_dtypes_with_a_readable_message():
-    """A dtype that is not one byte wide is an error naming the dtype and the fix.
+def test_encode_errors_name_what_the_caller_passed():
+    """A numpy array is named by its dtype, with the cast; anything else by its
+    type; a numpy array of the wrong rank is a `ValueError`.
 
-    The message is the point: the old failure was `'ndarray' object is not an
-    instance of 'ndarray'`, which names neither the dtype nor the argument.
+    The dtype is matched on its kind and item size, not `dtype.name`, so a
+    miss on either is pinned here: one-byte dtypes of another kind (`void8`,
+    `bytes8`), two-byte ints of the kinds taken at one byte (`int16`,
+    `uint16`), and an array-like that has a numpy dtype but is not a numpy
+    array (as a JAX or CuPy array is), which a cast would not fix. The old
+    failure, `'ndarray' object is not an instance of 'ndarray'`, named
+    neither the dtype nor the argument.
     """
-    with pytest.raises(TypeError, match=r"float32.*astype"):
-        mask.encode(np.zeros((10, 10), dtype=np.float32))
+    prefix = r"^encode\(\): mask must be a numpy array with dtype uint8, bool, or int8, got "
+    for arr, dtype in [
+        (np.zeros((4, 4), np.int16), "int16"),
+        (np.zeros((4, 4), np.uint16), "uint16"),
+        (np.zeros(4, np.float64), "float64"),  # the dtype is checked before the rank
+        (np.zeros((2, 2), dtype=[("a", "u1")]), "void8"),
+        (np.zeros((2, 2), "S1"), "bytes8"),
+    ]:
+        with pytest.raises(TypeError, match=prefix + rf"{dtype}; cast it with mask\.astype\(numpy\.uint8\)$"):
+            mask.encode(arr)
 
-    with pytest.raises(TypeError, match=r"mask must be a numpy array"):
-        mask.encode([[0, 1], [1, 0]])
+    class NumpyDtypeArrayLike:
+        dtype = np.dtype(np.uint8)
+        ndim = 2
+
+    for obj, name in [
+        ([[0, 1], [1, 0]], "list"),
+        (object(), "object"),
+        (None, "NoneType"),
+        (NumpyDtypeArrayLike(), "NumpyDtypeArrayLike"),
+    ]:
+        with pytest.raises(TypeError, match=prefix + rf"{name}$"):
+            mask.encode(obj)
+
+    for arr in (np.zeros(4, np.uint8), np.zeros((), bool), np.zeros((2, 2, 2, 2), np.int8)):
+        with pytest.raises(ValueError, match=r"^mask must be 2-D \(H, W\) or 3-D \(H, W, N\)$"):
+            mask.encode(arr)
 
 
 # ---------------------------------------------------------------------------

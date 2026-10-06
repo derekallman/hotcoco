@@ -3,8 +3,9 @@ use std::borrow::Cow;
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{
-    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString,
+    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString, PyTuple,
 };
 
 /// Extract an optional field from a Python dict.
@@ -73,7 +74,21 @@ pub(crate) fn extract_int<T: TryFrom<u64>>(v: &Bound<'_, PyAny>) -> PyResult<T> 
 /// Open Images spells `IsGroupOf` as `0`/`1`, and a flag column read back
 /// from pandas is `0.0`. The JSON loader applies the same rule through
 /// `types::deserialize_flag`.
+///
+/// An exact `bool` or `int` is read first, without the generic path: that is
+/// what nearly every flag is, and `extract::<bool>` on an `int` builds an
+/// error only to discard it. Anything else, including an `int` outside the
+/// `i64` range, takes the generic path, so the result is the same for every
+/// input.
 pub(crate) fn extract_flag(v: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if let Ok(b) = v.cast_exact::<PyBool>() {
+        return Ok(b.is_true());
+    }
+    if v.is_exact_instance_of::<PyInt>()
+        && let Ok(i) = v.extract::<i64>()
+    {
+        return Ok(i != 0);
+    }
     if let Ok(b) = v.extract::<bool>() {
         return Ok(b);
     }
@@ -96,15 +111,6 @@ pub(crate) fn type_name(obj: &Bound<'_, PyAny>) -> String {
     obj.get_type()
         .name()
         .map_or_else(|_| "unknown type".to_owned(), |n| n.to_string())
-}
-
-/// The numpy dtype name of `obj` (`"uint8"`, `"float32"`, …), or `None` for
-/// anything without a numpy `dtype`.
-pub(crate) fn numpy_dtype_name(obj: &Bound<'_, PyAny>) -> Option<String> {
-    obj.getattr("dtype")
-        .and_then(|d| d.getattr("name"))
-        .and_then(|n| n.extract::<String>())
-        .ok()
 }
 
 /// Compressed RLE `counts`, from either the `str` or the `bytes` spelling;
@@ -172,10 +178,28 @@ macro_rules! opt_with {
     };
 }
 
-/// The dict keys each record type owns; an annotation's are the arms of
-/// [`set_ann_field`]. Any other key on an incoming dict is a custom key,
-/// preserved through the `extra` map (serde-flattened in the core types) so
-/// `load → filter → save` keeps user metadata the way pycocotools does.
+/// The dict keys each record type owns. Any other key on an incoming dict is
+/// a custom key, preserved through the `extra` map (serde-flattened in the
+/// core types) so `load → filter → save` keeps user metadata the way
+/// pycocotools does.
+///
+/// An annotation's keys are the arms of [`set_ann_field`], which decides
+/// them; this list only feeds [`schema_keys`], so an arm missing here costs
+/// speed, not correctness.
+const ANNOTATION_KEYS: &[&str] = &[
+    "id",
+    "image_id",
+    "category_id",
+    "bbox",
+    "area",
+    "segmentation",
+    "iscrowd",
+    "score",
+    "keypoints",
+    "num_keypoints",
+    "obb",
+    "is_group_of",
+];
 const IMAGE_KEYS: &[&str] = &[
     "id",
     "file_name",
@@ -197,13 +221,51 @@ const CATEGORY_KEYS: &[&str] = &[
     "frequency",
 ];
 
+/// Every schema key name of every record type, each beside its interned
+/// `PyString`, for [`key_name`]. A name two record types share is listed
+/// twice, with the same object both times; [`key_name`] stops at the first.
+fn schema_keys(py: Python<'_>) -> &'static [(Py<PyString>, &'static str)] {
+    static KEYS: PyOnceLock<Vec<(Py<PyString>, &'static str)>> = PyOnceLock::new();
+    KEYS.get_or_init(py, || {
+        ANNOTATION_KEYS
+            .iter()
+            .chain(IMAGE_KEYS)
+            .chain(CATEGORY_KEYS)
+            .map(|&name| (PyString::intern(py, name).unbind(), name))
+            .collect()
+    })
+}
+
+/// A dict key as Rust text.
+///
+/// CPython interns a string literal that looks like an identifier, so the
+/// keys of a dict literal — how TorchMetrics and most user code build
+/// records — are the very objects in [`schema_keys`], and a pointer
+/// comparison names one without decoding it. The records this module builds
+/// ([`annotation_to_py`] and the rest) set their schema keys through
+/// `intern!`, so a record read back and passed in again is named the same
+/// way. Any other key is decoded, which under the `abi3-py39` API means a
+/// `bytes` copy and then a `String` copy. The keys `json.load` returns are
+/// equal to the interned ones but are other objects, so they take that path,
+/// with the same result.
+fn key_name<'a>(
+    key: &'a Bound<'_, PyString>,
+    schema: &[(Py<PyString>, &'static str)],
+) -> PyResult<Cow<'a, str>> {
+    let ptr = key.as_ptr();
+    match schema.iter().find(|(interned, _)| interned.as_ptr() == ptr) {
+        Some(&(_, name)) => Ok(Cow::Borrowed(name)),
+        None => key.to_cow(),
+    }
+}
+
 /// Collect every key of `dict` not in `known` into a JSON map, in dict order.
 ///
-/// Plain scalar values, the common case (TorchMetrics adds a float `area_bbox`
-/// and an int `area_segm` to every detection), convert in Rust through
-/// [`scalar_to_json`]. Any other value sends the whole record through
-/// `json.dumps` ([`extra_from_dict`]), so a value JSON cannot hold raises
-/// exactly what it always did, message included.
+/// Plain values, the common case (TorchMetrics adds a float `area_bbox` and an
+/// int `area_segm` to every detection; CVAT-style data adds an `attributes`
+/// dict), convert in Rust through [`to_json`]. Any value it declines sends the
+/// whole record through `json.dumps` ([`extra_from_dict`]), so a value JSON
+/// cannot hold raises exactly what it always did, message included.
 ///
 /// `known` says whether a key is a schema key, and may consume it: the record
 /// converters pass their key list, the annotation merge passes the setter.
@@ -211,15 +273,17 @@ fn extract_extra(
     dict: &Bound<'_, PyDict>,
     mut known: impl FnMut(&str, &Bound<'_, PyAny>) -> PyResult<bool>,
 ) -> PyResult<Extra> {
-    // The custom entries as JSON for as long as every value is a plain
-    // scalar; from the first other value on, a dict for `json.dumps`.
-    let mut scalars = Vec::new();
+    let schema = schema_keys(dict.py());
+    // The custom entries as JSON for as long as `to_json` takes every value,
+    // each beside its own key and value objects; from the first value it
+    // declines on, a dict of those objects for `json.dumps`.
+    let mut converted = Vec::new();
     let mut fallback: Option<Bound<'_, PyDict>> = None;
     for (k, v) in dict {
         let Ok(key) = k.cast::<PyString>() else {
             continue; // non-string keys cannot appear in COCO JSON
         };
-        let name = key.to_cow()?;
+        let name = key_name(key, schema)?;
         if known(&name, &v)? {
             continue;
         }
@@ -227,16 +291,19 @@ fn extract_extra(
             fallback.set_item(k, v)?;
             continue;
         }
-        match scalar_to_json(&v) {
-            Some(json) => scalars.push((name.into_owned(), json)),
+        match to_json(&v, MAX_JSON_DEPTH) {
+            Some(json) => {
+                let name = name.into_owned();
+                converted.push((k, v, name, json));
+            }
             None => {
-                // The scalars so far are read back from `dict` by name: `known`
-                // can consume a key, so it cannot be called a second time.
+                // `known` can consume a key, so `dict` cannot be walked a
+                // second time, and a lookup by name misses a `str` subclass
+                // key with its own `__hash__` or `__eq__`: the entries so far
+                // go in as the objects kept beside them.
                 let objects = PyDict::new(dict.py());
-                for (name, _) in &scalars {
-                    if let Some(value) = dict.get_item(name)? {
-                        objects.set_item(name, value)?;
-                    }
+                for (key, value, _, _) in converted.drain(..) {
+                    objects.set_item(key, value)?;
                 }
                 objects.set_item(k, v)?;
                 fallback = Some(objects);
@@ -245,16 +312,37 @@ fn extract_extra(
     }
     match fallback {
         Some(objects) => extra_from_dict(&objects),
-        None => Ok(scalars.into_iter().collect()),
+        None => Ok(converted
+            .into_iter()
+            .map(|(_, _, name, json)| (name, json))
+            .collect()),
     }
 }
 
+/// How many levels of nested lists and dicts [`to_json`] follows before it
+/// declines.
+///
+/// Without a limit, a list that contains itself would recurse forever.
+/// Declined, it reaches `json.dumps`, which raises its own `Circular
+/// reference detected`. 32 levels is far deeper than real custom metadata
+/// goes, and far below the 128 that `serde_json` reads back from `json.dumps`
+/// output, so every value taken here is one that path takes too.
+const MAX_JSON_DEPTH: usize = 32;
+
 /// `value` as the `serde_json::Value` that parsing `json.dumps(value)`
-/// yields, when it is an exact `None`, `bool`, `int`, `float`, or `str`;
+/// yields, when it is `None`, a `bool`, `int`, `float`, or `str`, or an exact
+/// `list`, `tuple`, or `dict` of those, nested at most `depth` levels deep;
 /// `None` for anything else, which keeps the `json.dumps` path.
 ///
-/// - Exact types only: a subclass can override what `json` writes for it,
-///   and a numpy scalar is a different type to `json` altogether.
+/// - A subclass of `int`, `float`, or `str` is read as its base value, which
+///   is what `json` writes for it: `int.__repr__`, `float.__repr__`, or the
+///   string itself, whatever the subclass overrides. So an `IntEnum` member,
+///   `numpy.float64`, and `numpy.str_` convert here. Other numpy scalars,
+///   such as `numpy.float32` and `numpy.int64`, subclass neither, and `json`
+///   rejects them. `bool` cannot be subclassed.
+/// - A container is taken only as its exact type: `json` reads a `list` or
+///   `tuple` subclass through `__iter__` and a `dict` subclass through
+///   `items()`, which a subclass can override.
 /// - A `float` stays a float, `1.0` included: its `repr` always has a `.` or
 ///   an exponent, so `serde_json` never reads it back as an integer, and the
 ///   core crate's `float_roundtrip` feature makes that read exact. NaN and
@@ -265,22 +353,51 @@ fn extract_extra(
 ///   float, so such an int is not converted here.
 /// - A `str` with a lone surrogate has no UTF-8 form, so it is not converted
 ///   here either.
-fn scalar_to_json(value: &Bound<'_, PyAny>) -> Option<serde_json::Value> {
+/// - A `tuple` is an array, as `json.dumps` writes it.
+/// - A `dict` is converted only when every key is a `str`, which `json`
+///   writes as its base string too. `json.dumps` turns an `int`, `float`,
+///   `bool`, or `None` key into a string by its own spelling rules, which are
+///   not repeated here.
+/// - A `dict`'s entries are inserted into a `serde_json::Map`, which orders
+///   them exactly as parsing does: sorted by key without `serde_json`'s
+///   `preserve_order` feature (this workspace's build), in insertion order —
+///   the order `json.dumps` writes — with it.
+fn to_json(value: &Bound<'_, PyAny>, depth: usize) -> Option<serde_json::Value> {
     use serde_json::Value;
     if value.is_none() {
         Some(Value::Null)
     } else if let Ok(b) = value.cast_exact::<PyBool>() {
         Some(Value::Bool(b.is_true()))
-    } else if let Ok(f) = value.cast_exact::<PyFloat>() {
+    } else if let Ok(f) = value.cast::<PyFloat>() {
+        // `PyFloat_AsDouble` reads a subclass's value without `__float__`.
         serde_json::Number::from_f64(f.value()).map(Value::Number)
-    } else if value.is_exact_instance_of::<PyInt>() {
+    } else if value.is_instance_of::<PyInt>() {
+        // `PyLong_AsLongLong` and `PyLong_AsUnsignedLongLong` read an int
+        // subclass's value without `__int__` or `__index__`.
         value
             .extract::<i64>()
             .map(Value::from)
             .or_else(|_| value.extract::<u64>().map(Value::from))
             .ok()
-    } else if let Ok(s) = value.cast_exact::<PyString>() {
+    } else if let Ok(s) = value.cast::<PyString>() {
         s.to_cow().ok().map(|s| Value::String(s.into_owned()))
+    } else if depth == 0 {
+        None
+    } else if value.is_exact_instance_of::<PyList>() || value.is_exact_instance_of::<PyTuple>() {
+        value
+            .try_iter()
+            .ok()?
+            .map(|item| to_json(&item.ok()?, depth - 1))
+            .collect::<Option<_>>()
+            .map(Value::Array)
+    } else if let Ok(dict) = value.cast_exact::<PyDict>() {
+        dict.iter()
+            .map(|(k, v)| {
+                let key = k.cast::<PyString>().ok()?.to_cow().ok()?;
+                Some((key.into_owned(), to_json(&v, depth - 1)?))
+            })
+            .collect::<Option<_>>()
+            .map(Value::Object)
     } else {
         None
     }
@@ -300,48 +417,101 @@ fn extra_from_dict(extras: &Bound<'_, PyDict>) -> PyResult<Extra> {
     })
 }
 
+/// `value` as the object `json.loads` returns for the text `serde_json`
+/// writes for it, built without the text: the way back from [`to_json`].
+///
+/// - A number holding an integer is an `int`, and one holding an `f64` is a
+///   `float`, `1.0` included: `serde_json` writes an `f64` with a `.` or an
+///   exponent, so `json.loads` reads it back as a `float`. The value is the
+///   same `f64`, since that text is the shortest that reads back as it and
+///   Python's reading is correctly rounded.
+/// - An object's entries come in the order of its `serde_json::Map`, which
+///   is the order `serde_json` writes them in: sorted by key in this
+///   workspace's build, without the `preserve_order` feature.
+/// - The recursion needs no limit of its own. Every `Value` in an [`Extra`]
+///   was parsed by `serde_json`, which stops at 128 levels, or built by
+///   [`to_json`], which stops at [`MAX_JSON_DEPTH`].
+fn json_to_py<'py>(py: Python<'py>, value: &serde_json::Value) -> PyResult<Bound<'py, PyAny>> {
+    use serde_json::Value;
+    let object = match value {
+        Value::Null => py.None().into_bound(py),
+        Value::Bool(b) => PyBool::new(py, *b).to_owned().into_any(),
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                u.into_pyobject(py)?.into_any()
+            } else if let Some(i) = n.as_i64() {
+                i.into_pyobject(py)?.into_any()
+            } else if let Some(f) = n.as_f64().filter(|_| n.is_f64()) {
+                PyFloat::new(py, f).into_any()
+            } else {
+                // Only `serde_json`'s `arbitrary_precision` feature, which
+                // this workspace does not enable, holds any other number.
+                crate::serde_to_py(py, value)?.into_bound(py)
+            }
+        }
+        Value::String(s) => PyString::new(py, s).into_any(),
+        Value::Array(items) => {
+            let items = items
+                .iter()
+                .map(|item| json_to_py(py, item))
+                .collect::<PyResult<Vec<_>>>()?;
+            PyList::new(py, items)?.into_any()
+        }
+        Value::Object(map) => {
+            let dict = PyDict::new(py);
+            for (key, item) in map {
+                dict.set_item(key, json_to_py(py, item)?)?;
+            }
+            dict.into_any()
+        }
+    };
+    Ok(object)
+}
+
 /// Merge a record's `extra` map back into its outgoing Python dict.
+///
+/// The custom keys go in after the schema keys, in file order. A custom key
+/// with a schema key's name, which only the Rust API can create, replaces
+/// that key's value where it stands.
 fn merge_extra(dict: &Bound<'_, PyDict>, extra: &Extra) -> PyResult<()> {
-    if extra.is_empty() {
-        return Ok(());
-    }
-    let py = dict.py();
-    let extras = crate::serde_to_py(py, extra)?;
-    for (k, v) in extras.bind(py).cast::<PyDict>()? {
-        dict.set_item(k, v)?;
+    for (key, value) in extra {
+        dict.set_item(key, json_to_py(dict.py(), value)?)?;
     }
     Ok(())
 }
 
 pub fn annotation_to_py(py: Python<'_>, ann: &Annotation) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
-    dict.set_item("id", ann.id)?;
-    dict.set_item("image_id", ann.image_id)?;
-    dict.set_item("category_id", ann.category_id)?;
+    dict.set_item(pyo3::intern!(py, "id"), ann.id)?;
+    dict.set_item(pyo3::intern!(py, "image_id"), ann.image_id)?;
+    dict.set_item(pyo3::intern!(py, "category_id"), ann.category_id)?;
     if let Some(ref bbox) = ann.bbox {
-        dict.set_item("bbox", bbox.to_vec())?;
+        dict.set_item(pyo3::intern!(py, "bbox"), &bbox[..])?;
     }
     if let Some(area) = ann.area {
-        dict.set_item("area", area)?;
+        dict.set_item(pyo3::intern!(py, "area"), area)?;
     }
     if let Some(ref seg) = ann.segmentation {
-        dict.set_item("segmentation", segmentation_to_py(py, seg)?)?;
+        dict.set_item(
+            pyo3::intern!(py, "segmentation"),
+            segmentation_to_py(py, seg)?,
+        )?;
     }
-    dict.set_item("iscrowd", ann.iscrowd as u8)?;
+    dict.set_item(pyo3::intern!(py, "iscrowd"), ann.iscrowd as u8)?;
     if let Some(ref kpts) = ann.keypoints {
-        dict.set_item("keypoints", kpts.clone())?;
+        dict.set_item(pyo3::intern!(py, "keypoints"), kpts)?;
     }
     if let Some(nk) = ann.num_keypoints {
-        dict.set_item("num_keypoints", nk)?;
+        dict.set_item(pyo3::intern!(py, "num_keypoints"), nk)?;
     }
     if let Some(ref obb) = ann.obb {
-        dict.set_item("obb", obb.to_vec())?;
+        dict.set_item(pyo3::intern!(py, "obb"), &obb[..])?;
     }
     if let Some(score) = ann.score {
-        dict.set_item("score", score)?;
+        dict.set_item(pyo3::intern!(py, "score"), score)?;
     }
     if let Some(is_group_of) = ann.is_group_of {
-        dict.set_item("is_group_of", is_group_of)?;
+        dict.set_item(pyo3::intern!(py, "is_group_of"), is_group_of)?;
     }
     merge_extra(&dict, &ann.extra)?;
     Ok(dict.into_any().unbind())
@@ -353,14 +523,14 @@ pub fn segmentation_to_py(py: Python<'_>, seg: &Segmentation) -> PyResult<Py<PyA
         Segmentation::Rect(bbox) => polygons_to_py(py, &[Segmentation::rect_corners(bbox)]),
         Segmentation::CompressedRle { size, counts } => {
             let dict = PyDict::new(py);
-            dict.set_item("size", vec![size[0], size[1]])?;
-            dict.set_item("counts", counts)?;
+            dict.set_item(pyo3::intern!(py, "size"), &size[..])?;
+            dict.set_item(pyo3::intern!(py, "counts"), counts)?;
             Ok(dict.into_any().unbind())
         }
         Segmentation::UncompressedRle { size, counts } => {
             let dict = PyDict::new(py);
-            dict.set_item("size", vec![size[0], size[1]])?;
-            dict.set_item("counts", counts.clone())?;
+            dict.set_item(pyo3::intern!(py, "size"), &size[..])?;
+            dict.set_item(pyo3::intern!(py, "counts"), counts)?;
             Ok(dict.into_any().unbind())
         }
         // `Segmentation` is `#[non_exhaustive]`: a format the core adds must
@@ -494,29 +664,29 @@ pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
 
 pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
-    dict.set_item("id", img.id)?;
-    dict.set_item("file_name", &img.file_name)?;
-    dict.set_item("height", img.height)?;
-    dict.set_item("width", img.width)?;
+    dict.set_item(pyo3::intern!(py, "id"), img.id)?;
+    dict.set_item(pyo3::intern!(py, "file_name"), &img.file_name)?;
+    dict.set_item(pyo3::intern!(py, "height"), img.height)?;
+    dict.set_item(pyo3::intern!(py, "width"), img.width)?;
     if let Some(license) = img.license {
-        dict.set_item("license", license)?;
+        dict.set_item(pyo3::intern!(py, "license"), license)?;
     }
     if let Some(ref url) = img.coco_url {
-        dict.set_item("coco_url", url)?;
+        dict.set_item(pyo3::intern!(py, "coco_url"), url)?;
     }
     if let Some(ref url) = img.flickr_url {
-        dict.set_item("flickr_url", url)?;
+        dict.set_item(pyo3::intern!(py, "flickr_url"), url)?;
     }
     if let Some(ref dc) = img.date_captured {
-        dict.set_item("date_captured", dc)?;
+        dict.set_item(pyo3::intern!(py, "date_captured"), dc)?;
     }
     if !img.neg_category_ids.is_empty() {
-        dict.set_item("neg_category_ids", img.neg_category_ids.clone())?;
+        dict.set_item(pyo3::intern!(py, "neg_category_ids"), &img.neg_category_ids)?;
     }
     if !img.not_exhaustive_category_ids.is_empty() {
         dict.set_item(
-            "not_exhaustive_category_ids",
-            img.not_exhaustive_category_ids.clone(),
+            pyo3::intern!(py, "not_exhaustive_category_ids"),
+            &img.not_exhaustive_category_ids,
         )?;
     }
     merge_extra(&dict, &img.extra)?;
@@ -525,20 +695,20 @@ pub fn image_to_py(py: Python<'_>, img: &Image) -> PyResult<Py<PyAny>> {
 
 pub fn category_to_py(py: Python<'_>, cat: &Category) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
-    dict.set_item("id", cat.id)?;
-    dict.set_item("name", &cat.name)?;
+    dict.set_item(pyo3::intern!(py, "id"), cat.id)?;
+    dict.set_item(pyo3::intern!(py, "name"), &cat.name)?;
     if let Some(ref sc) = cat.supercategory {
-        dict.set_item("supercategory", sc)?;
+        dict.set_item(pyo3::intern!(py, "supercategory"), sc)?;
     }
     if let Some(ref sk) = cat.skeleton {
-        let skel: Vec<Vec<u32>> = sk.iter().map(|pair| pair.to_vec()).collect();
-        dict.set_item("skeleton", skel)?;
+        // Each `[u32; 2]` pair becomes a list, as `Vec<Vec<u32>>` would.
+        dict.set_item(pyo3::intern!(py, "skeleton"), sk)?;
     }
     if let Some(ref kpts) = cat.keypoints {
-        dict.set_item("keypoints", kpts.clone())?;
+        dict.set_item(pyo3::intern!(py, "keypoints"), kpts)?;
     }
     if let Some(ref freq) = cat.frequency {
-        dict.set_item("frequency", freq)?;
+        dict.set_item(pyo3::intern!(py, "frequency"), freq)?;
     }
     merge_extra(&dict, &cat.extra)?;
     Ok(dict.into_any().unbind())
@@ -589,11 +759,20 @@ pub fn dataset_stats_to_py(py: Python<'_>, stats: &DatasetStats) -> PyResult<Py<
 /// The `counts` value is a `bytes` object containing the LEB128-compressed
 /// string, matching what `pycocotools.mask.encode` returns.
 pub fn rle_to_coco_py(py: Python<'_>, rle: &Rle) -> PyResult<Py<PyAny>> {
+    compressed_rle_to_py(py, rle.h, rle.w, &hotcoco_core::mask::rle_to_string(rle))
+}
+
+/// [`rle_to_coco_py`] for an RLE already compressed to its `counts` string.
+pub(crate) fn compressed_rle_to_py(
+    py: Python<'_>,
+    h: u32,
+    w: u32,
+    counts: &str,
+) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
-    dict.set_item("size", vec![rle.h, rle.w])?;
-    let compressed = hotcoco_core::mask::rle_to_string(rle);
-    let py_bytes = PyBytes::new(py, compressed.as_bytes());
-    dict.set_item("counts", py_bytes)?;
+    dict.set_item(pyo3::intern!(py, "size"), [h, w])?;
+    let py_bytes = PyBytes::new(py, counts.as_bytes());
+    dict.set_item(pyo3::intern!(py, "counts"), py_bytes)?;
     Ok(dict.into_any().unbind())
 }
 
@@ -609,7 +788,9 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
 /// needs only their sum — read them straight off the string. Takes the
 /// pycocotools spelling `{"size": [h, w], "counts": ...}` and
 /// `{"h": h, "w": w, "counts": ...}`, with `counts` as `bytes`, `str`, or a
-/// list of ints in either. A string that does not decode is a `ValueError`.
+/// list of ints in either. A string that does not decode is a `ValueError`,
+/// and so is a list whose runs sum past `h * w`, with the message the same
+/// runs give as a string.
 pub(crate) fn read_rle_dict<R>(
     dict: &Bound<'_, PyDict>,
     compressed: impl FnOnce(&str, u32, u32) -> Result<R, hotcoco_core::Error>,
@@ -636,12 +817,13 @@ pub(crate) fn read_rle_dict<R>(
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("RLE dict missing 'counts'"))?;
         (h, w, counts)
     };
+    let invalid = |e: hotcoco_core::Error| pyo3::exceptions::PyValueError::new_err(e.to_string());
     if let Some(s) = counts_str(&counts_obj)? {
-        return compressed(&s, h, w)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
+        return compressed(&s, h, w).map_err(invalid);
     }
-    // Uncompressed RLE: a list of ints
+    // Uncompressed RLE: a list of ints, held to the bound a string is.
     let counts: Vec<u32> = counts_obj.extract()?;
+    hotcoco_core::mask::check_counts(&counts, h, w).map_err(invalid)?;
     Ok(uncompressed(Rle { h, w, counts }))
 }
 
