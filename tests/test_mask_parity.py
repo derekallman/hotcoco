@@ -690,6 +690,23 @@ class TestEncodeScan:
         for i, m in enumerate(np.ascontiguousarray(stack.transpose(2, 0, 1))):
             assert norm_rle(hm.encode(np.asfortranarray(m))) == ref[i]
 
+    def test_stack_encoded_without_the_gil_matches_pycocotools(self):
+        """Stacks that take long enough are copied out of numpy and the rest encoded with
+        the GIL released: C order from 16 MiB (`DETACH_MIN_BYTES` in mask.rs), Fortran
+        order once `IN_PLACE_BUDGET` (5 ms) of in-place encoding has passed. The leading
+        noise masks take longer than that on any machine, so the later slices of the
+        Fortran-order stack go through the copy."""
+        rng = np.random.default_rng(11)
+        stack = np.zeros((1030, 1024, 16), dtype=bool)  # 16.1 MiB, H off the 8x8 block grid
+        stack[:, :, :4] = rng.random((1030, 1024, 4)) < 0.5
+        for i in range(4, 16):
+            y0, x0 = rng.integers(0, 1000), rng.integers(0, 1000)
+            stack[y0 : y0 + rng.integers(1, 500), x0 : x0 + rng.integers(1, 500), i] = True
+        assert stack.nbytes >= 16 << 20
+        ref = [norm_rle(r) for r in reference_rle(stack)]
+        for layout in (np.asfortranarray, np.ascontiguousarray):
+            assert [norm_rle(r) for r in hm.encode(layout(stack))] == ref, layout.__name__
+
     @pytest.mark.parametrize("shape", [(0, 5), (5, 0), (0, 0), (0, 5, 2), (5, 0, 2), (3, 4, 0), (0, 3, 2)])
     def test_zero_size_matches_pycocotools(self, shape):
         m = np.zeros(shape, dtype=np.uint8)

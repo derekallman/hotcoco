@@ -91,7 +91,11 @@ fn upsert(
     match entries.iter_mut().find(|(k, _)| *k == key) {
         Some(slot) => Some(std::mem::replace(&mut slot.1, value)),
         None => {
-            // Exact for a few keys, so boxing needs no shrink; amortized past that, to stay linear.
+            // Grow by exactly one while there are few keys, so a full Vec stays
+            // full and boxing it needs no shrink; amortized past that, to stay
+            // linear. A Vec reserved up front (`from_iter` reserves the size
+            // hint) ends with spare room when a key repeats, and boxing that one
+            // shrinks: one realloc, on a rare path.
             if entries.len() < 4 {
                 entries.reserve_exact(1);
             }

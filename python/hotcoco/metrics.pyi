@@ -8,7 +8,7 @@ ndarray takes a fast path in the bindings; anything else falls back to
 per-element extraction but still works.
 """
 
-from typing import Any, Optional, Sequence, TypeAlias
+from typing import Any, Sequence, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -17,15 +17,15 @@ _Floats: TypeAlias = Sequence[float] | npt.NDArray[Any]
 _Bools: TypeAlias = Sequence[bool] | npt.NDArray[Any]
 
 def average_precision(
-    scores: _Floats, matched: _Bools, num_gt: int, ignored: Optional[_Bools] = None, rec_thrs: Optional[_Floats] = None
+    scores: _Floats, matched: _Bools, num_gt: int, ignored: _Bools | None = None, rec_thrs: _Floats | None = None
 ) -> float: ...
 def precision_recall_curve(
-    tp_cum: _Floats, fp_cum: _Floats, num_gt: int, rec_thrs: Optional[_Floats] = None
+    tp_cum: _Floats, fp_cum: _Floats, num_gt: int, rec_thrs: _Floats | None = None
 ) -> tuple[float, list[tuple[int, float, int]]]: ...
 def calibration_curve(scores: _Floats, matched: _Bools, n_bins: int = 10) -> list[dict[str, Any]]: ...
 def calibration_error(scores: _Floats, matched: _Bools, n_bins: int = 10) -> tuple[float, float]: ...
 def confusion_matrix(
-    gt: Sequence[Optional[int]], dt: Sequence[Optional[int]], num_classes: int
+    gt: Sequence[int | None], dt: Sequence[int | None], num_classes: int
 ) -> npt.NDArray[np.uint64]: ...
 def is_computed(v: float) -> bool:
     """Whether a metric value was actually computed (``-1.0`` means "not computed")."""

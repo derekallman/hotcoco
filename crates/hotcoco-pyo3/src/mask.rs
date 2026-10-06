@@ -21,6 +21,7 @@ use crate::convert::{
 };
 use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
+use std::time::{Duration, Instant};
 
 /// Transpose between row-major (numpy) and column-major (hotcoco) mask layouts.
 ///
@@ -206,11 +207,12 @@ fn transpose_8x8(mut m: [u64; 8]) -> [u64; 8] {
 
 // The GIL rule for the encoders below: whatever reads numpy memory holds the
 // GIL, because a buffer read without it can be written by another Python
-// thread mid-scan. That covers every 2-D mask, a Fortran-order or strided
-// stack (each encoded straight from the numpy buffer), and the transpose that
-// copies a C-order stack out. The only release is for encoding and
-// compressing that copy, which no Python code can reach, from
-// `DETACH_MIN_BYTES` up.
+// thread mid-scan. That covers every 2-D mask, a strided stack, a
+// Fortran-order stack for up to `IN_PLACE_BUDGET` (each encoded straight from
+// the numpy buffer), and the copy that moves a stack out of numpy memory. The
+// only release is for encoding and compressing such a copy, which no Python
+// code can reach: the rest of a Fortran-order stack once its budget is spent,
+// and a C-order stack's transpose from `DETACH_MIN_BYTES` up.
 //
 // For one mask a release would buy nothing and risk the convoy effect: it
 // scans in about 10 µs (426×640), while getting the GIL back from a busy
@@ -232,6 +234,19 @@ fn transpose_8x8(mut m: [u64; 8]) -> [u64; 8] {
 /// runs: a 1024×1024×100 noise stack held the GIL for 318 ms before this
 /// release and 82 ms after.
 const DETACH_MIN_BYTES: usize = 16 << 20;
+
+/// How long a Fortran-order `(H, W, N)` stack is encoded in place, under the
+/// GIL, before the rest is copied out and encoded without it: CPython's
+/// default switch interval.
+///
+/// A size threshold suits a Fortran-order stack poorly, because its copy is a
+/// memcpy, far quicker than encoding masks with many runs and slower than
+/// encoding masks with few. Copying from 16 MiB up cost a 426×640×400 stack of
+/// val2017 masks about 21 µs per mask against about 8 µs in place, and 16 MiB
+/// of ellipse masks 7.5 ms against 0.6 ms with a busy thread alongside. Typical
+/// masks finish within the budget and never copy; a 1024×1024×100 noise stack
+/// held the GIL for 255 ms in place and about 11 ms with the budget.
+const IN_PLACE_BUDGET: Duration = Duration::from_millis(5);
 
 /// Encode one `(H, W)` view, from its own buffer when it is Fortran-contiguous
 /// — TorchMetrics' call, one `np.asfortranarray` mask at a time — and through
@@ -262,7 +277,7 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAn
         // already column-major. ndarray counts every zero-size array as
         // contiguous, so those all land here and the C-order offsets below
         // never index an empty buffer.
-        encode_slices(stack, h, w, n)
+        encode_fortran_stack(py, stack, h, w, n)
     } else if let Some(row_major) = view.to_slice().filter(|_| n >= 8) {
         // C order: one blocked pass to Fortran order. For each column `x`,
         // the `(h, n)` matrix of `(y, i)` bytes sits at `x * n` with row
@@ -295,6 +310,30 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAn
         list.append(compressed_rle_to_py(py, h as u32, w as u32, counts)?)?;
     }
     Ok(list.into_any().unbind())
+}
+
+/// [`encode_slices`] on a Fortran-order stack still in numpy memory: in place
+/// under the GIL for up to [`IN_PLACE_BUDGET`], then on a copy of the slices
+/// left, with the GIL released.
+fn encode_fortran_stack(
+    py: Python<'_>,
+    stack: &[u8],
+    h: usize,
+    w: usize,
+    n: usize,
+) -> hotcoco_core::error::Result<Vec<String>> {
+    let hw = h * w;
+    let start = Instant::now();
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        if start.elapsed() >= IN_PLACE_BUDGET {
+            let rest = stack[i * hw..].to_vec();
+            out.extend(py.detach(|| encode_slices(&rest, h, w, n - i))?);
+            break;
+        }
+        out.extend(encode_slices(&stack[i * hw..(i + 1) * hw], h, w, 1)?);
+    }
+    Ok(out)
 }
 
 /// The compressed `counts` string of each `h × w` column-major block of a

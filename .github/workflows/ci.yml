@@ -110,11 +110,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 3.9 is the floor declared by requires-python and by the abi3-py39
-        # wheel, which is a single wheel served to every Python >= 3.9. Testing
-        # the floor catches syntax that only parses on newer interpreters (e.g.
-        # PEP 604 `X | Y` unions in evaluated annotations).
-        python-version: ["3.9", "3.12"]
+        # The oldest and the newest Python that the one abi3 wheel serves.
+        # - 3.10, the floor set by requires-python and abi3-py310: the extension
+        #   imports and runs on a real 3.10, so every limited-API symbol it uses
+        #   exists there. pip also resolves the newest dependency versions that
+        #   still support 3.10 (numpy 2.2.x), and the suite runs against them.
+        # - 3.14, the newest: catches stdlib removals, the PEP 649/749 change to
+        #   how annotations are evaluated (FastAPI reads the route signatures in
+        #   server.py at runtime), and the newest numpy, matplotlib, and FastAPI.
+        # Syntax newer than 3.10 is not this matrix's job: the Python lint job
+        # runs Ruff at py310, which reports it as invalid-syntax.
+        python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v4
 

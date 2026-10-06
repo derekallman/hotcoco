@@ -9,7 +9,7 @@ Thanks for your interest in contributing! This guide covers everything you need 
 - [Rust](https://rustup.rs/) (stable, 1.70+)
 - [uv](https://docs.astral.sh/uv/) — Python dependency management (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - [just](https://just.systems/) — task runner (`cargo install just`)
-- Python 3.9+
+- Python 3.10+
 
 ### Build the Rust library
 

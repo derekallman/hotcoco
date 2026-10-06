@@ -811,11 +811,10 @@ class TestKnownKeysRoundTrip:
 # ---------------------------------------------------------------------------
 # A key reads the same whichever str object spells it
 #
-# convert.rs names a schema key by comparing it, as an object, with interned
-# copies of the schema key names: a dict literal's keys are those objects, and
-# so are the schema keys of a record the binding returns. json.loads returns
-# equal keys that are other objects, which are decoded instead. All of them
-# must give the same records.
+# A dict literal, a record hotcoco returns, and json.loads output spell the same
+# keys as equal strings that are not always the same objects. These tests
+# compare the records each spelling gives, so a fast path that names a key by
+# object identity instead of by its text cannot come back unnoticed.
 # ---------------------------------------------------------------------------
 
 
@@ -823,11 +822,6 @@ class TestKeyObjectsDoNotMatter:
     def test_loaded_keys_read_like_literal_keys(self, tmp_path):
         literal = _every_key_dataset()
         loaded = json.loads(json.dumps(literal))
-        for record in _READERS:
-            # The premise: literal keys are the interned objects, loaded ones are not.
-            assert all(k is sys.intern(k) for k in literal[record][0])
-            assert not any(k is sys.intern(k) for k in loaded[record][0])
-
         views = []
         for ds, name in ((literal, "literal.json"), (loaded, "loaded.json")):
             coco = COCO(ds)
@@ -837,10 +831,6 @@ class TestKeyObjectsDoNotMatter:
 
     def test_read_back_records_round_trip(self, tmp_path):
         coco = COCO(_every_key_dataset())
-        for record, fields in _schema_records().items():
-            # The premise: a record read back carries the interned schema keys.
-            for out in _reads(coco, record, fields["id"]):
-                assert all(k is sys.intern(k) for k in out if k in fields)
         want = _exact(coco.dataset)
         again = COCO(coco.dataset)
         assert _exact(again.dataset) == want
@@ -858,6 +848,18 @@ class TestKeyObjectsDoNotMatter:
 
         literal = {"id": 7, "score": 0.25, "iscrowd": 0, "bbox": [0.0, 0.0, 1.0, 1.0], "name": "renamed", "new": [1]}
         assert updated(literal) == updated(json.loads(json.dumps(literal)))
+
+    @pytest.mark.parametrize("record", list(_READERS))
+    def test_key_with_no_text_raises(self, record):
+        """Pins a known difference from pycocotools: a lone-surrogate key raises.
+
+        pycocotools keeps such a key, and `json.dump` writes it back escaped. hotcoco
+        stores keys as UTF-8 Rust strings, and a lone surrogate has no UTF-8 form, so
+        the key raises instead of being read as some other key. hotcoco 1.1 raised the
+        same error. docs/getting-started/migration.md lists it under Known differences.
+        """
+        with pytest.raises(UnicodeEncodeError, match="surrogates not allowed"):
+            COCO(_with_custom(record, {chr(0xD800): 1}))
 
 
 # ---------------------------------------------------------------------------

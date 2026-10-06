@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use numpy::{PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyTuple, PyType};
+use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple, PyType};
 
 use mask::transpose_mask;
 
@@ -1916,9 +1916,11 @@ impl PyHierarchy {
         label_to_id: Option<HashMap<String, u64>>,
     ) -> PyResult<Self> {
         let json_mod = py.import("json")?;
-        let json_str: String = json_mod.call_method1("dumps", (tree_dict,))?.extract()?;
+        let json_str = json_mod
+            .call_method1("dumps", (tree_dict,))?
+            .cast_into::<PyString>()?;
         let map = label_to_id.unwrap_or_default();
-        let inner = hotcoco_core::Hierarchy::from_oid_json(&json_str, &map)
+        let inner = hotcoco_core::Hierarchy::from_oid_json(json_str.to_str()?, &map)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(Self { inner })
     }

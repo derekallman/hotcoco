@@ -127,6 +127,7 @@ re-indexes.
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |
 | Mutating `coco.dataset` / `ev.params` internals in place | Mutates shared state | No-op on a copy — [assign back to apply](#getters-return-copies-assign-back-to-apply) |
 | `summarize()` or `run()` with non-default params | Prints the table only | Also emits a `UserWarning` per deviation — filter with `warnings.filterwarnings` |
+| A key or string holding a lone surrogate, such as `"\ud800"` | Kept; `json.dump` writes it back escaped | Raises `UnicodeEncodeError` or `ValueError` — text is stored as UTF-8, which has no form for a lone surrogate |
 | Performance | Single-threaded C + Python | Multi-threaded Rust |
 
 ## Metric parity

@@ -37,7 +37,7 @@ repos:
 
   # Same two checks as `just py-fmt` and `just py-lint`; all settings, including
   # which files are excluded, come from [tool.ruff] in pyproject.toml
-  # (line-length 120, py39, E/F/I; the notebook is excluded there).
+  # (line-length 120, py310, E/F/I; the notebook is excluded there).
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.6
     hooks:

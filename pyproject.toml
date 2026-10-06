@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "hotcoco"
 version = "1.1.0"
 description = "Perception evaluation toolkit — pycocotools-compatible detection metrics in pure Rust, up to 84× faster"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Derek Allman", email = "derek.allman@yahoo.com" }]
 keywords = ["coco", "pycocotools", "object-detection", "evaluation", "computer-vision", "segmentation", "keypoints", "instance-segmentation", "perception", "model-evaluation"]
@@ -20,11 +20,11 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
@@ -36,9 +36,9 @@ dev = [
     "faster-coco-eval",
     # The two other Rust evaluators scripts/bench.py compares against. Both are
     # optional there: a missing one leaves its column blank rather than failing
-    # the run. vernier ships abi3 wheels for 3.10+ only.
+    # the run.
     "ultrafast-pycocotools",
-    "vernier; python_version >= '3.10'",
+    "vernier",
     "hypothesis",
     "lvis>=0.5.3",
     # Runs the hooks in .pre-commit-config.yaml, which pins the Ruff and typos
@@ -89,7 +89,7 @@ include = [{ path = "LICENSE", format = "sdist" }]
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 # The notebook is prose with cells, not code under lint; excluding it lets every
 # caller run ruff on `.` instead of naming the Python directories.
 extend-exclude = ["external/", "*.ipynb"]
@@ -122,7 +122,7 @@ pythonpath = ["scripts"]
 # code and `external/` is vendored — checking any of them produces noise, not signal.
 include = ["python"]
 exclude = ["external", "scripts", "tests", ".venv", "target", "**/__pycache__"]
-pythonVersion = "3.9"
+pythonVersion = "3.10"
 typeCheckingMode = "basic"
 # `hotcoco` is a compiled PyO3 extension; pyright resolves it through the venv
 # that `just build` installs into, and types it from the hand-written

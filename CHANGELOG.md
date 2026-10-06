@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **hotcoco requires Python 3.10 or later.** Under the 3.10 stable ABI, the
+  bindings read ASCII text in place, which covers COCO keys and RLE `counts`;
+  3.9's made two copies of every string. Non-ASCII text gets a UTF-8 copy,
+  which CPython keeps on the string object for as long as the string lives.
+  Python 3.9 reached end of life in October 2025. The wheel is `cp310-abi3`,
+  and pip on Python 3.9 installs 1.1.x.
 - **`load_res()` takes a `float32` array as well as `float64`,** widened once on
   the way in; so does `StreamingEval.update()`. Detectors emit `float32`, and
   every caller had to convert first.
@@ -126,28 +132,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     1.5 µs. It sums the runs as the `counts` string decodes, and every other
     reader of a compressed `counts` string (`decode`, `toBbox`, `iou`,
     `merge`, `frPyObjects`, segm evaluation) shares the faster decoder.
-  - `COCO(dict)` of TorchMetrics' 46,000 prediction dicts takes about 35 ms
-    where it took about 130 ms. A key written as a string literal is matched
-    without being decoded, and a custom value converts in Rust when it is a
+  - `COCO(dict)` takes about 32 ms where it took about 130 ms on
+    TorchMetrics' 46,000 prediction dicts, and about 37 ms where it took
+    about 50 ms on COCO val2017's ground truth loaded with `json.load`
+    (36,781 annotations). A custom value converts in Rust when it is a
     `None`, `bool`, `int`, `float`, or `str` (a subclass such as
-    `numpy.float64` or an `IntEnum` member included), or a `list`, `tuple`, or
-    `str`-keyed `dict` of those, up to 32 levels deep. 46,000 annotations
-    with an `attributes` dict each load in about 40 ms instead of about
-    120 ms. A record with any other custom value goes through `json.dumps`
-    as before, so what is stored, and any error raised, is unchanged.
+    `numpy.float64` or an `IntEnum` member included), or a `list`, `tuple`,
+    or `str`-keyed `dict` of those, up to 32 levels deep: 46,000 synthetic
+    box annotations, each with an `attributes` dict, load in about 40 ms
+    instead of about 120 ms. A record with any other custom value goes
+    through `json.dumps` as before, so what is stored, and any error raised,
+    is unchanged.
   - Reading records back (`dataset`, `load_anns`, `anns`, and the image and
     category forms) builds custom values directly instead of through
     `json.loads`, and reuses one key object per field: `load_anns` of the
     46,000 annotations with two custom keys takes about 75 ms where it took
-    about 140 ms. A dict read back and passed to `COCO()` again is matched by
-    key object as well.
+    about 140 ms.
 - **`mask.encode` holds the GIL while it reads the numpy buffer.** Releasing
   it for a scan of about 10 µs cost about 2.5 ms per mask whenever another
   Python thread was busy, waiting out the switch interval to get it back;
-  pycocotools holds it too. A C-order `(H, W, N)` stack of 16 MiB or more is
-  encoded with the GIL released once it has been transposed into hotcoco's
-  own buffer: a 1024×1024×100 stack held it for about 80 ms instead of about
-  320 ms.
+  pycocotools holds it too. An `(H, W, N)` stack that takes longer releases
+  it once the masks are copied into hotcoco's own buffer: a C-order stack of
+  16 MiB or more after its transpose, and a Fortran-order stack after about
+  5 ms of encoding in place. A 1024×1024×100 stack of noise masks held the
+  GIL for about 80 ms instead of about 320 ms in C order, and about 11 ms
+  instead of about 255 ms in Fortran order.
 - **`mask.encode` names the type of an array-like that is not a numpy
   array,** such as a pandas `Series`, instead of an error about its numpy
   dtype or dimensions.

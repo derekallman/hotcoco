@@ -1,9 +1,6 @@
-use std::borrow::Cow;
-
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
-use pyo3::sync::PyOnceLock;
 use pyo3::types::{
     PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString, PyTuple,
 };
@@ -12,10 +9,10 @@ use pyo3::types::{
 ///
 /// `$key` is interned (`pyo3::intern!`) rather than passed as a bare `&str`:
 /// `get_item` takes anything `IntoPyObject`, and for a plain `&str` that means
-/// allocating a fresh `PyString` on every call. Decoding an RF-DETR-shaped
-/// annotation list calls this once per key per annotation — millions of
-/// throwaway strings for a fixed set of ~10 field names. Interning builds each
-/// literal's `PyString` once per process and reuses it from then on.
+/// allocating a fresh `PyString` on every call. This macro and its siblings
+/// read the fields of image and category dicts and an RLE's `size`, once per
+/// key per record; interning builds each key's `PyString` once per process.
+/// Annotation fields do not come through here: [`set_ann_field`] reads them.
 macro_rules! opt {
     ($dict:expr, $key:literal) => {
         $dict
@@ -124,20 +121,21 @@ pub(crate) fn type_name(obj: &Bound<'_, PyAny>) -> String {
 /// pycocotools. Every RLE dict reader goes through here so that cannot
 /// happen to one and not the other again.
 ///
-/// `bytes` is borrowed in place rather than copied, and checked first: it is
-/// the common spelling, and a failed `str` cast builds a Python error only to
-/// discard it.
-fn counts_str<'a>(counts: &'a Bound<'_, PyAny>) -> PyResult<Option<Cow<'a, str>>> {
+/// `bytes` is borrowed in place, and so is a `str` that is ASCII, as every
+/// valid `counts` string is; any other `str` gets a UTF-8 copy that CPython
+/// keeps on the string object. `bytes` is checked first: it is the common
+/// spelling, and a failed `str` cast builds a Python error only to discard it.
+fn counts_str<'a>(counts: &'a Bound<'_, PyAny>) -> PyResult<Option<&'a str>> {
     if let Ok(b) = counts.cast::<PyBytes>() {
         let s = std::str::from_utf8(b.as_bytes()).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
         })?;
-        return Ok(Some(Cow::Borrowed(s)));
+        return Ok(Some(s));
     }
     if let Ok(s) = counts.cast::<PyString>() {
         // A `str` with no UTF-8 form (a lone surrogate) is left to the list
         // branch, which rejects it.
-        return Ok(s.to_cow().ok());
+        return Ok(s.to_str().ok());
     }
     if counts.is_instance_of::<PyByteArray>() || counts.is_instance_of::<PyMemoryView>() {
         return Err(counts_type_error(counts));
@@ -153,8 +151,8 @@ fn counts_type_error(counts: &Bound<'_, PyAny>) -> PyErr {
     ))
 }
 
-/// `req!` with an explicit reader such as [`extract_int`]. Same interning
-/// rationale as `opt!` above.
+/// `req!` with an explicit reader such as [`extract_int`]. The key is interned
+/// for the reason `opt!` gives.
 macro_rules! req_with {
     ($dict:expr, $key:literal, $read:expr) => {
         $read(
@@ -167,8 +165,8 @@ macro_rules! req_with {
     };
 }
 
-/// `opt!` with an explicit reader such as [`extract_int`]. Same interning
-/// rationale as `opt!` above.
+/// `opt!` with an explicit reader such as [`extract_int`]. The key is interned
+/// for the reason `opt!` gives.
 macro_rules! opt_with {
     ($dict:expr, $key:literal, $read:expr) => {
         $dict
@@ -181,25 +179,7 @@ macro_rules! opt_with {
 /// The dict keys each record type owns. Any other key on an incoming dict is
 /// a custom key, preserved through the `extra` map (serde-flattened in the
 /// core types) so `load → filter → save` keeps user metadata the way
-/// pycocotools does.
-///
-/// An annotation's keys are the arms of [`set_ann_field`], which decides
-/// them; this list only feeds [`schema_keys`], so an arm missing here costs
-/// speed, not correctness.
-const ANNOTATION_KEYS: &[&str] = &[
-    "id",
-    "image_id",
-    "category_id",
-    "bbox",
-    "area",
-    "segmentation",
-    "iscrowd",
-    "score",
-    "keypoints",
-    "num_keypoints",
-    "obb",
-    "is_group_of",
-];
+/// pycocotools does. An annotation's keys are the arms of [`set_ann_field`].
 const IMAGE_KEYS: &[&str] = &[
     "id",
     "file_name",
@@ -221,44 +201,6 @@ const CATEGORY_KEYS: &[&str] = &[
     "frequency",
 ];
 
-/// Every schema key name of every record type, each beside its interned
-/// `PyString`, for [`key_name`]. A name two record types share is listed
-/// twice, with the same object both times; [`key_name`] stops at the first.
-fn schema_keys(py: Python<'_>) -> &'static [(Py<PyString>, &'static str)] {
-    static KEYS: PyOnceLock<Vec<(Py<PyString>, &'static str)>> = PyOnceLock::new();
-    KEYS.get_or_init(py, || {
-        ANNOTATION_KEYS
-            .iter()
-            .chain(IMAGE_KEYS)
-            .chain(CATEGORY_KEYS)
-            .map(|&name| (PyString::intern(py, name).unbind(), name))
-            .collect()
-    })
-}
-
-/// A dict key as Rust text.
-///
-/// CPython interns a string literal that looks like an identifier, so the
-/// keys of a dict literal — how TorchMetrics and most user code build
-/// records — are the very objects in [`schema_keys`], and a pointer
-/// comparison names one without decoding it. The records this module builds
-/// ([`annotation_to_py`] and the rest) set their schema keys through
-/// `intern!`, so a record read back and passed in again is named the same
-/// way. Any other key is decoded, which under the `abi3-py39` API means a
-/// `bytes` copy and then a `String` copy. The keys `json.load` returns are
-/// equal to the interned ones but are other objects, so they take that path,
-/// with the same result.
-fn key_name<'a>(
-    key: &'a Bound<'_, PyString>,
-    schema: &[(Py<PyString>, &'static str)],
-) -> PyResult<Cow<'a, str>> {
-    let ptr = key.as_ptr();
-    match schema.iter().find(|(interned, _)| interned.as_ptr() == ptr) {
-        Some(&(_, name)) => Ok(Cow::Borrowed(name)),
-        None => key.to_cow(),
-    }
-}
-
 /// Collect every key of `dict` not in `known` into a JSON map, in dict order.
 ///
 /// Plain values, the common case (TorchMetrics adds a float `area_bbox` and an
@@ -273,7 +215,6 @@ fn extract_extra(
     dict: &Bound<'_, PyDict>,
     mut known: impl FnMut(&str, &Bound<'_, PyAny>) -> PyResult<bool>,
 ) -> PyResult<Extra> {
-    let schema = schema_keys(dict.py());
     // The custom entries as JSON for as long as `to_json` takes every value,
     // each beside its own key and value objects; from the first value it
     // declines on, a dict of those objects for `json.dumps`.
@@ -283,8 +224,8 @@ fn extract_extra(
         let Ok(key) = k.cast::<PyString>() else {
             continue; // non-string keys cannot appear in COCO JSON
         };
-        let name = key_name(key, schema)?;
-        if known(&name, &v)? {
+        let name = key.to_str()?;
+        if known(name, &v)? {
             continue;
         }
         if let Some(fallback) = &fallback {
@@ -293,7 +234,7 @@ fn extract_extra(
         }
         match to_json(&v, MAX_JSON_DEPTH) {
             Some(json) => {
-                let name = name.into_owned();
+                let name = name.to_owned();
                 converted.push((k, v, name, json));
             }
             None => {
@@ -380,7 +321,7 @@ fn to_json(value: &Bound<'_, PyAny>, depth: usize) -> Option<serde_json::Value> 
             .or_else(|_| value.extract::<u64>().map(Value::from))
             .ok()
     } else if let Ok(s) = value.cast::<PyString>() {
-        s.to_cow().ok().map(|s| Value::String(s.into_owned()))
+        s.to_str().ok().map(|s| Value::String(s.to_owned()))
     } else if depth == 0 {
         None
     } else if value.is_exact_instance_of::<PyList>() || value.is_exact_instance_of::<PyTuple>() {
@@ -393,8 +334,8 @@ fn to_json(value: &Bound<'_, PyAny>, depth: usize) -> Option<serde_json::Value> 
     } else if let Ok(dict) = value.cast_exact::<PyDict>() {
         dict.iter()
             .map(|(k, v)| {
-                let key = k.cast::<PyString>().ok()?.to_cow().ok()?;
-                Some((key.into_owned(), to_json(&v, depth - 1)?))
+                let key = k.cast::<PyString>().ok()?.to_str().ok()?;
+                Some((key.to_owned(), to_json(&v, depth - 1)?))
             })
             .collect::<Option<_>>()
             .map(Value::Object)
@@ -405,12 +346,12 @@ fn to_json(value: &Bound<'_, PyAny>, depth: usize) -> Option<serde_json::Value> 
 
 /// The custom keys of a record, as the JSON they will be saved as.
 fn extra_from_dict(extras: &Bound<'_, PyDict>) -> PyResult<Extra> {
-    let json_str: String = extras
+    let json_str = extras
         .py()
         .import("json")?
         .call_method1("dumps", (extras,))?
-        .extract()?;
-    serde_json::from_str(&json_str).map_err(|e| {
+        .cast_into::<PyString>()?;
+    serde_json::from_str(json_str.to_str()?).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "custom keys did not round-trip through JSON: {e}"
         ))
@@ -649,8 +590,10 @@ pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
             .get_item(pyo3::intern!(dict.py(), "counts"))?
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("dict missing 'counts'"))?;
         if let Some(counts) = counts_str(&counts_obj)? {
-            let counts = counts.into_owned();
-            return Ok(Segmentation::CompressedRle { size, counts });
+            return Ok(Segmentation::CompressedRle {
+                size,
+                counts: counts.to_owned(),
+            });
         }
         let counts: Vec<u32> = counts_obj
             .extract()
@@ -819,7 +762,7 @@ pub(crate) fn read_rle_dict<R>(
     };
     let invalid = |e: hotcoco_core::Error| pyo3::exceptions::PyValueError::new_err(e.to_string());
     if let Some(s) = counts_str(&counts_obj)? {
-        return compressed(&s, h, w).map_err(invalid);
+        return compressed(s, h, w).map_err(invalid);
     }
     // Uncompressed RLE: a list of ints, held to the bound a string is.
     let counts: Vec<u32> = counts_obj.extract()?;
