@@ -13,7 +13,7 @@ Perception evaluation for Python, written in Rust.
 </p>
 
 <p class="hero-sub">
-hotcoco evaluates perception models, starting with detection: boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 119× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
+hotcoco evaluates perception models, starting with detection: boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 113× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
 </p>
 
 <div class="hero-actions" markdown>
@@ -103,7 +103,7 @@ pip install hotcoco
 
 ## Performance
 
-Bbox evaluation on COCO val2017 takes **0.04s**; pycocotools takes 5.10s. Peak
+Bbox evaluation on COCO val2017 takes **0.05s**; pycocotools takes 5.11s. Peak
 memory is a third of pycocotools' or less at every scale measured. The
 precision, recall, and scores arrays and every summary metric are bit-identical to
 pycocotools'.

@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/hotcoco)](https://crates.io/crates/hotcoco)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**hotcoco is a perception evaluation toolkit, written in Rust with Python bindings.** It's a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) — the same numbers bit for bit, up to 119× faster — plus the analysis that usually lives in separate tools: TIDE error analysis, confusion matrices, confidence calibration, model comparison, label-error detection, and a dataset browser.
+**hotcoco is a perception evaluation toolkit, written in Rust with Python bindings.** It's a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) — the same numbers bit for bit, up to 113× faster — plus the analysis that usually lives in separate tools: TIDE error analysis, confusion matrices, confidence calibration, model comparison, label-error detection, and a dataset browser.
 
 It covers detection today — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols. Panoptic and tracking are planned, on the same engine.
 
@@ -15,7 +15,7 @@ Pure Rust, available as a **Python package**, **CLI tool**, and **Rust library**
 
 ## Performance
 
-Bbox evaluation on COCO val2017 runs in **0.04s** against 5.10s for pycocotools; segm is ~97× faster and keypoints ~51×. Peak memory is a third of pycocotools' or less at every scale measured. Two other Rust evaluators, ultrafast-pycocotools and vernier, are in the same speed class; the benchmarks page compares all five on time and memory. The precision, recall, and scores arrays and every summary metric are bit-identical to pycocotools', so your AP scores don't change.
+Bbox evaluation on COCO val2017 runs in **0.05s** against 5.11s for pycocotools; segm is ~111× faster and keypoints ~55×. Peak memory is a third of pycocotools' or less at every scale measured. Two other Rust evaluators, ultrafast-pycocotools and vernier, are in the same speed class; the benchmarks page compares all five on time and memory. The precision, recall, and scores arrays and every summary metric are bit-identical to pycocotools', so your AP scores don't change.
 
 Full tables, hardware, the Objects365 scale run, phase breakdowns, and parity verification: [Benchmarks](https://derekallman.github.io/hotcoco/benchmarks/).
 
