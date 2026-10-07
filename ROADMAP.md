@@ -44,7 +44,11 @@ at the moment.
 - **Frozen primitives API** — the similarity kernels, matchers, and count
   structs are callable today but provisional. Once the families above have
   exercised them, their signatures freeze, and batched variants land for
-  tracking-scale work.
+  tracking-scale work. The matchers get Python bindings then, together rather
+  than one family at a time: COCO greedy matching and panoptic segment
+  matching on caller-supplied arrays, plus per-image match records for
+  panoptic — the `evalImgs` detection already keeps, which panoptic computes
+  and discards today.
 - **Open-vocabulary detection guide** — evaluating open-vocabulary detector
   outputs (Grounding DINO, OWL-ViT, YOLO-World) with hotcoco. OV-LVIS is
   federated LVIS AP over rare categories, which hotcoco already computes; the
