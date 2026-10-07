@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.2.0] - 2026-10-07
+
+### Added
+
 - **Column-form inputs, with no Python dict per annotation.** Building dicts
   had become the dominant cost on the caller's side: about two thirds of
   `StreamingEval.update()`. Three additions, all additive:

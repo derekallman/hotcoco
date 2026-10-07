@@ -28,13 +28,3 @@ tempfile = "3"
 
 [lints]
 workspace = true
-
-# 1.2 adds `Error::UnknownCategoryIds` on purpose (see CHANGELOG). The check
-# compares against the newest published version, 1.1.0, so until 1.2.0 ships
-# it reports that change; this block turns exactly that finding into a
-# warning, and the summary then reads "no semver update required" even though
-# a break is in the tree. Delete the whole block in the commit that bumps the
-# version: `semver_override_expires_with_1_1_0` in tests/architecture.rs fails
-# the build if it survives the bump.
-[package.metadata.cargo-semver-checks.lints]
-enum_variant_added = "warn"
