@@ -119,7 +119,7 @@ fn tide(gts: &[(u64, [f64; 4])], dets: &[(u64, f64, [f64; 4])]) -> TideErrors {
         COCO::from_dataset(dataset(dt)),
         IouType::Bbox,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.tide_errors(0.5, 0.1).expect("tide_errors")
 }
 

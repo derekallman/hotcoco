@@ -75,7 +75,7 @@ After calling `evaluate()`, the `eval_imgs` field contains per-image, per-catego
 
     ```rust
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate()?;
 
     for e in ev.eval_imgs().iter().flatten() {
         println!("Image {}, Cat {}", e.image_id, e.category_id);
@@ -282,7 +282,7 @@ For direct access to the raw precision arrays, for example to compute AP at a no
 === "Rust"
 
     ```rust
-    ev.evaluate();
+    ev.evaluate()?;
     ev.accumulate();
 
     if let Some(acc) = ev.accumulated() {

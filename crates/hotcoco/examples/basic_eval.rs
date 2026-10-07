@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Running bbox evaluation...");
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate()?;
     ev.accumulate();
     ev.summarize();
 

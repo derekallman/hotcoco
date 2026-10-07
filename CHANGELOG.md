@@ -309,9 +309,12 @@ produced a plausible number instead of the right one, or instead of an error.
   outside `params.img_ids`, or in a category outside `params.cat_ids` (with
   `use_cats` on) is ignored as before.
   `StreamingEval.update()` and `coco eval` run the same check in segm mode.
-  *Rust API:* `COCOeval::check_inputs` (call it before `evaluate()`),
-  `COCO::check_mask_dims(img_ids, cat_ids)`, and `COCO::ann_to_rle` returns
-  `None` rather than an empty mask for such an annotation.
+  *Rust API:* `COCOeval::evaluate()` and `run()` return `Result` and make the
+  check first, so a Rust caller gets the error rather than the 0.000;
+  `COCOeval::check_inputs` makes it without evaluating,
+  `COCO::check_mask_dims(img_ids, cat_ids)` is the check itself, and
+  `COCO::ann_to_rle` returns `None` rather than an empty mask for such an
+  annotation.
 - **`StreamingEval.update()` assigns ground-truth ids and derives a missing
   `area`.** Targets in the shape a data loader yields carry neither. Without
   ids, every ground truth in a batch shared id 0 and the id index resolved all

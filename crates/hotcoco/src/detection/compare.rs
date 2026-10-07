@@ -373,7 +373,7 @@ mod tests {
         let gt = COCO::new(&fixtures_dir().join("gt.json")).unwrap();
         let dt = gt.load_res(&fixtures_dir().join("dt.json")).unwrap();
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         ev
     }
 
@@ -407,7 +407,7 @@ mod tests {
         let dt = gt.load_res(&fixtures_dir().join("dt.json")).unwrap();
         let mut ev_b = COCOeval::new(gt, dt, IouType::Bbox);
         ev_b.params.cat_ids = cat_ids.iter().rev().copied().collect();
-        ev_b.evaluate();
+        ev_b.evaluate().expect("evaluable inputs");
 
         let result = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap();
 
@@ -435,7 +435,7 @@ mod tests {
         let dt = gt.load_res(&fixtures_dir().join("dt.json")).unwrap();
         let mut ev_b = COCOeval::new(gt, dt, IouType::Bbox);
         ev_b.params.cat_ids = vec![ev_a.params.cat_ids[1]];
-        ev_b.evaluate();
+        ev_b.evaluate().expect("evaluable inputs");
 
         let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
         assert!(err.to_string().contains("cat_ids"), "{err}");

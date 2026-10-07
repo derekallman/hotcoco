@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     ev.params.cat_ids = first_cats;
-    ev.evaluate();
+    ev.evaluate()?;
     ev.accumulate();
     ev.summarize();
 
@@ -51,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (coco_gt, coco_dt) = load(&gt_path, &dt_path)?;
     let mut ev2 = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     ev2.params.iou_thrs = vec![0.5, 0.75];
-    ev2.evaluate();
+    ev2.evaluate()?;
     ev2.accumulate();
     ev2.summarize();
 
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (coco_gt, coco_dt) = load(&gt_path, &dt_path)?;
     let mut ev3 = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     ev3.params.use_cats = false;
-    ev3.evaluate();
+    ev3.evaluate()?;
     ev3.accumulate();
     ev3.summarize();
 

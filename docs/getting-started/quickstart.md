@@ -87,7 +87,7 @@ Your results file should be a JSON array of detection dicts:
     use hotcoco::params::IouType;
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.run();  // shorthand for evaluate() + accumulate() + summarize()
+    ev.run()?;  // shorthand for evaluate() + accumulate() + summarize()
     ```
 
 === "CLI"

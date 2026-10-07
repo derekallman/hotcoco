@@ -33,7 +33,7 @@ Every COCO evaluation follows the same pattern:
     let coco_dt = coco_gt.load_res(Path::new("detections.json"))?;
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, iou_type);
-    ev.evaluate();    // Per-image matching
+    ev.evaluate()?;   // Per-image matching
     ev.accumulate();  // Aggregate into precision/recall curves
     ev.summarize();   // Print and compute the 12 summary metrics
     ```
@@ -198,7 +198,7 @@ Modify `ev.params` before calling `evaluate()`:
     ev.params.max_dets = vec![1, 10, 100];
     ev.params.use_cats = false;
 
-    ev.evaluate();
+    ev.evaluate()?;
     ev.accumulate();
     ev.summarize();
     ```

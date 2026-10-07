@@ -95,7 +95,7 @@ fn bboxless_gt_between_valid_gts_does_not_shift_iou_columns() {
     ]);
 
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let diag = ev.image_diagnostics(0.5, 0.5).unwrap();
     assert_eq!(
@@ -132,7 +132,7 @@ fn bboxless_dt_between_valid_dts_does_not_shift_iou_rows() {
     ]);
 
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let diag = ev.image_diagnostics(0.5, 0.5).unwrap();
     assert_eq!(diag.annotations.dt_match.get(&101), Some(&1));
@@ -165,7 +165,7 @@ fn eval_imgs_matches_are_aligned_with_geometry_gaps() {
     ]);
 
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     // area = "all" cell at the default cap.
     let cell = ev
@@ -198,7 +198,7 @@ fn missing_area_label_reports_sentinel_not_all_slice() {
             ar.label = "tiny".to_string();
         }
     }
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let results = ev.get_results(None, false);
     assert!(
@@ -221,7 +221,7 @@ fn missing_area_label_reports_sentinel_not_all_slice() {
 fn empty_max_dets_degrades_to_sentinels_without_panicking() {
     let mut ev = fixture_eval();
     ev.params.max_dets = Vec::new();
-    ev.run(); // pre-fix: assert! panic inside evaluate()
+    ev.run().expect("evaluable inputs"); // pre-fix: assert! panic inside evaluate()
 
     let stats = ev.stats().expect("summarize ran");
     assert!(!stats.is_empty());
@@ -238,26 +238,26 @@ fn empty_max_dets_degrades_to_sentinels_without_panicking() {
 #[test]
 fn compare_rejects_mismatched_grids_and_ranges() {
     let mut ev_a = fixture_eval();
-    ev_a.evaluate();
+    ev_a.evaluate().expect("evaluable inputs");
 
     // iou_thrs
     let mut ev_b = fixture_eval();
     ev_b.params.iou_thrs = vec![0.5];
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
     let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
     assert!(err.to_string().contains("iou_thrs"), "got: {err}");
 
     // rec_thrs
     let mut ev_b = fixture_eval();
     ev_b.params.rec_thrs = vec![0.0, 0.5, 1.0];
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
     let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
     assert!(err.to_string().contains("rec_thrs"), "got: {err}");
 
     // max_dets
     let mut ev_b = fixture_eval();
     ev_b.params.max_dets = vec![50];
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
     let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
     assert!(err.to_string().contains("max_dets"), "got: {err}");
 
@@ -268,13 +268,13 @@ fn compare_rejects_mismatched_grids_and_ranges() {
         label: "small".to_string(),
         range: [0.0, 100.0],
     };
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
     let err = compare(&ev_a, &ev_b, &CompareOpts::default()).unwrap_err();
     assert!(err.to_string().contains("area_ranges"), "got: {err}");
 
     // Identical params still compare fine.
     let mut ev_b = fixture_eval();
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
     assert!(compare(&ev_a, &ev_b, &CompareOpts::default()).is_ok());
 }
 
@@ -285,7 +285,7 @@ fn compare_rejects_mismatched_grids_and_ranges() {
 #[test]
 fn f_score_keys_use_minimal_digits() {
     let mut ev = fixture_eval();
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let f2 = ev.f_scores(2.0);
     assert!(
@@ -308,7 +308,7 @@ fn f_score_keys_use_minimal_digits() {
 fn eval_params_archive_is_self_explaining() {
     let mut ev = fixture_eval();
     ev.params.iou_thrs = vec![0.25, 0.75]; // a deliberate deviation
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let results = ev.results(false).unwrap();
     assert_eq!(results.params.recall_thresholds, ev.params.rec_thrs);
@@ -357,7 +357,7 @@ fn float32_grids_are_kept_and_named_once() {
     assert_ne!(iou, ev.params.iou_thrs, "fixture must drift");
     ev.params.iou_thrs = iou.clone();
     ev.params.rec_thrs = rec.clone();
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     assert_eq!(ev.params.iou_thrs, iou);
     assert_eq!(ev.params.rec_thrs, rec);
@@ -425,7 +425,7 @@ fn missing_areas_are_derived_and_the_callers_dataset_is_untouched() {
     let run = |gt: Arc<COCO>| {
         let dt = gt.load_res_anns(dets.clone()).unwrap();
         let mut ev = COCOeval::new(Arc::clone(&gt), dt, IouType::Bbox);
-        ev.run();
+        ev.run().expect("evaluable inputs");
         ev.stats().unwrap().to_vec()
     };
 
@@ -541,7 +541,7 @@ fn num_keypoints_is_derived_when_absent() {
     let stats = |with_field: bool| {
         let (gt, dt) = keypoint_pair(with_field);
         let mut ev = COCOeval::new(gt, dt, IouType::Keypoints);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         ev.accumulate();
         ev.summarize_lines();
         ev.stats().unwrap().to_vec()

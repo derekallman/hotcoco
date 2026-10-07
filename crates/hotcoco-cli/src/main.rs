@@ -199,10 +199,9 @@ fn run_eval(args: EvalArgs) -> Result<(), Box<dyn std::error::Error>> {
         coco_eval.params.use_cats = false;
     }
 
-    coco_eval.check_inputs()?;
     let pb = spinner(&format!("Evaluating {}...", args.iou_type));
     let start = Instant::now();
-    coco_eval.evaluate();
+    coco_eval.evaluate()?;
     coco_eval.accumulate();
     pb.finish_and_clear();
     status("Evaluated", &format!("{}", args.iou_type), start.elapsed());

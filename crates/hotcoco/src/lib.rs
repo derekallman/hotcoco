@@ -11,7 +11,7 @@
 //! let dt = gt.load_res(std::path::Path::new("detections.json"))?;
 //!
 //! let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-//! ev.run();                       // evaluate -> accumulate -> summarize
+//! ev.run()?;                      // evaluate -> accumulate -> summarize
 //! let report = ev.report()?;      // metrics, per-class, curves, provenance
 //! # Ok(())
 //! # }

@@ -438,7 +438,7 @@ fn test_bbox_evaluation_runs() {
     let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
 
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    coco_eval.evaluate();
+    coco_eval.evaluate().expect("evaluable inputs");
     coco_eval.accumulate();
 
     let eval = coco_eval.accumulated().expect("Accumulate should set eval");
@@ -521,7 +521,7 @@ fn test_summarize_prints() {
     let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
 
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    coco_eval.evaluate();
+    coco_eval.evaluate().expect("evaluable inputs");
     coco_eval.accumulate();
 
     // `summarize_lines` is what `summarize()` prints; asserting on the strings
@@ -613,7 +613,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
         label: "custom".into(),
         range: [500.0, 1e10],
     }];
-    coco_eval.evaluate();
+    coco_eval.evaluate().expect("evaluable inputs");
     coco_eval.accumulate();
 
     let eval = coco_eval.accumulated().unwrap();
@@ -651,7 +651,7 @@ fn test_area_ignored_gt_does_not_absorb_multiple_detections() {
 /// Helper to run bbox eval and return the 12 summary stats.
 fn run_bbox_eval(coco_gt: COCO, coco_dt: COCO) -> Vec<f64> {
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    coco_eval.evaluate();
+    coco_eval.evaluate().expect("evaluable inputs");
     coco_eval.accumulate();
     coco_eval.summarize();
     coco_eval
@@ -732,7 +732,7 @@ fn test_crowd_rematching() {
     let coco_dt = COCO::from_dataset(dt_dataset);
 
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    coco_eval.evaluate();
+    coco_eval.evaluate().expect("evaluable inputs");
     coco_eval.accumulate();
 
     let eval = coco_eval.accumulated().unwrap();
@@ -1239,7 +1239,7 @@ fn test_lvis_neg_category_counts_as_fp() {
     let coco_dt = COCO::from_dataset(dt_ds);
 
     let mut ev = COCOeval::new_lvis(coco_gt, coco_dt, IouType::Bbox);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let results = ev.get_results(None, false);
     let ap = results["AP"];
@@ -1279,7 +1279,7 @@ fn test_lvis_unlisted_category_not_penalized() {
     let coco_dt_two = COCO::from_dataset(dt_ds);
 
     let mut ev_two = COCOeval::new_lvis(coco_gt_two, coco_dt_two, IouType::Bbox);
-    ev_two.run();
+    ev_two.run().expect("evaluable inputs");
 
     // Baseline: only image A with its GT and matching DT (perfect AP = 1.0).
     let gt_ds_one = dataset(
@@ -1301,7 +1301,7 @@ fn test_lvis_unlisted_category_not_penalized() {
         COCO::from_dataset(dt_ds_one),
         IouType::Bbox,
     );
-    ev_one.run();
+    ev_one.run().expect("evaluable inputs");
 
     let ap_two = ev_two.get_results(None, false)["AP"];
     let ap_one = ev_one.get_results(None, false)["AP"];
@@ -1346,7 +1346,7 @@ fn test_lvis_not_exhaustive_unmatched_ignored() {
         COCO::from_dataset(dt_ds),
         IouType::Bbox,
     );
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let ap = ev.get_results(None, false)["AP"];
     assert!(
@@ -1607,7 +1607,7 @@ fn test_confusion_matrix_max_det() {
 /// Run evaluate() and return tide_errors at the default thresholds.
 fn run_tide(coco_gt: COCO, coco_dt: COCO) -> hotcoco::TideErrors {
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.tide_errors(0.5, 0.1).expect("tide_errors failed")
 }
 
@@ -2961,7 +2961,7 @@ fn make_perfect_eval() -> COCOeval {
         vec![det(1, bbox, 1.0)],
     ));
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev
 }
@@ -2973,7 +2973,7 @@ fn test_f_scores_empty_before_accumulate() {
     let coco_gt = COCO::new(&gt_path).expect("load GT");
     let coco_dt = coco_gt.load_res(&dt_path).expect("load DT");
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     assert!(ev.f_scores(1.0).is_empty());
 }
 
@@ -2984,7 +2984,7 @@ fn test_f_scores_keys_and_range() {
     let coco_gt = COCO::new(&gt_path).expect("load GT");
     let coco_dt = coco_gt.load_res(&dt_path).expect("load DT");
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
 
     let f1 = ev.f_scores(1.0);
@@ -3020,7 +3020,7 @@ fn test_results_returns_metrics() {
     let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     // Without per-class
     let results = ev
@@ -3057,7 +3057,7 @@ fn test_results_save_roundtrip() {
     let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let results = ev.results(true).unwrap();
     let json = results.to_json().unwrap();
@@ -3232,7 +3232,7 @@ fn test_accumulate_unchanged_after_refactor() {
     let coco_dt = coco_gt.load_res(&dt_path).unwrap();
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
 
     // The name promises numeric stability across a refactor, so pin the numbers.
@@ -3247,7 +3247,7 @@ fn test_accumulate_unchanged_after_refactor() {
     //     from pycocotools.cocoeval import COCOeval; \
     //     gt=COCO('crates/hotcoco/tests/fixtures/gt.json'); \
     //     dt=gt.loadRes('crates/hotcoco/tests/fixtures/dt.json'); \
-    //     e=COCOeval(gt,dt,'bbox'); e.evaluate(); e.accumulate(); e.summarize()"
+    //     e=COCOeval(gt,dt,'bbox'); e.evaluate().expect("evaluable inputs"); e.accumulate(); e.summarize()"
     ev.summarize();
     let stats = ev.stats().expect("summarize sets stats");
 
@@ -3294,13 +3294,13 @@ fn test_slice_by_full_dataset_matches_normal_eval() {
     let all_img_ids: Vec<u64> = coco_gt1.dataset.images.iter().map(|i| i.id).collect();
 
     let mut ev = COCOeval::new(coco_gt1, coco_dt1, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
     let normal_results = ev.get_results(None, false);
 
     let mut ev2 = COCOeval::new(coco_gt2, coco_dt2, IouType::Bbox);
-    ev2.evaluate();
+    ev2.evaluate().expect("evaluable inputs");
     let sliced = ev2
         .slice_by(
             vec![("all_images".to_string(), all_img_ids)]
@@ -3349,7 +3349,7 @@ fn test_slice_by_disjoint_halves() {
     let coco_dt = coco_gt.load_res(&dt_path).unwrap();
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let sliced = ev
         .slice_by(
@@ -3381,7 +3381,7 @@ fn test_slice_by_disjoint_halves() {
         let dt = gt.load_res(&dt_path).unwrap();
         let mut e = COCOeval::new(gt, dt, IouType::Bbox);
         e.params.img_ids = img_ids;
-        e.run();
+        e.run().expect("evaluable inputs");
         e.get_results(None, false)
     };
 
@@ -3424,7 +3424,7 @@ fn test_slice_by_reserved_name_rejected() {
     let coco_dt = coco_gt.load_res(&dt_path).unwrap();
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let result = ev.slice_by(
         vec![("_overall".to_string(), vec![1])]
@@ -3880,7 +3880,7 @@ fn test_oid_group_of_multi_match() {
     let coco_gt = COCO::from_dataset(gt_dataset);
     let coco_dt = COCO::from_dataset(dt_dataset);
     let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -3983,7 +3983,7 @@ fn test_oid_group_of_matches_on_ioa_not_iou() {
     ));
 
     let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     // Both ground truths found, no false positives -> AP 1.0.
     // Matched on IoU instead, the first detection is an FP at recall 0 and AP
@@ -4020,7 +4020,7 @@ fn test_oid_undetected_group_of_is_a_miss() {
     let coco_dt = COCO::from_dataset(dataset(vec![img(1)], cats, vec![det(1, FOUND_GT, 0.9)]));
 
     let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     // Two ground truths in the denominator, one found. Recall caps at 0.5 and
     // precision is 1.0 up to there, so all-points AP is exactly 0.5.
@@ -4116,7 +4116,7 @@ fn test_oid_hierarchy_evaluation() {
     let coco_gt = COCO::from_dataset(gt_dataset);
     let coco_dt = COCO::from_dataset(dt_dataset);
     let mut ev = COCOeval::new_oid(coco_gt, coco_dt, Some(hierarchy));
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -4201,7 +4201,7 @@ fn test_oid_dt_expansion() {
     let coco_gt = COCO::from_dataset(gt_dataset.clone());
     let coco_dt = COCO::from_dataset(dt_dataset.clone());
     let mut ev1 = COCOeval::new_oid(coco_gt, coco_dt, Some(hierarchy.clone()));
-    ev1.evaluate();
+    ev1.evaluate().expect("evaluable inputs");
     ev1.accumulate();
     ev1.summarize();
     let stats_no_expand = ev1.stats().unwrap().to_vec();
@@ -4211,7 +4211,7 @@ fn test_oid_dt_expansion() {
     let coco_dt2 = COCO::from_dataset(dt_dataset);
     let mut ev2 = COCOeval::new_oid(coco_gt2, coco_dt2, Some(hierarchy));
     ev2.params.expand_dt = true;
-    ev2.evaluate();
+    ev2.evaluate().expect("evaluable inputs");
     ev2.accumulate();
     ev2.summarize();
     let stats_expand = ev2.stats().unwrap().to_vec();
@@ -4284,7 +4284,7 @@ fn test_oid_auto_derive_hierarchy() {
 
     // No hierarchy arg → auto-derive from supercategory
     let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -4309,7 +4309,7 @@ fn test_calibration_basic() {
     let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let cal = ev.calibration(10, 0.5).expect("calibration should succeed");
 
@@ -4349,7 +4349,7 @@ fn test_calibration_invalid_iou_threshold() {
     let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let result = ev.calibration(10, 0.42);
     assert!(
@@ -4385,7 +4385,7 @@ fn test_calibration_rejects_unnormalized_scores() {
         COCO::from_dataset(dt),
         IouType::Bbox,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let err = ev
         .calibration(10, 0.5)
@@ -4492,7 +4492,7 @@ fn test_calibration_known_values() {
     let coco_dt = COCO::from_dataset(dt_dataset);
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let cal = ev.calibration(10, 0.5).expect("calibration should succeed");
 
@@ -4628,12 +4628,12 @@ fn test_compare_bootstrap_ci_contains_point_estimate() {
     let gt_a = COCO::from_dataset(gt_ds.clone());
     let dt_a = COCO::from_dataset(dt_good_ds);
     let mut ev_a = COCOeval::new(gt_a, dt_a, IouType::Bbox);
-    ev_a.evaluate();
+    ev_a.evaluate().expect("evaluable inputs");
 
     let gt_b = COCO::from_dataset(gt_ds);
     let dt_b = COCO::from_dataset(dt_weak_ds);
     let mut ev_b = COCOeval::new(gt_b, dt_b, IouType::Bbox);
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
 
     let opts = hotcoco::CompareOpts {
         n_bootstrap: 200,
@@ -4700,12 +4700,12 @@ fn test_compare_bootstrap_coverage() {
     let gt_a = COCO::from_dataset(gt_ds.clone());
     let dt_a = COCO::from_dataset(dt_good_ds.clone());
     let mut ev_a = COCOeval::new(gt_a, dt_a, IouType::Bbox);
-    ev_a.evaluate();
+    ev_a.evaluate().expect("evaluable inputs");
 
     let gt_b = COCO::from_dataset(gt_ds.clone());
     let dt_b = COCO::from_dataset(dt_weak_ds.clone());
     let mut ev_b = COCOeval::new(gt_b, dt_b, IouType::Bbox);
-    ev_b.evaluate();
+    ev_b.evaluate().expect("evaluable inputs");
 
     let baseline = hotcoco::compare(&ev_a, &ev_b, &hotcoco::CompareOpts::default()).unwrap();
     let true_ap_delta = baseline.deltas["AP"];
@@ -4717,12 +4717,12 @@ fn test_compare_bootstrap_coverage() {
         let gt_a = COCO::from_dataset(gt_ds.clone());
         let dt_a = COCO::from_dataset(dt_good_ds.clone());
         let mut ev_a = COCOeval::new(gt_a, dt_a, IouType::Bbox);
-        ev_a.evaluate();
+        ev_a.evaluate().expect("evaluable inputs");
 
         let gt_b = COCO::from_dataset(gt_ds.clone());
         let dt_b = COCO::from_dataset(dt_weak_ds.clone());
         let mut ev_b = COCOeval::new(gt_b, dt_b, IouType::Bbox);
-        ev_b.evaluate();
+        ev_b.evaluate().expect("evaluable inputs");
 
         let opts = hotcoco::CompareOpts {
             n_bootstrap: 200,
@@ -4809,7 +4809,7 @@ fn test_obb_eval_basic() {
     let coco_gt = COCO::from_dataset(gt_dataset);
     let coco_dt = COCO::from_dataset(dt_dataset);
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Obb);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -4863,7 +4863,7 @@ fn test_obb_eval_no_overlap() {
     let coco_gt = COCO::from_dataset(gt_dataset);
     let coco_dt = COCO::from_dataset(dt_dataset);
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Obb);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -4940,7 +4940,7 @@ fn test_empty_max_dets_degrades_gracefully() {
 
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     coco_eval.params.max_dets = vec![];
-    coco_eval.run(); // must not panic
+    coco_eval.run().expect("evaluable inputs"); // must not panic
 
     let stats = coco_eval.stats().expect("summarize ran");
     assert!(!stats.is_empty());
@@ -5033,7 +5033,7 @@ fn test_match_floor_clamped_at_iou_threshold_one() {
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
     ev.params.iou_thrs = vec![1.0];
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -5138,7 +5138,7 @@ fn load_bbox_fixtures() -> COCOeval {
 /// [`load_bbox_fixtures`] run to completion.
 fn bbox_eval_on_fixtures() -> COCOeval {
     let mut ev = load_bbox_fixtures();
-    ev.run();
+    ev.run().expect("evaluable inputs");
     ev
 }
 
@@ -5257,7 +5257,7 @@ fn test_report_provenance_marks_obb_as_extension() {
         .load_res(&fixtures_dir().join("dt.json"))
         .expect("DT");
     let mut obb = COCOeval::new(coco_gt, coco_dt, IouType::Obb);
-    obb.run();
+    obb.run().expect("evaluable inputs");
     let obb_report = obb.report().expect("report");
     assert_eq!(obb_report.provenance, hotcoco::Provenance::Extension);
     assert!(
@@ -5382,7 +5382,7 @@ fn eval_invariants_hold_across_fixtures() {
         let gt = COCO::new(&fixtures_dir().join(gt_name)).unwrap();
         let dt = gt.load_res(&fixtures_dir().join(dt_name)).unwrap();
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-        ev.run();
+        ev.run().expect("evaluable inputs");
 
         assert_eval_invariants(&ev, gt_name);
 
@@ -5421,7 +5421,7 @@ fn eval_invariants_hold_for_open_images() {
     );
 
     let mut ev = COCOeval::new_oid(COCO::from_dataset(gt), COCO::from_dataset(dt), None);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     assert_eval_invariants(&ev, "open images group-of");
 }
@@ -5438,7 +5438,7 @@ fn eval_invariants_hold_for_open_images() {
 
 /// Run to completion and report whether `report()` calls the result comparable.
 fn provenance_of(mut ev: COCOeval) -> Provenance {
-    ev.run();
+    ev.run().expect("evaluable inputs");
     ev.report().expect("report() succeeds").provenance
 }
 
@@ -5461,7 +5461,7 @@ fn default_params_are_parity_verified() {
 #[test]
 fn provenance_accessor_agrees_with_report() {
     let mut verified = load_bbox_fixtures();
-    verified.run();
+    verified.run().expect("evaluable inputs");
     assert_eq!(
         verified.provenance(),
         verified.report().expect("report() succeeds").provenance,
@@ -5471,7 +5471,7 @@ fn provenance_accessor_agrees_with_report() {
 
     let mut extension = load_bbox_fixtures();
     extension.params.iou_thrs = vec![0.5, 0.75];
-    extension.run();
+    extension.run().expect("evaluable inputs");
     assert_eq!(
         extension.provenance(),
         extension.report().expect("report() succeeds").provenance,
@@ -5646,7 +5646,7 @@ fn accumulate_arrays_are_independent_of_thread_count() {
             let coco_dt = COCO::from_dataset(dt_ds.clone());
             let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
             ev.params.max_dets = vec![1, 5, 100];
-            ev.evaluate();
+            ev.evaluate().expect("evaluable inputs");
             ev.accumulate();
             let sliced = ev.slice_by(slices.clone()).expect("slice_by");
             (
@@ -5768,7 +5768,7 @@ fn tide_errors_is_deterministic_across_thread_counts_with_tied_scores() {
             .expect("thread pool");
         pool.install(|| {
             let mut ev = COCOeval::new(build_gt(), build_dt(), IouType::Bbox);
-            ev.evaluate();
+            ev.evaluate().expect("evaluable inputs");
             ev.tide_errors(0.5, 0.1).expect("tide_errors failed")
         })
     }
@@ -5951,7 +5951,7 @@ fn tide_fp_types_partition_the_false_positives() {
     let gt = COCO::new(&fixtures_dir().join("edge_gt.json")).unwrap();
     let dt = gt.load_res(&fixtures_dir().join("edge_dt.json")).unwrap();
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     let te = ev.tide_errors(0.5, 0.1).expect("tide_errors");
 
     // No key outside the documented set. `Miss` is a false *negative* and is
@@ -6045,7 +6045,7 @@ fn test_gt_less_all_ignored_cell_still_fills_score_ranks() {
         COCO::from_dataset(dt_ds),
         IouType::Bbox,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let small_idx = ev
         .params
@@ -6094,7 +6094,7 @@ fn test_max_dets_order_is_irrelevant() {
         let coco_dt = coco_gt.load_res(&dt_path).expect("Failed to load DT");
         let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
         ev.params.max_dets = max_dets;
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         ev.accumulate();
         ev.summarize();
         ev
@@ -6155,7 +6155,7 @@ fn test_accumulate_shared_order_equals_per_cap_runs() {
         let coco_dt = COCO::from_dataset(dt_ds.clone());
         let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
         ev.params.max_dets = max_dets;
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         if let Some(md) = acc_max_dets {
             ev.params.max_dets = md;
         }
@@ -6275,7 +6275,7 @@ fn test_accumulate_shared_order_equals_per_cap_runs() {
         COCO::from_dataset(dt_ds.clone()),
         IouType::Bbox,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     let odd: Vec<u64> = (1..=12).filter(|i| i % 2 == 1).collect();
     let even: Vec<u64> = (1..=12).filter(|i| i % 2 == 0).collect();
     let sliced = ev
@@ -6300,7 +6300,7 @@ fn test_accumulate_shared_order_equals_per_cap_runs() {
             IouType::Bbox,
         );
         fresh.params.img_ids = ids;
-        fresh.run();
+        fresh.run().expect("evaluable inputs");
         let expected = fresh.get_results(None, false);
         assert_eq!(
             slice.metrics.len(),
@@ -6349,7 +6349,7 @@ fn test_gt_annotations_keep_json_array_order() {
     let coco_gt = COCO::new(&gt_path).expect("load GT");
     let coco_dt = coco_gt.load_res(&dt_path).expect("load DT");
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let all_idx = ev.params.all_area_idx();
     let all_rng = ev.params.area_ranges[all_idx].range;
@@ -6414,7 +6414,7 @@ fn per_class_metrics_follow_max_det_not_the_last_slot() {
         let dt = gt.load_res_anns(dets.clone()).unwrap();
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
         ev.params.max_dets = max_dets;
-        ev.run();
+        ev.run().expect("evaluable inputs");
         let report = ev.report().unwrap();
         let per_class: Vec<f64> = report
             .per_class
@@ -6471,7 +6471,7 @@ fn metric_defs_align_with_metric_keys_and_stats() {
         .load_res_anns(vec![det(1, [0.0, 0.0, 10.0, 10.0], 0.9)])
         .unwrap();
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let defs = ev.metric_defs();
     let keys = ev.metric_keys();
@@ -6838,7 +6838,7 @@ fn test_oid_end_to_end_open_images_eval() {
     let coco_dt = coco_gt.load_res_anns(dt_anns).expect("load_res_anns");
 
     let mut ev = COCOeval::new_oid(coco_gt, coco_dt, None);
-    ev.run();
+    ev.run().expect("evaluable inputs");
     let stats = ev.stats().expect("stats after run");
     assert!(
         stats[0] > 0.99,
@@ -6924,7 +6924,7 @@ fn test_segm_eval_end_to_end() {
         COCO::from_dataset(dt),
         IouType::Segm,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -6994,7 +6994,7 @@ fn test_segm_eval_crowd_uses_ioa() {
         COCO::from_dataset(dt),
         IouType::Segm,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -7041,7 +7041,7 @@ fn test_segm_eval_polygon_end_to_end() {
         COCO::from_dataset(dt),
         IouType::Segm,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -7095,7 +7095,7 @@ fn test_keypoints_eval_end_to_end() {
         COCO::from_dataset(dt),
         IouType::Keypoints,
     );
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
 
@@ -7280,7 +7280,7 @@ fn assert_streams_like_batch(
     dt_ds: &Dataset,
     mut batch: COCOeval,
 ) -> (COCOeval, COCOeval) {
-    batch.evaluate();
+    batch.evaluate().expect("evaluable inputs");
     let mut streamed = stream_datasets(gt_ds, dt_ds, batch.params.clone(), batch.eval_mode);
 
     batch.accumulate();

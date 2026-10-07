@@ -273,8 +273,7 @@ impl StreamingEval {
         let mut params = self.params.clone();
         params.img_ids.clone_from(&ids);
         let mut ev = COCOeval::with_mode(gt, dt, params, self.eval_mode, None);
-        ev.check_inputs()?;
-        ev.evaluate();
+        ev.evaluate()?;
         let cells = std::mem::take(&mut ev.cells);
 
         // `evaluate()` sorts its pairs by (image, category), so each image is
@@ -807,7 +806,7 @@ mod tests {
             COCO::from_dataset(dt.clone()),
             IouType::Bbox,
         );
-        batch.evaluate();
+        batch.evaluate().expect("evaluable inputs");
         batch
     }
 
@@ -858,7 +857,7 @@ mod tests {
             .load_res_anns(dt.annotations.clone())
             .expect("finite scores");
         let mut batch = COCOeval::new(gt_coco, dt_coco, IouType::Bbox);
-        batch.evaluate();
+        batch.evaluate().expect("evaluable inputs");
         let streamed = stream(&gt, &dt.annotations, &[&[1, 2, 3]]);
         assert_eq!(
             format!("{:?}", batch.cells),

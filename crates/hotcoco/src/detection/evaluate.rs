@@ -130,12 +130,11 @@ impl COCOeval {
 
     /// Check that the inputs can be evaluated under the current `params`.
     ///
-    /// Run it right before [`evaluate`](Self::evaluate), after any `params`
-    /// edit: today it covers mask geometry (segm), where a polygon on an image
-    /// without `height` and `width` rasterizes to an empty mask and AP comes
-    /// out 0 with nothing to say why — see [`COCO::check_mask_dims`](crate::COCO::check_mask_dims).
-    /// `evaluate()` itself stays infallible, so every entry point that can
-    /// surface an error calls this first.
+    /// [`evaluate`](Self::evaluate) runs it first, so a caller needs it only
+    /// to validate inputs without evaluating them. Today it covers mask
+    /// geometry (segm), where a polygon on an image without `height` and
+    /// `width` rasterizes to an empty mask and AP comes out 0 with nothing to
+    /// say why — see [`COCO::check_mask_dims`](crate::COCO::check_mask_dims).
     ///
     /// # Errors
     ///
@@ -177,7 +176,13 @@ impl COCOeval {
     /// expanded data through the same handles the analysis surfaces read (TIDE,
     /// diagnostics, category names), which is why the handles are replaced
     /// rather than shadowed by private copies.
-    pub fn evaluate(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// What [`check_inputs`](Self::check_inputs) reports: inputs that cannot
+    /// be evaluated under the current `params`. Nothing is evaluated then.
+    pub fn evaluate(&mut self) -> crate::error::Result<()> {
+        self.check_inputs()?;
         // OID: expand GT (and optionally DT) using hierarchy — this replaces
         // the `coco_gt`/`coco_dt` handles; see the method docs above.
         if self.eval_mode == EvalMode::OpenImages {
@@ -278,6 +283,7 @@ impl COCOeval {
         self.eval_imgs = std::sync::OnceLock::new();
         self.default_eval_imgs = std::sync::OnceLock::new();
         self.eval_inputs = Some(inputs);
+        Ok(())
     }
 
     /// Whether `evaluate()`'s per-pair passes fan out. A pair's IoU and

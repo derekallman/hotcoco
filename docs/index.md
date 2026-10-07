@@ -72,7 +72,7 @@ pip install hotcoco
     let coco_dt = coco_gt.load_res(Path::new("detections.json"))?;
 
     let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate()?;
     ev.accumulate();
     ev.summarize();
     ```

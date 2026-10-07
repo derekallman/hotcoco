@@ -459,7 +459,7 @@ mod tests {
             COCO::from_dataset(dt),
             IouType::Segm,
         );
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
 
         let cache = ev
             .segm_rles

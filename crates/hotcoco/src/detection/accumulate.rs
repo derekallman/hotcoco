@@ -936,7 +936,7 @@ mod tests {
             area("medium", 2500.0, 6400.0),
             area("large", 6400.0, 1e10),
         ];
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         ev
     }
 

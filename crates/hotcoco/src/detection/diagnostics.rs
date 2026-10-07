@@ -555,7 +555,7 @@ mod tests {
     fn test_diagnostics_perfect_detection() {
         let (gt, dt) = make_gt_dt();
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
 
         let diag = ev.image_diagnostics(0.5, 0.5).unwrap();
 
@@ -607,7 +607,7 @@ mod tests {
         );
 
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
 
         let diag = ev.image_diagnostics(0.5, 0.5).unwrap();
 
@@ -641,7 +641,7 @@ mod tests {
         );
 
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
 
         let diag = ev.image_diagnostics(0.5, 0.5).unwrap();
 
@@ -677,7 +677,7 @@ mod tests {
         );
 
         let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
 
         let diag = ev.image_diagnostics(0.5, 0.5).unwrap();
 

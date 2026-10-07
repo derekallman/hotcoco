@@ -63,7 +63,7 @@ fn assert_close(actual: f64, expected: f64) {
 }
 
 fn stats(ev: &mut COCOeval) -> Vec<f64> {
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
     ev.stats().unwrap().to_vec()
@@ -107,6 +107,14 @@ fn check_mask_dims_rejects_polygons_on_dimensionless_images() {
     ev.check_inputs().unwrap();
     ev.params.iou_type = IouType::Segm;
     assert!(ev.check_inputs().is_err());
+
+    // `evaluate()` and `run()` make the same check themselves, so a Rust
+    // caller gets the error rather than a 0.000: nothing is evaluated.
+    assert!(ev.evaluate().is_err());
+    assert!(ev.run().is_err());
+    assert!(!ev.evaluated());
+    ev.params.iou_type = IouType::Bbox;
+    ev.run().expect("box evaluation never reads the dims");
 
     // The annotation on the dimensionless image has no mask at all — never a
     // 0×0 one that compares as empty against everything.
@@ -499,7 +507,7 @@ fn lvis_results(ev: &COCOeval) -> std::collections::BTreeMap<String, f64> {
 fn lvis_frequency_groups_follow_the_accumulated_k_axis() {
     let (gt, dt) = lvis_pair();
     let mut ev = COCOeval::new_lvis(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.params.cat_ids = vec![3];
     ev.accumulate();
     ev.summarize();
@@ -512,7 +520,7 @@ fn lvis_frequency_groups_follow_the_accumulated_k_axis() {
     // category, not the one that used to sit at its position.
     let (gt, dt) = lvis_pair();
     let mut ev = COCOeval::new_lvis(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.params.cat_ids = vec![3, 1];
     ev.accumulate();
     ev.summarize();
@@ -553,7 +561,7 @@ fn streaming_lvis_without_categories_reports_no_frequency_groups() {
     let dt = gt.load_res_anns(dts).unwrap();
     let mut batch = COCOeval::new_lvis(gt, dt, IouType::Bbox);
     batch.params.use_cats = false;
-    batch.run();
+    batch.run().expect("evaluable inputs");
 
     let s = lvis_results(&streamed);
     let b = lvis_results(&batch);
@@ -572,7 +580,7 @@ fn pooled_run_has_no_per_class_entries() {
     let (gt, dt) = lvis_pair();
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
     ev.params.use_cats = false;
-    ev.run();
+    ev.run().expect("evaluable inputs");
 
     let r = ev.get_results(None, true);
     let per_class: Vec<&String> = r.keys().filter(|k| k.starts_with("AP/")).collect();
@@ -590,7 +598,7 @@ fn pooled_run_has_no_per_class_entries() {
     // And with categories on, every one is named.
     let (gt, dt) = lvis_pair();
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.run();
+    ev.run().expect("evaluable inputs");
     let r = ev.get_results(None, true);
     assert_eq!(r.keys().filter(|k| k.starts_with("AP/")).count(), 3);
 }

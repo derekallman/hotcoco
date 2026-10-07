@@ -90,7 +90,7 @@ fn two_category_eval(cat_ids: Option<Vec<u64>>, use_cats: bool) -> COCOeval {
         ev.params.cat_ids = ids;
     }
     ev.params.use_cats = use_cats;
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev
 }
 
@@ -309,7 +309,7 @@ fn calibration_omits_category_without_detections() {
     let gt = COCO::from_dataset(dataset(images.clone(), gts, cats.clone()));
     let dt = COCO::from_dataset(dataset(images, dts, cats));
     let mut ev = COCOeval::new(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
 
     let cal = ev.calibration(10, 0.5).expect("calibration");
     assert!(
@@ -435,14 +435,14 @@ fn oid_evaluate_twice_with_expand_dt_is_idempotent() {
     let mut ev = COCOeval::new_oid(gt, dt, Some(animal_hierarchy()));
     ev.params.expand_dt = true;
 
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     let n_dt = ev.coco_dt().dataset.annotations.len();
     let n_gt = ev.coco_gt().dataset.annotations.len();
     ev.accumulate();
     ev.summarize();
     let first = ev.stats().expect("summarized").to_vec();
 
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     assert_eq!(ev.coco_dt().dataset.annotations.len(), n_dt);
     assert_eq!(ev.coco_gt().dataset.annotations.len(), n_gt);
     ev.accumulate();

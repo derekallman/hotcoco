@@ -2130,12 +2130,8 @@ impl PyCOCOeval {
         // in between, and only this sees the configuration that runs.
         // A configuration that cannot be evaluated is a bad argument, so
         // `ValueError` (pycocotools raises `KeyError` at the same point).
-        self.with_params(py, |ev| {
-            ev.check_inputs()?;
-            py.detach(|| ev.evaluate());
-            Ok::<_, hotcoco_core::Error>(())
-        })
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        self.with_params(py, |ev| py.detach(|| ev.evaluate()))
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         self.eval_cache = None;
         Ok(())
     }

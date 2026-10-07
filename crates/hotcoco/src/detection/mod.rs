@@ -84,7 +84,7 @@ fn not_evaluated_at(thr: f64) -> String {
 /// # let coco_gt = COCO::new(std::path::Path::new("gt.json"))?;
 /// # let coco_dt = coco_gt.load_res(std::path::Path::new("dt.json"))?;
 /// let mut ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-/// ev.evaluate();   // per-image IoU matching
+/// ev.evaluate()?;  // per-image IoU matching
 /// ev.accumulate(); // aggregate into precision/recall curves
 /// ev.summarize();  // print + store the summary metrics in ev.stats
 /// # Ok(())
@@ -99,7 +99,7 @@ fn not_evaluated_at(thr: f64) -> String {
 /// # let coco_gt = COCO::new(std::path::Path::new("gt.json"))?;
 /// # let coco_dt = coco_gt.load_res(std::path::Path::new("dt.json"))?;
 /// let mut ev = COCOeval::new_lvis(coco_gt, coco_dt, IouType::Segm);
-/// ev.run();
+/// ev.run()?;
 /// let results = ev.get_results(None, false); // BTreeMap<metric_name, f64>
 /// # Ok(())
 /// # }
@@ -473,10 +473,15 @@ impl COCOeval {
     ///
     /// Equivalent to calling the three methods in sequence. Primarily used with LVIS
     /// pipelines such as Detectron2 and MMDetection that expect a single `run()` entry point.
-    pub fn run(&mut self) {
-        self.evaluate();
+    ///
+    /// # Errors
+    ///
+    /// [`evaluate`](Self::evaluate)'s: nothing runs then.
+    pub fn run(&mut self) -> crate::error::Result<()> {
+        self.evaluate()?;
         self.accumulate();
         self.summarize();
+        Ok(())
     }
 
     /// Create a new COCOeval configured for Open Images detection evaluation.

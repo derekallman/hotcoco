@@ -183,7 +183,7 @@ fn lvis_caps_detections_per_image_like_lvis_api() {
     });
     let dt = gt.load_res_anns(dt_anns.clone()).unwrap();
     let mut ev = COCOeval::new_lvis(gt, dt, IouType::Bbox);
-    ev.evaluate();
+    ev.evaluate().expect("evaluable inputs");
     ev.accumulate();
     ev.summarize();
     let stats = ev.stats().unwrap().to_vec();
@@ -227,7 +227,7 @@ fn lvis_keeps_a_results_set_capped_by_the_caller() {
             .unwrap()
             .cap_detections_per_image(max_det);
         let mut ev = COCOeval::new_lvis(gt.clone(), dt, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         ev.accumulate();
         ev.summarize();
         ev.stats().unwrap().to_vec()
@@ -272,7 +272,7 @@ fn lvis_streaming_caps_like_batch_with_custom_max_dets() {
         let dt = gt.load_res_anns(dt_anns.clone()).unwrap();
         let mut batch = COCOeval::new_lvis(gt, dt, IouType::Bbox);
         batch.params = params.clone();
-        batch.evaluate();
+        batch.evaluate().expect("evaluable inputs");
         batch.accumulate();
         batch.summarize();
 
@@ -323,7 +323,7 @@ fn lvis_shared_cap_copies_only_when_it_changes_something() {
         let capped = Arc::clone(&full).cap_detections_per_image_shared(max_det);
         assert!(!Arc::ptr_eq(&capped, &full), "{max_det:?}");
         let mut ev = COCOeval::new_lvis(gt.clone(), capped, IouType::Bbox);
-        ev.evaluate();
+        ev.evaluate().expect("evaluable inputs");
         ev.accumulate();
         ev.summarize();
         let stats = ev.stats().unwrap();
