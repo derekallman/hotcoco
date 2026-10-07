@@ -1,8 +1,8 @@
 //! Perception evaluation in pure Rust.
 //!
-//! Detection ships today — bbox, segmentation, keypoints, and oriented boxes
-//! across the COCO, LVIS, and Open Images protocols — on a layered engine that
-//! other metric families will share.
+//! Detection — bbox, segmentation, keypoints, and oriented boxes across the
+//! COCO, LVIS, and Open Images protocols — and panoptic segmentation, on a
+//! layered engine that the metric families share.
 //!
 //! ```no_run
 //! use hotcoco::{COCO, COCOeval, params::IouType};
@@ -28,6 +28,7 @@
 //! | [`metrics`] | Metric functions over flat arrays — AP, calibration, confusion, bootstrap. |
 //! | [`report`] | [`EvalReport`] — the shape every metric family reports in. |
 //! | [`detection`] | The detection metric family: AP/AR, LVIS, Open Images, TIDE. |
+//! | [`panoptic`] | The panoptic metric family: PQ, SQ, RQ against panopticapi. |
 //! | [`quality`] | Dataset introspection: health checks and statistics. |
 //! | [`convert`] | YOLO, Pascal VOC, CVAT, DOTA, and Open Images conversion. |
 //!
@@ -69,6 +70,7 @@ pub mod geometry;
 mod json;
 pub mod mask;
 pub mod metrics;
+pub mod panoptic;
 pub mod params;
 pub mod primitives;
 pub mod quality;
@@ -104,6 +106,7 @@ pub use detection::hierarchy::Hierarchy;
 // for a type detection does not own.
 pub use metrics::bootstrap::BootstrapCI;
 pub use metrics::calibration::CalibrationBin;
+pub use panoptic::{PanopticDataset, PanopticEval, PanopticResult};
 pub use params::{AreaRange, IouType, Params};
 pub use quality::{
     CategoryStats, DatasetStats, DatasetSummary, Finding, HealthReport, Layer, SummaryStats,

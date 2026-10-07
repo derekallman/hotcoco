@@ -8,13 +8,14 @@
 
 use std::collections::BTreeMap;
 
+use crate::metrics::mean_or_missing;
 use crate::params::{IouType, Params, is_rounded_default};
 use crate::report::{EvalReport, Provenance};
 
 use super::accumulate::AccumulatedEval;
 use super::catalog::{MetricDef, build_metric_defs};
 use super::results::{EvalParams, EvalResults};
-use super::summarize::{mean_of_valid, mean_or_missing, per_cat_ap_static, summarize_impl};
+use super::summarize::{mean_of_valid, per_cat_ap_static, summarize_impl};
 use super::{COCOeval, EvalMode};
 
 impl COCOeval {

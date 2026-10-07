@@ -21,8 +21,14 @@ STUB_PATH = Path(__file__).resolve().parent.parent / "python" / "hotcoco" / "__i
 
 @functools.cache
 def _parse_stub_names() -> dict[str, set[str]]:
-    """Parse the .pyi file and return {class_name: {method_names}} and top-level names."""
-    source = STUB_PATH.read_text()
+    """Parse __init__.pyi: {class_name: {method_names}} plus top-level names."""
+    return _parse_stub_file(STUB_PATH.name)
+
+
+@functools.cache
+def _parse_stub_file(filename: str) -> dict[str, set[str]]:
+    """Parse a sibling .pyi file into {class_name: {member names}} plus "__top__"."""
+    source = (STUB_PATH.parent / filename).read_text()
     tree = ast.parse(source)
 
     top_level: set[str] = set()
@@ -44,6 +50,9 @@ def _parse_stub_names() -> dict[str, set[str]]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     top_level.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            # `NAME: type` — how a stub declares a module constant.
+            top_level.add(node.target.id)
 
     return {"__top__": top_level, **classes}
 
@@ -260,6 +269,41 @@ def test_primitives_stub_matches_runtime():
 
     missing = set(primitives.__all__) - _stub_function_names("primitives.pyi")
     assert not missing, f"Names missing from primitives.pyi: {sorted(missing)}"
+
+
+def test_panoptic_namespace_importable_both_ways():
+    import hotcoco.panoptic
+    from hotcoco import panoptic
+
+    assert "hotcoco.panoptic" in sys.modules
+    assert panoptic is hotcoco.panoptic
+
+
+def test_panoptic_stub_matches_runtime():
+    """panoptic.pyi lists every name the facade exports, and nothing more."""
+    from hotcoco import panoptic
+
+    stub = _parse_stub_file("panoptic.pyi")
+    missing = set(panoptic.__all__) - stub["__top__"]
+    assert not missing, f"Names missing from panoptic.pyi: {sorted(missing)}"
+    phantom = {n for n in stub["__top__"] if not n.startswith("_")} - set(panoptic.__all__)
+    assert not phantom, f"Names stubbed in panoptic.pyi but not exported: {sorted(phantom)}"
+
+    runtime_members = _public_names(panoptic.PanopticEval)
+    stub_members = stub["PanopticEval"]
+    missing = runtime_members - stub_members
+    assert not missing, f"PanopticEval members missing from stub: {sorted(missing)}"
+    phantom = {m for m in stub_members if not m.startswith("_")} - runtime_members
+    assert not phantom, f"PanopticEval members stubbed but not defined: {sorted(phantom)}"
+
+
+def test_panoptic_facade_reexports_every_extension_name():
+    from hotcoco import panoptic
+    from hotcoco.hotcoco import panoptic as _ext
+
+    exported = {n for n in dir(_ext) if not n.startswith("_")}
+    missing = exported - set(panoptic.__all__)
+    assert not missing, f"In the extension but not re-exported by panoptic.py: {sorted(missing)}"
 
 
 def test_functional_layer_needs_no_evaluator():

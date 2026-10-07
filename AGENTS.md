@@ -3,11 +3,11 @@
 ## Project Overview
 
 hotcoco is a perception evaluation toolkit — a pure-Rust engine with PyO3 Python
-bindings. Detection is the family that ships today (COCO, LVIS, and Open Images
-protocols over bbox, segm, keypoints, and OBB) and doubles as a drop-in
+bindings. Two families ship: detection (COCO, LVIS, and Open Images protocols over
+bbox, segm, keypoints, and OBB), which doubles as a drop-in
 [pycocotools](https://github.com/ppwwyyxx/cocoapi) replacement, tens of times faster
-on COCO val2017 (`docs/benchmarks.md` owns the current numbers). Panoptic and
-tracking are planned families on the same engine —
+on COCO val2017 (`docs/benchmarks.md` owns the current numbers), and panoptic (PQ,
+SQ, RQ against panopticapi). Tracking is the next planned family on the same engine —
 see `plans/PLAN.md` for the ladder, `plans/POSITIONING.md` for how the docs say so.
 
 ### Build and binding mechanics
@@ -17,7 +17,7 @@ see `plans/PLAN.md` for the ladder, `plans/POSITIONING.md` for how the docs say 
 - Python bindings return plain dicts (not wrapped Rust structs) matching pycocotools conventions
 - Mask operations handle numpy row-major <-> Rust column-major transposition in the PyO3 layer
 - `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expected — cdylib needs Python). Use `cargo check` instead, or build via maturin.
-- **Type stubs:** four hand-written files must track the Python API — `python/hotcoco/{__init__,detection,metrics,primitives}.pyi`. Run `uv run pytest tests/test_stubs.py` for drift, and `uv run pyright` to type-check the shipped package against them. The tests check **names only, never signatures** — review those by hand when changing a signature. For `metrics` they check both directions (stub ⊇ `__all__`, and `__all__` ⊇ the extension module), because a new `#[pyfunction]` that the facade forgets to re-export is otherwise unreachable from Python with the suite green.
+- **Type stubs:** five hand-written files must track the Python API — `python/hotcoco/{__init__,detection,metrics,primitives,panoptic}.pyi`. Run `uv run pytest tests/test_stubs.py` for drift, and `uv run pyright` to type-check the shipped package against them. The tests check **names only, never signatures** — review those by hand when changing a signature. For `metrics` they check both directions (stub ⊇ `__all__`, and `__all__` ⊇ the extension module), because a new `#[pyfunction]` that the facade forgets to re-export is otherwise unreachable from Python with the suite green.
 
 ### Core-crate architecture
 
@@ -34,9 +34,10 @@ All COCO evaluation metrics must match pycocotools: 12 for bbox/segm, 10 for key
 - Verified on val2017 for bbox, segm, and keypoints; `docs/benchmarks.md` (Metric parity) owns the measured figures and CONTRIBUTING.md owns the tolerance.
 - When in doubt, run differential tests against pycocotools on real COCO data before declaring a task complete.
 - After any change to evaluation logic, run `just test`, then `just parity` if `data/` exists. Do not commit or update docs until both are clean.
-- **Not everything has a *checked* reference.** `scripts/parity.py` covers pycocotools (bbox/segm/keypoints) on val2017 and `scripts/parity_tide.py` covers tidecv; both need `data/`. In CI, `tests/test_parity_lvis.py` covers LVIS, `tests/test_mask_parity.py` covers `pycocotools.mask`, and `tests/test_parity_oid.py` covers Open Images against frozen output of the TF Object Detection API. Oriented boxes have **no parity script**, which is why `report()` marks them `Provenance::Extension`; Open Images is `Extension` too, but for a different reason — the Challenge's non-exhaustive image-level-label rule is unimplemented, not uncompared.
+- **Not everything has a *checked* reference.** `scripts/parity.py` covers pycocotools (bbox/segm/keypoints) on val2017, `scripts/parity_tide.py` covers tidecv, and `scripts/parity_panoptic.py` covers panopticapi on panoptic val2017; all three need `data/` (`just download-panoptic` fetches the panoptic part). In CI, `tests/test_parity_lvis.py` covers LVIS, `tests/test_mask_parity.py` covers `pycocotools.mask`, `tests/test_parity_panoptic.py` covers panoptic against panopticapi run live on synthetic label maps, and `tests/test_parity_oid.py` covers Open Images against frozen output of the TF Object Detection API. Oriented boxes have **no parity script**, which is why `report()` marks them `Provenance::Extension`; Open Images is `Extension` too, but for a different reason — the Challenge's non-exhaustive image-level-label rule is unimplemented, not uncompared.
 
   Say *no parity script*, not *no reference implementation* — the distinction matters. Open Images had two reference implementations all along (the TF Object Detection API, which the official protocol page points to, and FiftyOne), and a group-of defect went unnoticed for the life of the feature partly because the "no reference exists" framing made a comparison look impossible rather than merely unwritten. Oriented boxes genuinely have no reference protocol, but their IoU kernel is checked against Shapely.
+- **Panoptic follows panopticapi, quirks included.** Ground-truth area comes from the JSON, not the PNG; a prediction more than half on void plus the *last* crowd segment of its category is ignored; a PNG id missing from the GT JSON is neither a segment nor void. Where the reference raises, `run()` errors; where it would divide by zero (an empty things or stuff split), hotcoco reports `-1.0`. The formula home is `primitives/panoptic.rs` — a second entry in the architecture test's `FORMULA_HOMES`, because the void-discounted union is a different formula, not a copy.
 - **Open Images follows the Challenge protocol**, not V2: a group-of box counts as one ground truth, its best-scoring enclosed detection is a TP, surplus detections are ignored, and an undetected group-of box is a miss. "Inside" is IoA (intersection ÷ *detection* area), the same measure as COCO `iscrowd`. Equivalent to TF `group_of_weight = 1.0`. Both protocols are real — see `docs/guide/lvis-open-images.md` — so name which one before changing anything here.
 
 ## Testing

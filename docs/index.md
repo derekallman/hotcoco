@@ -13,7 +13,7 @@ Perception evaluation for Python, written in Rust.
 </p>
 
 <p class="hero-sub">
-hotcoco evaluates perception models, starting with detection: boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 113× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
+hotcoco evaluates perception models: detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — and panoptic segmentation. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 113× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
 </p>
 
 <div class="hero-actions" markdown>
@@ -81,7 +81,7 @@ pip install hotcoco
 
 <div class="feature-card" markdown>
 <strong>Evaluate</strong>
-<p>COCO, LVIS, and Open Images protocols over boxes, masks, keypoints, and oriented boxes. <code>init_as_pycocotools()</code> patches existing pycocotools imports in place — no code changes.</p>
+<p>COCO, LVIS, and Open Images protocols over boxes, masks, keypoints, and oriented boxes, and panoptic quality against panopticapi. <code>init_as_pycocotools()</code> patches existing pycocotools imports in place — no code changes.</p>
 </div>
 
 <div class="feature-card" markdown>
@@ -173,5 +173,19 @@ metrics.calibration_error(scores, matched)            # (ece, mce)
 `COCOeval` calls these same functions internally, so numbers you compute by hand match
 what `summarize()` prints.
 
-Panoptic and tracking are next, on the same engine —
+## Panoptic segmentation
+
+The second metric family on the same engine. PQ, SQ, and RQ match panopticapi on
+COCO val2017, from the COCO panoptic JSON + PNG files or from annotations that
+carry masks, with no PNG files at all:
+
+```python
+from hotcoco import panoptic
+
+ev = panoptic.PanopticEval("panoptic_val2017.json", "predictions.json")
+ev.run()
+ev.report()["metrics"]["PQ"]
+```
+
+See the [panoptic guide](guide/panoptic.md). Tracking is next —
 see the [roadmap](https://github.com/derekallman/hotcoco/blob/main/ROADMAP.md).

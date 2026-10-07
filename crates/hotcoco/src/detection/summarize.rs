@@ -14,14 +14,7 @@ use super::accumulate::{AccumulatedEval, EvalGrouping, accumulate_impl};
 use super::catalog::MetricDef;
 use super::mode::FreqGroups;
 
-/// Mean of `count` values summing to `sum`, or the `-1.0` "not computed" sentinel.
-///
-/// The sole producer of the sentinel documented on
-/// [`metrics::is_computed`](crate::metrics::is_computed), which is how every
-/// consumer reads it back.
-pub(super) fn mean_or_missing(sum: f64, count: usize) -> f64 {
-    if count == 0 { -1.0 } else { sum / count as f64 }
-}
+use crate::metrics::mean_or_missing;
 
 /// Mean of the values that were actually computed, or the `-1.0` sentinel.
 ///

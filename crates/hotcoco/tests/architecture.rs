@@ -124,18 +124,22 @@ fn scan(skip: impl Fn(&str) -> bool, hit: impl Fn(&str) -> bool) -> Vec<String> 
 /// # Adding a sanctioned home
 ///
 /// [`FORMULA_HOMES`] is a list, not a constant, because a *genuinely different*
-/// formula may legitimately need its own home. The known case is panoptic
-/// quality (1.1): panopticapi computes
+/// formula may legitimately need its own home. There are two today. Panoptic
+/// quality's is not a copy of `sim`'s: panopticapi computes
 /// `union = pred_area + gt_area - intersection - void_intersection`, whose
-/// void-overlap term has no analogue here, over a label-map co-occurrence
-/// histogram rather than a dense `[D][G]` kernel. When that lands, add
-/// `primitives/pq.rs` (or wherever it lives) to the list with a comment — do not
-/// weaken or `#[ignore]` this test.
+/// void-overlap term has no analogue in IoU, over a label-map co-occurrence
+/// histogram rather than a dense `[D][G]` kernel. A third entry needs the
+/// same argument — a formula, not a convenience. Do not weaken or `#[ignore]`
+/// this test to add one.
 #[test]
 fn iou_formula_only_in_primitives_sim() {
     /// Files permitted to define a similarity denominator. One entry per
     /// *distinct* formula — never a place that should have called `sim`.
-    const FORMULA_HOMES: &[&str] = &["crates/hotcoco/src/primitives/sim.rs"];
+    const FORMULA_HOMES: &[&str] = &[
+        "crates/hotcoco/src/primitives/sim.rs",
+        // `pq_iou`: the void-discounted union, see the note above.
+        "crates/hotcoco/src/primitives/panoptic.rs",
+    ];
 
     // `union = <area> + <area> - <intersection>`: the IoU denominator. RLE
     // set-union (`merge(.., false)`) has no subtraction and is not caught.
@@ -232,7 +236,10 @@ fn iou_shape(line: &str) -> bool {
 fn iou_formula_shape_only_in_primitives_sim() {
     /// Keep in lockstep with [`iou_formula_only_in_primitives_sim`]'s list —
     /// the two checks cover one rule.
-    const FORMULA_HOMES: &[&str] = &["crates/hotcoco/src/primitives/sim.rs"];
+    const FORMULA_HOMES: &[&str] = &[
+        "crates/hotcoco/src/primitives/sim.rs",
+        "crates/hotcoco/src/primitives/panoptic.rs",
+    ];
 
     let violations = scan(|path| FORMULA_HOMES.contains(&path), iou_shape);
 
@@ -304,12 +311,12 @@ fn detection_cap_only_derived_in_params() {
 /// copy is how match semantics (tie-breaking especially, which is public contract
 /// via `evalImgs`) drift apart.
 ///
-/// This is a *naming* heuristic, so it can catch an innocent bystander — panoptic
-/// (1.1) has a unique-match scan where `best_iou` would be a natural variable
-/// name, even though PQ needs no solver and is not re-implementing this matcher.
-/// If that happens, rename the variable (`pq_overlap`, say) rather than deleting
-/// the check: the tokens are cheap to avoid, and their absence is what makes the
-/// guard trustworthy.
+/// This is a *naming* heuristic, so it can catch an innocent bystander — a
+/// scan where `best_iou` would be a natural variable name even though it is
+/// not re-implementing this matcher (panoptic's lives in `primitives/`, where
+/// the tokens are permitted, and avoids them anyway). If that happens, rename
+/// the variable rather than deleting the check: the tokens are cheap to avoid,
+/// and their absence is what makes the guard trustworthy.
 #[test]
 fn greedy_matching_only_in_primitives() {
     let violations = scan(
@@ -451,7 +458,15 @@ fn foreign_imports(dir: &str, allowed: &[&str]) -> Vec<String> {
 ///
 /// `super::`/`self::` are deliberately absent — [`foreign_imports`] handles them
 /// structurally, because whether they escape the layer depends on the file.
-const NEUTRAL: &[&str] = &["std::", "core::", "serde", "rand", "rayon", "self::"];
+const NEUTRAL: &[&str] = &[
+    "std::",
+    "core::",
+    "serde",
+    "rand",
+    "rayon",
+    "rustc_hash",
+    "self::",
+];
 
 /// What `metrics/` may reach: sibling metric functions, the crate's Result
 /// type, and the cross-family output contract. Shared by the `use`-statement
@@ -480,8 +495,33 @@ fn primitives_allowed() -> Vec<&'static str> {
             "crate::primitives::sim",
             "crate::primitives::greedy",
             "crate::primitives::assign",
+            "crate::primitives::panoptic",
             "crate::geometry",
             "crate::mask",
+            "crate::types",
+        ],
+    ]
+    .concat()
+}
+
+/// The family drivers held to [`family_allowed`]: every driver but
+/// detection, which the rule is about. A new family is one entry here.
+const FAMILY_DIRS: &[&str] = &["/panoptic/"];
+
+/// What a family driver other than detection may reach: the two shared
+/// layers, the output contract, and the data layer. Not another driver —
+/// `crate::detection` is absent on purpose, and so is every crate-root
+/// re-export of a detection type, which the allowlist discipline rejects
+/// without naming. The list is what the drivers use today, not what one
+/// might someday want; widen it when a family needs more, deliberately.
+fn family_allowed() -> Vec<&'static str> {
+    [
+        NEUTRAL,
+        &[
+            "crate::primitives",
+            "crate::metrics",
+            "crate::report",
+            "crate::error",
             "crate::types",
         ],
     ]
@@ -638,6 +678,45 @@ fn primitives_never_names_metrics_inline() {
          re-export) inline instead of importing it does not change the dependency.",
         violations.join("\n  ")
     );
+}
+
+/// A sibling family composes `primitives` and `metrics`; it does not reach
+/// into `detection`.
+///
+/// The point of the layering is that the second family costs no change to
+/// the first. A panoptic module importing a detection type — a `Params`, an
+/// `EvalMode`, a summarize helper — makes detection's internals a dependency
+/// of a family that has nothing to do with boxes, and the next refactor of
+/// detection breaks panoptic. Same allowlist discipline as `metrics/`: what
+/// the layer is for, not what it must avoid.
+#[test]
+fn families_never_depend_on_detection() {
+    let allowed = family_allowed();
+    for dir in FAMILY_DIRS {
+        let violations = foreign_imports(dir, &allowed);
+        assert!(
+            violations.is_empty(),
+            "`{dir}` may only import {allowed:?}.\nFound:\n  {}\n\n\
+             A family driver composes `primitives` and `metrics`. If it needs \
+             something detection has, that something belongs in one of the shared \
+             layers — move it there and import it from both.",
+            violations.join("\n  ")
+        );
+    }
+}
+
+/// The inline-path twin of [`families_never_depend_on_detection`].
+#[test]
+fn families_never_name_detection_inline() {
+    let allowed = family_allowed();
+    for dir in FAMILY_DIRS {
+        let violations = inline_foreign_paths(dir, &allowed);
+        assert!(
+            violations.is_empty(),
+            "`{dir}` may only name {allowed:?} in qualified paths.\nFound:\n  {}",
+            violations.join("\n  ")
+        );
+    }
 }
 
 /// The semver lint override in `Cargo.toml` exists only while the published

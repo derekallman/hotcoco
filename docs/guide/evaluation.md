@@ -310,5 +310,6 @@ Analyses that need per-image records — TIDE, the confusion matrix, calibration
 ## Where to next
 
 - [LVIS and Open Images](lvis-open-images.md) — federated AP, category hierarchies, and group-of matching
+- [Panoptic segmentation](panoptic.md) — PQ, SQ, and RQ against panopticapi, from PNG files or from masks
 - [Model diagnostics](diagnostics.md) — confusion matrix, TIDE error analysis, calibration, F-scores, model comparison, and per-image failure mining
 - [Working with results](results.md) — the evaluation report, provenance, per-category AP, JSON export, and experiment-tracker logging

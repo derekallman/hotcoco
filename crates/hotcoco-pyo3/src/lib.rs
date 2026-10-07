@@ -13,6 +13,7 @@ use hotcoco_core::Annotation;
 mod convert;
 mod mask;
 mod metrics;
+mod panoptic;
 mod primitives;
 
 /// Read `(width, height)` for every image in `dir`, keyed by file stem.
@@ -102,7 +103,7 @@ pub(crate) fn to_input_err(err: hotcoco_core::Error) -> PyErr {
 /// `eprintln!` writes to fd 2, which bypasses `sys.stderr` — invisible in a
 /// Jupyter cell, uncatchable by `warnings.catch_warnings`. Routing through
 /// `PyErr::warn` makes filters, `-W` flags, and `pytest.warns` all work.
-fn warn_user(py: Python<'_>, msg: &str) -> PyResult<()> {
+pub(crate) fn warn_user(py: Python<'_>, msg: &str) -> PyResult<()> {
     let msg = std::ffi::CString::new(msg)
         .unwrap_or_else(|_| c"hotcoco: warning text contained a NUL byte".to_owned());
     PyErr::warn(
@@ -118,12 +119,24 @@ fn warn_user(py: Python<'_>, msg: &str) -> PyResult<()> {
 /// Rust's `println!` writes to fd 1 and skips `sys.stdout`, so
 /// `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells never
 /// see it. Every user-facing table the bindings print goes through here.
-fn print_lines(py: Python<'_>, lines: &[String]) -> PyResult<()> {
+pub(crate) fn print_lines(py: Python<'_>, lines: &[String]) -> PyResult<()> {
     let print = py.import("builtins")?.getattr("print")?;
     for line in lines {
         print.call1((line,))?;
     }
     Ok(())
+}
+
+/// The string Python sees for a [`Provenance`](hotcoco_core::Provenance):
+/// `'parity_verified'` or `'extension'`.
+///
+/// Serialized rather than matched, so this and `report()['provenance']`
+/// cannot spell the same variant two ways. Falls back to the *non*-verified
+/// side: an unrecognized provenance is a reason to caveat, not to certify.
+pub(crate) fn provenance_str(prov: hotcoco_core::Provenance) -> PyResult<String> {
+    let value = serde_json::to_value(prov)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(value.as_str().unwrap_or("extension").to_string())
 }
 
 /// Hand Python a serde-serializable value as plain dicts and lists.
@@ -133,7 +146,10 @@ fn print_lines(py: Python<'_>, lines: &[String]) -> PyResult<()> {
 /// serialize-then-`json.loads`. Used by `healthcheck`, `report` and `results`,
 /// so all three agree on the failure type: a serialization failure is
 /// `Error::Json`, and `to_pyerr` maps it as it does everywhere else.
-fn serde_to_py<T: serde::Serialize + ?Sized>(py: Python<'_>, value: &T) -> PyResult<Py<PyAny>> {
+pub(crate) fn serde_to_py<T: serde::Serialize + ?Sized>(
+    py: Python<'_>,
+    value: &T,
+) -> PyResult<Py<PyAny>> {
     let json_str =
         serde_json::to_string(value).map_err(|e| to_pyerr(hotcoco_core::Error::Json(e)))?;
     let json_mod = py.import("json")?;
@@ -173,8 +189,8 @@ use convert::{
 // so wrappers over one `Arc` cannot observe each other by construction.
 #[pyclass(name = "COCO", subclass, from_py_object)]
 #[derive(Clone)]
-struct PyCOCO {
-    inner: Arc<hotcoco_core::COCO>,
+pub(crate) struct PyCOCO {
+    pub(crate) inner: Arc<hotcoco_core::COCO>,
     /// Root directory for image files. Used by `browse()` and `coco explore`.
     /// Set at construction time or assign directly: ``coco.image_dir = "/data/images"``.
     #[pyo3(get, set)]
@@ -2398,13 +2414,7 @@ str
         // Reading `self.inner` directly returned `parity_verified` for a run that
         // was about to be an extension — the same defect `with_params` was
         // written to close, one call site later.
-        let prov = self.with_params(py, |ev| ev.provenance());
-        // Serialized rather than matched, so this and ``report()['provenance']``
-        // cannot spell the same variant two ways. Falls back to the *non*-verified
-        // side: an unrecognized provenance is a reason to caveat, not to certify.
-        let value = serde_json::to_value(prov)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(value.as_str().unwrap_or("extension").to_string())
+        provenance_str(self.with_params(py, |ev| ev.provenance()))
     }
 
     #[doc = "Whether these numbers can be presented as leaderboard-comparable.
@@ -3533,6 +3543,8 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_submodule(&metrics_mod)?;
     let primitives_mod = primitives::register(py)?;
     m.add_submodule(&primitives_mod)?;
+    let panoptic_mod = panoptic::register(py)?;
+    m.add_submodule(&panoptic_mod)?;
 
     // mask submodule — the pycocotools.mask mirror. `bbox_iou` is the
     // primitive object itself, not a second binding of the kernel.

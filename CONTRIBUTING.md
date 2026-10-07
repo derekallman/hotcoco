@@ -177,13 +177,15 @@ scripts regenerate them. What each reference comparison checks:
 | `test_mask_parity.py` | `pycocotools.mask`, every operation, bit for bit |
 | `test_parity_lvis.py` | lvis-api, all 13 metrics |
 | `test_parity_oid.py` | frozen output of the TensorFlow Object Detection API (`just gen-oid-fixtures` regenerates it) |
+| `test_parity_panoptic.py` | panopticapi, run live on synthetic label maps: per-category counts exactly, PQ/SQ/RQ to 1e-9, and the PNG-free mask path against the PNG path |
 | `test_obb_eval.py` | IoU worked out by hand, for oriented-box evaluation at the 0.50 threshold |
 | `fuzz_obb.py` | Shapely, for oriented-box IoU (not collected by default) |
 | `scripts/fuzz_torchmetrics.py` | torchmetrics' `MeanAveragePrecision` on its pycocotools backend, with hotcoco swapped in the way RF-DETR runs it (`just fuzz-torchmetrics`) |
 
 Oriented-box *evaluation* has no reference protocol, so `report()` marks it
-`Provenance::Extension`. Two checks need the gitignored `data/`: `just parity`
-(pycocotools on COCO val2017) and `just parity-tide` (tidecv).
+`Provenance::Extension`. Three checks need the gitignored `data/`: `just parity`
+(pycocotools on COCO val2017), `just parity-tide` (tidecv), and `just parity-panoptic`
+(panopticapi on COCO panoptic val2017; `just download-panoptic` fetches the 35 MB it needs).
 
 ## Submitting a pull request
 

@@ -4,7 +4,7 @@
 
 Five libraries evaluate COCO-format detections from Python; three of them are
 Rust engines. Versions: pycocotools 2.0.11, faster-coco-eval 1.8.0,
-ultrafast-pycocotools 0.1.13, vernier 0.5.4, hotcoco `main` (1.2 development).
+ultrafast-pycocotools 0.1.13, vernier 0.5.4, hotcoco `main` (1.3 development).
 
 | Feature | pycocotools | faster-coco-eval | ultrafast-pycocotools | vernier | hotcoco |
 |---------|-------------|------------------|-----------------------|---------|---------|
@@ -12,7 +12,7 @@ ultrafast-pycocotools 0.1.13, vernier 0.5.4, hotcoco `main` (1.2 development).
 | **Metric parity** | Reference | Exact | `precision`/`recall`/`scores` bit-identical on x86-64; segm differs on arm64 (see [Segmentation](#segmentation)) | Bit-identical in `parity_mode="strict"` on x86-64; segm differs on arm64 | `precision`/`recall`/`scores` bit-identical on x86-64 and arm64; summary metrics bit-identical (measured on arm64) |
 | **LVIS evaluation** | No | Yes — via `lvis_style=True` flag | Yes — via `lvis_style=True` flag | Yes — federated AP | Yes — 13 metrics, `LVISeval` class, `init_as_lvis()` |
 | **Open Images, oriented boxes** | No | No | No | No | Yes — Challenge protocol with group-of; OBB IoU |
-| **Panoptic, semantic** | No | No | No | Yes — PQ, mIoU | Planned |
+| **Panoptic, semantic** | No | No | No | Yes — PQ, mIoU | PQ/SQ/RQ matching panopticapi ([parity](#panoptic)); from PNG files or from masks with no PNG files |
 | **TIDE error analysis** | No | No | No | Yes | Yes — 6 error types, ΔAP per type |
 | **Confusion matrix** | No | No | Yes | Yes | Yes — cross-category, configurable threshold |
 | **Calibration** | No | No | No | Yes — ECE/MCE | Yes — ECE/MCE, reliability curve |
@@ -277,6 +277,41 @@ Two things that comparison does **not** cover, and why `provenance` still report
 - **Hierarchy expansion** is applied to annotations before evaluation rather than
   inside it, so it sits outside the compared surface.
 
+### Panoptic
+
+**Reference:** [panopticapi](https://github.com/cocodataset/panopticapi) at commit
+`7bb4655`, numpy 2.4.3.
+**Ground truth:** COCO panoptic val2017 — 5,000 images, 133 categories.
+**Predictions:** the ground truth perturbed deterministically by
+`scripts/download_panoptic.py` — segments dropped, relabeled, eroded, shifted, and
+merged, plus spurious segments — so that every matching rule fires and PQ sits
+well inside (0, 1).
+
+Below the averages, every per-category TP, FP, and FN count is identical and the
+summed IoUs agree to 9.1e-12. The averages:
+
+| Metric | panopticapi | hotcoco | Diff |
+|---|---|---|---|
+| PQ | 0.624866 | 0.624866 | 2.2e-16 |
+| SQ | 0.934635 | 0.934635 | 2.2e-16 |
+| RQ | 0.668410 | 0.668410 | 0.0 |
+| PQ_th | 0.604005 | 0.604005 | 1.1e-16 |
+| SQ_th | 0.931952 | 0.931952 | 1.1e-16 |
+| RQ_th | 0.648102 | 0.648102 | 0.0 |
+| PQ_st | 0.656354 | 0.656354 | 1.1e-16 |
+| SQ_st | 0.938683 | 0.938683 | 4.4e-16 |
+| RQ_st | 0.699063 | 0.699063 | 0.0 |
+
+The differences that are not zero are summation order: panopticapi splits the
+images across worker processes and adds the per-worker sums, so its own last bits
+depend on the core count. The gate is 1e-9.
+
+On the same files, same machine as the tables above, panopticapi's `pq_compute`
+takes 16.1 s across its 8 worker processes and hotcoco 6.0 s (medians of 3 fresh
+processes, one session); PNG decoding is most of hotcoco's time. The synthetic
+version of this comparison — 50 random cases and 5 hand-built ones, counts exact,
+plus the PNG-free mask path against the PNG path — runs in CI on every commit.
+
 ### Verify it yourself
 
 You do not have to take these numbers on faith, and you should not have to clone
@@ -359,6 +394,8 @@ uv run python scripts/bench.py --phases     # load/eval phase breakdown
 uv run python scripts/bench.py --scale 10   # 10x stress test
 just parity                                 # metric parity vs pycocotools
 just parity-tide                            # TIDE vs tidecv
+just download-panoptic                      # 35 MB — panoptic val2017 + perturbed predictions
+just parity-panoptic                        # PQ/SQ/RQ vs panopticapi
 uv run pytest tests/test_mask_parity.py     # hotcoco.mask vs pycocotools.mask, bit for bit
 uv run pytest tests/test_parity_oid.py      # Open Images vs the TF Object Detection API
 just fuzz                                   # hypothesis fuzzer, ~10,000 generated datasets

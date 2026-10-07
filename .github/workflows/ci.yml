@@ -136,11 +136,14 @@ jobs:
         run: |
           python -m venv .venv
           source .venv/bin/activate
-          # pycocotools and lvis are the references the differential suites compare
-          # against. Without them, CI's only correctness check was a length
-          # assertion, which cannot catch a wrong number. The `plot` and `browse`
-          # extras the suite imports come from the wheel itself, below.
-          pip install maturin numpy pytest pycocotools lvis
+          # pycocotools, lvis, and panopticapi are the references the differential
+          # suites compare against. Without them, CI's only correctness check was
+          # a length assertion, which cannot catch a wrong number. panopticapi is
+          # not on PyPI; the commit matches [tool.uv.sources] in pyproject.toml,
+          # and Pillow writes the PNG files the panoptic suite feeds it. The `plot` and
+          # `browse` extras the suite imports come from the wheel itself, below.
+          pip install maturin numpy pytest pycocotools lvis Pillow \
+            "panopticapi @ git+https://github.com/cocodataset/panopticapi.git@7bb4655548f98f3fedc07bf37e9040a992b054b0"
 
       # Built from the repo root, where pyproject.toml's `python-source` pulls in
       # the pure-Python package. Building inside crates/hotcoco-pyo3 produces a

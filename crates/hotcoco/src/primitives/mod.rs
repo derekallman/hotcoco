@@ -1,11 +1,12 @@
 //! Matching kernels — the shared substrate that decides what pairs with what.
 //!
-//! Three kernels, and nothing else: [`sim`] computes similarity between two sets,
+//! Four kernels, and nothing else: [`sim`] computes similarity between two sets,
 //! [`greedy`] resolves it into COCO's rank-ordered assignment, [`assign`] resolves
-//! it optimally via rectangular LSAP. Family drivers (detection at 1.0;
-//! panoptic/tracking/concepts later) compose them. The one non-kernel export is
-//! [`greedy::ThreshMatrix`], the container shape of the greedy kernel's
-//! per-threshold output.
+//! it optimally via rectangular LSAP, and [`panoptic`] counts pixel overlaps
+//! between two label maps and matches segments on them. Family drivers
+//! (detection, panoptic; tracking/concepts later) compose them. The one
+//! non-kernel export is [`greedy::ThreshMatrix`], the container shape of the
+//! greedy kernel's per-threshold output.
 //!
 //! Kernels here produce matches and similarities; the functions in
 //! [`metrics`](crate::metrics) turn those into numbers. There is exactly one
@@ -28,4 +29,5 @@
 
 pub mod assign;
 pub mod greedy;
+pub mod panoptic;
 pub mod sim;

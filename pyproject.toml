@@ -5,11 +5,11 @@ build-backend = "maturin"
 [project]
 name = "hotcoco"
 version = "1.2.1"
-description = "Perception evaluation toolkit — pycocotools-compatible detection metrics in pure Rust, up to 119× faster"
+description = "Perception evaluation toolkit — pycocotools-compatible detection metrics and panoptic quality in pure Rust, up to 113× faster"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Derek Allman", email = "derek.allman@yahoo.com" }]
-keywords = ["coco", "pycocotools", "object-detection", "evaluation", "computer-vision", "segmentation", "keypoints", "instance-segmentation", "perception", "model-evaluation"]
+keywords = ["coco", "pycocotools", "object-detection", "evaluation", "computer-vision", "segmentation", "keypoints", "instance-segmentation", "panoptic-segmentation", "perception", "model-evaluation"]
 readme = "README.md"
 dependencies = [
     "numpy>=1.22",
@@ -132,6 +132,17 @@ venvPath = "."
 venv = ".venv"
 
 [dependency-groups]
+# Reference implementation for tests/test_parity_panoptic.py and
+# scripts/parity_panoptic.py; Pillow writes the PNG files those feed it.
+# panopticapi is not on PyPI — it comes from git, pinned to a commit under
+# [tool.uv.sources] — so it cannot sit in a published extra: a wheel whose
+# `dev` extra named it would make `pip install hotcoco[dev]` unsatisfiable.
+# A group is not published, and `default-groups` below makes `uv sync`
+# install it anyway, so `just setup` and the test suite see it.
+panoptic = [
+    "panopticapi",
+    "pillow>=8.0",
+]
 # scripts/fuzz_torchmetrics.py: torchmetrics' MeanAveragePrecision with hotcoco
 # swapped in, the way RF-DETR evaluates. A group, not an extra, so it is not
 # published and `just setup` does not install it.
@@ -144,3 +155,7 @@ torchmetrics = [
 
 [tool.uv]
 package = false
+default-groups = ["panoptic"]
+
+[tool.uv.sources]
+panopticapi = { git = "https://github.com/cocodataset/panopticapi.git", rev = "7bb4655548f98f3fedc07bf37e9040a992b054b0" }

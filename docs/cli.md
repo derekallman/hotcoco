@@ -358,6 +358,31 @@ coco compare --gt ann.json --dt-a a.json --dt-b b.json --bootstrap 1000 --json
 
 ---
 
+### `coco panoptic eval`
+
+Panoptic quality — PQ, SQ, RQ for All, Things, and Stuff — from two COCO panoptic
+JSON files and their PNG folders, as panopticapi's `pq_compute` computes it. See the
+[panoptic guide](guide/panoptic.md).
+
+```bash
+coco panoptic eval --gt <gt.json> --pred <pred.json> [options]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--gt` | Ground truth panoptic JSON | *required* |
+| `--pred` | Predicted panoptic JSON | *required* |
+| `--gt-folder DIR` | Ground truth PNG folder | `--gt` without `.json` |
+| `--pred-folder DIR` | Prediction PNG folder | `--pred` without `.json` |
+| `--json` | `results()` plus the `report` as JSON | off |
+
+```bash
+coco panoptic eval --gt panoptic_val2017.json --pred predictions.json
+coco panoptic eval --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-folder pred_png/ --json
+```
+
+---
+
 ### `coco convert`
 
 Convert between annotation formats. Supports COCO JSON ↔ YOLO labels, Pascal VOC XML, CVAT for Images XML, DOTA oriented-box labels, and Open Images CSV.
@@ -508,8 +533,8 @@ coco-eval eval --gt annotations.json --dt detections.json --iou-type bbox
 
 ### Options
 
-These apply to `eval` and to the bare form. The only other subcommand is
-`completions`, covered under [Shell completions](#shell-completions).
+These apply to `eval` and to the bare form. The other subcommands are `panoptic`,
+below, and `completions`, covered under [Shell completions](#shell-completions).
 
 | Flag | Description | Default |
 |------|-------------|---------|
@@ -554,6 +579,18 @@ The standard 12 COCO metrics (10 for keypoints), in pycocotools' table layout:
 ```
 
 A full run is shown in the [quick start](getting-started/quickstart.md#4-run-evaluation).
+
+### `coco-eval panoptic`
+
+The panoptic family, with the same flags as [`coco panoptic eval`](#coco-panoptic-eval):
+
+```bash
+coco-eval panoptic --gt panoptic_val2017.json --pred predictions.json
+coco-eval panoptic --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-folder pred_png/ -o report.json
+```
+
+Prints the panopticapi table and a `stats:` line with the nine headline values;
+`-o` writes the `EvalReport` as JSON.
 
 ---
 

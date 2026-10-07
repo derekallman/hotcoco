@@ -35,6 +35,10 @@ fuzz-torchmetrics: build
 parity: build
     uv run python scripts/parity.py
 
+# Verify panoptic parity vs panopticapi on COCO panoptic val2017 (needs data/)
+parity-panoptic: build
+    uv run python scripts/parity_panoptic.py
+
 # Generate evaluation report PDF — just report [type=bbox|segm|kpt]
 report type="bbox": build
     uv run python scripts/report.py --type {{type}}
@@ -51,8 +55,13 @@ download-coco:
 download-o365:
     uv run python scripts/download_o365.py
 
+# Download COCO panoptic val2017 (35 MB, fetched by byte range out of the
+# 860 MB archive) + generate perturbed predictions for `just parity-panoptic`
+download-panoptic:
+    uv run python scripts/download_panoptic.py
+
 # Download everything needed for all benchmarks
-download-all: download-coco download-o365
+download-all: download-coco download-o365 download-panoptic
 
 # Preview docs locally (installs zensical via uv tool if needed)
 docs:

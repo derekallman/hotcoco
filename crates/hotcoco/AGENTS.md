@@ -6,10 +6,11 @@
 
 | Layer | Produces | Contents |
 |---|---|---|
-| `primitives` | matches and similarities | `sim`, `greedy`, `assign` |
-| `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap` |
+| `primitives` | matches and similarities | `sim`, `greedy`, `assign`, `panoptic` |
+| `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic` |
 | `report` | the cross-family output contract | `EvalReport`, `Provenance` |
 | `detection` | the detection family driver | `COCOeval` + AP/AR, LVIS, Open Images, TIDE |
+| `panoptic` | the panoptic family driver | `PanopticEval` + PQ/SQ/RQ, PNG and mask inputs |
 | `quality` | dataset introspection | health checks, statistics |
 
 `primitives` and `metrics` are **free functions over flat arrays** — callable with no
@@ -19,8 +20,10 @@ analysis methods (`calibration`, `confusion_matrix`, `compare`, `f_scores`) are
 shared function. **Put metric math in `metrics`, never in a `COCOeval` method** — the
 alternative is what 1.0 spent its whole cycle undoing.
 
-Dependencies run one way: `detection` → `metrics` → `primitives`. Panoptic, tracking,
-and concepts will be siblings of `detection`, composing the same two layers.
+Dependencies run one way: `detection` → `metrics` → `primitives`, and `panoptic` →
+`metrics` → `primitives` beside it — `tests/architecture.rs` holds `panoptic/` to an
+allowlist that excludes `detection`. Tracking and concepts will be further siblings,
+composing the same two layers, each with an allowlist entry of its own.
 
 Detection keeps what is genuinely detection-shaped: TIDE's Cls/Loc/Both/Dupe/Bkg
 taxonomy is about box localization vs classification, and `image_diagnostics` reports
@@ -47,8 +50,9 @@ re-derive.
 
 - **`-1.0` means "not computed for this configuration"** — never a low score. It shows
   up for an area range with no ground truth, or a category absent from the split.
-  `detection::summarize::mean_or_missing` is the only producer; `report()` filters on
-  it before emitting a per-class metric and `metrics::counts::max_f_beta` skips it.
+  `metrics::mean_or_missing` is the only producer, beside its predicate
+  `metrics::is_computed`; each family's `report()` filters on it before emitting a
+  per-class metric and `metrics::counts::max_f_beta` skips it.
 - **`Params::all_area_idx()`** is the only `"all"` area-range lookup.
 - **`params::default_rec_thrs()`** (a free function, not a `Params` method) is the only
   101-point recall grid. A caller using the `metrics` functions directly needs the same

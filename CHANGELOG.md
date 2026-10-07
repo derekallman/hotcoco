@@ -9,7 +9,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Panoptic segmentation — the second metric family.** `hotcoco.panoptic`
+  computes PQ, SQ, and RQ for all, things, and stuff categories, matching
+  [panopticapi](https://github.com/cocodataset/panopticapi) on COCO panoptic
+  val2017: every per-category count identical, every score within 4.4e-16
+  (`docs/benchmarks.md` has the table).
+  - `panoptic.PanopticEval(gt, pred, *, gt_folder=None, pred_folder=None)` takes
+    the COCO panoptic format — a JSON file plus a folder of PNG files, the folder
+    defaulting to the JSON path without `.json` as panopticapi assumes — or a
+    `COCO` dataset whose annotations carry RLE or polygon masks, one per
+    segment, which needs no PNG files. The two can be mixed and give identical
+    numbers on the same pixels. `evaluate()`, `summarize()`, `summary_lines()`,
+    `run()`, `stats`, `results()`, `report()`, `reference_deviations()`,
+    `provenance()` mirror `COCOeval`; `results()` is panopticapi's dict with `tp`/`fp`/`fn`/`iou` per
+    class added, and `report()` is the `EvalReport` every family shares.
+  - `panoptic.pq_compute(gt_json_file, pred_json_file, gt_folder=None,
+    pred_folder=None)` has panopticapi's signature and return shape, so the
+    migration is one import.
+  - `coco panoptic eval --gt --pred [--gt-folder] [--pred-folder] [--json]` in
+    the Python CLI and `coco-eval panoptic` in the Rust one.
+  - Rust: `hotcoco::panoptic::{PanopticEval, PanopticDataset, PanopticResult}`,
+    the kernel `primitives::panoptic::{Overlaps, match_segments, pq_iou}` (the
+    void-discounted IoU is a second formula home, not a copy of `sim`'s), and
+    the formulas `metrics::panoptic::{PqCounts, PqScores, pq_average}`.
+  - Where panopticapi raises — a predicted segment in the JSON but not the PNG
+    or the reverse, an unknown prediction category, an image with no
+    prediction — `evaluate()` raises too, naming the image. Where it would
+    divide by zero (a things or stuff split with no evaluable category) hotcoco
+    reports the `-1.0` "not computed" sentinel with `n = 0`. A category without
+    `isthing` is scored in `All` and in neither split, and makes the run an
+    `extension`, since the reference would not have evaluated the file.
+  - Parity: `tests/test_parity_panoptic.py` runs panopticapi live on 55
+    synthetic cases in CI; `just download-panoptic` fetches the 35 MB of val2017
+    panoptic data by byte range out of the 860 MB archive and generates
+    perturbed predictions; `just parity-panoptic` compares on them. Both share
+    one reference runner, one comparator, and one perturbation recipe in
+    `scripts/helpers.py`. panopticapi is not on PyPI, so it lives in a
+    `panoptic` dependency group pinned to a commit, installed by default
+    through `tool.uv.default-groups` and never advertised by the wheel.
+- `Category.isthing` (`bool | None`), read from `1`/`0` or `true`/`false` and
+  round-tripped through `COCO` dicts. `None` on every detection file.
+- Rust: `Segmentation::to_rle(h, w)` rasterizes any segmentation variant onto
+  a canvas; `COCO::ann_to_rle` now goes through it.
+
 ### Changed
+
+- Rust: `Category` has a new public field, `isthing`, so a struct literal
+  without `..Default::default()` no longer compiles. Named here because
+  Rust-visible breaks ship in minors while the crate has no outside
+  dependents.
+- Rust: the `-1.0` sentinel's producer moved from the detection driver to
+  `metrics::mean_or_missing`, beside its predicate `metrics::is_computed`, so
+  every family averages through one function. It was `pub(super)` before and
+  is `pub` now.
+- The crate depends on `png` for decoding COCO panoptic PNG files. Pure Rust, no
+  feature flag: a family flag is an untested configuration waiting to rot.
 
 ### Fixed
 

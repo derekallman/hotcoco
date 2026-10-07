@@ -11,7 +11,7 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 exclude = ["AGENTS.md", "CLAUDE.md"]
-description = "Perception evaluation in pure Rust — a pycocotools-compatible COCO/LVIS/Open Images engine with diagnostics and dataset tools"
+description = "Perception evaluation in pure Rust — a pycocotools-compatible COCO/LVIS/Open Images engine, panoptic quality, diagnostics and dataset tools"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -22,6 +22,7 @@ rand = "0.9"
 thiserror = "2"
 memchr = "2.8.3"
 rustc-hash = "2"
+png = "0.18.1"
 
 [dev-dependencies]
 tempfile = "3"

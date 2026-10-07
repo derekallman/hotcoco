@@ -22,7 +22,7 @@
 //! | | Produces | Contains |
 //! |---|---|---|
 //! | [`primitives`](crate::primitives) | matches and similarities | `sim`, `greedy`, `assign` |
-//! | `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap` |
+//! | `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic` |
 //!
 //! `primitives::greedy::greedy_match_masked` decides *which detection pairs
 //! with which ground truth*. `metrics::counts::average_precision` turns that
@@ -60,7 +60,18 @@ pub mod bootstrap;
 pub mod calibration;
 pub mod confusion;
 pub mod counts;
+pub mod panoptic;
 pub(crate) mod sum;
+
+/// Mean of `count` values summing to `sum`, or the `-1.0` "not computed" sentinel.
+///
+/// The sole producer of the sentinel [`is_computed`] reads back. Every family
+/// averages through this — detection's per-category and per-area means, the
+/// panoptic things/stuff splits — so an empty mean has one spelling.
+#[inline]
+pub fn mean_or_missing(sum: f64, count: usize) -> f64 {
+    if count == 0 { -1.0 } else { sum / count as f64 }
+}
 
 /// Whether a metric value was actually computed, as opposed to carrying the
 /// crate's `-1.0` "not computed for this configuration" sentinel.
@@ -70,10 +81,10 @@ pub(crate) mod sum;
 /// genuinely low score. Filter evaluation arrays with this rather than an
 /// open-coded comparison.
 ///
-/// The predicate half of the convention whose *producer* is
-/// `detection::summarize::mean_or_missing`. It lives here rather than beside the
-/// producer because the lower layer reads it too — [`counts::max_f_beta`] skips
-/// sentinel precisions — and `metrics` may not import a family driver.
+/// The predicate half of the convention whose producer is [`mean_or_missing`].
+/// Both live here because the lower layer reads the sentinel too —
+/// [`counts::max_f_beta`] skips sentinel precisions — and `metrics` may not
+/// import a family driver.
 ///
 /// The test is `v >= 0.0`, so `NaN` reads as **not** computed. Deliberate, and
 /// not interchangeable with `!(v < 0.0)`: the two agree everywhere except `NaN`,

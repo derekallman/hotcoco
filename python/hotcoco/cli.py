@@ -5,6 +5,7 @@ hotcoco command-line interface.
 Usage:
     coco eval --gt <gt.json> --dt <dt.json> [--iou-type bbox|segm|keypoints]
         [--lvis] [--tide] [--calibration] [--report out.pdf] [--slices slices.json]
+    coco panoptic eval --gt <gt.json> --pred <pred.json> [--gt-folder <dir>] [--pred-folder <dir>]
     coco healthcheck <annotation_file> [--dt <detections.json>]
     coco stats <annotation_file>
     coco filter <file> -o <output> [options]
@@ -588,6 +589,44 @@ _FROM_COCO = {
 }
 
 
+def cmd_panoptic_eval(args):
+    try:
+        from hotcoco import panoptic
+    except ImportError as e:
+        if args.json:
+            raise
+        _extension_import_failed(e)
+
+    try:
+        with _maybe_spinner("Loading panoptic annotations...", args.json), Timer() as t:
+            ev = panoptic.PanopticEval(args.gt, args.pred, gt_folder=args.gt_folder, pred_folder=args.pred_folder)
+        if not args.json:
+            status(
+                "Loaded", f"{dim(os.path.basename(args.gt))} and {dim(os.path.basename(args.pred))}", elapsed=t.elapsed
+            )
+        with _maybe_spinner("Evaluating panoptic quality...", args.json), Timer() as t:
+            ev.evaluate()
+    except (OSError, ValueError, RuntimeError) as e:
+        if args.json:
+            raise  # main() renders it as {"error": ...} JSON
+        error(str(e))
+        sys.exit(1)
+    if not args.json:
+        status("Evaluated", "panoptic quality", elapsed=t.elapsed)
+        # The styled warning here is the one owner of the deviations on the
+        # terminal; `summarize()` would emit them again through `warnings`.
+        for w in ev.reference_deviations():
+            warning(w)
+        print()
+        for line in ev.summary_lines():
+            print(line)
+        return None
+
+    result = ev.results()
+    result["report"] = ev.report()
+    return result
+
+
 def cmd_convert(args):
     from_fmt = args.from_fmt
     to_fmt = args.to_fmt
@@ -883,6 +922,7 @@ def main():
               coco eval --gt ann.json --dt det.json              evaluate detections (bbox)
               coco eval --gt ann.json --dt det.json --tide       evaluation + error analysis
               coco eval --gt ann.json --dt det.json --json       JSON output for CI/CD
+              coco panoptic eval --gt pan.json --pred pred.json  panoptic quality (PQ, SQ, RQ)
               coco stats ann.json                                dataset overview
               coco healthcheck ann.json                          validate annotations
               coco compare --gt ann.json --dt-a a.json --dt-b b.json  compare two models
@@ -1018,6 +1058,40 @@ def main():
         "--healthcheck",
         action="store_true",
         help="run dataset healthcheck before evaluation (warnings printed to stderr)",
+    )
+
+    panoptic_parser = subparsers.add_parser(
+        "panoptic",
+        help="panoptic segmentation metrics (PQ, SQ, RQ)",
+        description=(
+            "Panoptic segmentation metrics. `coco panoptic eval` scores PQ, SQ, and RQ against panopticapi's protocol."
+        ),
+    )
+    panoptic_sub = panoptic_parser.add_subparsers(dest="panoptic_command", metavar="<command>")
+    panoptic_eval_parser = panoptic_sub.add_parser(
+        "eval",
+        parents=[_json_parent],
+        help="evaluate panoptic predictions against ground truth",
+        description=(
+            "Compute PQ, SQ, and RQ for All, Things, and Stuff from two COCO panoptic JSON files "
+            "and their PNG folders, as panopticapi's pq_compute does. A folder defaults to its JSON "
+            "path without .json."
+        ),
+        epilog=textwrap.dedent("""\
+            examples:
+              coco panoptic eval --gt panoptic_val2017.json --pred predictions.json
+              coco panoptic eval --gt gt.json --pred pred.json --gt-folder gt_pngs/ --pred-folder pred_pngs/
+              coco panoptic eval --gt gt.json --pred pred.json --json
+        """),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    panoptic_eval_parser.add_argument("--gt", required=True, help="ground truth panoptic JSON")
+    panoptic_eval_parser.add_argument("--pred", required=True, help="predicted panoptic JSON")
+    panoptic_eval_parser.add_argument(
+        "--gt-folder", dest="gt_folder", metavar="DIR", help="ground truth PNG folder (default: --gt without .json)"
+    )
+    panoptic_eval_parser.add_argument(
+        "--pred-folder", dest="pred_folder", metavar="DIR", help="prediction PNG folder (default: --pred without .json)"
     )
 
     healthcheck_parser = subparsers.add_parser(
@@ -1238,9 +1312,13 @@ def main():
     if args.command is None:
         parser.print_help()
         sys.exit(1)
+    if args.command == "panoptic" and args.panoptic_command is None:
+        panoptic_parser.print_help()
+        sys.exit(1)
 
     dispatch = {
         "eval": cmd_eval,
+        "panoptic": cmd_panoptic_eval,
         "healthcheck": cmd_healthcheck,
         "stats": cmd_stats,
         "filter": cmd_filter,

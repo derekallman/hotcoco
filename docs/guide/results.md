@@ -168,12 +168,15 @@ report["provenance"]   # 'parity_verified'
 
 `"parity_verified"` means the numbers were checked against the reference
 implementation — bbox, segm, and keypoints match pycocotools **at reference
-parameters**. `"extension"` means a real metric or configuration with no reference implementation checked against
+parameters**, and panoptic quality matches panopticapi. `"extension"` means a real metric or configuration with no reference implementation checked against
 it. That covers more than geometry:
 
 - oriented bounding boxes — no reference protocol exists to check against
 - Open Images — the group-of protocol is checked, but the challenge's image-level-label
   rule is not implemented; see [Verification](lvis-open-images.md#verification)
+- panoptic evaluation of categories without `isthing` — panopticapi requires it, so
+  the things and stuff splits of such a run have no reference; see
+  [Panoptic segmentation](panoptic.md#evaluate-without-png-files)
 - any run with non-default `iou_thrs`, `rec_thrs`, `max_dets`, area-range labels
   or bounds, `use_cats=False`, or custom `kpt_oks_sigmas` — the metric is real,
   but nobody checked *that* configuration against a reference. The default

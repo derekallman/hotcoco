@@ -354,7 +354,9 @@ impl<'de> Deserialize<'de> for Flag {
     }
 }
 
-fn deserialize_flag<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+pub(crate) fn deserialize_flag<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
     Flag::deserialize(deserializer).map(|f| f.0)
 }
 
@@ -414,7 +416,7 @@ impl<'de, T: TryFrom<u64>> Deserialize<'de> for Uint<T> {
     }
 }
 
-fn deserialize_uint<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+pub(crate) fn deserialize_uint<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: TryFrom<u64>,
@@ -422,7 +424,7 @@ where
     Uint::deserialize(deserializer).map(|u| u.0)
 }
 
-fn deserialize_opt_uint<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(crate) fn deserialize_opt_uint<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: Deserializer<'de>,
     T: TryFrom<u64>,
@@ -512,6 +514,23 @@ impl Segmentation {
                 w: size[1],
             }),
             Segmentation::Polygon(_) | Segmentation::Rect(_) => None,
+        }
+    }
+
+    /// This segmentation as an RLE on an `h × w` canvas.
+    ///
+    /// Polygons and boxes are rasterized at that size; an RLE is decoded as
+    /// it is, at its own size — the caller that needs the two to agree
+    /// checks the returned `h`/`w`. Errors are the codecs': an RLE whose
+    /// runs overrun its size, a canvas larger than `u32::MAX` pixels.
+    pub fn to_rle(&self, h: u32, w: u32) -> crate::error::Result<Rle> {
+        match self {
+            Segmentation::Polygon(polys) => crate::mask::fr_polys(polys, h, w),
+            Segmentation::Rect(bbox) => crate::mask::fr_bbox(bbox, h, w),
+            Segmentation::CompressedRle { .. } | Segmentation::UncompressedRle { .. } => self
+                .rle_ref()
+                .expect("RLE variants have an RleRef")
+                .to_rle(),
         }
     }
 
@@ -658,11 +677,32 @@ pub struct Category {
     /// LVIS frequency bucket: "r" (rare), "c" (common), "f" (frequent).
     #[serde(default)]
     pub frequency: Option<String>,
+    /// Panoptic: `true` for a countable "thing" (person, car), `false` for
+    /// amorphous "stuff" (sky, road). COCO panoptic JSON spells it `1`/`0`;
+    /// it is written back as `true`/`false`, which panopticapi's `== 1`
+    /// reads the same way. `None` when the file does not say, which is every
+    /// detection file; the panoptic driver then reports the category in
+    /// `All` but in neither the things nor the stuff split.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_opt_flag",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub isthing: Option<bool>,
     /// Keys not in the COCO schema, preserved verbatim so
     /// load → filter/split/merge → save round-trips user metadata
     /// (pycocotools keeps unknown keys because it stores raw dicts).
     #[serde(flatten, skip_serializing_if = "Extra::is_empty")]
     pub extra: Extra,
+}
+
+/// The stand-in name for a category that has none: `cat_{id}`.
+///
+/// The one spelling, so a nameless category reads the same in a detection
+/// report and a panoptic one; [`COCO::placeholder_cat_name`](crate::COCO::placeholder_cat_name)
+/// is this function.
+pub fn placeholder_cat_name(id: u64) -> String {
+    format!("cat_{id}")
 }
 
 /// Map `category_id -> name`.

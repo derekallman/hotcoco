@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anstream::stderr;
@@ -7,7 +7,7 @@ use anstyle::{AnsiColor, Color, Style};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use hotcoco::params::IouType;
-use hotcoco::{COCO, COCOeval};
+use hotcoco::{COCO, COCOeval, PanopticDataset, PanopticEval};
 use indicatif::{ProgressBar, ProgressStyle};
 
 const GREEN: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));
@@ -64,6 +64,9 @@ enum Command {
     /// Evaluate detections against ground truth (the default action)
     Eval(EvalArgs),
 
+    /// Panoptic quality: PQ, SQ, RQ from two COCO panoptic JSON files
+    Panoptic(PanopticArgs),
+
     /// Print a shell completion script
     Completions {
         /// Shell to generate completions for
@@ -109,6 +112,29 @@ struct EvalArgs {
     completions: Option<Shell>,
 }
 
+#[derive(clap::Args)]
+struct PanopticArgs {
+    /// Path to the ground-truth panoptic JSON file
+    #[arg(long)]
+    gt: PathBuf,
+
+    /// Path to the predicted panoptic JSON file
+    #[arg(long)]
+    pred: PathBuf,
+
+    /// Folder of ground-truth PNG files (default: --gt without .json)
+    #[arg(long)]
+    gt_folder: Option<PathBuf>,
+
+    /// Folder of predicted PNG files (default: --pred without .json)
+    #[arg(long)]
+    pred_folder: Option<PathBuf>,
+
+    /// Write the evaluation report to a JSON file
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+}
+
 /// Write a completion script for `shell` to stdout.
 fn print_completions(shell: Shell) {
     generate(
@@ -128,6 +154,7 @@ fn main() -> std::process::ExitCode {
             Ok(())
         }
         Some(Command::Eval(args)) => run_eval(args),
+        Some(Command::Panoptic(args)) => run_panoptic(args),
         // No subcommand: the historic bare form.
         None => run_eval(cli.eval),
     };
@@ -158,34 +185,8 @@ fn run_eval(args: EvalArgs) -> Result<(), Box<dyn std::error::Error>> {
         unreachable!("clap enforces --gt/--dt via required_unless_present")
     };
 
-    let gt_name = gt_path.file_name().unwrap_or_default().to_string_lossy();
-    let dt_name = dt_path.file_name().unwrap_or_default().to_string_lossy();
-
-    let pb = spinner(&format!("Loading ground truth {gt_name}..."));
-    let start = Instant::now();
-    let coco_gt = COCO::new(gt_path).map_err(|e| {
-        pb.finish_and_clear();
-        format!("failed to load ground truth {}: {e}", gt_path.display())
-    })?;
-    pb.finish_and_clear();
-    status(
-        "Loaded",
-        &format!("ground truth {DIM}{gt_name}{RESET}"),
-        start.elapsed(),
-    );
-
-    let pb = spinner(&format!("Loading detections {dt_name}..."));
-    let start = Instant::now();
-    let coco_dt = coco_gt.load_res(dt_path).map_err(|e| {
-        pb.finish_and_clear();
-        format!("failed to load detections {}: {e}", dt_path.display())
-    })?;
-    pb.finish_and_clear();
-    status(
-        "Loaded",
-        &format!("detections {DIM}{dt_name}{RESET}"),
-        start.elapsed(),
-    );
+    let coco_gt = timed_load("ground truth", gt_path, || COCO::new(gt_path))?;
+    let coco_dt = timed_load("detections", dt_path, || coco_gt.load_res(dt_path))?;
 
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, args.iou_type);
 
@@ -209,10 +210,8 @@ fn run_eval(args: EvalArgs) -> Result<(), Box<dyn std::error::Error>> {
     let _ = writeln!(stderr());
     coco_eval.summarize();
 
-    // Print machine-readable stats line for parity testing
     if let Some(stats) = coco_eval.stats() {
-        let stats_strs: Vec<String> = stats.iter().map(|v| format!("{:.15}", v)).collect();
-        println!("stats: [{}]", stats_strs.join(", "));
+        print_stats(stats);
     }
 
     if let Some(ref output_path) = args.output {
@@ -228,5 +227,71 @@ fn run_eval(args: EvalArgs) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    Ok(())
+}
+
+/// Load `what` from `path` behind a spinner, reporting the time it took;
+/// a failure names the file.
+fn timed_load<T>(
+    what: &str,
+    path: &Path,
+    load: impl FnOnce() -> hotcoco::error::Result<T>,
+) -> Result<T, String> {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let pb = spinner(&format!("Loading {what} {name}..."));
+    let start = Instant::now();
+    let value = load().map_err(|e| {
+        pb.finish_and_clear();
+        format!("failed to load {what} {}: {e}", path.display())
+    })?;
+    pb.finish_and_clear();
+    status(
+        "Loaded",
+        &format!("{what} {DIM}{name}{RESET}"),
+        start.elapsed(),
+    );
+    Ok(value)
+}
+
+/// The machine-readable `stats:` line the parity scripts read.
+fn print_stats(stats: &[f64]) {
+    let stats_strs: Vec<String> = stats.iter().map(|v| format!("{v:.15}")).collect();
+    println!("stats: [{}]", stats_strs.join(", "));
+}
+
+fn run_panoptic(args: PanopticArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let load = |path: &Path, folder: Option<PathBuf>, what: &str| {
+        let dataset = timed_load(what, path, || PanopticDataset::from_file(path))?;
+        Ok::<_, String>(match folder {
+            Some(folder) => dataset.with_folder(folder),
+            None => dataset,
+        })
+    };
+    let gt = load(&args.gt, args.gt_folder, "ground truth")?;
+    let pred = load(&args.pred, args.pred_folder, "predictions")?;
+
+    let mut ev = PanopticEval::new(gt, pred);
+    let pb = spinner("Evaluating panoptic quality...");
+    let start = Instant::now();
+    let outcome = ev.run();
+    pb.finish_and_clear();
+    outcome?;
+    status("Evaluated", "panoptic quality", start.elapsed());
+
+    let _ = writeln!(stderr());
+    ev.summarize();
+    if let Some(result) = ev.result() {
+        print_stats(&result.stats());
+    }
+
+    if let Some(ref output_path) = args.output {
+        let start = Instant::now();
+        std::fs::write(output_path, ev.report()?.to_json()?)?;
+        status(
+            "Saved",
+            &format!("report to {DIM}{}{RESET}", output_path.display()),
+            start.elapsed(),
+        );
+    }
     Ok(())
 }

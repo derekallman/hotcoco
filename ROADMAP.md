@@ -4,9 +4,9 @@ What's planned, in order. This page is forward-looking only — for what has alr
 shipped, see the [CHANGELOG](CHANGELOG.md).
 
 hotcoco is one engine — `primitives` for similarity and matching, `metrics` for the
-numbers — with a family driver per task on top. Detection ships today. Each family
-below lands as an additive minor release on the same layering, so nothing about
-detection changes when a sibling arrives. The families are listed in the order they
+numbers — with a family driver per task on top. Detection and panoptic ship today. Each
+family below lands as an additive minor release on the same layering, so nothing
+about the shipped families changes when a sibling arrives. The families are listed in the order they
 are planned; a version number is assigned when one is ready to ship.
 
 ## Near term
@@ -18,14 +18,6 @@ are planned; a version number is assigned when one is ready to ship.
   needs. Charts move from Plotly to vendored Observable Plot, browse's
   dashboard tab migrates to the same templates, and the matplotlib PDF report
   retires once the HTML report ships.
-
-## Panoptic segmentation
-
-PQ = SQ × RQ for unified "stuff" and "things" evaluation: per-class, things, and
-stuff breakdowns, COCO panoptic JSON + PNG input (plus an RLE-native path that
-needs no PNG files), and `coco panoptic eval` in the CLI. Verified against
-panopticapi before release, the same way detection is verified against
-pycocotools.
 
 ## Multi-object tracking
 

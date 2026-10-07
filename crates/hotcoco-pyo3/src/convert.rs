@@ -298,14 +298,24 @@ fn to_json(value: &Bound<'_, PyAny>, depth: usize) -> Option<serde_json::Value> 
 
 /// The custom keys of a record, as the JSON they will be saved as.
 fn extra_from_dict(extras: &Bound<'_, PyDict>) -> PyResult<Extra> {
-    let json_str = extras
+    from_py_json(extras, "custom keys")
+}
+
+/// Deserialize a Python object through `json.dumps`: the way in for a value
+/// whose Rust type already knows its JSON shape. `what` names it in the
+/// error a non-JSON value raises.
+pub(crate) fn from_py_json<T: serde::de::DeserializeOwned>(
+    obj: &Bound<'_, PyAny>,
+    what: &str,
+) -> PyResult<T> {
+    let json_str = obj
         .py()
         .import("json")?
-        .call_method1("dumps", (extras,))?
+        .call_method1("dumps", (obj,))?
         .cast_into::<PyString>()?;
     serde_json::from_str(json_str.to_str()?).map_err(|e| {
         pyo3::exceptions::PyValueError::new_err(format!(
-            "custom keys did not round-trip through JSON: {e}"
+            "{what} did not round-trip through JSON: {e}"
         ))
     })
 }
@@ -603,6 +613,9 @@ pub fn category_to_py(py: Python<'_>, cat: &Category) -> PyResult<Py<PyAny>> {
     if let Some(ref freq) = cat.frequency {
         dict.set_item(pyo3::intern!(py, "frequency"), freq)?;
     }
+    if let Some(isthing) = cat.isthing {
+        dict.set_item(pyo3::intern!(py, "isthing"), isthing)?;
+    }
     merge_extra(&dict, &cat.extra)?;
     Ok(dict.into_any().unbind())
 }
@@ -823,6 +836,8 @@ fn set_category_field(cat: &mut Category, key: &str, value: &Bound<'_, PyAny>) -
         "skeleton" => cat.skeleton = value.extract()?,
         "keypoints" => cat.keypoints = value.extract()?,
         "frequency" => cat.frequency = value.extract()?,
+        // `1`/`0` in COCO panoptic files, a bool from a Python caller.
+        "isthing" => cat.isthing = Some(extract_flag(value)?),
         _ => return Ok(false),
     }
     Ok(true)

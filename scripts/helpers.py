@@ -39,6 +39,16 @@ VAL2017 = {
     },
 }
 
+# COCO panoptic val2017: the JSON, its PNG folder (panopticapi's convention is
+# the JSON path minus `.json`), and the perturbed predictions
+# `scripts/download_panoptic.py` writes beside them. Same gitignored `data/`.
+PANOPTIC_VAL2017 = {
+    "gt": DATA_DIR / "annotations/panoptic_val2017.json",
+    "gt_folder": DATA_DIR / "annotations/panoptic_val2017",
+    "dt": DATA_DIR / "panoptic_val2017_results.json",
+    "dt_folder": DATA_DIR / "panoptic_val2017_results",
+}
+
 # ---------------------------------------------------------------------------
 # COCO keypoint constants
 # ---------------------------------------------------------------------------
@@ -354,3 +364,155 @@ def hotcoco_eval_obb(obb_gt, obb_dt):
         ev.accumulate()
         ev.summarize()
         return ev.stats
+
+
+# ---------------------------------------------------------------------------
+# Panoptic: the reference run, the comparison, and the perturbation recipe
+# ---------------------------------------------------------------------------
+#
+# Shared by `scripts/parity_panoptic.py` (val2017) and
+# `tests/test_parity_panoptic.py` (synthetic, in CI) so the two are one check
+# on two inputs rather than two checks. panopticapi is imported inside the
+# functions: it is a dev-only dependency and this module is imported by every
+# test.
+
+
+def panopticapi_reference(gt_json, pred_json, gt_folder, pred_folder, *, multi_core: bool):
+    """panopticapi's `pq_compute`, split open to keep the per-category counts.
+
+    Returns ``(averages, counts)``: ``averages`` maps ``All``/``Things``/``Stuff``
+    to the dict ``pq_average`` returns, or ``None`` where the reference divides
+    by zero (nothing to average); ``counts`` maps category id to its
+    ``tp``/``fp``/``fn``/``iou``. Does the function's own glue — pairing by
+    image id, raising on a missing prediction — and calls the worker it calls:
+    the multiprocess one for a real dataset, the single-core one for tests.
+    """
+    from panopticapi.evaluation import pq_compute_multi_core, pq_compute_single_core
+
+    gt = json.loads(Path(gt_json).read_text())
+    pred = json.loads(Path(pred_json).read_text())
+    categories = {el["id"]: el for el in gt["categories"]}
+    pred_by_image = {el["image_id"]: el for el in pred["annotations"]}
+    matched = []
+    for gt_ann in gt["annotations"]:
+        if gt_ann["image_id"] not in pred_by_image:
+            raise Exception(f"no prediction for the image with id: {gt_ann['image_id']}")
+        matched.append((gt_ann, pred_by_image[gt_ann["image_id"]]))
+    # The reference prints its core count and per-core progress.
+    with suppress_output(stderr=False):
+        if multi_core:
+            pq_stat = pq_compute_multi_core(matched, str(gt_folder), str(pred_folder), categories)
+        else:
+            pq_stat = pq_compute_single_core(0, matched, str(gt_folder), str(pred_folder), categories)
+    averages = {}
+    for name, isthing in (("All", None), ("Things", True), ("Stuff", False)):
+        try:
+            averages[name] = pq_stat.pq_average(categories, isthing)[0]
+        except ZeroDivisionError:
+            averages[name] = None
+    counts = {
+        cid: {"tp": s.tp, "fp": s.fp, "fn": s.fn, "iou": s.iou}
+        for cid, s in pq_stat.pq_per_cat.items()
+        if cid in categories
+    }
+    return averages, counts
+
+
+def pq_disagreements(ref_averages, ref_counts, got, category_ids, *, tol=1e-9):
+    """Where hotcoco's `results()` departs from the reference, as strings.
+
+    Counts must match exactly; summed IoU and the three averages within
+    ``tol``. A category the reference saw nothing for must read as the
+    ``-1.0`` sentinel, not a score. ``category_ids`` are the categories to
+    check, so a category missing from either side is a finding.
+    """
+    out = []
+    for split in ("All", "Things", "Stuff"):
+        ref, g = ref_averages[split], got[split]
+        if ref is None:
+            if g["n"] != 0 or g["pq"] != -1.0:
+                out.append(f"{split}: reference has nothing to average, hotcoco reports {g}")
+            continue
+        if ref["n"] != g["n"]:
+            out.append(f"{split}.n: ref {ref['n']} got {g['n']}")
+        for key in ("pq", "sq", "rq"):
+            if abs(ref[key] - g[key]) > tol:
+                out.append(f"{split}.{key}: ref {ref[key]:.12f} got {g[key]:.12f} diff {abs(ref[key] - g[key]):.3e}")
+    for cid in category_ids:
+        ref = ref_counts.get(cid, {"tp": 0, "fp": 0, "fn": 0, "iou": 0.0})
+        g = got["per_class"].get(cid)
+        if g is None:
+            out.append(f"category {cid}: missing from hotcoco")
+            continue
+        for key in ("tp", "fp", "fn"):
+            if ref[key] != g[key]:
+                out.append(f"category {cid}.{key}: ref {ref[key]} got {g[key]}")
+        if abs(ref["iou"] - g["iou"]) > tol:
+            out.append(f"category {cid}.iou: ref {ref['iou']:.12f} got {g['iou']:.12f}")
+        if ref["tp"] + ref["fp"] + ref["fn"] == 0 and (g["pq"], g["sq"], g["rq"]) != (-1.0, -1.0, -1.0):
+            out.append(f"category {cid}: nothing to score, hotcoco reports pq={g['pq']} sq={g['sq']} rq={g['rq']}")
+    return out
+
+
+def erode(mask, px: int):
+    """Shrink a boolean mask by `px` pixels on every side (no scipy)."""
+    out = mask.copy()
+    for _ in range(px):
+        shrunk = out.copy()
+        shrunk[1:, :] &= out[:-1, :]
+        shrunk[:-1, :] &= out[1:, :]
+        shrunk[:, 1:] &= out[:, :-1]
+        shrunk[:, :-1] &= out[:, 1:]
+        out = shrunk
+    return out
+
+
+def perturb_label_map(gt_map, gt_segs, category_ids, rng, *, shift: int, erode_px, first_id: int, spurious: int):
+    """A prediction derived from a ground-truth label map, every rule in play.
+
+    Each segment is dropped, relabeled to a random category, eroded, shifted,
+    or merged into a same-category neighbor, with the given odds; up to
+    ``spurious`` rectangles are added on top. Later segments paint over
+    earlier ones, so the result stays a partition. Returns
+    ``(pred_map, segments_info)`` with ids from ``first_id``.
+    """
+    import numpy as np
+
+    h, w = gt_map.shape
+    pred = np.zeros_like(gt_map)
+    segs = []
+    next_id = first_id
+    for seg in gt_segs:
+        m = gt_map == seg["id"]
+        if not m.any():
+            continue
+        roll = rng.random()
+        cat = seg["category_id"]
+        if roll < 0.1:
+            continue  # dropped: a miss
+        if roll < 0.2:
+            cat = rng.choice(category_ids)  # relabeled: a miss and a false positive
+        elif roll < 0.3:
+            m = erode(m, rng.choice(erode_px))  # IoU drifts toward 0.5
+        elif roll < 0.4:
+            dy, dx = rng.randint(-shift, shift), rng.randint(-shift, shift)
+            m = np.roll(np.roll(m, dy, axis=0), dx, axis=1)
+        elif roll < 0.5:
+            others = [s for s in gt_segs if s["id"] != seg["id"] and s["category_id"] == cat]
+            if others:
+                m = m | (gt_map == rng.choice(others)["id"])
+        if not m.any():
+            continue
+        pred[m] = next_id
+        segs.append({"id": next_id, "category_id": cat})
+        next_id += 1
+    # Spurious segments on void or on top of anything: false positives, some
+    # majority-void so the ignore rule fires.
+    for _ in range(rng.randint(0, spurious)):
+        sh, sw = rng.randint(2, max(3, h // 3)), rng.randint(2, max(3, w // 3))
+        y0, x0 = rng.randint(0, max(0, h - sh)), rng.randint(0, max(0, w - sw))
+        pred[y0 : y0 + sh, x0 : x0 + sw] = next_id
+        segs.append({"id": next_id, "category_id": rng.choice(category_ids)})
+        next_id += 1
+    present = set(np.unique(pred).tolist())
+    return pred, [s for s in segs if s["id"] in present]

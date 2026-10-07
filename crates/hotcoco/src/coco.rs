@@ -501,7 +501,7 @@ impl COCO {
     /// TorchMetrics emits bare `{"id": i}` records). One owner, so the two
     /// cases read the same in a report.
     pub fn placeholder_cat_name(id: u64) -> String {
-        format!("cat_{id}")
+        crate::types::placeholder_cat_name(id)
     }
 
     /// Get annotation IDs for a specific (image, category) pair.
@@ -1118,11 +1118,9 @@ impl COCO {
     pub fn ann_to_rle(&self, ann: &Annotation) -> Option<Rle> {
         let (h, w) = self.raster_dims(ann)?;
         match &ann.segmentation {
-            Some(Segmentation::Polygon(polys)) => mask::fr_polys(polys, h, w).ok(),
-            Some(Segmentation::Rect(bbox)) => mask::fr_bbox(bbox, h, w).ok(),
-            // Either RLE spelling, validated the same way: a string that does
+            // Either RLE spelling is validated on the way: a string that does
             // not decode, or runs past `h * w`, is no mask.
-            Some(seg) => seg.rle_ref()?.to_rle().ok(),
+            Some(seg) => seg.to_rle(h, w).ok(),
             None => {
                 // For bbox-only annotations, convert bbox to RLE
                 ann.bbox
