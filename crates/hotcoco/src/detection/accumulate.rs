@@ -1,11 +1,13 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};
 
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
 use super::COCOeval;
 use super::EvalMode;
 use super::matching::{CellRef, arena_index};
+use crate::metrics::counts::descending_score_key;
 
 /// The key two area ranges are compared on: bit equality of both bounds.
 /// `[0, 1e5**2]` and `[0, 1e10]` are the same range only if they are the same
@@ -14,7 +16,7 @@ fn area_key(range: [f64; 2]) -> [u64; 2] {
     [range[0].to_bits(), range[1].to_bits()]
 }
 
-/// `eval_imgs` bucketed by (category slot, area-range slot).
+/// The evaluated pairs bucketed by K slot, read per (K slot, area slot).
 ///
 /// The bucketing depends only on `params` and the evaluated cells — never on which
 /// images an accumulation happens to cover — so it is built once and reused across
@@ -29,43 +31,34 @@ fn area_key(range: [f64; 2]) -> [u64; 2] {
 /// under one evaluator's category list cannot be accumulated under another's.
 pub(super) struct EvalGrouping<'a> {
     ev: &'a COCOeval,
-    /// Indexed `k_idx * a + a_idx`, each bucket in `eval_imgs` order. Each cell
-    /// carries the dense image slot its `image_id` resolves to — see
-    /// [`image_mask`](Self::image_mask).
-    grouped: Vec<Vec<(CellRef, u32)>>,
-    /// Number of area ranges — the stride of `grouped`.
-    a: usize,
-    /// Distinct `image_id` -> dense slot, over every cell in `grouped`.
-    img_slots: HashMap<u64, u32>,
+    /// Every in-scope pair as `(pair index, image slot)`, grouped by K slot
+    /// and in pair order within each: slot `k_idx` holds
+    /// `pairs[k_starts[k_idx]..k_starts[k_idx + 1]]`. The image slot is
+    /// what [`image_mask`](Self::image_mask) indexes.
+    pairs: Vec<(u32, u32)>,
+    k_starts: Vec<usize>,
+    /// For each slot of `params.area_ranges`, the evaluate-time area indices
+    /// whose cells land in it, in evaluate-time order.
+    area_cells: Vec<Vec<usize>>,
+    /// Distinct `image_id` -> dense slot, over every pair in `pairs`.
+    img_slots: FxHashMap<u64, u32>,
     /// For each threshold of the T axis, its row in the grid the cells were
-    /// matched on — see the axis-resolution block in
-    /// [`build_chunked`](Self::build_chunked).
+    /// matched on — see the axis-resolution block in [`build`](Self::build).
     t_rows: Vec<Option<usize>>,
 }
 
 impl<'a> EvalGrouping<'a> {
     /// Bucket an evaluated `COCOeval`'s cells.
     pub(super) fn build(ev: &'a COCOeval) -> Self {
-        // Tests pass their own run length to put run boundaries where they
-        // want them.
-        Self::build_chunked(ev, super::run_len(ev.cells.len()))
-    }
-
-    /// [`build`](Self::build) with the cells walked in runs of `chunk_len`.
-    ///
-    /// The result does not depend on `chunk_len` — bucket contents and order are
-    /// the same for any value; only the internal image-slot numbering differs.
-    fn build_chunked(ev: &'a COCOeval, chunk_len: usize) -> Self {
         let params = &ev.params;
         let k = if params.use_cats {
             params.cat_ids.len()
         } else {
             1
         };
-        let a = params.area_ranges.len();
 
         // Build category_id → k_idx mapping for grouping eval_imgs.
-        let cat_id_to_k_idx: HashMap<u64, usize> = if params.use_cats {
+        let cat_id_to_k_idx: FxHashMap<u64, usize> = if params.use_cats {
             params
                 .cat_ids
                 .iter()
@@ -78,8 +71,8 @@ impl<'a> EvalGrouping<'a> {
 
         // Area-range keys as bit-exact f64 pairs. The range values are copied verbatim
         // from `params`, so bit equality is the right test. A linear scan over the
-        // handful of ranges beats hashing a 16-byte key per cell; `rposition` makes
-        // a range listed twice fill its last slot only.
+        // handful of ranges beats hashing a 16-byte key; `rposition` makes a range
+        // listed twice fill its last slot only.
         let area_keys: Vec<[u64; 2]> = params
             .area_ranges
             .iter()
@@ -95,14 +88,14 @@ impl<'a> EvalGrouping<'a> {
         // `params.area_ranges`. The same range listed twice fills its last
         // slot only, and a range no longer listed is skipped. Every pair's
         // `areas` is indexed by the evaluate-time position.
-        let remap: Vec<Option<usize>> = ev.eval_inputs.as_ref().map_or_else(Vec::new, |inputs| {
-            inputs
-                .params
-                .area_ranges
-                .iter()
-                .map(|ar| area_keys.iter().rposition(|key| *key == area_key(ar.range)))
-                .collect()
-        });
+        let mut area_cells: Vec<Vec<usize>> = vec![Vec::new(); area_keys.len()];
+        if let Some(inputs) = ev.eval_inputs.as_ref() {
+            for (at_eval, ar) in inputs.params.area_ranges.iter().enumerate() {
+                if let Some(a_idx) = area_keys.iter().rposition(|key| *key == area_key(ar.range)) {
+                    area_cells[a_idx].push(at_eval);
+                }
+            }
+        }
         // IoU thresholds: the opposite direction — for each threshold of the T
         // axis, its row in the evaluate-time grid. The T axis is
         // `params.iou_thrs` as it stands, since `summarize()`, `report()`, and
@@ -118,118 +111,71 @@ impl<'a> EvalGrouping<'a> {
             .map(|&thr| ev.evaluated_iou_row(thr))
             .collect();
 
-        // Group the pairs by (k_idx, a_idx) — one pass over the cells, in parallel.
+        // Group the pairs by K slot with a counting sort: one pass finds each
+        // pair's slot and counts them, the second writes every pair once into
+        // its slot's span of one exactly sized array. A pair's area cells are
+        // not stored at all — `cells_into` reads them off `area_cells` — so the
+        // grouping is one entry per pair, not one per cell per area range.
+        // Growing a bucket per (category, area range) by pushing cost more
+        // than the precision curves themselves at 10x COCO val2017.
         //
-        // The pairs are cut into a few contiguous runs per thread; each run keeps
-        // its own buckets, in pair order, and the runs are concatenated in order
-        // below — so every bucket ends up in `evaluate()` order exactly as a
-        // sequential walk would leave it. That order feeds the stable score sort and
-        // decides ties, so it is part of the output, not an implementation detail.
-        // Explicit chunks rather than rayon's adaptive splitting: every run allocates
-        // `k * a` buckets, so runs must stay few.
-        //
-        // `evaluate()` writes `area_ranges.len()` consecutive cells per (image,
-        // category) pair, pairs sorted by image then category, so consecutive cells
-        // almost always share their category and their image. The two memos turn one
-        // hash lookup per cell into one per pair (category) and one per image. They
-        // are keyed on the id a cell carries, never on its position, so a `params`
-        // reconfigured between `evaluate()` and `accumulate()` still resolves every
-        // cell correctly — the layout only makes the memo hit.
-        //
-        // Image slots are assigned per run first (an index into `imgs`), then
-        // remapped to global slots once the runs are back together. Slot numbers are
-        // internal — `image_mask` is the only reader — so which run saw an image
-        // first does not matter, only that every cell of one image shares a slot.
-        struct Run {
-            /// `k_idx * a + a_idx` → cells in this run, in pair order; the `u32` is an
-            /// index into `imgs`.
-            buckets: Vec<Vec<(CellRef, u32)>>,
-            /// Image ids in first-seen order. A repeat is only possible when an image's
-            /// cells are not contiguous, and the remap below tolerates it.
-            imgs: Vec<u64>,
-        }
+        // Pairs stay in `evaluate()` order within a slot, and that order feeds
+        // the stable score sort and decides ties, so it is part of the output,
+        // not an implementation detail. The lookups are keyed on the ids a pair
+        // carries, never on its position, so a `params` reconfigured between
+        // `evaluate()` and `accumulate()` still resolves every pair correctly.
+        const OUT_OF_SCOPE: u32 = u32::MAX;
         let cells = &ev.cells;
-        let runs: Vec<Run> = (0..cells.len().div_ceil(chunk_len))
-            .into_par_iter()
-            .map(|run| run * chunk_len)
-            .map(|start| {
-                let mut run = Run {
-                    buckets: vec![Vec::new(); k * a],
-                    imgs: Vec::new(),
-                };
-                let mut last_cat: Option<(u64, Option<usize>)> = None;
-                let mut last_img: Option<(u64, u32)> = None;
-                for pair in start..(start + chunk_len).min(cells.len()) {
-                    let (image_id, category_id) = cells.ids(pair);
-                    let k_idx = match last_cat {
-                        Some((id, k_idx)) if id == category_id => k_idx,
-                        _ => {
-                            let k_idx = cat_id_to_k_idx.get(&category_id).copied();
-                            last_cat = Some((category_id, k_idx));
-                            k_idx
-                        }
-                    };
-                    let Some(k_idx) = k_idx else {
-                        continue;
-                    };
-                    for (at_eval, &a_idx) in remap.iter().enumerate() {
-                        let Some(a_idx) = a_idx else {
-                            continue;
-                        };
-                        // An image gets a slot only once a cell of it lands in a
-                        // bucket, so a run with nothing in scope has no slots.
-                        let local = match last_img {
-                            Some((id, local)) if id == image_id => local,
-                            _ => {
-                                let local = run.imgs.len() as u32;
-                                run.imgs.push(image_id);
-                                last_img = Some((image_id, local));
-                                local
-                            }
-                        };
-                        run.buckets[k_idx * a + a_idx].push((CellRef::new(pair, at_eval), local));
-                    }
+        // With no area range in scope every bucket is empty, so no pair is.
+        let n_pairs = if area_cells.iter().any(|at| !at.is_empty()) {
+            cells.len()
+        } else {
+            0
+        };
+        let k_of: Vec<u32> = (0..n_pairs)
+            .map(|pair| {
+                cat_id_to_k_idx
+                    .get(&cells.ids(pair).1)
+                    .map_or(OUT_OF_SCOPE, |&k_idx| arena_index(k_idx))
+            })
+            .collect();
+        let mut k_starts = vec![0usize; k + 1];
+        for &k_idx in k_of.iter().filter(|&&k_idx| k_idx != OUT_OF_SCOPE) {
+            k_starts[k_idx as usize + 1] += 1;
+        }
+        for k_idx in 0..k {
+            k_starts[k_idx + 1] += k_starts[k_idx];
+        }
+        // Image slots in first-seen order. `evaluate()` writes an image's pairs
+        // together, so the memo turns one hash lookup per pair into one per image.
+        let mut cursor = k_starts.clone();
+        let mut pairs = vec![(0u32, 0u32); k_starts[k]];
+        let mut img_slots: FxHashMap<u64, u32> = FxHashMap::default();
+        let mut last_img: Option<(u64, u32)> = None;
+        for (pair, &k_idx) in k_of.iter().enumerate() {
+            if k_idx == OUT_OF_SCOPE {
+                continue;
+            }
+            let image_id = cells.ids(pair).0;
+            let slot = match last_img {
+                Some((id, slot)) if id == image_id => slot,
+                _ => {
+                    let next = img_slots.len() as u32;
+                    let slot = *img_slots.entry(image_id).or_insert(next);
+                    last_img = Some((image_id, slot));
+                    slot
                 }
-                run
-            })
-            .collect();
-
-        // Global slots, and one run-local → global table per run.
-        let mut img_slots: HashMap<u64, u32> = HashMap::new();
-        let remaps: Vec<Vec<u32>> = runs
-            .iter()
-            .map(|run| {
-                run.imgs
-                    .iter()
-                    .map(|&img_id| {
-                        let next = img_slots.len() as u32;
-                        *img_slots.entry(img_id).or_insert(next)
-                    })
-                    .collect()
-            })
-            .collect();
-
-        // Concatenate the runs bucket by bucket, in run order.
-        let grouped: Vec<Vec<(CellRef, u32)>> = (0..k * a)
-            .into_par_iter()
-            .map(|b| {
-                let total: usize = runs.iter().map(|run| run.buckets[b].len()).sum();
-                let mut bucket = Vec::with_capacity(total);
-                for (run, remap) in runs.iter().zip(&remaps) {
-                    bucket.extend(
-                        run.buckets[b]
-                            .iter()
-                            .map(|&(eval, local)| (eval, remap[local as usize])),
-                    );
-                }
-                bucket
-            })
-            .collect();
+            };
+            let at = &mut cursor[k_idx as usize];
+            pairs[*at] = (arena_index(pair), slot);
+            *at += 1;
+        }
 
         EvalGrouping {
             ev,
-            grouped,
-            a,
+            pairs,
+            k_starts,
+            area_cells,
             img_slots,
             t_rows,
         }
@@ -240,7 +186,7 @@ impl<'a> EvalGrouping<'a> {
         self.ev
     }
 
-    /// A dense "is this image in scope" bitmap, indexed by the slot each cell carries.
+    /// A dense "is this image in scope" bitmap, indexed by the slot each pair carries.
     ///
     /// Built once per accumulation instead of probing a `HashSet<u64>` once per
     /// cell per work item. The membership test runs `K × A × M × cells` times —
@@ -263,8 +209,27 @@ impl<'a> EvalGrouping<'a> {
         mask
     }
 
-    fn cell(&self, k_idx: usize, a_idx: usize) -> &[(CellRef, u32)] {
-        &self.grouped[k_idx * self.a + a_idx]
+    /// The `(k_idx, a_idx)` bucket, cell by cell, into `out`: each of the
+    /// slot's pairs whose image slot `in_scope` admits, in pair order, with
+    /// its cells for the area range in evaluate-time order.
+    fn cells_into(
+        &self,
+        k_idx: usize,
+        a_idx: usize,
+        in_scope: impl Fn(u32) -> bool,
+        out: &mut Vec<CellRef>,
+    ) {
+        out.clear();
+        let areas = &self.area_cells[a_idx];
+        for &(pair, slot) in &self.pairs[self.k_starts[k_idx]..self.k_starts[k_idx + 1]] {
+            if in_scope(slot) {
+                out.extend(
+                    areas
+                        .iter()
+                        .map(|&at_eval| CellRef::new(pair as usize, at_eval)),
+                );
+            }
+        }
     }
 }
 
@@ -346,14 +311,22 @@ pub(super) fn accumulate_impl(
         /// score-descending list — the per-cell truncation index that
         /// `dtScores[0:maxDet]` applies.
         rank_in_cell: Vec<u32>,
-        /// One threshold's matched and ignore rows, one flag per gathered
-        /// detection.
+        /// `(descending_score_key(score), position)` per gathered detection, sorted:
+        /// the score order, as gathered positions.
+        keyed: Vec<(u64, u32)>,
+        /// Per gathered position, its rank in `keyed`.
+        rank_of: Vec<u32>,
+        /// `0..n`: every rank, the order a cap that keeps everything reads.
+        all_ranks: Vec<u32>,
+        /// Per `m`, the ranks its cap keeps; empty where the cap keeps all.
+        filtered: Vec<Vec<u32>>,
+        /// Per rank, the detection's matched and ignore flags at up to 64
+        /// thresholds, one bit each.
+        matched_bits: Vec<u64>,
+        ignore_bits: Vec<u64>,
+        /// One threshold's matched and ignore flags, in score order.
         matched: Vec<bool>,
         ignore: Vec<bool>,
-        /// Gathered positions, score-descending.
-        order: Vec<u32>,
-        /// Per `m`, `order` cut to its cap; empty where the cap keeps all.
-        filtered: Vec<Vec<u32>>,
         tp: Vec<f64>,
         fp: Vec<f64>,
         pr_scratch: crate::metrics::counts::PrCurveScratch,
@@ -376,20 +349,13 @@ pub(super) fn accumulate_impl(
         },
     });
 
-    // Items are indexed as `grouped` is: `k_idx * a + a_idx`.
+    // One item per (K slot, area slot), indexed `k_idx * a + a_idx`.
     (0..k * a)
         .into_par_iter()
         .for_each_init(<(Staged, Gathered)>::default, |(staged, g), item| {
             let (k_idx, a_idx) = (item / a, item % a);
             // Materialized once for every `m`, rather than filtered per `m`.
-            g.evals.clear();
-            g.evals.extend(
-                grouping
-                    .cell(k_idx, a_idx)
-                    .iter()
-                    .filter(|&&(_, slot)| img_mask[slot as usize])
-                    .map(|&(e, _)| e),
-            );
+            grouping.cells_into(k_idx, a_idx, |slot| img_mask[slot as usize], &mut g.evals);
             let evals = &g.evals;
 
             // Independent of `max_det` — the cap truncates detections, never
@@ -424,13 +390,11 @@ pub(super) fn accumulate_impl(
             // `accumulate()`, so the gather truncates to the current cap and never
             // trusts the stored length.
             //
-            // The identity needs a strict weak order on scores, which `partial_cmp`
-            // gives for every finite value (and for `-0.0` versus `0.0`, which
-            // compare equal and keep input order). A NaN score breaks it: the
-            // comparator below treats NaN as equal to everything, so the sorted
-            // order — and therefore which detections a filtered slot keeps —
-            // depends on the input sequence. `load_res` rejects NaN scores;
-            // `COCO::from_dataset` does not, so NaN ranking is undefined.
+            // The identity needs a strict weak order on scores, which every
+            // non-NaN score has (`-0.0` and `0.0` compare equal and keep input
+            // order). A NaN score has no place in it and ranks wherever its bits
+            // put it. `load_res` rejects NaN scores; `COCO::from_dataset` does
+            // not, so NaN ranking is undefined.
             let cap = params.max_det();
             // A cell's detection count at the current cap.
             let nd_of = |cell: CellRef| cells.scores(cell.pair()).len().min(cap);
@@ -447,120 +411,176 @@ pub(super) fn accumulate_impl(
             }
             let (all_dt_scores, rank_in_cell) = (&g.scores, &g.rank_in_cell);
 
-            // Sort by score descending — stable, ties keep concatenation order.
-            clear_with_capacity(&mut g.order, n_gathered);
-            g.order.extend(0..n_gathered_u32);
-            g.order.sort_by(|&a, &b| {
-                all_dt_scores[b as usize]
-                    .partial_cmp(&all_dt_scores[a as usize])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            // Sort by score descending, ties in concatenation order: a stable
+            // sort on `descending_score_key`, each comparison reading an integer
+            // in place rather than two scores through an index. The position
+            // rides along to map ranks back to gathered detections.
+            clear_with_capacity(&mut g.keyed, n_gathered);
+            g.keyed.extend(
+                all_dt_scores
+                    .iter()
+                    .zip(0..n_gathered_u32)
+                    .map(|(&score, i)| (descending_score_key(score), i)),
+            );
+            g.keyed.sort_by_key(|&(key, _)| key);
+            // Everything from here on works in score order: each detection's
+            // match bits are written at its rank, so every curve reads its
+            // flags front to back.
+            g.rank_of.clear();
+            g.rank_of.resize(n_gathered, 0);
+            for (rank, &(_, i)) in (0..n_gathered_u32).zip(&g.keyed) {
+                g.rank_of[i as usize] = rank;
+            }
 
             // Stable filter of the shared order == per-`m` sort (see above).
-            // Built once per `m`, ahead of the threshold sweep; a cap at or
-            // above the gather's keeps the whole order and fills no slot.
+            // Built once per `m`, ahead of the threshold sweep, as ranks into
+            // the sorted arrays; a cap at or above the gather's keeps them all.
+            clear_with_capacity(&mut g.all_ranks, n_gathered);
+            g.all_ranks.extend(0..n_gathered_u32);
             g.filtered.resize_with(m, Vec::new);
             for (kept, &max_det) in g.filtered.iter_mut().zip(&params.max_dets) {
                 kept.clear();
                 if max_det < cap {
-                    kept.extend(
-                        g.order
-                            .iter()
-                            .copied()
-                            .filter(|&i| (rank_in_cell[i as usize] as usize) < max_det),
-                    );
+                    kept.extend(g.keyed.iter().zip(0..n_gathered_u32).filter_map(
+                        |(&(_, i), rank)| {
+                            ((rank_in_cell[i as usize] as usize) < max_det).then_some(rank)
+                        },
+                    ));
                 }
             }
             let inds_of = |m_idx: usize| -> &[u32] {
                 if params.max_dets[m_idx] >= cap {
-                    &g.order
+                    &g.all_ranks
                 } else {
                     &g.filtered[m_idx]
                 }
             };
 
-            // Thresholds outside, caps inside, so only one threshold's matched
-            // and ignore rows are live at a time.
-            clear_with_capacity(&mut g.matched, n_gathered);
-            clear_with_capacity(&mut g.ignore, n_gathered);
-            for (t_idx, &row) in t_rows.iter().enumerate() {
-                let Some(row) = row else {
-                    // Never evaluated at this threshold: "not computed", not
-                    // the 0.0 a category with ground truth starts from.
-                    for m_idx in 0..m {
-                        let base = (m_idx * t + t_idx) * r;
-                        staged.precision[base..base + r].fill(-1.0);
-                        staged.scores[base..base + r].fill(-1.0);
-                    }
-                    continue;
-                };
-                g.matched.clear();
-                g.ignore.clear();
+            // Each detection's matched and ignore flags at up to 64 thresholds
+            // at a time, as one bit per threshold, at its rank: one walk over
+            // the cells per 64 thresholds, rather than one per threshold.
+            for (chunk_idx, chunk) in t_rows.chunks(64).enumerate() {
+                for bits in [&mut g.matched_bits, &mut g.ignore_bits] {
+                    bits.clear();
+                    bits.resize(n_gathered, 0);
+                }
+                // When the chunk's thresholds are consecutive evaluate-time
+                // rows — always, unless `iou_thrs` changed after `evaluate()` —
+                // a detection's flags are one read each.
+                let run = chunk
+                    .first()
+                    .copied()
+                    .flatten()
+                    .map(|first| first..first + chunk.len())
+                    .filter(|rows| chunk.iter().copied().eq(rows.clone().map(Some)));
+                let mut at = 0;
                 for &cell in evals {
-                    let nd = nd_of(cell);
                     let block = cells.block(cell);
-                    g.matched.extend(block.matched(row).take(nd));
-                    g.ignore.extend(block.ignore(row).take(nd));
+                    for d in 0..nd_of(cell) {
+                        let (matched, ignore) = match &run {
+                            Some(rows) => (
+                                block.matched(d, rows.clone()),
+                                block.ignore(d, rows.clone()),
+                            ),
+                            None => chunk
+                                .iter()
+                                .enumerate()
+                                .fold((0, 0), |(m, i), (bit, &row)| {
+                                    let Some(row) = row else { return (m, i) };
+                                    (
+                                        m | block.matched(d, row..row + 1) << bit,
+                                        i | block.ignore(d, row..row + 1) << bit,
+                                    )
+                                }),
+                        };
+                        let rank = g.rank_of[at] as usize;
+                        g.matched_bits[rank] = matched;
+                        g.ignore_bits[rank] = ignore;
+                        at += 1;
+                    }
                 }
 
-                for m_idx in 0..m {
-                    let inds = inds_of(m_idx);
-                    if inds.is_empty() {
-                        // GT exists but no detections — recall and AP are 0.0, not -1.0
-                        // "missing". The metric *is* computable here and the answer is that
-                        // nothing was found; reporting "not computed" would drop the
-                        // category from the mean and quietly raise mAP.
-                        let ap = if want_all_points { 0.0 } else { -1.0 };
-                        staged.recall[m_idx * t + t_idx] = (0.0, ap);
+                // Thresholds outside, caps inside, so one threshold's flags are
+                // unpacked at a time.
+                for (bit, &row) in chunk.iter().enumerate() {
+                    let t_idx = chunk_idx * 64 + bit;
+                    if row.is_none() {
+                        // Never evaluated at this threshold: "not computed", not
+                        // the 0.0 a category with ground truth starts from.
+                        for m_idx in 0..m {
+                            let base = (m_idx * t + t_idx) * r;
+                            staged.precision[base..base + r].fill(-1.0);
+                            staged.scores[base..base + r].fill(-1.0);
+                        }
                         continue;
                     }
+                    g.matched.clear();
+                    g.matched
+                        .extend(g.matched_bits.iter().map(|&w| w >> bit & 1 == 1));
+                    g.ignore.clear();
+                    g.ignore
+                        .extend(g.ignore_bits.iter().map(|&w| w >> bit & 1 == 1));
 
-                    // `metrics::counts` owns the TP/FP classification and the
-                    // curve. The all-points AP is the exact area under the same
-                    // envelope the grid samples and needs the cumulative `tp`/`fp`
-                    // arrays, score-ordered — it cannot be recovered from the 101
-                    // samples afterwards — so Open Images materializes them and
-                    // reads the curve from them. Every other mode discards that
-                    // AP and takes the fused kernel, which produces the same
-                    // curve without the two arrays.
-                    let (final_recall, all_points_ap) = if want_all_points {
-                        crate::metrics::counts::cumulative_tp_fp(
-                            inds.iter().map(|&i| i as usize),
-                            &g.matched,
-                            Some(&g.ignore),
-                            &mut g.tp,
-                            &mut g.fp,
-                        );
-                        let final_recall = crate::metrics::counts::precision_recall_curve_into(
-                            &g.tp,
-                            &g.fp,
-                            num_gt,
-                            &params.rec_thrs,
-                            &mut g.pr_scratch,
-                            &mut g.curve,
-                        );
-                        let ap = crate::metrics::counts::average_precision_all_points(
-                            &g.tp, &g.fp, num_gt,
-                        );
-                        (final_recall, ap)
-                    } else {
-                        let final_recall =
-                            crate::metrics::counts::precision_recall_curve_of_order_into(
+                    for m_idx in 0..m {
+                        let inds = inds_of(m_idx);
+                        if inds.is_empty() {
+                            // GT exists but no detections — recall and AP are 0.0, not -1.0
+                            // "missing". The metric *is* computable here and the answer is that
+                            // nothing was found; reporting "not computed" would drop the
+                            // category from the mean and quietly raise mAP.
+                            let ap = if want_all_points { 0.0 } else { -1.0 };
+                            staged.recall[m_idx * t + t_idx] = (0.0, ap);
+                            continue;
+                        }
+
+                        // `metrics::counts` owns the TP/FP classification and the
+                        // curve. The all-points AP is the exact area under the same
+                        // envelope the grid samples and needs the cumulative `tp`/`fp`
+                        // arrays, score-ordered — it cannot be recovered from the 101
+                        // samples afterwards — so Open Images materializes them and
+                        // reads the curve from them. Every other mode discards that
+                        // AP and takes the fused kernel, which produces the same
+                        // curve without the two arrays.
+                        let (final_recall, all_points_ap) = if want_all_points {
+                            crate::metrics::counts::cumulative_tp_fp(
                                 inds.iter().map(|&i| i as usize),
                                 &g.matched,
                                 Some(&g.ignore),
+                                &mut g.tp,
+                                &mut g.fp,
+                            );
+                            let final_recall = crate::metrics::counts::precision_recall_curve_into(
+                                &g.tp,
+                                &g.fp,
                                 num_gt,
                                 &params.rec_thrs,
                                 &mut g.pr_scratch,
                                 &mut g.curve,
                             );
-                        (final_recall, -1.0)
-                    };
-                    staged.recall[m_idx * t + t_idx] = (final_recall, all_points_ap);
-                    for &(r_idx, pr_val, rc_ptr) in &g.curve {
-                        let i = (m_idx * t + t_idx) * r + r_idx;
-                        staged.precision[i] = pr_val;
-                        staged.scores[i] = all_dt_scores[inds[rc_ptr] as usize];
+                            let ap = crate::metrics::counts::average_precision_all_points(
+                                &g.tp, &g.fp, num_gt,
+                            );
+                            (final_recall, ap)
+                        } else {
+                            let final_recall =
+                                crate::metrics::counts::precision_recall_curve_of_order_into(
+                                    inds.iter().map(|&i| i as usize),
+                                    &g.matched,
+                                    Some(&g.ignore),
+                                    num_gt,
+                                    &params.rec_thrs,
+                                    &mut g.pr_scratch,
+                                    &mut g.curve,
+                                );
+                            (final_recall, -1.0)
+                        };
+                        staged.recall[m_idx * t + t_idx] = (final_recall, all_points_ap);
+                        for &(r_idx, pr_val, rc_ptr) in &g.curve {
+                            let i = (m_idx * t + t_idx) * r + r_idx;
+                            staged.precision[i] = pr_val;
+                            let (_, at) = g.keyed[inds[rc_ptr] as usize];
+                            staged.scores[i] = all_dt_scores[at as usize];
+                        }
                     }
                 }
             }
@@ -685,6 +705,8 @@ impl AccumulatedEval {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::COCO;
     use crate::params::{AreaRange, IouType};
@@ -848,18 +870,36 @@ mod tests {
         ev
     }
 
-    fn assert_same_grouping(ev: &COCOeval, chunk_len: usize, label: &str) {
+    /// One bucket's cells with the image slot each carries.
+    fn bucket(g: &EvalGrouping<'_>, k_idx: usize, a_idx: usize) -> Vec<(CellRef, u32)> {
+        let mut cells = Vec::new();
+        g.cells_into(k_idx, a_idx, |_| true, &mut cells);
+        let slots = g.pairs[g.k_starts[k_idx]..g.k_starts[k_idx + 1]]
+            .iter()
+            .flat_map(|&(_, slot)| g.area_cells[a_idx].iter().map(move |_| slot));
+        cells.into_iter().zip(slots).collect()
+    }
+
+    /// Every bucket, indexed `k_idx * a + a_idx` as the reference walk is.
+    fn buckets(g: &EvalGrouping<'_>) -> Vec<Vec<(CellRef, u32)>> {
+        let k = g.k_starts.len() - 1;
+        let a = g.area_cells.len();
+        (0..k * a).map(|b| bucket(g, b / a, b % a)).collect()
+    }
+
+    fn assert_same_grouping(ev: &COCOeval, label: &str) {
         let expected = reference_grouping(ev);
-        let got = EvalGrouping::build_chunked(ev, chunk_len);
-        assert_eq!(got.grouped.len(), expected.len(), "{label}: bucket count");
-        for (b, (got_bucket, want_bucket)) in got.grouped.iter().zip(&expected).enumerate() {
+        let got = EvalGrouping::build(ev);
+        let got_buckets = buckets(&got);
+        assert_eq!(got_buckets.len(), expected.len(), "{label}: bucket count");
+        for (b, (got_bucket, want_bucket)) in got_buckets.iter().zip(&expected).enumerate() {
             let got_cells: Vec<(usize, usize, u64)> = got_bucket
                 .iter()
                 .map(|&(cell, _)| (cell.pair(), cell.area(), ev.cells.ids(cell.pair()).0))
                 .collect();
             assert_eq!(
                 got_cells, *want_bucket,
-                "{label}, chunk_len {chunk_len}: bucket {b} differs from the sequential walk"
+                "{label}: bucket {b} differs from the sequential walk"
             );
         }
         assert_slots_consistent(&got, label);
@@ -870,7 +910,8 @@ mod tests {
     fn assert_slots_consistent(g: &EvalGrouping<'_>, label: &str) {
         let mut slot_of: HashMap<u64, u32> = HashMap::new();
         let mut img_of: HashMap<u32, u64> = HashMap::new();
-        for &(cell, slot) in g.grouped.iter().flatten() {
+        let all = buckets(g);
+        for &(cell, slot) in all.iter().flatten() {
             let image_id = g.eval().cells.ids(cell.pair()).0;
             assert_eq!(
                 *slot_of.entry(image_id).or_insert(slot),
@@ -885,7 +926,7 @@ mod tests {
         }
         let keep: HashSet<u64> = [2u64, 5].into_iter().collect();
         let mask = g.image_mask(Some(&keep));
-        for &(cell, slot) in g.grouped.iter().flatten() {
+        for &(cell, slot) in all.iter().flatten() {
             let image_id = g.eval().cells.ids(cell.pair()).0;
             assert_eq!(
                 mask[slot as usize],
@@ -895,10 +936,6 @@ mod tests {
         }
     }
 
-    /// Chunk lengths that put run boundaries in the middle of an image, in the
-    /// middle of a pair's area-range block, at one cell, and nowhere.
-    const CHUNKS: [usize; 5] = [1, 3, 7, 16, usize::MAX];
-
     #[test]
     fn grouping_matches_sequential_walk_under_reconfigured_params() {
         let mut ev = make_eval(true);
@@ -906,16 +943,12 @@ mod tests {
         // truth or a detection, and since 1.1 keeps every one of them (as
         // pycocotools does): one cell per visited pair, none empty.
         assert_fixture_filled(&ev);
-        for chunk_len in CHUNKS {
-            assert_same_grouping(&ev, chunk_len, "as evaluated");
-        }
+        assert_same_grouping(&ev, "as evaluated");
 
         // Category subset, reordered: cells of category 2 must be skipped and the
         // remaining two land in swapped slots.
         ev.params.cat_ids = vec![3, 1];
-        for chunk_len in CHUNKS {
-            assert_same_grouping(&ev, chunk_len, "cat_ids = [3, 1]");
-        }
+        assert_same_grouping(&ev, "cat_ids = [3, 1]");
 
         // Area subset, reordered, one range listed twice: a repeated range fills its
         // last slot only, and the dropped ranges skip.
@@ -924,17 +957,15 @@ mod tests {
             area("all", 0.0, 1e10),
             area("all again", 0.0, 1e10),
         ];
-        for chunk_len in CHUNKS {
-            assert_same_grouping(&ev, chunk_len, "areas reordered with a duplicate");
-        }
+        assert_same_grouping(&ev, "areas reordered with a duplicate");
         let g = EvalGrouping::build(&ev);
         assert_eq!(
-            g.grouped.len(),
+            buckets(&g).len(),
             ev.params.cat_ids.len() * ev.params.area_ranges.len()
         );
         for k_idx in 0..ev.params.cat_ids.len() {
             assert!(
-                g.cell(k_idx, 1).is_empty() && !g.cell(k_idx, 2).is_empty(),
+                bucket(&g, k_idx, 1).is_empty() && !bucket(&g, k_idx, 2).is_empty(),
                 "a repeated area range must fill its last slot only"
             );
         }
@@ -942,7 +973,7 @@ mod tests {
         // Nothing left in scope: every bucket empty, no slots.
         ev.params.area_ranges = vec![area("none", 1.0, 2.0)];
         let g = EvalGrouping::build(&ev);
-        assert!(g.grouped.iter().all(Vec::is_empty));
+        assert!(buckets(&g).iter().all(Vec::is_empty));
         assert!(g.img_slots.is_empty());
     }
 
@@ -950,14 +981,12 @@ mod tests {
     fn grouping_matches_sequential_walk_without_categories() {
         let ev = make_eval(false);
         assert_fixture_filled(&ev);
-        for chunk_len in CHUNKS {
-            assert_same_grouping(&ev, chunk_len, "use_cats = false");
-        }
+        assert_same_grouping(&ev, "use_cats = false");
         // The category axis collapses to one slot.
         let g = EvalGrouping::build(&ev);
-        assert_eq!(g.grouped.len(), ev.params.area_ranges.len());
+        assert_eq!(buckets(&g).len(), ev.params.area_ranges.len());
         assert!(
-            g.cell(0, 0).len() >= 6,
+            bucket(&g, 0, 0).len() >= 6,
             "every image lands in the 'all' bucket"
         );
     }

@@ -446,7 +446,7 @@ same annotations.
         ids: ArrayLike | None = None,
         area: ArrayLike | None = None,
         iscrowd: ArrayLike | None = None,
-        rles: list[dict | list[list[float]]] | None = None,
+        segmentation: list[dict | list[list[float]]] | None = None,
     ) -> COCO
     ```
 
@@ -458,10 +458,10 @@ same annotations.
     | `ids` | <code>ArrayLike &#124; None</code> | Annotation ids. Default: `1` to `N`. |
     | `area` | <code>ArrayLike &#124; None</code> | Default: each box's `w * h`. |
     | `iscrowd` | <code>ArrayLike &#124; None</code> | Ints or bools. Default: none are crowds. |
-    | `rles` | <code>list[dict &#124; list[list[float]]] &#124; None</code> | `N` RLE or polygon segmentations, for `segm`. `area` is then required, because the box area would not match the mask. |
+    | `segmentation` | <code>list[dict &#124; list[list[float]]] &#124; None</code> | `N` RLE or polygon segmentations, for `segm`. `area` is then required, because the box area would not match the mask. |
 
     Raises `ValueError` for columns of different lengths, a `boxes` array that
-    is not `(N, 4)`, a negative id, or `rles` without `area`, and `TypeError`
+    is not `(N, 4)`, a negative id, or `segmentation` without `area`, and `TypeError`
     for a column that is not an array or sequence of the right kind.
 
     ```python

@@ -123,8 +123,9 @@ class COCO:
     def to_dota(self, output_dir: str) -> dict[str, int]: ...
     def to_oid(self, output_csv: str) -> dict[str, int]: ...
     def load_res_oid(self, csv_path: str, class_descriptions: str | None = None) -> COCO: ...
-    @staticmethod
+    @classmethod
     def from_arrays(
+        cls,
         images: list[dict[str, Any]],
         categories: list[dict[str, Any]],
         image_ids: npt.ArrayLike,
@@ -134,7 +135,7 @@ class COCO:
         ids: npt.ArrayLike | None = None,
         area: npt.ArrayLike | None = None,
         iscrowd: npt.ArrayLike | None = None,
-        rles: list[dict[str, Any] | list[list[float]]] | None = None,
+        segmentation: list[dict[str, Any] | list[list[float]]] | None = None,
     ) -> COCO:
         """A dataset from columns, equal to ``COCO(dict)`` over the same annotations."""
         ...
@@ -292,8 +293,9 @@ class StreamingEval:
     ``categories`` does not list, and leaves the evaluator as it was.
 
     The state pickles and copies with ``copy.copy`` and ``copy.deepcopy``.
-    ``merge()`` folds another rank's shard in, and ``to_bytes()`` /
-    ``from_bytes()`` move the state between processes.
+    ``StreamingEval.merge(...)`` combines the evaluators of a run split across
+    ranks, and ``to_bytes()`` / ``from_bytes()`` move the state between
+    processes.
     """
 
     def __init__(
@@ -312,7 +314,8 @@ class StreamingEval:
         segmentation: list[dict[str, Any] | list[list[float]]] | None = None,
     ) -> None: ...
     def finalize(self) -> COCOeval: ...
-    def merge(self, other: StreamingEval) -> None: ...
+    @classmethod
+    def merge(cls, evaluators: Iterable[StreamingEval]) -> StreamingEval: ...
     def to_bytes(self) -> bytes: ...
     @staticmethod
     def from_bytes(data: bytes) -> StreamingEval: ...
@@ -330,8 +333,9 @@ class Params:
     temporary and is a silent no-op. Assign whole values instead:
     ``p.max_dets = [1, 10, 100, 200]``.
 
-    Assigning ``iou_thrs`` or ``rec_thrs`` a grid that is the default rounded
-    through ``float32`` stores the default grid exactly.
+    ``iou_thrs`` and ``rec_thrs`` are stored as given. A ``float32`` grid, as
+    ``torch.linspace`` builds, is evaluated as pycocotools evaluates it, and
+    ``summarize()`` warns that it is not the reference grid.
     """
 
     def __init__(self, iou_type: str = "bbox") -> None: ...

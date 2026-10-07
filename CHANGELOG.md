@@ -9,14 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`hotcoco.__version__`** names the compiled extension that is loaded. It was
-  missing, so `hasattr(hotcoco, "__version__")` was `False` and the install
-  check in CONTRIBUTING.md raised `AttributeError`. It equals
-  `importlib.metadata.version("hotcoco")` for an installed wheel. Based on
-  [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka Borovec.
-- *Rust API:* `StreamingEval::unknown_category_ids` returns the category ids in
-  a set of annotations that the evaluator was not built with, the same check
-  `update()` makes.
 - **Column-form inputs, with no Python dict per annotation.** Building dicts
   had become the dominant cost on the caller's side: about two thirds of
   `StreamingEval.update()`. Three additions, all additive:
@@ -29,11 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     detection's area is the box's, as `load_res()` gives a result with a
     `bbox`, even for `segm`; for mask-area size buckets, pass dicts.
   - `COCO.from_arrays(images, categories, image_ids, category_ids, boxes, *,
-    ids, area, iscrowd, rles)` builds a dataset equal to `COCO(dict)` over the
-    same annotations. On 300,000 annotations it takes 0.015 s where building
-    the dicts and calling `COCO(dict)` takes 0.294 s. `categories` is a
-    required argument and `area` defaults to each box's `w * h`; `rles` needs
-    an explicit `area`.
+    ids, area, iscrowd, segmentation)` builds a dataset equal to `COCO(dict)`
+    over the same annotations. On 300,000 annotations it takes 0.015 s where
+    building the dicts and calling `COCO(dict)` takes 0.294 s. `categories` is
+    a required argument and `area` defaults to each box's `w * h`;
+    `segmentation` needs an explicit `area`.
   - `COCO.update_anns(ids=..., area=...)` writes a column of areas by id. On
     300,000 annotations it takes 0.009 s where the dict form takes 0.091 s
     with the dicts built. The `anns` argument of `update_anns` is now
@@ -41,35 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
   Based on [#26](https://github.com/derekallman/hotcoco/pull/26) by Jirka
   Borovec.
-- **`StreamingEval.merge()`, `to_bytes()` / `from_bytes()`, and pickling.**
-  A run split across processes can now stream each shard on its own rank,
-  `all_gather` the bytes, and merge them on one rank; `finalize()` gives
-  exactly what one stream over every image gives. `merge` takes the other
-  evaluator's cells without matching anything again, lets `other` win an image
-  present in both, and raises `ValueError` naming the first mismatched field
-  when the categories, mode, or params differ. `pickle`, `copy.copy`, and
-  `copy.deepcopy` use the same state, which was a `TypeError` before. The
-  state is versioned, only what `finalize()` reads is saved, and damaged bytes
-  raise `ValueError`. `StreamingEval.__module__` is now `hotcoco`, which pickle
-  needs to find the class again.
-  *Rust API:* `StreamingEval::merge`, `to_bytes`, and `from_bytes`;
-  `StreamingEval` is now `Clone`.
 
-  Based on [#24](https://github.com/derekallman/hotcoco/pull/24) by Jirka
-  Borovec.
-
-- *Rust API:* `hotcoco::mask::area_from_string(s, h, w)` returns the area
-  of the RLE a compressed `counts` string encodes without building its run
-  list, and fails on exactly the strings `rle_from_string` rejects.
-- *Rust API:* `hotcoco::mask::check_counts(counts, h, w)` rejects a run
-  list that sums past `h * w`, with the message `rle_from_string` gives for
-  a compressed string that does.
-- **`just fuzz-torchmetrics`** runs `scripts/fuzz_torchmetrics.py`:
-  torchmetrics' `MeanAveragePrecision` with hotcoco swapped in, the way
-  RF-DETR evaluates, against its pycocotools backend, requiring every output
-  to match exactly. It found the `float32` grid divergence described under
-  Changed. Its dependencies are a new `torchmetrics` dependency group, which
-  is not published and which `just setup` does not install.
 - **`load_res(array, segmentation=rles)` takes masks with the detection
   array,** one RLE or polygon per row, as `StreamingEval.update()` does, so
   segm results load with no dict per detection. Each row has a box, so its
@@ -82,6 +46,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `area_and_bbox()`, and `to_rle()`; `Segmentation::rle_ref()`;
   `mask::areas` and `mask::bboxes` for batches; `COCO::update_ann_areas`
   and `COCO::check_ann_ids`.
+- **`StreamingEval.merge()`, `to_bytes()`, and `from_bytes()`.**
+  A run split across processes can now stream each shard on its own rank,
+  `all_gather` the bytes, and merge them on one rank; `finalize()` gives
+  exactly what one stream over every image gives.
+  `StreamingEval.merge(evaluators)` returns a new evaluator built from the
+  evaluators' stored results without matching anything again, as
+  `COCO.merge` returns a new dataset. It reads any iterable one evaluator at
+  a time, so a generator over `from_bytes` holds one shard beside the result.
+  An image seen by more than one keeps the last one's result, and a mismatch
+  in categories, mode, or params raises `ValueError` naming the evaluator and
+  the field. The state is versioned, only
+  what `finalize()` reads is saved, and damaged bytes raise `ValueError`.
+  *Rust API:* `StreamingEval::merge`, `to_bytes`, and `from_bytes`;
+  `StreamingEval` is now `Clone`.
+
+  Based on [#24](https://github.com/derekallman/hotcoco/pull/24) by Jirka
+  Borovec.
+
+- **`just fuzz-torchmetrics`** runs `scripts/fuzz_torchmetrics.py`:
+  torchmetrics' `MeanAveragePrecision` with hotcoco swapped in, the way
+  RF-DETR evaluates, against its pycocotools backend, requiring every output
+  to match exactly. It found the `float32` grid divergence described under
+  Fixed. Its dependencies are a new `torchmetrics` dependency group, which
+  is not published and which `just setup` does not install.
+- *Rust API:* `StreamingEval::unknown_category_ids` returns the category ids in
+  a set of annotations that the evaluator was not built with, the same check
+  `update()` makes.
+- *Rust API:* `hotcoco::mask::area_from_string(s, h, w)` returns the area
+  of the RLE a compressed `counts` string encodes without building its run
+  list, and fails on exactly the strings `rle_from_string` rejects.
+- *Rust API:* `hotcoco::mask::check_counts(counts, h, w)` rejects a run
+  list that sums past `h * w`, with the message `rle_from_string` gives for
+  a compressed string that does.
 
 ### Changed
 
@@ -94,41 +91,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`load_res()` takes an array of any integer or float dtype, not only
   `float64`,** cast once on the way in; so does `StreamingEval.update()`.
   Detectors emit `float32`, and every caller had to convert first.
-- **`load_res()` raises `ValueError` for an array row whose `image_id` or
-  `category_id` is NaN or negative.** The float was cast to an integer that
-  saturated at 0, so such a row became image or category 0, which is a real id
-  in some datasets. pycocotools' `int()` raises on NaN as well.
-- **`StreamingEval.update()` raises `KeyError` for a category it was not built
-  with.** A ground truth or detection whose `category_id` is not in
-  `categories` used to drop out of every metric without a trace, so an
-  off-by-one class map or a background id looked like a model that never
-  predicted that class. The error names every unknown id, rejects the batch
-  whole, and leaves the evaluator as it was. A batch `COCOeval` still drops
-  such an annotation silently. A category that is listed but excluded by
-  `params.cat_ids` is not an error, and with `use_cats` false nothing is
-  checked. Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by
-  Jirka Borovec.
-- **A `float32` threshold grid gets one warning that says what it is.**
-  torchmetrics builds both grids with `torch.linspace`, and read back as
-  `float64` they sit up to 4e-8 from the default. `summarize()` gave two
-  warnings for them, and one was wrong: it said the AP50 and AP75 lines might
-  show -1.000, but 0.5 and 0.75 are exact in `float32`. It now gives one
-  warning, saying the grid is the default rounded through `float32`, is
-  evaluated as given as pycocotools evaluates it, and should be `float64` for
-  the reference numbers. The rounding is not only noise: on a category with
-  20 ground truths a `float32` recall grid moves 240 of 12,120 precision
-  cells, by up to 0.33, because recall `k / n` lands exactly on a grid point
-  that is one ulp too high to include it. A grid counts as rounded when it
-  has the default's length and every point is within 1e-6 of the default.
-  Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka
-  Borovec.
 - **Coding-agent instructions live in `AGENTS.md`,** which Codex and Claude
   Code both read; `CLAUDE.md` is a one-line import of it. The core-crate
   architecture rules moved to `crates/hotcoco/AGENTS.md`, and the docs owner
   map and voice rules moved into `STYLE.md`. Two Claude Code skills are now
   tracked under `.claude/skills/`: `ship` (the pre-commit checklist) and
   `bench` (the benchmark-table procedure). Neither file ships in the crate.
-
 - **`hotcoco.primitives` is the strict layer; `hotcoco.mask` is the
   pycocotools-shaped one.** `primitives.mask_iou` takes RLEs only and
   `primitives.bbox_iou` takes an `(N, 4)` array or 4-element rows;
@@ -138,7 +106,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   an alias of `mask.iou`, so the two layers could not differ. *Rust API:*
   `COCOeval::print_results_lines()` returns the lines `print_results()`
   prints.
-
+- **`evaluate()` and `accumulate()` are faster, most of all on large result
+  sets.** On the benchmark's 10× COCO val2017 detections (368,000), a bbox
+  evaluation end to end takes 0.14 s where it took 0.22 s, and segm 0.24 s
+  where it took 0.33 s; on the 1× set, bbox takes 0.04 s where it took
+  0.06 s. Peak memory at 10× is 208 MB where it was 241 MB for bbox, and
+  372 MB where it was 404 MB for segm. Measured on an M1 the same day,
+  before and after the change; `docs/benchmarks.md` has every cell. The metrics are unchanged: val2017
+  parity and the four fuzzers agree with pycocotools as before.
+  - An (image, category) pair with detections but no ground truth, or ground
+    truth but no detections, skips the matcher, since nothing in it can
+    match. That is 96% of the pairs at 10×, where `evaluate()` takes about
+    27 ms instead of 87 ms.
+  - `evaluate()` lists the pairs to visit by merging each image's
+    categories from the two annotation indexes, already in order, instead
+    of collecting them in a hash set and sorting it: about 2 ms instead of
+    30 ms on one thread at 10×.
+  - `accumulate()` groups the evaluated cells by category with one counting
+    sort, stores each detection's matched and ignore flags for every IoU
+    threshold side by side so it reads them in one go, and sorts
+    detections on integer keys: about 34 ms instead of 49 ms at 10×.
 - **`mask.encode`, `mask.area`, and reading and writing `COCO` records are
   faster on the calls TorchMetrics makes for every validation batch.**
   Measured on 46,000 full-image masks and their detections from COCO val2017
@@ -217,10 +204,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-A whole-project review (2026-10-02) found a group of places where hotcoco
+Each entry has a regression test that fails on the old code. Most came out of
+a whole-project review on 2026-10-02, which looked for places where hotcoco
 produced a plausible number instead of the right one, or instead of an error.
-Each entry below has a regression test that fails on the old code.
 
+- **`StreamingEval.update()` raises `KeyError` for a category it was not built
+  with.** A ground truth or detection whose `category_id` is not in
+  `categories` used to drop out of every metric without a trace, so an
+  off-by-one class map or a background id looked like a model that never
+  predicted that class. The error names every unknown id, rejects the batch
+  whole, and leaves the evaluator as it was. A batch `COCOeval` still drops
+  such an annotation silently. A category that is listed but excluded by
+  `params.cat_ids` is not an error, and with `use_cats` false nothing is
+  checked. Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by
+  Jirka Borovec.
+- **`load_res()` raises `ValueError` for an array row whose `image_id` or
+  `category_id` is NaN or negative.** The float was cast to an integer that
+  saturated at 0, so such a row became image or category 0, which is a real id
+  in some datasets. pycocotools' `int()` raises on NaN as well.
+- **A `float32` threshold grid gets one warning that says what it is.**
+  torchmetrics builds both grids with `torch.linspace`, and read back as
+  `float64` they sit up to 4e-8 from the default. `summarize()` gave two
+  warnings for them, and one was wrong: it said the AP50 and AP75 lines might
+  show -1.000, but 0.5 and 0.75 are exact in `float32`. It now gives one
+  warning, saying the grid is the default rounded through `float32`, is
+  evaluated as given as pycocotools evaluates it, and should be `float64` for
+  the reference numbers. The rounding is not only noise: on a category with
+  20 ground truths a `float32` recall grid moves 240 of 12,120 precision
+  cells, by up to 0.33, because recall `k / n` lands exactly on a grid point
+  that is one ulp too high to include it. A grid counts as rounded when it
+  has the default's length and every point is within 1e-6 of the default.
+  Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka
+  Borovec.
+- **`pickle`, `copy.copy`, and `copy.deepcopy` work on a `StreamingEval`.**
+  Each raised `TypeError`. They now go through the `to_bytes()` state, and
+  `StreamingEval.__module__` is `hotcoco`, which pickle needs to find the
+  class again. Based on [#24](https://github.com/derekallman/hotcoco/pull/24)
+  by Jirka Borovec.
+- **`hotcoco.__version__` exists.** It was missing, so
+  `hasattr(hotcoco, "__version__")` was `False` and the install check in
+  CONTRIBUTING.md raised `AttributeError`. It names the compiled extension
+  that is loaded, and equals `importlib.metadata.version("hotcoco")` for an
+  installed wheel. Based on
+  [#23](https://github.com/derekallman/hotcoco/pull/23) by Jirka Borovec.
 - **An RLE whose counts stop short of `h × w` no longer scores IoU above 1.**
   pycocotools accepts such a mask (`decode` fills the missing tail with
   background), but hotcoco's run-stream walkers kept the last run's value over
@@ -260,12 +286,32 @@ Each entry below has a regression test that fails on the old code.
   category — so matching ran against the wrong box. Without `area`, the
   matcher read 0 and put every object in `small`, so APm and APl were `-1` or
   counted every detection as a false positive while APs counted everything.
-  Ids are now assigned per batch (nothing after `update()` reads them) and a
-  missing `area` is the mask's pixel count — COCO's definition of instance
-  area, and what `load_res()` derives for mask detections — or the box's
-  `w × h` for an annotation without a mask; an authored `area` is kept. In
-  segm mode each such polygon is rasterized once and the mask reused for
-  matching. *Rust API:* `COCO::fill_missing_areas`.
+  Ids are now assigned per batch (nothing after `update()` reads them), and a
+  missing `area` is derived by the rule in the next entry, starting from the
+  mask's pixel count, COCO's definition of instance area; an authored `area`
+  is kept. In segm mode each such polygon is rasterized once and the mask
+  reused for matching. *Rust API:* `COCO::fill_missing_areas`.
+- **With `use_cats` off, tied scores rank as pycocotools ranks them.**
+  pycocotools lists an image's annotations category by category, in
+  `cat_ids` order, before its stable sort by score, and leaves out a category
+  not in `cat_ids`; hotcoco listed them in load order and kept every
+  category. A true positive and a false positive at the same score in two
+  categories could swap ranks: AP 1.0 where pycocotools gives 0.5. Ground
+  truths are listed the same way, which decides which of two equal-IoU
+  matches wins.
+- **`-0.0` and `0.0` tie in `metrics.average_precision` and in TIDE,** as in
+  `COCOeval` and pycocotools. `average_precision` ranked `0.0` first, and
+  TIDE's ranking was not a total order with `NaN` present.
+- **`COCOeval` derives a missing `area`, as `StreamingEval` does.** An
+  annotation with no `area` read as 0, so every such object landed in
+  `small`, while `StreamingEval` derived it: the same annotations gave two
+  answers. Both evaluators now fill in their own copy of the datasets, and
+  the dataset you pass keeps its missing areas. A ground truth takes its
+  mask's pixel count, then its rotated box's `w × h`, then its box's, then
+  the extent of its labeled keypoints; a mask of no pixels, such as
+  `"segmentation": []`, does not count. A detection takes the order
+  `load_res` derives a result's area in: box, mask, keypoints, rotated box.
+  pycocotools raises `KeyError` here instead.
 - **LVIS frequency-group AP (`APr`/`APc`/`APf`) and the per-class table read
   the K axis the accumulation was built on.** Both used `params.cat_ids` as
   it stood at `summarize()` time, which disagrees with `accumulate()`'s axis
@@ -430,16 +476,6 @@ Each entry below has a regression test that fails on the old code.
   `num_keypoints`, `obb`, `score`, and `is_group_of` on an annotation. A
   `json.load`-ed file with `null` in one raised `TypeError`; pycocotools
   takes it. In `update_anns()`, `None` clears the field.
-- **`COCOeval` derives a missing `area`, as `StreamingEval` does.** An
-  annotation with no `area` read as 0, so every such object landed in
-  `small`, while `StreamingEval` derived it: the same annotations gave two
-  answers. Both evaluators now fill in their own copy of the datasets, and
-  the dataset you pass keeps its missing areas. A ground truth takes its
-  mask's pixel count, then its rotated box's `w × h`, then its box's, then
-  the extent of its labeled keypoints; a mask of no pixels, such as
-  `"segmentation": []`, does not count. A detection takes the order
-  `load_res` derives a result's area in: box, mask, keypoints, rotated box.
-  pycocotools raises `KeyError` here instead.
 
 ## [1.1.0] - 2026-10-01
 

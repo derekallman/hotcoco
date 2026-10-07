@@ -297,9 +297,7 @@ import torch.distributed as dist
 states = [None] * dist.get_world_size()
 dist.all_gather_object(states, se.to_bytes())
 if dist.get_rank() == 0:
-    merged = StreamingEval.from_bytes(states[0])
-    for state in states[1:]:
-        merged.merge(StreamingEval.from_bytes(state))
+    merged = StreamingEval.merge(StreamingEval.from_bytes(s) for s in states)
     ev = merged.finalize()
 ```
 

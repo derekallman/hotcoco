@@ -6,8 +6,8 @@ shipped, see the [CHANGELOG](CHANGELOG.md).
 hotcoco is one engine — `primitives` for similarity and matching, `metrics` for the
 numbers — with a family driver per task on top. Detection ships today. Each family
 below lands as an additive minor release on the same layering, so nothing about
-detection changes when a sibling arrives. Version numbers state order and intent,
-not dates.
+detection changes when a sibling arrives. The families are listed in the order they
+are planned; a version number is assigned when one is ready to ship.
 
 ## Near term
 
@@ -19,7 +19,7 @@ not dates.
   dashboard tab migrates to the same templates, and the matplotlib PDF report
   retires once the HTML report ships.
 
-## 1.1 — Panoptic segmentation
+## Panoptic segmentation
 
 PQ = SQ × RQ for unified "stuff" and "things" evaluation: per-class, things, and
 stuff breakdowns, COCO panoptic JSON + PNG input (plus an RLE-native path that
@@ -27,15 +27,15 @@ needs no PNG files), and `coco panoptic eval` in the CLI. Verified against
 panopticapi before release, the same way detection is verified against
 pycocotools.
 
-## 1.2 — Multi-object tracking
+## Multi-object tracking
 
 HOTA, CLEAR (MOTA/MOTP), and Identity (IDF1), verified against TrackEval, with
-Track AP (TAO) as the natural extension once the video model is in. This release
+Track AP (TAO) as the natural extension once the video model is in. Tracking
 brings the video data model — videos, tracks, `track_id` on annotations —
 along with MOTChallenge and video-COCO interchange, video-aware `merge`,
 `split`, and `sample`, and healthcheck rules for video datasets.
 
-## 1.3 — Concept segmentation
+## Concept segmentation
 
 Promptable concept evaluation in the SAM 3 style: cgF1 for images, pHOTA for
 video. Gated on a feasibility spike — it ships only if a reference oracle solid

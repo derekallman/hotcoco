@@ -24,15 +24,17 @@
 //! `mod match;` does not compile without `r#` escaping.
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use rayon::prelude::*;
 
 use crate::coco::COCO;
-use crate::params::{IouType, Params};
+use crate::metrics::counts::descending_score_key;
+use crate::params::Params;
 use crate::primitives::greedy::{GtMasks, ThreshMatrix};
 use crate::types::Annotation;
 
-use super::EvalMode;
+use super::iou::AnnIds;
 
 /// Everything one (image, category) pair contributes that does **not** depend on
 /// the area range: the resolved annotations, the detection score order, and the
@@ -55,7 +57,6 @@ pub(super) struct PairCell<'a> {
     dt_anns: Vec<&'a Annotation>,
     /// Position in `dt_anns` -> row in the pair's IoU matrix.
     dt_iou_indices: Vec<usize>,
-    dt_ids: Vec<u64>,
     dt_scores: Vec<f64>,
     /// The pair's similarity matrix, looked up once instead of per area range.
     iou_matrix: Option<&'a IouMatrix>,
@@ -107,8 +108,9 @@ struct DtView<'a> {
     anns: &'a [&'a Annotation],
     /// Position -> row in the cell's IoU matrix.
     iou_indices: &'a [usize],
-    /// Detection falls outside this cell's area range.
-    area_ignore: Vec<bool>,
+    /// Whether each detection is ignored when nothing matches it — see
+    /// [`ignored_unless_matched`].
+    ignore_unless_matched: Vec<bool>,
 }
 
 impl DtView<'_> {
@@ -132,16 +134,18 @@ pub(super) struct Cells {
     /// One per pair, plus a sentinel whose offsets are the arenas' lengths,
     /// so a pair's score count is the gap to the next header.
     pairs: Vec<PairHeader>,
-    /// IoU thresholds and area ranges at evaluate time: the row and block
-    /// counts of every pair's bits.
+    /// IoU thresholds and area ranges at evaluate time: how many flags each
+    /// detection has per area range, and how many area-range blocks a pair has.
     n_thr: usize,
     n_areas: usize,
     /// Every pair's scores, score-descending and cut at `max_det`, back to back.
     scores: Vec<f64>,
     /// Per pair, per area range: how many ground truths count toward recall.
     num_gt: Vec<u32>,
-    /// Per pair, from a word boundary: `n_areas` blocks of `2 * n_thr` rows of
-    /// `nd` bits — the matched rows, then the ignore rows.
+    /// Per pair, from a word boundary: `n_areas` blocks of `nd` fields of
+    /// `2 * n_thr` bits — per detection, its matched flag at each threshold,
+    /// then its ignore flag at each. Detection-major because `accumulate()`
+    /// reads a detection's flags at every threshold together.
     bits: Vec<u64>,
 }
 
@@ -197,8 +201,8 @@ pub(super) fn arena_index(i: usize) -> u32 {
     u32::try_from(i).expect("cell arena positions are u32")
 }
 
-/// The bit words a pair of `nd` detections takes: `2 * n_thr` rows of `nd`
-/// bits per area range, packed end to end.
+/// The bit words a pair of `nd` detections takes: `2 * n_thr` flags per
+/// detection per area range, packed end to end.
 fn words_for(n_thr: usize, n_areas: usize, nd: usize) -> usize {
     (2 * n_thr * n_areas * nd).div_ceil(64)
 }
@@ -467,7 +471,7 @@ impl Cells {
         self.num_gt[cell.pair() * self.n_areas + cell.area()]
     }
 
-    /// The cell's matched and ignore rows.
+    /// The cell's matched and ignore flags.
     pub(super) fn block(&self, cell: CellRef) -> Block<'_> {
         debug_assert!(cell.area() < self.n_areas);
         let nd = self.scores(cell.pair()).len();
@@ -481,37 +485,74 @@ impl Cells {
     }
 }
 
-/// One cell's bits: `2 * n_thr` rows of `nd`, matched rows then ignore rows.
+/// One cell's bits: per detection, `n_thr` matched flags then `n_thr` ignore
+/// flags.
 pub(super) struct Block<'a> {
     words: &'a [u64],
-    /// Bit offset of the first row.
+    /// Bit offset of the first detection's flags.
     base: usize,
     nd: usize,
     n_thr: usize,
 }
 
 impl Block<'_> {
-    /// `EvalImg::dt_matched` row `t`, one bit per score.
-    pub(super) fn matched(&self, t: usize) -> impl Iterator<Item = bool> + '_ {
-        debug_assert!(t < self.n_thr);
-        self.row(t)
+    /// Detection `d`'s `EvalImg::dt_matched` flags at the thresholds in
+    /// `rows`, at most 64 of them: threshold `rows.start + i` in bit `i`.
+    pub(super) fn matched(&self, d: usize, rows: Range<usize>) -> u64 {
+        debug_assert!(rows.end <= self.n_thr);
+        self.field(d, rows)
     }
 
-    /// `EvalImg::dt_ignore` row `t`.
-    pub(super) fn ignore(&self, t: usize) -> impl Iterator<Item = bool> + '_ {
-        debug_assert!(t < self.n_thr);
-        self.row(self.n_thr + t)
+    /// Detection `d`'s `EvalImg::dt_ignore` flags, as [`matched`](Self::matched).
+    pub(super) fn ignore(&self, d: usize, rows: Range<usize>) -> u64 {
+        debug_assert!(rows.end <= self.n_thr);
+        self.field(d, self.n_thr + rows.start..self.n_thr + rows.end)
     }
 
-    fn row(&self, row: usize) -> impl Iterator<Item = bool> + '_ {
-        let start = self.base + row * self.nd;
-        (start..start + self.nd).map(|i| (self.words[i / 64] >> (i % 64)) & 1 == 1)
+    fn field(&self, d: usize, bits: Range<usize>) -> u64 {
+        debug_assert!(d < self.nd && bits.len() <= 64);
+        read_bits(
+            self.words,
+            self.base + d * 2 * self.n_thr + bits.start,
+            bits.len(),
+        )
+    }
+}
+
+/// The `len` bits (at most 64) of `words` from bit `start`, the first in bit 0.
+fn read_bits(words: &[u64], start: usize, len: usize) -> u64 {
+    if len == 0 {
+        return 0;
+    }
+    let (word, offset) = (start / 64, start % 64);
+    let mut bits = words[word] >> offset;
+    if offset + len > 64 {
+        bits |= words[word + 1] << (64 - offset);
+    }
+    if len < 64 {
+        bits & ((1 << len) - 1)
+    } else {
+        bits
+    }
+}
+
+/// ORs the low `len` bits (at most 64) of `value` into `words` from bit
+/// `start`: [`read_bits`]'s inverse on zeroed words.
+fn write_bits(words: &mut [u64], start: usize, len: usize, value: u64) {
+    if len == 0 {
+        return;
+    }
+    let (word, offset) = (start / 64, start % 64);
+    words[word] |= value << offset;
+    if offset + len > 64 {
+        words[word + 1] |= value >> (64 - offset);
     }
 }
 
 /// One run's window of the [`Cells`] arenas, written pair by pair: a
 /// [`begin_pair`](Self::begin_pair), then one [`push_area`](Self::push_area)
-/// per area range in `params.area_ranges` order.
+/// or [`push_area_unmatched`](Self::push_area_unmatched) per area range in
+/// `params.area_ranges` order.
 pub(super) struct CellWriter<'a> {
     n_thr: usize,
     n_areas: usize,
@@ -555,21 +596,53 @@ impl CellWriter<'_> {
         self.n_words += words_for(self.n_thr, self.n_areas, scores.len());
     }
 
-    /// The current pair's next area range: its denominator, then its
-    /// `2 * n_thr` rows of `nd` bits, matched rows first.
-    pub(super) fn push_area<'r>(&mut self, num_gt: u32, rows: impl Iterator<Item = &'r [bool]>) {
+    /// The current pair's next area range: its denominator, then each
+    /// detection's matched flags and ignore flags, one row per threshold.
+    pub(super) fn push_area(
+        &mut self,
+        num_gt: u32,
+        matched: &ThreshMatrix<bool>,
+        ignore: &ThreshMatrix<bool>,
+    ) {
+        debug_assert!(self.areas_done < self.n_areas);
+        debug_assert_eq!(
+            (matched.num_rows(), matched.row_len()),
+            (self.n_thr, self.nd)
+        );
+        debug_assert_eq!((ignore.num_rows(), ignore.row_len()), (self.n_thr, self.nd));
+        self.num_gt[(self.n_pairs - 1) * self.n_areas + self.areas_done] = num_gt;
+        for d in 0..self.nd {
+            for flags in [matched, ignore] {
+                // 64 thresholds per write.
+                for rows in (0..self.n_thr).step_by(64) {
+                    let len = (self.n_thr - rows).min(64);
+                    let field =
+                        (0..len).fold(0u64, |field, i| field | (flags[(rows + i, d)] as u64) << i);
+                    write_bits(self.bits, self.bit, len, field);
+                    self.bit += len;
+                }
+            }
+        }
+        self.areas_done += 1;
+    }
+
+    /// The current pair's next area range when nothing in it can match: its
+    /// denominator, no detection matched, and detection `d` ignored at every
+    /// threshold where `ignored(d)`.
+    pub(super) fn push_area_unmatched(&mut self, num_gt: u32, ignored: impl Fn(usize) -> bool) {
         debug_assert!(self.areas_done < self.n_areas);
         self.num_gt[(self.n_pairs - 1) * self.n_areas + self.areas_done] = num_gt;
-        let mut n_rows = 0;
-        for row in rows {
-            debug_assert_eq!(row.len(), self.nd);
-            for &set in row {
-                self.bits[self.bit / 64] |= (set as u64) << (self.bit % 64);
-                self.bit += 1;
+        for d in 0..self.nd {
+            // The arena starts zeroed, so the matched flags need only be skipped.
+            self.bit += self.n_thr;
+            if ignored(d) {
+                for rows in (0..self.n_thr).step_by(64) {
+                    let len = (self.n_thr - rows).min(64);
+                    write_bits(self.bits, self.bit + rows, len, u64::MAX >> (64 - len));
+                }
             }
-            n_rows += 1;
+            self.bit += self.n_thr;
         }
-        debug_assert_eq!(n_rows, 2 * self.n_thr);
         self.areas_done += 1;
     }
 
@@ -606,7 +679,7 @@ fn pair_ids<'a>(
     ctx: &EvalImgContext<'a>,
     img_id: u64,
     cat_id: u64,
-) -> Option<(&'a [u64], &'a [u64])> {
+) -> Option<(AnnIds<'a>, AnnIds<'a>)> {
     let gt_ids = super::COCOeval::get_anns_static(ctx.coco_gt, ctx.params, img_id, cat_id);
     let dt_ids = super::COCOeval::get_anns_static(ctx.coco_dt, ctx.params, img_id, cat_id);
     (!gt_ids.is_empty() || !dt_ids.is_empty()).then_some((gt_ids, dt_ids))
@@ -638,12 +711,8 @@ pub(super) fn gather_pair<'a>(
         .enumerate()
         .filter_map(|(iou_idx, &id)| Some((iou_idx, ctx.coco_dt.get_ann(id)?)))
         .collect();
-    with_iou_idx.sort_by(|a, b| {
-        b.1.score
-            .unwrap_or(0.0)
-            .partial_cmp(&a.1.score.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Stable, so tied scores keep load order; `accumulate()` ranks on the same key.
+    with_iou_idx.sort_by_key(|&(_, ann)| descending_score_key(ann.score.unwrap_or(0.0)));
     with_iou_idx.truncate(max_det);
     // The index holds every annotation, so nothing above drops an id:
     // `lean_scores_len` sizes the cell arenas on that.
@@ -654,7 +723,6 @@ pub(super) fn gather_pair<'a>(
 
     let (dt_iou_indices, dt_anns): (Vec<usize>, Vec<&Annotation>) =
         with_iou_idx.into_iter().unzip();
-    let dt_ids: Vec<u64> = dt_anns.iter().map(|a| a.id).collect();
     let dt_scores: Vec<f64> = dt_anns.iter().map(|a| a.score.unwrap_or(0.0)).collect();
 
     Some(PairCell {
@@ -665,7 +733,6 @@ pub(super) fn gather_pair<'a>(
         gt_iou_indices,
         dt_anns,
         dt_iou_indices,
-        dt_ids,
         dt_scores,
         iou_matrix: ctx.ious.get(&(img_id, cat_id)),
     })
@@ -684,29 +751,9 @@ fn partition_gt<'a>(
 ) -> GtView<'a> {
     let anns = pair.gt_anns.as_slice();
 
-    // `ignore` governs *matching*; `in_denominator` governs the *recall
-    // denominator*. COCO's single `gtIgnore` cannot express "not matchable here"
-    // and "counted" at once, which Open Images group-of boxes need: they are
-    // held out of matching (the second pass in `match_cell` absorbs them) yet
-    // still count as one ground truth. See `EvalImg::gt_in_denominator`.
     let (ignore, in_denominator): (Vec<bool>, Vec<bool>) = anns
         .iter()
-        .map(|ann| {
-            let a = ann.area.unwrap_or(0.0);
-            let area_ignore = a < area_rng[0] || a > area_rng[1];
-            if is_oid {
-                (
-                    ann.is_group_of.unwrap_or(false) || area_ignore,
-                    !area_ignore,
-                )
-            } else {
-                let mut ignore = ann.iscrowd || area_ignore;
-                if is_kp {
-                    ignore = ignore || ann.num_visible_keypoints() == 0;
-                }
-                (ignore, !ignore)
-            }
-        })
+        .map(|ann| gt_flags(ann, area_rng, is_kp, is_oid))
         .unzip();
 
     // Stable sort on the ignore flag: non-ignored first, load order preserved
@@ -741,21 +788,57 @@ fn partition_gt<'a>(
     }
 }
 
-/// Flag the pair's detections that fall outside this area range.
-fn area_filter_dt<'a>(pair: &'a PairCell<'a>, area_rng: [f64; 2]) -> DtView<'a> {
-    let area_ignore: Vec<bool> = pair
+/// One ground truth under one area range: whether matching ignores it, and
+/// whether it counts toward the recall denominator.
+///
+/// `ignore` governs *matching*; `in_denominator` governs the *recall
+/// denominator*. COCO's single `gtIgnore` cannot express "not matchable here"
+/// and "counted" at once, which Open Images group-of boxes need: they are
+/// held out of matching (the second pass in `match_cell` absorbs them) yet
+/// still count as one ground truth. See `EvalImg::gt_in_denominator`.
+fn gt_flags(ann: &Annotation, area_rng: [f64; 2], is_kp: bool, is_oid: bool) -> (bool, bool) {
+    let a = ann.area.unwrap_or(0.0);
+    let area_ignore = a < area_rng[0] || a > area_rng[1];
+    if is_oid {
+        (
+            ann.is_group_of.unwrap_or(false) || area_ignore,
+            !area_ignore,
+        )
+    } else {
+        let mut ignore = ann.iscrowd || area_ignore;
+        if is_kp {
+            ignore = ignore || ann.num_visible_keypoints() == 0;
+        }
+        (ignore, !ignore)
+    }
+}
+
+/// Whether a detection is ignored when nothing matches it: it falls outside
+/// the area range, or LVIS does not count its category on the image
+/// (`not_exhaustive_cat`). A match replaces this with the matched ground
+/// truth's ignore flag.
+fn ignored_unless_matched(ann: &Annotation, area_rng: [f64; 2], not_exhaustive_cat: bool) -> bool {
+    let a = ann.area.unwrap_or(0.0);
+    not_exhaustive_cat || a < area_rng[0] || a > area_rng[1]
+}
+
+/// Flag the pair's detections that are ignored unless matched under this area
+/// range.
+fn area_filter_dt<'a>(
+    pair: &'a PairCell<'a>,
+    area_rng: [f64; 2],
+    not_exhaustive_cat: bool,
+) -> DtView<'a> {
+    let ignore_unless_matched: Vec<bool> = pair
         .dt_anns
         .iter()
-        .map(|ann| {
-            let a = ann.area.unwrap_or(0.0);
-            a < area_rng[0] || a > area_rng[1]
-        })
+        .map(|ann| ignored_unless_matched(ann, area_rng, not_exhaustive_cat))
         .collect();
 
     DtView {
         anns: pair.dt_anns.as_slice(),
         iou_indices: pair.dt_iou_indices.as_slice(),
-        area_ignore,
+        ignore_unless_matched,
     }
 }
 
@@ -785,17 +868,17 @@ fn match_cell(
     gt: &GtView<'_>,
     dt: &DtView<'_>,
     iou_matrix: Option<&IouMatrix>,
-    is_oid: bool,
 ) -> MatchOutcome {
+    let is_oid = ctx.is_oid;
     let (d, g) = (dt.len(), gt.len());
     let num_iou_thrs = ctx.params.iou_thrs.len();
 
     let mut dt_matches = ThreshMatrix::new(num_iou_thrs, d, 0u64);
     let mut gt_matches = ThreshMatrix::new(num_iou_thrs, g, 0u64);
     let mut dt_matched = ThreshMatrix::new(num_iou_thrs, d, false);
-    // Seeded from the area-ignore flags so unmatched detections carry the right
-    // ignore status even when there is no IoU data at all.
-    let mut dt_ignore = ThreshMatrix::repeat_row(num_iou_thrs, &dt.area_ignore);
+    // Seeded with what an unmatched detection's ignore status is, so it holds
+    // even when there is no IoU data at all; a match overwrites it below.
+    let mut dt_ignore = ThreshMatrix::repeat_row(num_iou_thrs, &dt.ignore_unless_matched);
 
     let Some(iou_mat) = iou_matrix else {
         // No detections and/or no ground truths: nothing matched.
@@ -836,7 +919,7 @@ fn match_cell(
     );
 
     // Translate matched indices into annotation ids + ignore flags. Unmatched
-    // detections keep the area-ignore status they were seeded with.
+    // detections keep the `ignore_unless_matched` flag they were seeded with.
     for t_idx in 0..num_iou_thrs {
         for (di, dt_ann) in dt.anns.iter().enumerate() {
             if let Some(gi) = m.dt_gt[(t_idx, di)] {
@@ -946,23 +1029,9 @@ fn match_area<'a>(
     area_rng: [f64; 2],
     not_exhaustive_cat: bool,
 ) -> (GtView<'a>, MatchOutcome) {
-    let is_kp = ctx.params.iou_type == IouType::Keypoints;
-    let is_oid = ctx.eval_mode == EvalMode::OpenImages;
-
-    let gt = partition_gt(pair, area_rng, is_kp, is_oid);
-    let dt = area_filter_dt(pair, area_rng);
-
-    let mut outcome = match_cell(ctx, &gt, &dt, pair.iou_matrix, is_oid);
-
-    if not_exhaustive_cat {
-        for t_idx in 0..ctx.params.iou_thrs.len() {
-            for di in 0..dt.len() {
-                if !outcome.dt_matched[(t_idx, di)] {
-                    outcome.dt_ignore[(t_idx, di)] = true;
-                }
-            }
-        }
-    }
+    let gt = partition_gt(pair, area_rng, ctx.is_kp, ctx.is_oid);
+    let dt = area_filter_dt(pair, area_rng, not_exhaustive_cat);
+    let outcome = match_cell(ctx, &gt, &dt, pair.iou_matrix);
     (gt, outcome)
 }
 
@@ -992,14 +1061,41 @@ pub(super) fn push_pair_lean(
         return;
     };
     cells.begin_pair(img_id, cat_id, &pair.dt_scores);
+    // Without an IoU matrix — a pair with no ground truth or no detections —
+    // `match_cell` matches nothing, so the outcome needs no matcher: no
+    // detection is matched, each keeps its `ignored_unless_matched` flag, and
+    // the denominator counts what `gt_flags` counts. At 10x COCO val2017 that
+    // is 96% of pairs. Debug builds check every such pair against the matcher.
+    if pair.iou_matrix.is_none() {
+        for ar in &ctx.params.area_ranges {
+            let num_gt = pair
+                .gt_anns
+                .iter()
+                .filter(|ann| gt_flags(ann, ar.range, ctx.is_kp, ctx.is_oid).1)
+                .count();
+            let ignored =
+                |d: usize| ignored_unless_matched(pair.dt_anns[d], ar.range, not_exhaustive_cat);
+            #[cfg(debug_assertions)]
+            {
+                let (gt, outcome) = match_area(ctx, &pair, ar.range, not_exhaustive_cat);
+                debug_assert_eq!(gt.num_in_denominator, num_gt);
+                for t in 0..ctx.params.iou_thrs.len() {
+                    for d in 0..pair.dt_anns.len() {
+                        debug_assert!(!outcome.dt_matched[(t, d)]);
+                        debug_assert_eq!(outcome.dt_ignore[(t, d)], ignored(d));
+                    }
+                }
+            }
+            cells.push_area_unmatched(num_gt as u32, ignored);
+        }
+        return;
+    }
     for ar in &ctx.params.area_ranges {
         let (gt, outcome) = match_area(ctx, &pair, ar.range, not_exhaustive_cat);
         cells.push_area(
             gt.num_in_denominator as u32,
-            outcome
-                .dt_matched
-                .iter_rows()
-                .chain(outcome.dt_ignore.iter_rows()),
+            &outcome.dt_matched,
+            &outcome.dt_ignore,
         );
     }
 }
@@ -1028,7 +1124,7 @@ pub(super) fn evaluate_pair_full(
             category_id: pair.cat_id,
             area_rng,
             max_det: pair.max_det,
-            dt_ids: pair.dt_ids.clone(),
+            dt_ids: pair.dt_anns.iter().map(|a| a.id).collect(),
             gt_ids: gt.sorted_ids(),
             dt_matches: outcome.dt_matches,
             gt_matches: outcome.gt_matches,
@@ -1116,7 +1212,10 @@ pub(super) struct EvalImgContext<'a> {
     pub(super) coco_dt: &'a COCO,
     pub(super) params: &'a Params,
     pub(super) ious: &'a HashMap<(u64, u64), IouMatrix>,
-    pub(super) eval_mode: super::EvalMode,
+    /// `params.iou_type` is keypoints, and the evaluator runs Open Images:
+    /// resolved once, since the ground-truth ignore rule reads both per pair.
+    pub(super) is_kp: bool,
+    pub(super) is_oid: bool,
     /// `params.iou_thrs` with pycocotools' match floor applied
     /// ([`crate::primitives::greedy::coco_match_floor`]). Resolved once per
     /// `evaluate()` rather than per image-category pair: this is read inside a

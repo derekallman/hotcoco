@@ -8,7 +8,7 @@ Nothing here is new, and nothing is going away. ``hotcoco.detection.COCOeval``
 *is* ``hotcoco.COCOeval`` — the same object, re-exported under the family name so
 that code evaluating several families reads consistently::
 
-    from hotcoco import detection, panoptic   # panoptic lands in 1.1
+    from hotcoco import detection, panoptic   # once panoptic ships
 
     det = detection.COCOeval(gt, dt, "bbox")
     det.run()

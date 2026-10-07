@@ -33,50 +33,74 @@ impl COCOeval {
         cat_ids: &[u64],
         neg_cats: &HashMap<u64, HashSet<u64>>,
     ) -> Vec<(u64, u64)> {
-        let allowed_imgs: HashSet<u64> = self.params.img_ids.iter().copied().collect();
-        let allowed_cats: HashSet<u64> = cat_ids.iter().copied().collect();
-
         // At large-scale (e.g. Objects365: 365 cats × 80K imgs = 29M pairs), ~96% of pairs
         // are empty. Driving evaluation from the index instead reduces pairs by ~35x.
-        let mut sparse_set: HashSet<(u64, u64)> = HashSet::new();
-        if self.params.use_cats {
-            // Collect GT pairs first (needed for LVIS DT filtering).
-            let mut gt_pairs: HashSet<(u64, u64)> = HashSet::new();
-            for pair in self.coco_gt.nonempty_img_cat_pairs() {
-                if allowed_imgs.contains(&pair.0) && allowed_cats.contains(&pair.1) {
-                    gt_pairs.insert(pair);
-                    sparse_set.insert(pair);
-                }
-            }
-            for pair in self.coco_dt.nonempty_img_cat_pairs() {
-                if allowed_imgs.contains(&pair.0) && allowed_cats.contains(&pair.1) {
-                    if self.eval_mode == EvalMode::Lvis {
-                        // Keep DT pair only if GT exists OR cat is explicitly neg for this image.
-                        if gt_pairs.contains(&pair)
-                            || neg_cats.get(&pair.0).is_some_and(|s| s.contains(&pair.1))
-                        {
-                            sparse_set.insert(pair);
+        //
+        // Images ascending, and within each image the two indexes' categories,
+        // both ascending, merged: the pairs come out sorted and distinct with no
+        // set of pairs to build and no sort, which at 10x COCO val2017 took a
+        // third of `evaluate()`, on one thread.
+        let mut img_ids = self.params.img_ids.clone();
+        img_ids.sort_unstable();
+        img_ids.dedup();
+        if !self.params.use_cats {
+            return img_ids
+                .into_iter()
+                .filter(|&img_id| {
+                    !self.coco_gt.get_ann_ids_for_img(img_id).is_empty()
+                        || !self.coco_dt.get_ann_ids_for_img(img_id).is_empty()
+                })
+                .map(|img_id| (img_id, u64::MAX))
+                .collect();
+        }
+        let allowed_cats: rustc_hash::FxHashSet<u64> = cat_ids.iter().copied().collect();
+        let lvis = self.eval_mode == EvalMode::Lvis;
+        // At most every pair of both indexes, so the list never regrows.
+        let mut pairs = Vec::with_capacity(
+            self.coco_gt.nonempty_pair_count() + self.coco_dt.nonempty_pair_count(),
+        );
+        for img_id in img_ids {
+            // LVIS keeps a category only the detections have where the image
+            // lists it as confirmed absent.
+            let neg = neg_cats.get(&img_id);
+            let mut gt = self
+                .coco_gt
+                .cat_ids_of_img(img_id)
+                .filter(|cat| allowed_cats.contains(cat))
+                .peekable();
+            let mut dt = self
+                .coco_dt
+                .cat_ids_of_img(img_id)
+                .filter(|cat| allowed_cats.contains(cat))
+                .peekable();
+            loop {
+                let cat = match (gt.peek().copied(), dt.peek().copied()) {
+                    (None, None) => break,
+                    // The ground truth's category, and the detections' too
+                    // when they share it.
+                    (Some(g), d) if d.is_none_or(|d| g <= d) => {
+                        gt.next();
+                        if d == Some(g) {
+                            dt.next();
                         }
-                    } else {
-                        sparse_set.insert(pair);
+                        g
                     }
-                }
-            }
-        } else {
-            for img_id in self.coco_gt.nonempty_img_ids() {
-                if allowed_imgs.contains(&img_id) {
-                    sparse_set.insert((img_id, u64::MAX));
-                }
-            }
-            for img_id in self.coco_dt.nonempty_img_ids() {
-                if allowed_imgs.contains(&img_id) {
-                    sparse_set.insert((img_id, u64::MAX));
-                }
+                    // A category only the detections have.
+                    (_, Some(d)) => {
+                        dt.next();
+                        if lvis && !neg.is_some_and(|s| s.contains(&d)) {
+                            continue;
+                        }
+                        d
+                    }
+                    (Some(_), None) => unreachable!("taken by the first arm"),
+                };
+                pairs.push((img_id, cat));
             }
         }
-
-        let mut pairs: Vec<(u64, u64)> = sparse_set.into_iter().collect();
-        pairs.sort_unstable();
+        // `EvalInputs` keeps the list for the evaluator's lifetime; shrinking
+        // a large allocation usually happens in place.
+        pairs.shrink_to_fit();
         pairs
     }
 
@@ -95,8 +119,8 @@ impl COCOeval {
             let gt = Self::get_anns_static(&self.coco_gt, &self.params, img_id, cat_id);
             let dt = Self::get_anns_static(&self.coco_dt, &self.params, img_id, cat_id);
             if !gt.is_empty() && !dt.is_empty() {
-                gt_ids.extend_from_slice(gt);
-                dt_ids.extend_from_slice(dt);
+                gt_ids.extend_from_slice(&gt);
+                dt_ids.extend_from_slice(&dt);
             }
         }
         (gt_ids, dt_ids)
@@ -297,7 +321,8 @@ impl COCOeval {
             coco_dt: &self.coco_dt,
             params,
             ious: &self.ious,
-            eval_mode: self.eval_mode,
+            is_kp: params.iou_type == crate::params::IouType::Keypoints,
+            is_oid: self.eval_mode == EvalMode::OpenImages,
             match_floors: &match_floors,
         };
         f(&ctx, max_det)

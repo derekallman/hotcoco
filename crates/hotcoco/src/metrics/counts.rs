@@ -44,6 +44,24 @@ pub(crate) fn coco_precision(tp: f64, fp: f64) -> f64 {
     tp / (tp + fp + f64::EPSILON)
 }
 
+/// The key the detection ranking sorts on: its integer order is the reverse of
+/// `score`'s for every score but NaN, so keys sorted ascending put scores in
+/// descending order, and a stable sort keeps tied scores in input order, as
+/// pycocotools' mergesort does. `-0.0` and `0.0` compare equal as scores, so
+/// they share a key. Otherwise the order is reversed [`f64::total_cmp`]:
+/// positive `NaN` above every number, negative `NaN` below.
+pub(crate) fn descending_score_key(score: f64) -> u64 {
+    // `-0.0 + 0.0` is `0.0`.
+    let bits = (score + 0.0).to_bits();
+    // Ascending order: flip every bit of a negative, only the sign of the rest.
+    let ascending = if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits | 1 << 63
+    };
+    !ascending
+}
+
 /// Precision interpolated at fixed recall thresholds, from cumulative TP/FP.
 ///
 /// `tp_cum` and `fp_cum` must already be cumulative (prefix-summed) over
@@ -420,10 +438,10 @@ fn average_precision_of_order_into(
 /// [module note](self) on empty-set conventions: a caller that wants a different
 /// answer for `num_gt == 0` must guard before calling.
 ///
-/// The sort is total ([`f64::total_cmp`], reversed), so `NaN` scores order
-/// deterministically — positive `NaN` above every number, negative `NaN` below —
-/// instead of feeding std's sort a non-total order, which may panic (Rust ≥ 1.81)
-/// or silently scramble the ranking.
+/// The sort is total and stable, on the same key `COCOeval` ranks detections
+/// by: `-0.0` ties `0.0`, positive `NaN` ranks above every number and negative
+/// `NaN` below, instead of feeding std's sort a non-total order, which may
+/// panic (Rust ≥ 1.81) or silently scramble the ranking.
 ///
 /// # Panics
 ///
@@ -458,8 +476,8 @@ pub fn average_precision(
     }
 
     let mut order: Vec<usize> = (0..nd).collect();
-    // Descending, NaN-total: reversed total_cmp. Stable, so ties keep input order.
-    order.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+    // Stable, so ties keep input order.
+    order.sort_by_key(|&i| descending_score_key(scores[i]));
 
     let mut scratch = ApScratch::default();
     average_precision_of_order_into(order, matched, ignored, num_gt, rec_thrs, &mut scratch)

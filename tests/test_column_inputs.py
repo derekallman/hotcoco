@@ -20,7 +20,7 @@ CATEGORY_IDS = np.array([1, 2, 1, 1], dtype=np.int64)
 BOXES = np.array([[10, 10, 30, 30], [50, 50, 20, 20], [0, 0, 40, 40], [5, 5, 10, 10]], dtype=np.float64)
 
 
-def dict_dataset(ids=None, area=None, iscrowd=None, rles=None):
+def dict_dataset(ids=None, area=None, iscrowd=None, segmentation=None):
     n = len(IMAGE_IDS)
     anns = []
     for i in range(n):
@@ -33,8 +33,8 @@ def dict_dataset(ids=None, area=None, iscrowd=None, rles=None):
             "area": float(area[i]) if area is not None else b[2] * b[3],
             "iscrowd": int(iscrowd[i]) if iscrowd is not None else 0,
         }
-        if rles is not None:
-            ann["segmentation"] = rles[i]
+        if segmentation is not None:
+            ann["segmentation"] = segmentation[i]
         anns.append(ann)
     return {"images": IMAGES, "annotations": anns, "categories": CATEGORIES}
 
@@ -96,12 +96,20 @@ class TestFromArrays:
 
         rles = [rle(b) for b in BOXES]
         area = np.array([900.0, 400.0, 1600.0, 100.0])
-        by_arrays = COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, area=area, rles=rles)
-        assert by_arrays.dataset == COCO(dict_dataset(rles=rles)).dataset
+        by_arrays = COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, area=area, segmentation=rles)
+        assert by_arrays.dataset == COCO(dict_dataset(segmentation=rles)).dataset
 
-    def test_rles_without_area_raises(self):
-        with pytest.raises(ValueError, match="area is required with rles"):
-            COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, rles=[{}] * 4)
+    def test_polygons_equal_dict_form(self):
+        polygons = [[[x, y, x + w, y, x + w, y + h, x, y + h]] for x, y, w, h in BOXES.tolist()]
+        area = BOXES[:, 2] * BOXES[:, 3]
+        by_arrays = COCO.from_arrays(
+            IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, area=area, segmentation=polygons
+        )
+        assert by_arrays.dataset == COCO(dict_dataset(area=area, segmentation=polygons)).dataset
+
+    def test_segmentation_without_area_raises(self):
+        with pytest.raises(ValueError, match="area is required with segmentation"):
+            COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, segmentation=[{}] * 4)
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),
@@ -142,7 +150,7 @@ class TestFromArrays:
             "ids",
             "area",
             "iscrowd",
-            "rles",
+            "segmentation",
         ]
         with pytest.raises(TypeError, match="unexpected keyword argument 'crowd'"):
             COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, crowd=[0, 0, 0, 0])
@@ -153,13 +161,13 @@ class TestFromArrays:
 
     def test_none_options_mean_the_default(self):
         explicit = COCO.from_arrays(
-            IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, ids=None, area=None, iscrowd=None, rles=None
+            IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, ids=None, area=None, iscrowd=None, segmentation=None
         )
         assert explicit.dataset == COCO(dict_dataset()).dataset
 
-    def test_rles_must_be_a_list(self):
-        with pytest.raises(TypeError, match="rles must be a list"):
-            COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, area=np.ones(4), rles="abcd")
+    def test_segmentation_must_be_a_list(self):
+        with pytest.raises(TypeError, match="segmentation must be a list"):
+            COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, area=np.ones(4), segmentation="abcd")
 
 
 class TestUpdateAnnsColumns:

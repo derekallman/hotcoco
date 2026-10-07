@@ -177,6 +177,7 @@ scripts regenerate them. What each reference comparison checks:
 | `test_mask_parity.py` | `pycocotools.mask`, every operation, bit for bit |
 | `test_parity_lvis.py` | lvis-api, all 13 metrics |
 | `test_parity_oid.py` | frozen output of the TensorFlow Object Detection API (`just gen-oid-fixtures` regenerates it) |
+| `test_obb_eval.py` | IoU worked out by hand, for oriented-box evaluation at the 0.50 threshold |
 | `fuzz_obb.py` | Shapely, for oriented-box IoU (not collected by default) |
 | `scripts/fuzz_torchmetrics.py` | torchmetrics' `MeanAveragePrecision` on its pycocotools backend, with hotcoco swapped in the way RF-DETR runs it (`just fuzz-torchmetrics`) |
 

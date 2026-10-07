@@ -497,17 +497,30 @@ impl COCO {
         self.index.for_img(img_id)
     }
 
-    /// Returns (img_id, cat_id) pairs that have at least one annotation.
-    ///
-    /// Used by COCOeval to enumerate only non-empty pairs instead of the full
-    /// Cartesian product, which is critical for large-scale datasets.
+    /// Returns (img_id, cat_id) pairs that have at least one annotation:
+    /// images in first-seen order, categories ascending within an image.
     pub fn nonempty_img_cat_pairs(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
         self.index.pairs()
     }
 
-    /// Returns image IDs that have at least one annotation (any category).
-    ///
-    /// Used by COCOeval when `use_cats = false` (all categories treated as one).
+    /// One image's annotation ids grouped by category, ascending, and in array
+    /// order within a category.
+    pub(crate) fn ann_ids_for_img_by_cat(&self, img_id: u64) -> &[u64] {
+        self.index.for_img_by_cat(img_id)
+    }
+
+    /// How many (image, category) pairs hold an annotation.
+    pub(crate) fn nonempty_pair_count(&self) -> usize {
+        self.index.pair_count()
+    }
+
+    /// The categories one image has annotations in, ascending.
+    pub(crate) fn cat_ids_of_img(&self, img_id: u64) -> impl Iterator<Item = u64> + '_ {
+        self.index.cats_of(img_id)
+    }
+
+    /// Returns image IDs that have at least one annotation (any category), in
+    /// first-seen order.
     pub fn nonempty_img_ids(&self) -> impl Iterator<Item = u64> + '_ {
         self.index.img_ids()
     }
@@ -553,10 +566,11 @@ impl COCO {
         // again to build the result's own index; that walk is `create_index`'s.
         for (i, ann) in anns.iter_mut().enumerate() {
             // A NaN score is rejected rather than warned about: it corrupts the
-            // whole run, not one annotation. Every ranking path sorts with
-            // `partial_cmp(..).unwrap_or(Equal)`, which is not transitive once NaN
-            // is present — the sort silently produces an arbitrary order, so AP
-            // becomes a function of the sort implementation. (`healthcheck`
+            // whole run, not one annotation. NaN has no place in a score order:
+            // a sort with `partial_cmp(..).unwrap_or(Equal)` is not transitive
+            // once it is present, and the bit keys `accumulate()` sorts on put it
+            // wherever its bits fall, so AP becomes a function of the sort
+            // implementation. (`healthcheck`
             // reports the same condition as an error and points here.)
             if ann.score.is_some_and(f64::is_nan) {
                 return Err(format!(
@@ -632,9 +646,10 @@ impl COCO {
         Ok(res)
     }
 
-    /// Fill in `area` on every annotation that has none, by
-    /// [`AreaRule::Instance`]: the mask's pixel count, then the box's `w × h`,
-    /// then the keypoints' extent. Annotations with an `area` are left as they
+    /// Fill in `area` on every annotation that has none, the way a ground
+    /// truth's is derived: the mask's pixel count, then the rotated box's
+    /// `w × h`, then the box's, then the extent of the labeled keypoints.
+    /// Annotations with an `area` are left as they
     /// are, so a COCO file's authored areas survive; one with nothing to derive
     /// an area from stays without one.
     ///

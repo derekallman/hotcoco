@@ -981,24 +981,29 @@ this after `finalize()`.
 ### `merge`
 
 ```python
-se.merge(other: StreamingEval) -> None
+StreamingEval.merge(evaluators: Iterable[StreamingEval]) -> StreamingEval
 ```
 
-Fold another `StreamingEval`'s images into this one, as if its `update()`
-calls had been made here. This is how a run split across processes comes back
-together: each rank streams its shard of the images, one rank merges the
-rest, and `finalize()` gives exactly what one stream over every image gives.
-No matching is redone. An image on both sides keeps `other`'s result, the rule
-`update()` applies to an image seen again. `other` is left unchanged and
-usable, so its stored cells are copied into this evaluator, not moved.
+A new `StreamingEval` holding every image the given evaluators have seen, as
+if one evaluator had received all their `update()` calls. This is how a run
+split across processes comes back together: each rank streams its shard of
+the images, one rank merges them all, and `finalize()` gives exactly what one
+stream over every image gives. No matching is redone. `evaluators` is any
+iterable, read one at a time, so a generator over `from_bytes` keeps one shard
+in memory beside the merged result rather than every rank's at once. An image
+seen by more than one evaluator keeps the result of the last, the rule
+`update()` applies to an image seen again, so an image that
+`DistributedSampler` repeats to even out the shards counts once. The
+evaluators passed in are left unchanged and usable.
 
-Both evaluators must be built the same way: the same `categories`,
+Every evaluator must be built the same way: the same `categories`,
 `iou_type`, `lvis_style`, and `params`, `img_ids` included — leave `img_ids`
 empty on every rank rather than setting it to each rank's shard. Categories
 are compared by `id`, `name`, and LVIS `frequency`, in any order. Otherwise
-`merge` raises `ValueError` naming the first field that differs, and this
-evaluator is as it was. A finalized evaluator on either side raises
-`RuntimeError`.
+`merge` raises `ValueError` naming the first evaluator that differs and the
+field it differs in. An empty iterable raises `ValueError`, a single
+`StreamingEval` instead of an iterable of them raises `TypeError`, and a
+finalized evaluator raises `RuntimeError`.
 
 ### `to_bytes` and `from_bytes`
 

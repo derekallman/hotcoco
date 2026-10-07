@@ -315,3 +315,42 @@ def run_both(gt_dataset, dt_results, iou_type):
         rs_stats = rs_ev.stats
 
     return py_stats, rs_stats, rs_ev
+
+
+def hotcoco_eval_obb(obb_gt, obb_dt):
+    """Run hotcoco OBB evaluation and return the 12-metric stats vector.
+
+    A minimal dataset: one GT and one DT on a 4096x4096 image. The detection
+    scores 1.0 — the only score a single-detection case can meaningfully carry.
+    `tests/test_obb_eval.py` and `tests/fuzz_obb.py` share it.
+    """
+    from hotcoco import COCO, COCOeval
+
+    gt_area = obb_gt[2] * obb_gt[3]
+
+    gt_data = {
+        "images": [{"id": 1, "width": 4096, "height": 4096, "file_name": "test.png"}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                "obb": list(obb_gt),
+                "area": gt_area,
+                "bbox": [0, 0, 100, 100],
+                "iscrowd": 0,
+            }
+        ],
+        "categories": [{"id": 1, "name": "obj"}],
+    }
+
+    dt_data = [{"image_id": 1, "category_id": 1, "obb": list(obb_dt), "score": 1.0}]
+
+    with written_json(gt_data, dt_data, quiet=True) as (gt_path, dt_path):
+        coco_gt = COCO(gt_path)
+        coco_dt = coco_gt.load_res(dt_path)
+        ev = COCOeval(coco_gt, coco_dt, "obb")
+        ev.evaluate()
+        ev.accumulate()
+        ev.summarize()
+        return ev.stats

@@ -530,7 +530,10 @@ fn keep_rasterized_masks_of_arealess(gt: &mut COCO) {
 }
 
 const STATE_MAGIC: &[u8; 4] = b"HCSE";
-const STATE_VERSION: u32 = 1;
+/// Bumped whenever the bytes `to_bytes` writes change meaning, so older bytes
+/// are refused rather than misread; `state_bytes_are_pinned` fails until it is.
+/// 2: each detection's matched and ignore flags are stored together.
+const STATE_VERSION: u32 = 2;
 
 /// What precedes the arenas in a saved state. Floats are stored as their bit
 /// patterns: JSON has no spelling for an infinite area bound, and a round trip
@@ -1083,6 +1086,27 @@ mod tests {
         };
         assert!(err.to_string().contains("Open Images"));
     }
+    /// The exact bytes `to_bytes` writes for the fixture, as a hash. A
+    /// layout change that keeps every length — as moving the flags to
+    /// detection-major did — would otherwise load old bytes as wrong flags.
+    /// The hash also moves when the fixture's results or the header's
+    /// serialization change; only a change to what the bytes mean needs
+    /// `STATE_VERSION` bumped.
+    #[test]
+    fn state_bytes_are_pinned() {
+        let (gt, dt) = fixture();
+        let bytes = shard(&gt, &dt.annotations, &[1, 2, 3]).to_bytes();
+        let fnv1a = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        assert_eq!(bytes[4..8], STATE_VERSION.to_le_bytes());
+        assert_eq!(
+            fnv1a, 0xb111_1c56_d118_cce4,
+            "to_bytes changed: if the layout or meaning changed, bump STATE_VERSION; \
+             then pin {fnv1a:#018x}"
+        );
+    }
+
     /// An unfinalized evaluator over the images `ids` of the fixture.
     fn shard(gt: &Dataset, dt_anns: &[Annotation], ids: &[u64]) -> StreamingEval {
         let mut se = StreamingEval::new(

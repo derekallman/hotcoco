@@ -13,9 +13,8 @@ Usage:
 import math
 
 import hypothesis.strategies as st
-import pytest
 from gen_obb_fixtures import shapely_iou as shapely_obb_iou
-from helpers import written_json
+from helpers import hotcoco_eval_obb
 from hypothesis import HealthCheck, given, settings
 
 # The Shapely oracle — corner math and IoU — is owned by `gen_obb_fixtures.py`,
@@ -34,50 +33,6 @@ from hypothesis import HealthCheck, given, settings
 # overrode them.
 MIN_SIZE = 10.0
 MAX_SIZE = 500.0
-
-# ---------------------------------------------------------------------------
-# hotcoco evaluation helper
-# ---------------------------------------------------------------------------
-
-
-def hotcoco_eval_obb(obb_gt, obb_dt):
-    """Run hotcoco OBB evaluation and return the 12-metric stats vector.
-
-    A minimal dataset: one GT and one DT on a 4096x4096 image. The detection
-    scores 1.0 — the only score a single-detection case can meaningfully carry,
-    and no caller ever passed another.
-    """
-    from hotcoco import COCO, COCOeval
-
-    gt_area = obb_gt[2] * obb_gt[3]
-
-    gt_data = {
-        "images": [{"id": 1, "width": 4096, "height": 4096, "file_name": "test.png"}],
-        "annotations": [
-            {
-                "id": 1,
-                "image_id": 1,
-                "category_id": 1,
-                "obb": list(obb_gt),
-                "area": gt_area,
-                "bbox": [0, 0, 100, 100],
-                "iscrowd": 0,
-            }
-        ],
-        "categories": [{"id": 1, "name": "obj"}],
-    }
-
-    dt_data = [{"image_id": 1, "category_id": 1, "obb": list(obb_dt), "score": 1.0}]
-
-    with written_json(gt_data, dt_data, quiet=True) as (gt_path, dt_path):
-        coco_gt = COCO(gt_path)
-        coco_dt = coco_gt.load_res(dt_path)
-        ev = COCOeval(coco_gt, coco_dt, "obb")
-        ev.evaluate()
-        ev.accumulate()
-        ev.summarize()
-        return ev.stats
-
 
 # ---------------------------------------------------------------------------
 # Hypothesis strategies
@@ -133,37 +88,12 @@ def test_obb_eval_consistency_with_shapely(obb_a, obb_b):
     ap50 = stats[1]
 
     if iou > 0.5 + 1e-6:
-        assert ap50 == 1.0, (
+        # A lone true positive has precision 1 - 2**-52, not 1.0: pycocotools
+        # adds `np.spacing(1)` to the denominator, and the arrays match it.
+        assert abs(ap50 - 1.0) < 1e-9, (
             f"Shapely IoU = {iou:.9f} > 0.5, but hotcoco AP@50 = {ap50:.4f}. OBBs: GT={obb_a}, DT={obb_b}"
         )
     elif iou < 0.5 - 1e-6:
         assert ap50 <= 0.0, (
             f"Shapely IoU = {iou:.9f} < 0.5, but hotcoco AP@50 = {ap50:.4f}. OBBs: GT={obb_a}, DT={obb_b}"
         )
-
-
-@pytest.mark.parametrize(
-    "obb_a,obb_b,should_match_at_50",
-    [
-        # Identical → IoU=1.0, should match
-        ((0, 0, 200, 200, 0), (0, 0, 200, 200, 0), True),
-        # Far apart → IoU=0, should not match
-        ((0, 0, 200, 200, 0), (2000, 2000, 200, 200, 0), False),
-        # High overlap → IoU≈0.75, should match at 0.50
-        ((0, 0, 200, 200, 0), (50, 0, 200, 200, 0), True),
-    ],
-    ids=["perfect_match", "no_overlap", "high_overlap"],
-)
-def test_obb_eval_matches_shapely(obb_a, obb_b, should_match_at_50):
-    """hotcoco eval results must be consistent with Shapely IoU at the 0.50 threshold."""
-    ref_iou = shapely_obb_iou(obb_a, obb_b)
-    assert ref_iou is not None, f"Test setup error: Shapely rejected {obb_a} / {obb_b}"
-    stats = hotcoco_eval_obb(obb_a, obb_b)
-    ap50 = stats[1]
-
-    if should_match_at_50:
-        assert ref_iou >= 0.5, f"Test setup error: Shapely IoU = {ref_iou}"
-        assert ap50 == 1.0, f"Expected AP@50=1.0, got {ap50} (Shapely IoU={ref_iou})"
-    else:
-        assert ref_iou < 0.5, f"Test setup error: Shapely IoU = {ref_iou}"
-        assert ap50 <= 0.0, f"Expected AP@50=0, got {ap50} (Shapely IoU={ref_iou})"

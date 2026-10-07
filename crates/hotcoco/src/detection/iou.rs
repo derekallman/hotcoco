@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use rayon::prelude::*;
@@ -185,6 +186,10 @@ fn iou_scaffold<D, G>(
     scatter_full(valid, &dt_rows, &gt_cols, dt_ids.len(), gt_ids.len())
 }
 
+/// One cell's annotation ids: borrowed from the index, or listed in
+/// `params.cat_ids` order when that order is not the index's.
+pub(super) type AnnIds<'a> = Cow<'a, [u64]>;
+
 impl COCOeval {
     /// Compute the IoU/OKS matrix for a given image and category.
     ///
@@ -207,6 +212,7 @@ impl COCOeval {
     ) -> Vec<Vec<f64>> {
         let gt_anns = Self::get_anns_static(coco_gt, params, img_id, cat_id);
         let dt_anns = Self::get_anns_static(coco_dt, params, img_id, cat_id);
+        let (gt_anns, dt_anns) = (&*gt_anns, &*dt_anns);
 
         if gt_anns.is_empty() || dt_anns.is_empty() {
             return Vec::new();
@@ -230,18 +236,38 @@ impl COCOeval {
         }
     }
 
-    /// Get annotation IDs for an image, optionally filtered by category.
+    /// The annotation ids one cell evaluates, as [`AnnIds`], in the order pycocotools lists
+    /// them: the (image, category) pair's in array order, or with `use_cats`
+    /// off, the image's category by category in `params.cat_ids` order, which
+    /// leaves out a category not listed there. The order decides ties: the
+    /// score sort is stable, and on equal IoU the later ground truth wins.
     pub(super) fn get_anns_static<'a>(
         coco: &'a COCO,
         params: &Params,
         img_id: u64,
         cat_id: u64,
-    ) -> &'a [u64] {
+    ) -> AnnIds<'a> {
         if params.use_cats {
-            coco.get_ann_ids_for_img_cat(img_id, cat_id)
-        } else {
-            coco.get_ann_ids_for_img(img_id)
+            return Cow::Borrowed(coco.get_ann_ids_for_img_cat(img_id, cat_id));
         }
+        // The index groups an image's ids by category, ascending, so under the
+        // default `cat_ids` — every category, ascending — the list is its slice.
+        let ascending = params.cat_ids.windows(2).all(|w| w[0] < w[1]);
+        if ascending
+            && coco
+                .cat_ids_of_img(img_id)
+                .all(|cat| params.cat_ids.binary_search(&cat).is_ok())
+        {
+            return Cow::Borrowed(coco.ann_ids_for_img_by_cat(img_id));
+        }
+        Cow::Owned(
+            params
+                .cat_ids
+                .iter()
+                .flat_map(|&cat| coco.get_ann_ids_for_img_cat(img_id, cat))
+                .copied()
+                .collect(),
+        )
     }
 
     /// Compute segmentation mask IoU by converting annotations to RLE and calling `sim::mask_iou`.

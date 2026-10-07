@@ -146,12 +146,18 @@ impl AnnIndex {
         }
     }
 
+    /// The annotation ids of one image grouped by category, ascending, and in
+    /// array order within a category.
+    pub(crate) fn for_img_by_cat(&self, img_id: u64) -> &[u64] {
+        match self.img_slot.get(&img_id) {
+            Some(&slot) => &self.by_pair[span(&self.img_offsets, slot)],
+            None => &[],
+        }
+    }
+
     /// The annotation ids of one (image, category) pair, in array order.
     pub(crate) fn for_img_cat(&self, img_id: u64, cat_id: u64) -> &[u64] {
-        let Some(&slot) = self.img_slot.get(&img_id) else {
-            return &[];
-        };
-        let groups = &self.groups[span(&self.group_offsets, slot)];
+        let groups = self.groups_of(img_id);
         match groups.binary_search_by_key(&cat_id, |&(cat, _, _)| cat) {
             Ok(i) => {
                 let (_, start, len) = groups[i];
@@ -159,6 +165,24 @@ impl AnnIndex {
             }
             Err(_) => &[],
         }
+    }
+
+    /// The categories one image has annotations in, ascending.
+    pub(crate) fn cats_of(&self, img_id: u64) -> impl Iterator<Item = u64> + '_ {
+        self.groups_of(img_id).iter().map(|&(cat, _, _)| cat)
+    }
+
+    /// One image's `(category, start, len)` groups, ascending by category.
+    fn groups_of(&self, img_id: u64) -> &[(u64, u32, u32)] {
+        match self.img_slot.get(&img_id) {
+            Some(&slot) => &self.groups[span(&self.group_offsets, slot)],
+            None => &[],
+        }
+    }
+
+    /// How many (image, category) pairs hold an annotation.
+    pub(crate) fn pair_count(&self) -> usize {
+        self.groups.len()
     }
 
     /// Every image with at least one annotation, in first-seen order.

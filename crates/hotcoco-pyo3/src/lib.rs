@@ -393,23 +393,25 @@ impl PyCOCO {
     /// - ``ids``: integer annotation ids. Default: ``1`` to ``N``.
     /// - ``area``: floats. Default: the box's ``w * h``.
     /// - ``iscrowd``: ints or bools. Default: all false.
-    /// - ``rles``: a list of ``N`` RLE or polygon segmentations. ``area`` is
-    ///   then required, because the box area would not match the mask.
+    /// - ``segmentation``: a list of ``N`` RLE or polygon segmentations.
+    ///   ``area`` is then required, because the box area would not match the
+    ///   mask.
     ///
     /// The result equals ``COCO(dict)`` over the same annotations. Raises
     /// ``ValueError`` for columns of different lengths, a box array that is not
     /// ``(N, 4)``, or a negative id, and ``TypeError`` for a column that is not
     /// an array or sequence of the right kind.
-    #[staticmethod]
+    #[classmethod]
     // The keyword-only columns arrive through `**kwargs`: nine parameters would
     // trip clippy's argument limit. `text_signature` keeps their names visible
     // to `help()` and `inspect.signature`.
     #[pyo3(
         signature = (images, categories, image_ids, category_ids, boxes, **kwargs),
-        text_signature = "(images, categories, image_ids, category_ids, boxes, *, ids=None, \
-                          area=None, iscrowd=None, rles=None)"
+        text_signature = "($cls, images, categories, image_ids, category_ids, boxes, *, ids=None, \
+                          area=None, iscrowd=None, segmentation=None)"
     )]
     fn from_arrays(
+        _cls: &Bound<'_, PyType>,
         images: &Bound<'_, PyList>,
         categories: &Bound<'_, PyList>,
         image_ids: &Bound<'_, PyAny>,
@@ -417,14 +419,14 @@ impl PyCOCO {
         boxes: &Bound<'_, PyAny>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyCOCO> {
-        let (mut ids, mut area, mut iscrowd, mut rles) = (None, None, None, None);
+        let (mut ids, mut area, mut iscrowd, mut segmentation) = (None, None, None, None);
         for (key, value) in kwargs.into_iter().flatten() {
             let key: String = key.extract()?;
             let slot = match key.as_str() {
                 "ids" => &mut ids,
                 "area" => &mut area,
                 "iscrowd" => &mut iscrowd,
-                "rles" => &mut rles,
+                "segmentation" => &mut segmentation,
                 _ => {
                     return Err(pyo3::exceptions::PyTypeError::new_err(format!(
                         "from_arrays() got an unexpected keyword argument '{key}'"
@@ -433,17 +435,21 @@ impl PyCOCO {
             };
             *slot = (!value.is_none()).then_some(value);
         }
-        let rles = rles
+        let segmentation = segmentation
             .map(|obj| {
                 obj.cast_into::<PyList>().map_err(|_| {
                     pyo3::exceptions::PyTypeError::new_err(
-                        "from_arrays: rles must be a list of RLE or polygon segmentations",
+                        "from_arrays: segmentation must be a list of RLE or polygon segmentations",
                     )
                 })
             })
             .transpose()?;
-        let (ids, area, iscrowd, rles) =
-            (ids.as_ref(), area.as_ref(), iscrowd.as_ref(), rles.as_ref());
+        let (ids, area, iscrowd, segmentation) = (
+            ids.as_ref(),
+            area.as_ref(),
+            iscrowd.as_ref(),
+            segmentation.as_ref(),
+        );
         let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
         let image_ids = convert::u64_vec(image_ids, "image_ids")?;
         let n = image_ids.len();
@@ -473,7 +479,7 @@ impl PyCOCO {
             }
             None => (1..=n as u64).collect(),
         };
-        let area = match (area, rles) {
+        let area = match (area, segmentation) {
             (Some(obj), _) => {
                 let area = convert::f64_vec(obj, "area")?;
                 same_length("area", area.len())?;
@@ -481,8 +487,8 @@ impl PyCOCO {
             }
             (None, Some(_)) => {
                 return Err(value_err(
-                    "from_arrays: area is required with rles, because the box area \
-                     would not match the mask"
+                    "from_arrays: area is required with segmentation, because the box \
+                     area would not match the mask"
                         .into(),
                 ));
             }
@@ -496,8 +502,8 @@ impl PyCOCO {
             }
             None => None,
         };
-        if let Some(rles) = rles {
-            same_length("rles", rles.len())?;
+        if let Some(segmentation) = segmentation {
+            same_length("segmentation", segmentation.len())?;
         }
 
         let mut annotations = Vec::with_capacity(n);
@@ -511,8 +517,8 @@ impl PyCOCO {
                 bbox: Some(bbox),
                 area: Some(area.as_ref().map_or(bbox[2] * bbox[3], |a| a[i])),
                 iscrowd: iscrowd.as_ref().is_some_and(|c| c[i]),
-                segmentation: match rles {
-                    Some(rles) => Some(convert::py_to_segmentation(&rles.get_item(i)?)?),
+                segmentation: match segmentation {
+                    Some(segs) => Some(convert::py_to_segmentation(&segs.get_item(i)?)?),
                     None => None,
                 },
                 ..Default::default()
@@ -3176,30 +3182,55 @@ after ``finalize()``."]
         })
     }
 
-    #[doc = "Fold another ``StreamingEval``'s images into this one, as if its
-``update()`` calls had been made here. The use is a run split across processes:
-each rank streams its shard, and one rank merges the rest. No matching is
-redone.
+    #[classmethod]
+    #[doc = "A new ``StreamingEval`` holding every image the given evaluators have
+seen, as if one evaluator had received all their ``update()`` calls. The use is
+a run split across processes: each rank streams its shard, and one rank merges
+them all. No matching is redone.
 
-An image present in both keeps ``other``'s result. ``other`` is left unchanged
-and usable, so its stored cells are copied, not moved. Both must have been
-built with the same ``categories``, ``iou_type``, ``lvis_style``, and
-``params``; otherwise ``ValueError`` names the first field that differs and
-this evaluator is left as it was. Raises ``RuntimeError`` if either has been
-finalized."]
-    fn merge(&mut self, other: &Bound<'_, PyStreamingEval>) -> PyResult<()> {
-        let other = other
-            .try_borrow()
-            .map_err(|_| {
-                pyo3::exceptions::PyValueError::new_err("cannot merge a StreamingEval into itself")
-            })?
-            .inner
-            .clone()
-            .ok_or_else(spent)?;
-        let inner = self.inner.as_mut().ok_or_else(spent)?;
-        inner
-            .merge(other)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+``evaluators`` is any iterable. Each is read and released before the next, so
+a generator such as ``StreamingEval.from_bytes(s) for s in states`` keeps one
+shard in memory at a time beside the merged result. An image seen by more than
+one keeps the result of the last. The evaluators are left unchanged and
+usable. All must have been built with the same ``categories``, ``iou_type``,
+``lvis_style``, and ``params``; otherwise ``ValueError`` names the first that
+differs and the field it differs in. Raises ``ValueError`` when there is none,
+``TypeError`` for a single ``StreamingEval`` rather than an iterable of them,
+and ``RuntimeError`` if any has been finalized."]
+    fn merge(cls: &Bound<'_, PyType>, evaluators: &Bound<'_, PyAny>) -> PyResult<PyStreamingEval> {
+        if evaluators.is_instance(cls)? {
+            return Err(pyo3::exceptions::PyTypeError::new_err(
+                "merge takes an iterable of StreamingEvals and returns a new one: \
+                 StreamingEval.merge([a, b])",
+            ));
+        }
+        let py = cls.py();
+        let mut merged: Option<hotcoco_core::StreamingEval> = None;
+        for (i, item) in evaluators.try_iter()?.enumerate() {
+            let state = item?
+                .cast::<PyStreamingEval>()
+                .map_err(|_| {
+                    pyo3::exceptions::PyTypeError::new_err(format!(
+                        "evaluators[{i}] is not a StreamingEval"
+                    ))
+                })?
+                .borrow()
+                .inner
+                .clone()
+                .ok_or_else(spent)?;
+            match merged.as_mut() {
+                None => merged = Some(state),
+                Some(merged) => py.detach(|| merged.merge(state)).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("evaluators[{i}]: {e}"))
+                })?,
+            }
+        }
+        let merged = merged.ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("merge needs at least one StreamingEval")
+        })?;
+        Ok(PyStreamingEval {
+            inner: Some(merged),
+        })
     }
 
     #[doc = "The evaluator's state as ``bytes``, for ``StreamingEval.from_bytes`` to

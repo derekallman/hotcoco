@@ -334,49 +334,74 @@ class TestMergeAndSerialize:
 
     def test_merged_shards_equal_one_stream(self):
         whole = finalized_stats(stream_images(StreamingEval(categories()), {1, 2, 3}))
-        a = stream_images(StreamingEval(categories()), {1})
-        a.merge(stream_images(StreamingEval(categories()), {2, 3}))
-        assert finalized_stats(a) == whole
+        shards = [stream_images(StreamingEval(categories()), ids) for ids in ({1}, {2}, {3})]
+        assert finalized_stats(StreamingEval.merge(shards)) == whole
 
-    def test_merge_leaves_other_usable_and_other_wins_overlap(self):
+    def test_merge_leaves_its_inputs_usable_and_the_last_wins_an_overlap(self):
         moved = [{**d, "bbox": [90, 90, 5, 5]} for d in dt_annotations()]
         a = stream_images(StreamingEval(categories()), {1, 2})
         b = stream_images(StreamingEval(categories()), {2, 3}, moved)
-        a.merge(b)
+        merged = StreamingEval.merge([a, b])
         expected = stream_images(StreamingEval(categories()), {1})
         stream_images(expected, {2, 3}, moved)
-        assert finalized_stats(a) == finalized_stats(expected)
-        assert finalized_stats(b)  # not spent by being merged from
+        assert finalized_stats(merged) == finalized_stats(expected)
+        assert finalized_stats(a) == finalized_stats(stream_images(StreamingEval(categories()), {1, 2}))
+        assert finalized_stats(b) == finalized_stats(stream_images(StreamingEval(categories()), {2, 3}, moved))
 
-    def test_merge_mismatch_raises_and_names_the_field(self):
+    def test_merge_returns_an_independent_evaluator(self):
         a = stream_images(StreamingEval(categories()), {1})
-        with pytest.raises(ValueError, match="categories"):
-            a.merge(StreamingEval(categories()[:2]))
-        with pytest.raises(ValueError, match="eval_mode"):
-            a.merge(StreamingEval(categories(), lvis_style=True))
+        merged = StreamingEval.merge([a])
+        stream_images(merged, {2, 3})
+        assert finalized_stats(a) == finalized_stats(stream_images(StreamingEval(categories()), {1}))
+        assert finalized_stats(merged) == finalized_stats(stream_images(StreamingEval(categories()), {1, 2, 3}))
+
+    def test_the_same_evaluator_twice_counts_its_images_once(self):
+        a = stream_images(StreamingEval(categories()), {1, 2})
+        assert finalized_stats(StreamingEval.merge([a, a])) == finalized_stats(a)
+
+    def test_merge_mismatch_names_the_evaluator_and_the_field(self):
+        a = stream_images(StreamingEval(categories()), {1})
+        with pytest.raises(ValueError, match=r"evaluators\[1\].*categories"):
+            StreamingEval.merge([a, StreamingEval(categories()[:2])])
+        with pytest.raises(ValueError, match=r"evaluators\[2\].*eval_mode"):
+            StreamingEval.merge([a, StreamingEval(categories()), StreamingEval(categories(), lvis_style=True)])
         params = hotcoco.Params()
         params.max_dets = [1, 10]
         with pytest.raises(ValueError, match="max_dets"):
-            a.merge(StreamingEval(categories(), params=params))
-        # The failed merges changed nothing.
-        assert finalized_stats(a) == finalized_stats(stream_images(StreamingEval(categories()), {1}))
+            StreamingEval.merge([a, StreamingEval(categories(), params=params)])
 
     def test_category_order_does_not_block_a_merge(self):
         # The K axis is sorted by id, so list order changes no number.
         a = stream_images(StreamingEval(categories()), {1})
-        a.merge(stream_images(StreamingEval(categories()[::-1]), {2, 3}))
-        assert finalized_stats(a) == finalized_stats(stream_images(StreamingEval(categories()), {1, 2, 3}))
+        b = stream_images(StreamingEval(categories()[::-1]), {2, 3})
+        expected = stream_images(StreamingEval(categories()), {1, 2, 3})
+        assert finalized_stats(StreamingEval.merge([a, b])) == finalized_stats(expected)
 
-    def test_merge_with_spent_raises(self):
-        a, b = StreamingEval(categories()), StreamingEval(categories())
-        b.finalize()
+    @pytest.mark.parametrize("spent_at", [0, 1])
+    def test_merge_with_spent_raises(self, spent_at):
+        evaluators = [StreamingEval(categories()), StreamingEval(categories())]
+        evaluators[spent_at].finalize()
         with pytest.raises(RuntimeError, match="spent"):
-            a.merge(b)
+            StreamingEval.merge(evaluators)
 
-    def test_merge_into_itself_is_an_error(self):
-        a = StreamingEval(categories())
-        with pytest.raises(ValueError, match="itself"):
-            a.merge(a)
+    def test_merge_of_nothing_is_an_error(self):
+        with pytest.raises(ValueError, match="at least one"):
+            StreamingEval.merge([])
+        with pytest.raises(ValueError, match="at least one"):
+            StreamingEval.merge(iter(()))
+
+    def test_merge_reads_a_generator_of_restored_states(self):
+        states = [stream_images(StreamingEval(categories()), {i}).to_bytes() for i in (1, 2, 3)]
+        merged = StreamingEval.merge(StreamingEval.from_bytes(s) for s in states)
+        assert finalized_stats(merged) == finalized_stats(stream_images(StreamingEval(categories()), {1, 2, 3}))
+
+    def test_merge_names_what_it_takes(self):
+        a = stream_images(StreamingEval(categories()), {1})
+        # The old in-place spelling, `a.merge(b)`.
+        with pytest.raises(TypeError, match=r"StreamingEval.merge\(\[a, b\]\)"):
+            a.merge(StreamingEval(categories()))
+        with pytest.raises(TypeError, match=r"evaluators\[1\] is not a StreamingEval"):
+            StreamingEval.merge([a, "b"])
 
     def test_bytes_round_trip(self):
         se = stream_images(StreamingEval(categories()), {1, 2, 3})
@@ -438,10 +463,10 @@ class TestMergeAndSerialize:
         se.update(imgs, gts, dts)
         twin = copy.deepcopy(se)
         with pytest.raises(ValueError, match="eval_mode"):
-            copy.deepcopy(se).merge(StreamingEval(cats))
+            StreamingEval.merge([se, StreamingEval(cats)])
         # A different LVIS frequency would move APr/APc/APf.
         with pytest.raises(ValueError, match="categories"):
-            copy.deepcopy(se).merge(StreamingEval([{**c, "frequency": "c"} for c in cats], lvis_style=True))
+            StreamingEval.merge([se, StreamingEval([{**c, "frequency": "c"} for c in cats], lvis_style=True)])
         assert finalized_stats(twin) == finalized_stats(se)
 
     @pytest.mark.parametrize("bad", [b"", b"nope", b"HCSE", b"HCSE\x09\x00\x00\x00" + bytes(8)])

@@ -255,12 +255,15 @@ def _tie_heavy_dataset():
     return _make_minimal_gt("bbox", images=images, categories=categories, annotations=anns), dts
 
 
-def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec_thrs=None):
+def _accumulated_arrays(
+    gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec_thrs=None, use_cats=True, cat_ids=None
+):
     """Run evaluate + accumulate through both tools and return the two ``eval``
     dicts. ``acc_max_dets`` re-assigns the caps between the two calls — the
     pycocotools ``accumulate(p)`` idiom, which leaves cells holding more
     detections than the current cap. ``iou_thrs`` and ``rec_thrs`` replace the
-    default grids in both tools."""
+    default grids in both tools, and ``use_cats`` and ``cat_ids`` the category
+    settings."""
     from pycocotools.coco import COCO as PyCOCO  # noqa: PLC0415
     from pycocotools.cocoeval import COCOeval as PyCOCOeval  # noqa: PLC0415
 
@@ -269,6 +272,9 @@ def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec
             py_gt = PyCOCO(gt_path)
             py_ev = PyCOCOeval(py_gt, py_gt.loadRes(dt_path), "bbox")
             py_ev.params.maxDets = list(max_dets)
+            py_ev.params.useCats = int(use_cats)
+            if cat_ids is not None:
+                py_ev.params.catIds = list(cat_ids)
             if iou_thrs is not None:
                 py_ev.params.iouThrs = np.array(iou_thrs)
             if rec_thrs is not None:
@@ -281,6 +287,9 @@ def _accumulated_arrays(gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec
         rs_gt = COCO(gt_path)
         rs_ev = COCOeval(rs_gt, rs_gt.load_res(dt_path), "bbox")
         rs_ev.params.max_dets = list(max_dets)
+        rs_ev.params.use_cats = use_cats
+        if cat_ids is not None:
+            rs_ev.params.cat_ids = list(cat_ids)
         if iou_thrs is not None:
             rs_ev.params.iou_thrs = list(iou_thrs)
         if rec_thrs is not None:
@@ -384,6 +393,39 @@ def test_float32_grids_match_pycocotools_bit_for_bit():
     for key in ("precision", "recall"):
         assert not np.array_equal(py_eval[key], py_default[key]), f"fixture must make the float32 grid move {key}"
     _assert_arrays_bit_equal(py_eval, rs_eval, "float32 grids")
+
+
+@pytest.mark.parametrize("n_thrs", [65, 91])
+def test_grids_past_64_thresholds_match_pycocotools(n_thrs):
+    """``accumulate()`` reads a detection's flags 64 thresholds at a time; a
+    longer grid crosses into a second chunk."""
+    gt, dts = _grid_sensitive_dataset()
+    grid = np.linspace(0.5, 0.95, n_thrs).tolist()
+    py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100], iou_thrs=grid)
+    _assert_arrays_bit_equal(py_eval, rs_eval, f"{n_thrs} thresholds")
+
+
+@pytest.mark.parametrize(
+    ("cat_ids", "fp_first"), [(None, False), ([2, 1], True), ([2], True)], ids=["default", "reordered", "subset"]
+)
+def test_use_cats_off_breaks_score_ties_in_category_order(cat_ids, fp_first):
+    """With ``useCats=0`` pycocotools lists an image's detections category by
+    category, in ``catIds`` order, and leaves out a category not listed; the
+    stable score sort keeps that order for tied scores. A true positive in
+    category 2 ties a false positive in category 1, and each case loads them in
+    the order that category order reverses, so a load-order ranking moves AP."""
+    gt = {
+        "images": [{"id": 1, "width": 200, "height": 200, "file_name": "a.jpg"}],
+        "categories": [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 2, "bbox": [10, 10, 50, 50], "area": 2500, "iscrowd": 0}
+        ],
+    }
+    tp = {"image_id": 1, "category_id": 2, "bbox": [10, 10, 50, 50], "score": 0.5}
+    fp = {"image_id": 1, "category_id": 1, "bbox": [120, 120, 30, 30], "score": 0.5}
+    dts = [fp, tp] if fp_first else [tp, fp]
+    py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100], use_cats=False, cat_ids=cat_ids)
+    _assert_arrays_bit_equal(py_eval, rs_eval, f"use_cats off, cat_ids {cat_ids}")
 
 
 def test_kpt_no_visible():
