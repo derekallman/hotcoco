@@ -130,7 +130,7 @@ struct PanopticArgs {
     #[arg(long)]
     pred_folder: Option<PathBuf>,
 
-    /// Write the evaluation report to a JSON file
+    /// Write the results (panopticapi's shape, with per-class counts) to a JSON file
     #[arg(long, short)]
     output: Option<PathBuf>,
 }
@@ -286,10 +286,10 @@ fn run_panoptic(args: PanopticArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(ref output_path) = args.output {
         let start = Instant::now();
-        std::fs::write(output_path, ev.report()?.to_json()?)?;
+        ev.results()?.save(output_path)?;
         status(
             "Saved",
-            &format!("report to {DIM}{}{RESET}", output_path.display()),
+            &format!("results to {DIM}{}{RESET}", output_path.display()),
             start.elapsed(),
         );
     }

@@ -1,16 +1,25 @@
 //! Label maps: from a COCO panoptic PNG, or painted from segment masks.
 //!
-//! Both producers emit the same thing — a flat `u32` map in **column-major**
-//! order, the order RLE runs come in, so painting a mask is a contiguous
-//! fill. A PNG decodes row-major and is transposed once here; the overlap
-//! histogram downstream is order-free, so only the two sides' agreement
-//! matters, and this module is the one place that agreement is made.
+//! A painted map is a flat `u32` map in **column-major** order, the order
+//! RLE runs come in, so painting a mask is a contiguous fill. A PNG stays as
+//! its decoded bytes ([`Png`]) and yields ids row-major on demand: the
+//! overlap histogram is order-free, so two PNG sides are scanned straight
+//! off their bytes, and only a PNG paired with a painted map is transposed
+//! into column-major to agree with it. This module is the one place that
+//! agreement is made.
 
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use crate::primitives::panoptic::{Overlaps, OverlapsBuilder};
 use crate::types::{Rle, Segmentation};
+
+/// panopticapi's `rgb2id` for one pixel's leading three samples.
+#[inline]
+fn rgb2id(px: &[u8]) -> u32 {
+    u32::from(px[0]) | (u32::from(px[1]) << 8) | (u32::from(px[2]) << 16)
+}
 
 /// One image's segment ids, one per pixel, column-major.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,9 +29,67 @@ pub(super) struct LabelMap {
     pub labels: Vec<u32>,
 }
 
-/// Decode a COCO panoptic PNG: each pixel's color `(R, G, B)` is the segment
-/// id `R + 256·G + 256²·B`, panopticapi's `rgb2id`. Alpha, if any, is ignored.
-pub(super) fn read_png(path: &Path) -> crate::error::Result<LabelMap> {
+/// A decoded COCO panoptic PNG, as 8-bit RGB or RGBA rows.
+pub(super) struct Png {
+    pub h: u32,
+    pub w: u32,
+    channels: usize,
+    line_size: usize,
+    bytes: Vec<u8>,
+}
+
+impl Png {
+    /// The pixel rows, each `w` samples of `channels` bytes.
+    fn rows(&self) -> impl Iterator<Item = &[u8]> + '_ {
+        let (h, w, channels) = (self.h as usize, self.w as usize, self.channels);
+        self.bytes
+            .chunks_exact(self.line_size)
+            .take(h)
+            .map(move |row| &row[..w * channels])
+    }
+
+    /// Segment ids pixel by pixel, row-major: each color `(R, G, B)` is
+    /// `R + 256·G + 256²·B`, panopticapi's `rgb2id`. Alpha is ignored.
+    pub fn ids(&self) -> impl Iterator<Item = u32> + '_ {
+        let channels = self.channels;
+        self.rows()
+            .flat_map(move |row| row.chunks_exact(channels).map(rgb2id))
+    }
+
+    /// The overlap histogram of two PNG sides of the same size, read
+    /// straight off their bytes in row-major order.
+    pub fn overlaps(&self, other: &Png) -> Overlaps {
+        debug_assert_eq!((self.h, self.w), (other.h, other.w));
+        let mut builder = OverlapsBuilder::default();
+        for (a, b) in self.rows().zip(other.rows()) {
+            for (pa, pb) in a
+                .chunks_exact(self.channels)
+                .zip(b.chunks_exact(other.channels))
+            {
+                builder.push(rgb2id(pa), rgb2id(pb));
+            }
+        }
+        builder.finish()
+    }
+
+    /// The ids as a column-major map, the order a painted map has.
+    pub fn into_label_map(self) -> LabelMap {
+        let (h, w) = (self.h as usize, self.w as usize);
+        let mut labels = vec![0u32; h * w];
+        for (i, id) in self.ids().enumerate() {
+            let (y, x) = (i / w, i % w);
+            labels[x * h + y] = id;
+        }
+        LabelMap {
+            h: self.h,
+            w: self.w,
+            labels,
+        }
+    }
+}
+
+/// Decode a COCO panoptic PNG.
+pub(super) fn read_png(path: &Path) -> crate::error::Result<Png> {
     let file = File::open(path)
         .map_err(|e| format!("cannot open panoptic PNG {}: {e}", path.display()))?;
     let mut decoder = png::Decoder::new(BufReader::new(file));
@@ -48,18 +115,12 @@ pub(super) fn read_png(path: &Path) -> crate::error::Result<LabelMap> {
             .into());
         }
     };
-    let (h, w) = (info.height as usize, info.width as usize);
-    let mut labels = vec![0u32; h * w];
-    for (y, row) in buf.chunks_exact(info.line_size).take(h).enumerate() {
-        for (x, px) in row.chunks_exact(channels).take(w).enumerate() {
-            let id = u32::from(px[0]) + (u32::from(px[1]) << 8) + (u32::from(px[2]) << 16);
-            labels[x * h + y] = id;
-        }
-    }
-    Ok(LabelMap {
+    Ok(Png {
         h: info.height,
         w: info.width,
-        labels,
+        channels,
+        line_size: info.line_size,
+        bytes: buf,
     })
 }
 
@@ -137,16 +198,15 @@ mod tests {
         // 2 rows × 3 columns, row-major.
         let ids = [1, 2, 3, 4, 5, 70000];
         write_png(&path, 2, 3, &ids, false);
-        let map = read_png(&path).expect("decode");
-        assert_eq!((map.h, map.w), (2, 3));
+        let png = read_png(&path).expect("decode");
+        assert_eq!((png.h, png.w), (2, 3));
+        assert_eq!(png.ids().collect::<Vec<_>>(), ids, "row-major, as stored");
         // Column-major: column 0 is (1, 4), column 1 is (2, 5), column 2 is (3, 70000).
-        assert_eq!(map.labels, vec![1, 4, 2, 5, 3, 70000]);
+        assert_eq!(png.into_label_map().labels, vec![1, 4, 2, 5, 3, 70000]);
 
         write_png(&path, 2, 3, &ids, true);
-        assert_eq!(
-            read_png(&path).expect("decode rgba").labels,
-            vec![1, 4, 2, 5, 3, 70000]
-        );
+        let png = read_png(&path).expect("decode rgba");
+        assert_eq!(png.ids().collect::<Vec<_>>(), ids, "alpha is ignored");
     }
 
     #[test]

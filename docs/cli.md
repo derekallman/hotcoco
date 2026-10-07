@@ -590,7 +590,7 @@ coco-eval panoptic --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-fold
 ```
 
 Prints the panopticapi table and a `stats:` line with the nine headline values;
-`-o` writes the `EvalReport` as JSON.
+`-o` writes the results — the same content as `results()` in Python — as JSON.
 
 ---
 

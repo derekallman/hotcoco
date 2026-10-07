@@ -28,10 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     migration is one import.
   - `coco panoptic eval --gt --pred [--gt-folder] [--pred-folder] [--json]` in
     the Python CLI and `coco-eval panoptic` in the Rust one.
-  - Rust: `hotcoco::panoptic::{PanopticEval, PanopticDataset, PanopticResult}`,
-    the kernel `primitives::panoptic::{Overlaps, match_segments, pq_iou}` (the
-    void-discounted IoU is a second formula home, not a copy of `sim`'s), and
-    the formulas `metrics::panoptic::{PqCounts, PqScores, pq_average}`.
+  - Rust: `hotcoco::panoptic::{PanopticEval, PanopticDataset, PanopticResult,
+    PanopticResults}` — `results()` is panopticapi's shape with `to_json()`
+    and `save()`, the same content Python's `results()` returns and
+    `coco-eval panoptic -o` writes; the kernel `primitives::panoptic::{Overlaps,
+    OverlapsBuilder, match_segments, pq_iou}` (the void-discounted IoU is a
+    second formula home, not a copy of `sim`'s); and the formulas
+    `metrics::panoptic::{PqCounts, PqScores, pq_average}`. Two PNG sides are
+    scanned straight off their decoded bytes; only a PNG paired with a mask
+    side is transposed.
   - Where panopticapi raises — a predicted segment in the JSON but not the PNG
     or the reverse, an unknown prediction category, an image with no
     prediction — `evaluate()` raises too, naming the image. Where it would

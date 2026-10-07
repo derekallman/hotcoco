@@ -66,32 +66,19 @@ impl Overlaps {
             gt.len(),
             pred.len()
         );
-        // Neighboring pixels nearly always share a pair, so count runs and
-        // touch the map once per run rather than once per pixel.
-        let mut counts: FxHashMap<u64, u64> = FxHashMap::default();
-        let mut run_key = u64::MAX;
-        let mut run_len = 0u64;
-        for (&g, &p) in gt.iter().zip(pred) {
-            let key = (u64::from(g) << 32) | u64::from(p);
-            if key == run_key {
-                run_len += 1;
-            } else {
-                if run_len > 0 {
-                    *counts.entry(run_key).or_insert(0) += run_len;
-                }
-                run_key = key;
-                run_len = 1;
-            }
+        Self::from_pixels(gt.iter().copied().zip(pred.iter().copied()))
+    }
+
+    /// [`compute`](Self::compute) over a stream of `(gt id, pred id)` pixel
+    /// pairs. The caller guarantees the two sides are the same length and in
+    /// the same pixel order. For a source that is not an iterator, feed an
+    /// [`OverlapsBuilder`] directly.
+    pub fn from_pixels(pixels: impl Iterator<Item = (u32, u32)>) -> Self {
+        let mut builder = OverlapsBuilder::default();
+        for (g, p) in pixels {
+            builder.push(g, p);
         }
-        if run_len > 0 {
-            *counts.entry(run_key).or_insert(0) += run_len;
-        }
-        let mut pairs: Vec<(u32, u32, u64)> = counts
-            .into_iter()
-            .map(|(key, n)| ((key >> 32) as u32, key as u32, n))
-            .collect();
-        pairs.sort_unstable();
-        Overlaps { pairs }
+        builder.finish()
     }
 
     /// Pixels carrying `gt` in the ground-truth map and `pred` in the
@@ -137,6 +124,54 @@ impl Overlaps {
             }
         }
         out
+    }
+}
+
+/// Accumulates an [`Overlaps`] one pixel pair at a time.
+///
+/// Neighboring pixels nearly always share a pair, so runs are counted and the
+/// map is touched once per run rather than once per pixel. A caller whose
+/// pixels come from nested buffers — rows of a decoded image — loops over
+/// them and calls [`push`](Self::push), which keeps that loop tight.
+#[derive(Debug, Default)]
+pub struct OverlapsBuilder {
+    counts: FxHashMap<u64, u64>,
+    run_key: u64,
+    run_len: u64,
+}
+
+impl OverlapsBuilder {
+    /// One pixel carrying `gt` on the ground-truth side and `pred` on the
+    /// prediction side.
+    #[inline]
+    pub fn push(&mut self, gt: u32, pred: u32) {
+        let key = (u64::from(gt) << 32) | u64::from(pred);
+        if key == self.run_key && self.run_len > 0 {
+            self.run_len += 1;
+        } else {
+            self.flush();
+            self.run_key = key;
+            self.run_len = 1;
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.run_len > 0 {
+            *self.counts.entry(self.run_key).or_insert(0) += self.run_len;
+            self.run_len = 0;
+        }
+    }
+
+    /// The histogram of everything pushed so far.
+    pub fn finish(mut self) -> Overlaps {
+        self.flush();
+        let mut pairs: Vec<(u32, u32, u64)> = self
+            .counts
+            .into_iter()
+            .map(|(key, n)| ((key >> 32) as u32, key as u32, n))
+            .collect();
+        pairs.sort_unstable();
+        Overlaps { pairs }
     }
 }
 

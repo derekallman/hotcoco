@@ -71,7 +71,9 @@ pub const METRIC_NAMES: [&str; 9] = [
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct PqSplit {
-    /// The three means — the sentinel when `n == 0`.
+    /// The three means — the sentinel when `n == 0`. Flattened in JSON, so a
+    /// split reads `{"pq", "sq", "rq", "n"}` as panopticapi writes it.
+    #[serde(flatten)]
     pub scores: PqScores,
     /// Categories with at least one segment on either side.
     pub n: usize,
@@ -107,6 +109,58 @@ impl PanopticResult {
     }
 }
 
+/// One category in [`PanopticResults`]: its scores — the sentinel when
+/// nothing was seen — beside the counts they came from.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct PqClassResult {
+    #[serde(flatten)]
+    pub scores: PqScores,
+    #[serde(flatten)]
+    pub counts: PqCounts,
+}
+
+/// A run's results in panopticapi's shape, plus what makes them auditable.
+///
+/// `All`, `Things`, and `Stuff` each hold `pq`, `sq`, `rq`, and `n`;
+/// `per_class` maps category id to scores and counts. The three fields
+/// panopticapi does not have — version, provenance, deviations — ride along
+/// because this is the struct that gets archived: `save()` writes it, the
+/// CLIs emit it, and provenance that exists only in a live process cannot be
+/// audited afterwards. Serialized, the `per_class` keys are strings, as JSON
+/// object keys are; the Python binding hands them back as integers.
+///
+/// `#[non_exhaustive]`: an output DTO that callers read, never construct.
+#[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
+pub struct PanopticResults {
+    /// hotcoco version that produced these results.
+    pub hotcoco_version: String,
+    pub provenance: Provenance,
+    pub reference_deviations: Vec<String>,
+    #[serde(rename = "All")]
+    pub all: PqSplit,
+    #[serde(rename = "Things")]
+    pub things: PqSplit,
+    #[serde(rename = "Stuff")]
+    pub stuff: PqSplit,
+    pub per_class: BTreeMap<u64, PqClassResult>,
+}
+
+impl PanopticResults {
+    /// Serialize to a pretty-printed JSON string.
+    pub fn to_json(&self) -> crate::error::Result<String> {
+        Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Write as pretty-printed JSON to a file.
+    pub fn save(&self, path: &Path) -> crate::error::Result<()> {
+        let file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(std::io::BufWriter::new(file), self)?;
+        Ok(())
+    }
+}
+
 /// The panoptic evaluator.
 pub struct PanopticEval {
     gt: PanopticDataset,
@@ -119,8 +173,41 @@ pub struct PanopticEval {
 /// already applied — a repeated id keeps the last record at the first
 /// record's position.
 struct Side<'a> {
-    map: LabelMap,
+    pixels: Pixels,
     segments: Vec<(u32, &'a SegmentInfo)>,
+}
+
+/// One side's pixels, in whichever form it arrived.
+enum Pixels {
+    Png(raster::Png),
+    Map(LabelMap),
+}
+
+impl Pixels {
+    fn dims(&self) -> (u32, u32) {
+        match self {
+            Pixels::Png(png) => (png.h, png.w),
+            Pixels::Map(map) => (map.h, map.w),
+        }
+    }
+
+    /// Column-major ids, the order a painted map has.
+    fn into_label_map(self) -> LabelMap {
+        match self {
+            Pixels::Png(png) => png.into_label_map(),
+            Pixels::Map(map) => map,
+        }
+    }
+}
+
+/// The overlap histogram of two sides in one pixel order: two PNG files are
+/// scanned row-major straight off their bytes; any other pairing goes
+/// through column-major maps, one transpose at most.
+fn overlaps(gt: Pixels, pred: Pixels) -> Overlaps {
+    match (gt, pred) {
+        (Pixels::Png(g), Pixels::Png(p)) => g.overlaps(&p),
+        (g, p) => Overlaps::compute(&g.into_label_map().labels, &p.into_label_map().labels),
+    }
 }
 
 /// Read-only state shared by every image's evaluation.
@@ -309,6 +396,39 @@ impl PanopticEval {
         }
     }
 
+    /// The run in panopticapi's shape — see [`PanopticResults`].
+    ///
+    /// # Errors
+    ///
+    /// If [`run`](Self::run) has not completed.
+    pub fn results(&self) -> crate::error::Result<PanopticResults> {
+        let result = self
+            .result
+            .as_ref()
+            .ok_or("run() must be called before results()")?;
+        Ok(PanopticResults {
+            hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
+            provenance: self.provenance(),
+            reference_deviations: self.reference_deviations(),
+            all: result.all,
+            things: result.things,
+            stuff: result.stuff,
+            per_class: result
+                .per_category
+                .iter()
+                .map(|(&id, counts)| {
+                    (
+                        id,
+                        PqClassResult {
+                            scores: counts.scores_or_missing(),
+                            counts: *counts,
+                        },
+                    )
+                })
+                .collect(),
+        })
+    }
+
     /// The run as an [`EvalReport`]: the nine headline metrics, PQ/SQ/RQ per
     /// category name, the three splits as groups with their `n`, no curves.
     /// Categories and splits nothing was computed for are left out rather
@@ -398,7 +518,7 @@ fn load_side<'a>(
     side: &str,
 ) -> crate::error::Result<Side<'a>> {
     if let (Some(folder), Some(file_name)) = (folder, &ann.file_name) {
-        let map = raster::read_png(&folder.join(file_name))?;
+        let png = raster::read_png(&folder.join(file_name))?;
         // The reference's dict over `segments_info` applies here, where the
         // id is the PNG color. An id a 24-bit color cannot spell is not in
         // the PNG; `u32::MAX` is a label no PNG carries.
@@ -406,7 +526,10 @@ fn load_side<'a>(
             .into_iter()
             .map(|s| (u32::try_from(s.id).unwrap_or(u32::MAX), s))
             .collect();
-        return Ok(Side { map, segments });
+        return Ok(Side {
+            pixels: Pixels::Png(png),
+            segments,
+        });
     }
 
     let (h, w) = match canvas {
@@ -438,7 +561,7 @@ fn load_side<'a>(
     }
     let map = raster::paint(&masks, h, w).map_err(|e| format!("image {}: {e}", ann.image_id))?;
     Ok(Side {
-        map,
+        pixels: Pixels::Map(map),
         segments: labeled,
     })
 }
@@ -456,21 +579,18 @@ fn eval_image(
         ctx.gt_dims.get(&image_id).copied(),
         "ground-truth",
     )?;
-    let pred = load_side(
-        pred_ann,
-        ctx.pred_folder,
-        Some((gt.map.h, gt.map.w)),
-        "predicted",
-    )?;
-    if (gt.map.h, gt.map.w) != (pred.map.h, pred.map.w) {
+    let gt_dims = gt.pixels.dims();
+    let pred = load_side(pred_ann, ctx.pred_folder, Some(gt_dims), "predicted")?;
+    let pred_dims = pred.pixels.dims();
+    if gt_dims != pred_dims {
         return Err(format!(
             "image {image_id}: ground truth is {}×{} but the prediction is {}×{}",
-            gt.map.h, gt.map.w, pred.map.h, pred.map.w
+            gt_dims.0, gt_dims.1, pred_dims.0, pred_dims.1
         )
         .into());
     }
 
-    let overlaps = Overlaps::compute(&gt.map.labels, &pred.map.labels);
+    let overlaps = overlaps(gt.pixels, pred.pixels);
     let area_of = |areas: &[(u32, u64)], label: u32| {
         areas
             .binary_search_by_key(&label, |&(l, _)| l)

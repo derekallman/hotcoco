@@ -106,7 +106,7 @@ pub use detection::hierarchy::Hierarchy;
 // for a type detection does not own.
 pub use metrics::bootstrap::BootstrapCI;
 pub use metrics::calibration::CalibrationBin;
-pub use panoptic::{PanopticDataset, PanopticEval, PanopticResult};
+pub use panoptic::{PanopticDataset, PanopticEval, PanopticResult, PanopticResults};
 pub use params::{AreaRange, IouType, Params};
 pub use quality::{
     CategoryStats, DatasetStats, DatasetSummary, Finding, HealthReport, Layer, SummaryStats,

@@ -64,9 +64,10 @@ signatures and return shapes.
 | `reference_deviations()` | `list[str]` | Why this run is not comparable to panopticapi; empty when it is |
 | `provenance()` | `str` | `"parity_verified"` or `"extension"` |
 
-In Rust the same names return `Result` where Python raises, `result()`
-exposes the `PanopticResult` behind `results()`, and `summary_lines()` is
-spelled `summarize_lines()`.
+In Rust the same names return `Result` where Python raises: `results()`
+returns a `PanopticResults` with `to_json()` and `save()`, `result()` exposes
+the raw `PanopticResult` counts behind it, and `summary_lines()` is spelled
+`summarize_lines()`.
 
 ### `results()`
 

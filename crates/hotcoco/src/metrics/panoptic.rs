@@ -37,6 +37,7 @@ pub struct PqCounts {
     /// Predicted segments that matched nothing and were not ignored.
     pub fp: u64,
     /// Ground-truth segments (not crowd) that nothing matched.
+    #[serde(rename = "fn")]
     pub fn_: u64,
 }
 

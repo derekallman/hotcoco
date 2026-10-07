@@ -9,8 +9,7 @@ use std::path::PathBuf;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use hotcoco_core::metrics::panoptic::PqCounts;
-use hotcoco_core::panoptic::{METRIC_NAMES, PanopticDataset, PanopticEval, PqSplit};
+use hotcoco_core::panoptic::{METRIC_NAMES, PanopticDataset, PanopticEval};
 
 use crate::convert::{from_py_json, py_to_dataset, type_name};
 use crate::{PyCOCO, print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
@@ -73,30 +72,6 @@ fn dataset_arg(
         Some(folder) => dataset.with_folder(folder),
         None => dataset,
     })
-}
-
-fn split_to_py<'py>(py: Python<'py>, split: &PqSplit) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new(py);
-    d.set_item("pq", split.scores.pq)?;
-    d.set_item("sq", split.scores.sq)?;
-    d.set_item("rq", split.scores.rq)?;
-    d.set_item("n", split.n)?;
-    Ok(d)
-}
-
-fn counts_to_py<'py>(py: Python<'py>, counts: &PqCounts) -> PyResult<Bound<'py, PyDict>> {
-    let d = PyDict::new(py);
-    // The sentinel, not 0.0, for a category nothing was seen for: 0.0 is a
-    // real score (every segment missed), and the counts beside it say which.
-    let scores = counts.scores_or_missing();
-    d.set_item("pq", scores.pq)?;
-    d.set_item("sq", scores.sq)?;
-    d.set_item("rq", scores.rq)?;
-    d.set_item("tp", counts.tp)?;
-    d.set_item("fp", counts.fp)?;
-    d.set_item("fn", counts.fn_)?;
-    d.set_item("iou", counts.iou)?;
-    Ok(d)
 }
 
 #[doc = "Panoptic quality evaluation: PQ, SQ, and RQ against panopticapi.
@@ -213,22 +188,17 @@ three scores, where panopticapi prints ``0.0`` and skips it in the mean —
 the counts beside it are all zero either way. Also carries ``provenance``,
 ``reference_deviations`` and ``hotcoco_version``."]
     fn results(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let result = self.inner.result().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("evaluate() must be called before results()")
-        })?;
-        let d = PyDict::new(py);
-        d.set_item("All", split_to_py(py, &result.all)?)?;
-        d.set_item("Things", split_to_py(py, &result.things)?)?;
-        d.set_item("Stuff", split_to_py(py, &result.stuff)?)?;
+        let results = self.inner.results().map_err(to_pyerr)?;
+        let dict = serde_to_py(py, &results)?;
+        let dict = dict.bind(py).cast::<PyDict>()?;
+        // JSON object keys are strings; panopticapi keys `per_class` by the
+        // integer category id, and so does this.
         let per_class = PyDict::new(py);
-        for (id, counts) in &result.per_category {
-            per_class.set_item(id, counts_to_py(py, counts)?)?;
+        for (id, scores) in &results.per_class {
+            per_class.set_item(id, serde_to_py(py, scores)?)?;
         }
-        d.set_item("per_class", per_class)?;
-        d.set_item("provenance", self.provenance()?)?;
-        d.set_item("reference_deviations", self.inner.reference_deviations())?;
-        d.set_item("hotcoco_version", env!("CARGO_PKG_VERSION"))?;
-        Ok(d.into_any().unbind())
+        dict.set_item("per_class", per_class)?;
+        Ok(dict.clone().into_any().unbind())
     }
 
     #[doc = "The run as the ``EvalReport`` dict every hotcoco family produces:

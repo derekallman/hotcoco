@@ -223,6 +223,19 @@ fn worked_example_scores_by_hand() {
     let lines = ev.summarize_lines();
     assert_eq!(lines[0], "          |    PQ     SQ     RQ     N");
     assert_eq!(lines[2], "All       |  87.5   87.5  100.0     2");
+
+    // `results()` is panopticapi's shape: flat splits, per-class scores with
+    // the counts beside them, `fn` spelled as the reference spells it.
+    let results = ev.results().expect("results");
+    let json: serde_json::Value =
+        serde_json::from_str(&results.to_json().expect("json")).expect("parses");
+    assert_eq!(json["All"]["pq"], 0.875);
+    assert_eq!(json["Things"]["n"], 1);
+    assert_eq!(json["per_class"]["10"]["tp"], 1);
+    assert_eq!(json["per_class"]["10"]["fn"], 0);
+    assert_eq!(json["per_class"]["10"]["pq"], 0.75);
+    assert_eq!(json["provenance"], "parity_verified");
+    assert!(json["per_class"].get("20").is_some());
 }
 
 #[test]
