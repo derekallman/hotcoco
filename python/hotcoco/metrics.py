@@ -35,6 +35,7 @@ precision_recall_curve = _metrics.precision_recall_curve
 calibration_curve = _metrics.calibration_curve
 calibration_error = _metrics.calibration_error
 confusion_matrix = _metrics.confusion_matrix
+panoptic_quality = _metrics.panoptic_quality
 is_computed = _metrics.is_computed
 is_missing = _metrics.is_missing
 
@@ -45,5 +46,6 @@ __all__ = [
     "confusion_matrix",
     "is_computed",
     "is_missing",
+    "panoptic_quality",
     "precision_recall_curve",
 ]

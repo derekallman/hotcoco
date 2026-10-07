@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `scripts/helpers.py`. panopticapi is not on PyPI, so it lives in a
     `panoptic` dependency group pinned to a commit, installed by default
     through `tool.uv.default-groups` and never advertised by the wheel.
+- `metrics.panoptic_quality(iou_sum, tp, fp, fn_)` returns `(PQ, SQ, RQ)` from
+  match counts, the panoptic formulas on plain numbers the way
+  `average_precision` is the detection one; Rust callers have
+  `metrics::panoptic::PqCounts::scores_or_missing()`.
 - `Category.isthing` (`bool | None`), read from `1`/`0` or `true`/`false` and
   round-tripped through `COCO` dicts. `None` on every detection file.
 - Rust: `Segmentation::to_rle(h, w)` rasterizes any segmentation variant onto

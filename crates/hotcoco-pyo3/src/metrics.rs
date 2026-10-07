@@ -7,6 +7,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
+use hotcoco_core::metrics::panoptic::PqCounts;
 use hotcoco_core::metrics::{calibration as rcal, confusion as rconf, counts as rcounts};
 use hotcoco_core::params::default_rec_thrs;
 
@@ -239,6 +240,47 @@ fn confusion_matrix(
 }
 
 #[pyfunction]
+#[pyo3(text_signature = "(iou_sum, tp, fp, fn_)")]
+#[doc = "Panoptic quality from match counts: ``(PQ, SQ, RQ)``.
+
+The formulas behind ``hotcoco.panoptic``, for counts produced by your own
+matcher::
+
+    PQ = iou_sum / (tp + 0.5 fp + 0.5 fn)
+    SQ = iou_sum / tp             (0.0 when tp == 0)
+    RQ = tp / (tp + 0.5 fp + 0.5 fn)
+
+Args:
+    iou_sum: Summed IoU of the matched pairs.
+    tp: Matched ground-truth segments.
+    fp: Predicted segments that matched nothing and were not ignored.
+    fn_: Ground-truth segments (not crowd) that nothing matched. Spelled with
+        a trailing underscore because ``fn`` is a keyword in Rust, where the
+        same counts live.
+
+Returns:
+    tuple: ``(pq, sq, rq)`` in [0, 1], or ``(-1.0, -1.0, -1.0)`` when
+    ``tp + fp + fn == 0`` — nothing to score, which panopticapi leaves out of
+    its averages. Average per-category results with ``is_computed`` as the
+    filter to get panopticapi's ``All``/``Things``/``Stuff`` numbers.
+
+Example:
+    >>> from hotcoco import metrics
+    >>> metrics.panoptic_quality(1.6, tp=2, fp=1, fn_=1)
+    (0.5333333333333333, 0.8, 0.6666666666666666)
+"]
+fn panoptic_quality(iou_sum: f64, tp: u64, fp: u64, fn_: u64) -> (f64, f64, f64) {
+    let s = PqCounts {
+        iou: iou_sum,
+        tp,
+        fp,
+        fn_,
+    }
+    .scores_or_missing();
+    (s.pq, s.sq, s.rq)
+}
+
+#[pyfunction]
 #[doc = "Whether a metric value was actually computed.
 
 hotcoco reports ``-1.0`` for a metric that was *not computed for this
@@ -271,6 +313,7 @@ pub fn register(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     m.add_function(wrap_pyfunction!(calibration_curve, &m)?)?;
     m.add_function(wrap_pyfunction!(calibration_error, &m)?)?;
     m.add_function(wrap_pyfunction!(confusion_matrix, &m)?)?;
+    m.add_function(wrap_pyfunction!(panoptic_quality, &m)?)?;
     m.add_function(wrap_pyfunction!(is_computed, &m)?)?;
     m.add_function(wrap_pyfunction!(is_missing, &m)?)?;
     Ok(m)

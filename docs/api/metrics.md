@@ -254,6 +254,38 @@ as one whole-dataset call. That is what lets you parallelize and reduce.
 Class indices outside `range(num_classes)` are dropped rather than raising, so a
 stray label can't take down an evaluation run.
 
+### `panoptic_quality`
+
+PQ, SQ, and RQ from match counts.
+
+=== "Python"
+
+    ```python
+    panoptic_quality(iou_sum: float, tp: int, fp: int, fn_: int) -> tuple[float, float, float]
+    ```
+
+=== "Rust"
+
+    ```rust
+    metrics::panoptic::PqCounts { iou, tp, fp, fn_ }.scores_or_missing() -> PqScores
+    metrics::panoptic::pq_average(counts: impl IntoIterator<Item = &PqCounts>) -> (PqScores, usize)
+    ```
+
+The formulas behind [`panoptic`](panoptic.md), for counts your own matcher
+produced: `PQ = Σ IoU / (TP + ½ FP + ½ FN)`, `SQ = Σ IoU / TP`,
+`RQ = TP / (TP + ½ FP + ½ FN)`, so `PQ = SQ × RQ`.
+
+```python
+>>> metrics.panoptic_quality(1.6, tp=2, fp=1, fn_=1)
+(0.5333333333333333, 0.8, 0.6666666666666666)
+```
+
+Returns `(-1.0, -1.0, -1.0)` when `tp + fp + fn == 0`: nothing to score, which
+panopticapi leaves out of its averages. To reproduce its `All`, `Things`, and
+`Stuff` numbers, average the per-category results that `is_computed` accepts.
+`fn_` carries a trailing underscore because `fn` is a Rust keyword and the
+same counts live there.
+
 ### `is_computed` and `is_missing`
 
 ```python

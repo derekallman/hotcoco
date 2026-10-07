@@ -141,13 +141,13 @@ The driver composes the two shared layers, as detection does:
 | | Python | Rust |
 |---|---|---|
 | Segment overlaps and matching | — | `primitives::panoptic::{Overlaps, match_segments, pq_iou}` |
-| Counts and formulas | — | `metrics::panoptic::{PqCounts, PqScores, pq_average}` |
+| Counts and formulas | [`metrics.panoptic_quality`](metrics.md#panoptic_quality) | `metrics::panoptic::{PqCounts, PqScores, pq_average}` |
 
 `Overlaps::compute(gt, pred)` is the per-image histogram of `(gt id, pred id)`
 pixel co-occurrences; `match_segments` applies the protocol's rules to it;
-`PqCounts::scores()` and `pq_average` turn counts into PQ, SQ, RQ. They have
-no Python bindings yet; the functional surface for panoptic lands with the
-rest of the composability work.
+`PqCounts::scores()` and `pq_average` turn counts into PQ, SQ, RQ. The
+formulas are callable from Python as `metrics.panoptic_quality`; the matcher
+is not bound yet, and lands with the rest of the composability work.
 
 ## Data model
 

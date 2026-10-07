@@ -27,6 +27,10 @@ def calibration_error(scores: _Floats, matched: _Bools, n_bins: int = 10) -> tup
 def confusion_matrix(
     gt: Sequence[int | None], dt: Sequence[int | None], num_classes: int
 ) -> npt.NDArray[np.uint64]: ...
+def panoptic_quality(iou_sum: float, tp: int, fp: int, fn_: int) -> tuple[float, float, float]:
+    """``(PQ, SQ, RQ)`` from match counts; ``(-1.0, -1.0, -1.0)`` when there is nothing to score."""
+    ...
+
 def is_computed(v: float) -> bool:
     """Whether a metric value was actually computed (``-1.0`` means "not computed")."""
     ...

@@ -319,6 +319,9 @@ def test_functional_layer_needs_no_evaluator():
     assert ece == mce  # single occupied bin
     assert metrics.confusion_matrix([0, None], [0, 1], num_classes=2).shape == (3, 3)
     assert len(metrics.calibration_curve([0.5], [True], n_bins=4)) == 4
+    pq, sq, rq = metrics.panoptic_quality(1.6, tp=2, fp=1, fn_=1)
+    assert abs(pq - sq * rq) < 1e-12 and abs(sq - 0.8) < 1e-12
+    assert metrics.panoptic_quality(0.0, 0, 0, 0) == (-1.0, -1.0, -1.0)
     rows, _ = primitives.lsap([[1.0, 2.0], [3.0, 4.0]])
     assert len(rows) == 2
 
