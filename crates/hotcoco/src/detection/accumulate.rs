@@ -12,7 +12,7 @@ use crate::metrics::counts::descending_score_key;
 /// The key two area ranges are compared on: bit equality of both bounds.
 /// `[0, 1e5**2]` and `[0, 1e10]` are the same range only if they are the same
 /// `f64`s — no tolerance, because `params.area_ranges` is copied, not computed.
-fn area_key(range: [f64; 2]) -> [u64; 2] {
+pub(super) fn area_key(range: [f64; 2]) -> [u64; 2] {
     [range[0].to_bits(), range[1].to_bits()]
 }
 
@@ -114,7 +114,7 @@ impl<'a> EvalGrouping<'a> {
         // Group the pairs by K slot with a counting sort: one pass finds each
         // pair's slot and counts them, the second writes every pair once into
         // its slot's span of one exactly sized array. A pair's area cells are
-        // not stored at all — `cells_into` reads them off `area_cells` — so the
+        // not stored at all — `accumulate_impl` reads them off `area_cells` — so the
         // grouping is one entry per pair, not one per cell per area range.
         // Growing a bucket per (category, area range) by pushing cost more
         // than the precision curves themselves at 10x COCO val2017.
@@ -209,27 +209,16 @@ impl<'a> EvalGrouping<'a> {
         mask
     }
 
-    /// The `(k_idx, a_idx)` bucket, cell by cell, into `out`: each of the
-    /// slot's pairs whose image slot `in_scope` admits, in pair order, with
-    /// its cells for the area range in evaluate-time order.
-    fn cells_into(
-        &self,
-        k_idx: usize,
-        a_idx: usize,
-        in_scope: impl Fn(u32) -> bool,
-        out: &mut Vec<CellRef>,
-    ) {
+    /// The pairs of K slot `k_idx` whose image slot `in_scope` admits, in
+    /// pair order, into `out`.
+    fn pairs_into(&self, k_idx: usize, in_scope: impl Fn(u32) -> bool, out: &mut Vec<u32>) {
         out.clear();
-        let areas = &self.area_cells[a_idx];
-        for &(pair, slot) in &self.pairs[self.k_starts[k_idx]..self.k_starts[k_idx + 1]] {
-            if in_scope(slot) {
-                out.extend(
-                    areas
-                        .iter()
-                        .map(|&at_eval| CellRef::new(pair as usize, at_eval)),
-                );
-            }
-        }
+        out.extend(
+            self.pairs[self.k_starts[k_idx]..self.k_starts[k_idx + 1]]
+                .iter()
+                .filter(|&&(_, slot)| in_scope(slot))
+                .map(|&(pair, _)| pair),
+        );
     }
 }
 
@@ -273,20 +262,21 @@ pub(super) fn accumulate_impl(
     // `HashSet<u64>` probe per cell per work item.
     let img_mask = grouping.image_mask(img_filter);
 
-    // Work items are `(k_idx, a_idx)` with the M axis **inside**, not the full
-    // `(k, a, m)` product. Everything the max-detection settings share — which
-    // cells are in scope, and `num_gt`, which does not depend on the cap — is
-    // resolved once per item instead of once per `m`. On COCO that is three
-    // passes over the cell list collapsed into one, and the `num_gt == 0`
-    // short-circuit now skips all three M slots together.
+    // Work items are K slots, each with its area slots inside, in parallel,
+    // and the M axis inside those. What an area range cannot change is done
+    // once per K slot: which pairs are in scope, and the score ranking of
+    // their detections — an area range decides which detections are ignored,
+    // never which are gathered or how they rank. What the max-detection
+    // settings share — the cells in scope, and `num_gt`, which does not depend
+    // on the cap — is resolved once per area slot instead of once per `m`.
     //
-    // Each item's output cells are disjoint from every other item's, so no
-    // floating-point sum is reassociated and the items can write the output
+    // Each area slot's output cells are disjoint from every other's, so no
+    // floating-point sum is reassociated and the slots can write the output
     // arrays in place: each stages its writes on its thread, then takes the
     // lock once to apply them.
 
-    /// One item's `(k, a)` slab of every output, staged on its thread until
-    /// the item is done.
+    /// One `(k, a)` slab of every output, staged on its thread until the
+    /// slot is done.
     #[derive(Default)]
     struct Staged {
         /// `[M x T x R]`.
@@ -299,20 +289,18 @@ pub(super) fn accumulate_impl(
         recall: Vec<(f64, f64)>,
     }
 
-    /// One item's gathered detections and the curve buffers swept over
-    /// them, reused across the items a rayon job runs and sized exactly, so
-    /// no buffer doubles with its old and new copies both live. The person
-    /// category at 10x val2017 gathers ~130k detections per area range.
+    /// A gather's detections ranked by score, and each cap's share of them.
+    /// Sized exactly, so no buffer doubles with its old and new copies both
+    /// live; the person category at 10x val2017 gathers ~130k detections.
     #[derive(Default)]
-    struct Gathered {
-        evals: Vec<CellRef>,
+    struct Ranked {
         scores: Vec<f64>,
         /// Position of each gathered detection inside its cell's
         /// score-descending list — the per-cell truncation index that
         /// `dtScores[0:maxDet]` applies.
         rank_in_cell: Vec<u32>,
-        /// `(descending_score_key(score), position)` per gathered detection, sorted:
-        /// the score order, as gathered positions.
+        /// `(descending_score_key(score), position)` per gathered detection,
+        /// sorted: the score order, as gathered positions.
         keyed: Vec<(u64, u32)>,
         /// Per gathered position, its rank in `keyed`.
         rank_of: Vec<u32>,
@@ -320,6 +308,91 @@ pub(super) fn accumulate_impl(
         all_ranks: Vec<u32>,
         /// Per `m`, the ranks its cap keeps; empty where the cap keeps all.
         filtered: Vec<Vec<u32>>,
+    }
+
+    /// Gather the detections of `pairs`, in order, each cut at `cap`, and rank
+    /// them, once for every `m`.
+    ///
+    /// pycocotools concatenates each cell's `dtScores[0:maxDet]` and mergesorts
+    /// (stably) per `m`. A stable sort of the per-cell-truncated concatenation
+    /// equals the stable sort of the concatenation truncated at the *largest*
+    /// cap, filtered to `rank_in_cell < maxDet`: filtering preserves relative
+    /// order, and ties break on concatenation position, which the filter also
+    /// preserves. So gather at `Params::max_det()` once, sort once, and derive
+    /// each `m` by a stable filter. Cells may hold more detections than the
+    /// *current* cap when `params.max_dets` shrank between `evaluate()` and
+    /// `accumulate()`, so the gather truncates to the current cap and never
+    /// trusts the stored length.
+    ///
+    /// The identity needs a strict weak order on scores, which every non-NaN
+    /// score has (`-0.0` and `0.0` compare equal and keep input order). A NaN
+    /// score has no place in it and ranks wherever its bits put it. `load_res`
+    /// rejects NaN scores; `COCO::from_dataset` does not, so NaN ranking is
+    /// undefined.
+    fn rank_gather(
+        cells: &super::matching::Cells,
+        cap: usize,
+        max_dets: &[usize],
+        pairs: impl Iterator<Item = usize> + Clone,
+        out: &mut Ranked,
+    ) {
+        let n: usize = pairs.clone().map(|p| cells.scores(p).len().min(cap)).sum();
+        // The gather is a subset of the scores arena, so its positions, and
+        // each cell's ranks below them, fit `u32`.
+        let n_u32 = arena_index(n);
+        clear_with_capacity(&mut out.scores, n);
+        clear_with_capacity(&mut out.rank_in_cell, n);
+        for pair in pairs {
+            let scores = cells.scores(pair);
+            let nd = scores.len().min(cap);
+            out.scores.extend_from_slice(&scores[..nd]);
+            out.rank_in_cell.extend(0..nd as u32);
+        }
+        // Sort by score descending, ties in concatenation order: a stable sort
+        // on `descending_score_key`, each comparison reading an integer in place
+        // rather than two scores through an index. The position rides along to
+        // map ranks back to gathered detections.
+        clear_with_capacity(&mut out.keyed, n);
+        out.keyed.extend(
+            out.scores
+                .iter()
+                .zip(0..n_u32)
+                .map(|(&score, i)| (descending_score_key(score), i)),
+        );
+        out.keyed.sort_by_key(|&(key, _)| key);
+        out.rank_of.clear();
+        out.rank_of.resize(n, 0);
+        for (rank, &(_, i)) in (0..n_u32).zip(&out.keyed) {
+            out.rank_of[i as usize] = rank;
+        }
+        // Stable filter of the shared order == per-`m` sort (see above), as
+        // ranks; a cap at or above the gather's keeps them all.
+        clear_with_capacity(&mut out.all_ranks, n);
+        out.all_ranks.extend(0..n_u32);
+        out.filtered.resize_with(max_dets.len(), Vec::new);
+        let rank_in_cell = &out.rank_in_cell;
+        for (kept, &max_det) in out.filtered.iter_mut().zip(max_dets) {
+            kept.clear();
+            if max_det < cap {
+                kept.extend(
+                    out.keyed
+                        .iter()
+                        .zip(0..n_u32)
+                        .filter_map(|(&(_, i), rank)| {
+                            ((rank_in_cell[i as usize] as usize) < max_det).then_some(rank)
+                        }),
+                );
+            }
+        }
+    }
+
+    /// One area slot's cells and the buffers swept over them.
+    #[derive(Default)]
+    struct Swept {
+        evals: Vec<CellRef>,
+        /// The slot's own ranking, for a slot that reads more than one
+        /// evaluate-time block and so gathers each pair more than once.
+        own: Ranked,
         /// Per rank, the detection's matched and ignore flags at up to 64
         /// thresholds, one bit each.
         matched_bits: Vec<u64>,
@@ -331,6 +404,7 @@ pub(super) fn accumulate_impl(
         fp: Vec<f64>,
         pr_scratch: crate::metrics::counts::PrCurveScratch,
         curve: Vec<(usize, f64, usize)>,
+        staged: Staged,
     }
 
     let shape = EvalShape { t, r, k, a, m };
@@ -348,264 +422,260 @@ pub(super) fn accumulate_impl(
             Vec::new()
         },
     });
+    let cap = params.max_det();
 
-    // One item per (K slot, area slot), indexed `k_idx * a + a_idx`.
-    (0..k * a)
-        .into_par_iter()
-        .for_each_init(<(Staged, Gathered)>::default, |(staged, g), item| {
-            let (k_idx, a_idx) = (item / a, item % a);
-            // Materialized once for every `m`, rather than filtered per `m`.
-            grouping.cells_into(k_idx, a_idx, |slot| img_mask[slot as usize], &mut g.evals);
-            let evals = &g.evals;
-
+    (0..k).into_par_iter().for_each_init(
+        <(Vec<u32>, Ranked, Vec<usize>, Vec<Swept>)>::default,
+        |(pairs, shared, num_gts, swepts), k_idx| {
+            grouping.pairs_into(k_idx, |slot| img_mask[slot as usize], pairs);
             // Independent of `max_det` — the cap truncates detections, never
             // ground truth — so it is summed once for the whole M axis.
-            let num_gt: usize = evals.iter().map(|&e| cells.num_gt(e) as usize).sum();
-            if num_gt == 0 {
+            num_gts.clear();
+            num_gts.extend(grouping.area_cells.iter().map(|at_evals| {
+                pairs
+                    .iter()
+                    .flat_map(|&pair| {
+                        at_evals
+                            .iter()
+                            .map(move |&at| cells.num_gt(CellRef::new(pair as usize, at)) as usize)
+                    })
+                    .sum::<usize>()
+            }));
+            if num_gts.iter().all(|&n| n == 0) {
                 return;
             }
-            // Precision and scores start at 0.0 (distinct from -1.0, "no data")
-            // wherever ground truth exists, so a category with GT but no matches
-            // shows 0 AP rather than "missing" and dropping out of the mean. Only
-            // recall thresholds reached by detections are overwritten below;
-            // unreachable ones stay at 0.0. Per item, not per `m`: `num_gt` does
-            // not depend on the max-det cap.
-            staged.precision.clear();
-            staged.precision.resize(m * t * r, 0.0);
-            staged.scores.clear();
-            staged.scores.resize(m * t * r, 0.0);
-            staged.recall.clear();
-            staged.recall.resize(m * t, (-1.0, -1.0));
-
-            // One gather and one sort per work item, shared by every `m`.
-            //
-            // pycocotools concatenates each cell's `dtScores[0:maxDet]` and
-            // mergesorts (stably) per `m`. A stable sort of the per-cell-truncated
-            // concatenation equals the stable sort of the concatenation truncated
-            // at the *largest* cap, filtered to `rank_in_cell < maxDet`: filtering
-            // preserves relative order, and ties break on concatenation position,
-            // which the filter also preserves. So gather at `Params::max_det()`
-            // once, sort once, and derive each `m` by a stable filter. Cells may hold more detections than the
-            // *current* cap when `params.max_dets` shrank between `evaluate()` and
-            // `accumulate()`, so the gather truncates to the current cap and never
-            // trusts the stored length.
-            //
-            // The identity needs a strict weak order on scores, which every
-            // non-NaN score has (`-0.0` and `0.0` compare equal and keep input
-            // order). A NaN score has no place in it and ranks wherever its bits
-            // put it. `load_res` rejects NaN scores; `COCO::from_dataset` does
-            // not, so NaN ranking is undefined.
-            let cap = params.max_det();
-            // A cell's detection count at the current cap.
-            let nd_of = |cell: CellRef| cells.scores(cell.pair()).len().min(cap);
-            let n_gathered: usize = evals.iter().map(|&cell| nd_of(cell)).sum();
-            // The gather is a subset of the scores arena, so its positions,
-            // and each cell's ranks below them, fit `u32`.
-            let n_gathered_u32 = arena_index(n_gathered);
-            clear_with_capacity(&mut g.scores, n_gathered);
-            clear_with_capacity(&mut g.rank_in_cell, n_gathered);
-            for &cell in evals {
-                let nd = nd_of(cell);
-                g.scores.extend_from_slice(&cells.scores(cell.pair())[..nd]);
-                g.rank_in_cell.extend(0..nd as u32);
+            // The ranking every slot reading one evaluate-time block shares.
+            let shares = grouping
+                .area_cells
+                .iter()
+                .zip(num_gts.iter())
+                .any(|(at_evals, &n)| at_evals.len() == 1 && n > 0);
+            if shares {
+                rank_gather(
+                    cells,
+                    cap,
+                    &params.max_dets,
+                    pairs.iter().map(|&p| p as usize),
+                    shared,
+                );
             }
-            let (all_dt_scores, rank_in_cell) = (&g.scores, &g.rank_in_cell);
+            let (pairs, shared, num_gts) = (&*pairs, &*shared, &*num_gts);
 
-            // Sort by score descending, ties in concatenation order: a stable
-            // sort on `descending_score_key`, each comparison reading an integer
-            // in place rather than two scores through an index. The position
-            // rides along to map ranks back to gathered detections.
-            clear_with_capacity(&mut g.keyed, n_gathered);
-            g.keyed.extend(
-                all_dt_scores
-                    .iter()
-                    .zip(0..n_gathered_u32)
-                    .map(|(&score, i)| (descending_score_key(score), i)),
-            );
-            g.keyed.sort_by_key(|&(key, _)| key);
-            // Everything from here on works in score order: each detection's
-            // match bits are written at its rank, so every curve reads its
-            // flags front to back.
-            g.rank_of.clear();
-            g.rank_of.resize(n_gathered, 0);
-            for (rank, &(_, i)) in (0..n_gathered_u32).zip(&g.keyed) {
-                g.rank_of[i as usize] = rank;
-            }
-
-            // Stable filter of the shared order == per-`m` sort (see above).
-            // Built once per `m`, ahead of the threshold sweep, as ranks into
-            // the sorted arrays; a cap at or above the gather's keeps them all.
-            clear_with_capacity(&mut g.all_ranks, n_gathered);
-            g.all_ranks.extend(0..n_gathered_u32);
-            g.filtered.resize_with(m, Vec::new);
-            for (kept, &max_det) in g.filtered.iter_mut().zip(&params.max_dets) {
-                kept.clear();
-                if max_det < cap {
-                    kept.extend(g.keyed.iter().zip(0..n_gathered_u32).filter_map(
-                        |(&(_, i), rank)| {
-                            ((rank_in_cell[i as usize] as usize) < max_det).then_some(rank)
-                        },
-                    ));
+            // One `Swept` per area slot, kept across the K slots this rayon job
+            // runs: a fresh one per (K, A) item was an allocation round trip
+            // per item for buffers that only grow.
+            swepts.resize_with(a, Swept::default);
+            swepts.par_iter_mut().enumerate().for_each(|(a_idx, s)| {
+                let num_gt = num_gts[a_idx];
+                if num_gt == 0 {
+                    return;
                 }
-            }
-            let inds_of = |m_idx: usize| -> &[u32] {
-                if params.max_dets[m_idx] >= cap {
-                    &g.all_ranks
+                let Swept {
+                    evals,
+                    own,
+                    matched_bits,
+                    ignore_bits,
+                    matched,
+                    ignore,
+                    tp,
+                    fp,
+                    pr_scratch,
+                    curve,
+                    staged,
+                } = s;
+                let at_evals = &grouping.area_cells[a_idx];
+                evals.clear();
+                evals.extend(pairs.iter().flat_map(|&pair| {
+                    at_evals
+                        .iter()
+                        .map(move |&at| CellRef::new(pair as usize, at))
+                }));
+                let ranked: &Ranked = if at_evals.len() == 1 {
+                    shared
                 } else {
-                    &g.filtered[m_idx]
-                }
-            };
-
-            // Each detection's matched and ignore flags at up to 64 thresholds
-            // at a time, as one bit per threshold, at its rank: one walk over
-            // the cells per 64 thresholds, rather than one per threshold.
-            for (chunk_idx, chunk) in t_rows.chunks(64).enumerate() {
-                for bits in [&mut g.matched_bits, &mut g.ignore_bits] {
-                    bits.clear();
-                    bits.resize(n_gathered, 0);
-                }
-                // When the chunk's thresholds are consecutive evaluate-time
-                // rows — always, unless `iou_thrs` changed after `evaluate()` —
-                // a detection's flags are one read each.
-                let run = chunk
-                    .first()
-                    .copied()
-                    .flatten()
-                    .map(|first| first..first + chunk.len())
-                    .filter(|rows| chunk.iter().copied().eq(rows.clone().map(Some)));
-                let mut at = 0;
-                for &cell in evals {
-                    let block = cells.block(cell);
-                    for d in 0..nd_of(cell) {
-                        let (matched, ignore) = match &run {
-                            Some(rows) => (
-                                block.matched(d, rows.clone()),
-                                block.ignore(d, rows.clone()),
-                            ),
-                            None => chunk
-                                .iter()
-                                .enumerate()
-                                .fold((0, 0), |(m, i), (bit, &row)| {
-                                    let Some(row) = row else { return (m, i) };
-                                    (
-                                        m | block.matched(d, row..row + 1) << bit,
-                                        i | block.ignore(d, row..row + 1) << bit,
-                                    )
-                                }),
-                        };
-                        let rank = g.rank_of[at] as usize;
-                        g.matched_bits[rank] = matched;
-                        g.ignore_bits[rank] = ignore;
-                        at += 1;
+                    rank_gather(
+                        cells,
+                        cap,
+                        &params.max_dets,
+                        evals.iter().map(|c| c.pair()),
+                        own,
+                    );
+                    own
+                };
+                let n_gathered = ranked.scores.len();
+                let inds_of = |m_idx: usize| -> &[u32] {
+                    if params.max_dets[m_idx] >= cap {
+                        &ranked.all_ranks
+                    } else {
+                        &ranked.filtered[m_idx]
                     }
-                }
+                };
 
-                // Thresholds outside, caps inside, so one threshold's flags are
-                // unpacked at a time.
-                for (bit, &row) in chunk.iter().enumerate() {
-                    let t_idx = chunk_idx * 64 + bit;
-                    if row.is_none() {
-                        // Never evaluated at this threshold: "not computed", not
-                        // the 0.0 a category with ground truth starts from.
-                        for m_idx in 0..m {
-                            let base = (m_idx * t + t_idx) * r;
-                            staged.precision[base..base + r].fill(-1.0);
-                            staged.scores[base..base + r].fill(-1.0);
+                // Precision and scores start at 0.0 (distinct from -1.0, "no data")
+                // wherever ground truth exists, so a category with GT but no matches
+                // shows 0 AP rather than "missing" and dropping out of the mean. Only
+                // recall thresholds reached by detections are overwritten below;
+                // unreachable ones stay at 0.0. Per slot, not per `m`: `num_gt` does
+                // not depend on the max-det cap.
+                staged.precision.clear();
+                staged.precision.resize(m * t * r, 0.0);
+                staged.scores.clear();
+                staged.scores.resize(m * t * r, 0.0);
+                staged.recall.clear();
+                staged.recall.resize(m * t, (-1.0, -1.0));
+
+                // Each detection's matched and ignore flags at up to 64 thresholds
+                // at a time, as one bit per threshold, at its rank: one walk over
+                // the cells per 64 thresholds, rather than one per threshold.
+                for (chunk_idx, chunk) in t_rows.chunks(64).enumerate() {
+                    for bits in [&mut *matched_bits, &mut *ignore_bits] {
+                        bits.clear();
+                        bits.resize(n_gathered, 0);
+                    }
+                    // When the chunk's thresholds are consecutive evaluate-time
+                    // rows — always, unless `iou_thrs` changed after `evaluate()` —
+                    // a detection's flags are one read each.
+                    let run = chunk
+                        .first()
+                        .copied()
+                        .flatten()
+                        .map(|first| first..first + chunk.len())
+                        .filter(|rows| chunk.iter().copied().eq(rows.clone().map(Some)));
+                    let mut at = 0;
+                    for &cell in evals.iter() {
+                        let block = cells.block(cell);
+                        for d in 0..cells.scores(cell.pair()).len().min(cap) {
+                            let (m_flags, i_flags) =
+                                match &run {
+                                    Some(rows) => (
+                                        block.matched(d, rows.clone()),
+                                        block.ignore(d, rows.clone()),
+                                    ),
+                                    None => chunk.iter().enumerate().fold(
+                                        (0, 0),
+                                        |(m, i), (bit, &row)| {
+                                            let Some(row) = row else { return (m, i) };
+                                            (
+                                                m | block.matched(d, row..row + 1) << bit,
+                                                i | block.ignore(d, row..row + 1) << bit,
+                                            )
+                                        },
+                                    ),
+                                };
+                            let rank = ranked.rank_of[at] as usize;
+                            matched_bits[rank] = m_flags;
+                            ignore_bits[rank] = i_flags;
+                            at += 1;
                         }
-                        continue;
                     }
-                    g.matched.clear();
-                    g.matched
-                        .extend(g.matched_bits.iter().map(|&w| w >> bit & 1 == 1));
-                    g.ignore.clear();
-                    g.ignore
-                        .extend(g.ignore_bits.iter().map(|&w| w >> bit & 1 == 1));
 
-                    for m_idx in 0..m {
-                        let inds = inds_of(m_idx);
-                        if inds.is_empty() {
-                            // GT exists but no detections — recall and AP are 0.0, not -1.0
-                            // "missing". The metric *is* computable here and the answer is that
-                            // nothing was found; reporting "not computed" would drop the
-                            // category from the mean and quietly raise mAP.
-                            let ap = if want_all_points { 0.0 } else { -1.0 };
-                            staged.recall[m_idx * t + t_idx] = (0.0, ap);
+                    // Thresholds outside, caps inside, so one threshold's flags are
+                    // unpacked at a time.
+                    for (bit, &row) in chunk.iter().enumerate() {
+                        let t_idx = chunk_idx * 64 + bit;
+                        if row.is_none() {
+                            // Never evaluated at this threshold: "not computed", not
+                            // the 0.0 a category with ground truth starts from.
+                            for m_idx in 0..m {
+                                let base = (m_idx * t + t_idx) * r;
+                                staged.precision[base..base + r].fill(-1.0);
+                                staged.scores[base..base + r].fill(-1.0);
+                            }
                             continue;
                         }
+                        matched.clear();
+                        matched.extend(matched_bits.iter().map(|&w| w >> bit & 1 == 1));
+                        ignore.clear();
+                        ignore.extend(ignore_bits.iter().map(|&w| w >> bit & 1 == 1));
 
-                        // `metrics::counts` owns the TP/FP classification and the
-                        // curve. The all-points AP is the exact area under the same
-                        // envelope the grid samples and needs the cumulative `tp`/`fp`
-                        // arrays, score-ordered — it cannot be recovered from the 101
-                        // samples afterwards — so Open Images materializes them and
-                        // reads the curve from them. Every other mode discards that
-                        // AP and takes the fused kernel, which produces the same
-                        // curve without the two arrays.
-                        let (final_recall, all_points_ap) = if want_all_points {
-                            crate::metrics::counts::cumulative_tp_fp(
-                                inds.iter().map(|&i| i as usize),
-                                &g.matched,
-                                Some(&g.ignore),
-                                &mut g.tp,
-                                &mut g.fp,
-                            );
-                            let final_recall = crate::metrics::counts::precision_recall_curve_into(
-                                &g.tp,
-                                &g.fp,
-                                num_gt,
-                                &params.rec_thrs,
-                                &mut g.pr_scratch,
-                                &mut g.curve,
-                            );
-                            let ap = crate::metrics::counts::average_precision_all_points(
-                                &g.tp, &g.fp, num_gt,
-                            );
-                            (final_recall, ap)
-                        } else {
-                            let final_recall =
-                                crate::metrics::counts::precision_recall_curve_of_order_into(
+                        for m_idx in 0..m {
+                            let inds = inds_of(m_idx);
+                            if inds.is_empty() {
+                                // GT exists but no detections — recall and AP are 0.0, not -1.0
+                                // "missing". The metric *is* computable here and the answer is that
+                                // nothing was found; reporting "not computed" would drop the
+                                // category from the mean and quietly raise mAP.
+                                let ap = if want_all_points { 0.0 } else { -1.0 };
+                                staged.recall[m_idx * t + t_idx] = (0.0, ap);
+                                continue;
+                            }
+
+                            // `metrics::counts` owns the TP/FP classification and the
+                            // curve. The all-points AP is the exact area under the same
+                            // envelope the grid samples and needs the cumulative `tp`/`fp`
+                            // arrays, score-ordered — it cannot be recovered from the 101
+                            // samples afterwards — so Open Images materializes them and
+                            // reads the curve from them. Every other mode discards that
+                            // AP and takes the fused kernel, which produces the same
+                            // curve without the two arrays.
+                            let (final_recall, all_points_ap) = if want_all_points {
+                                crate::metrics::counts::cumulative_tp_fp(
                                     inds.iter().map(|&i| i as usize),
-                                    &g.matched,
-                                    Some(&g.ignore),
-                                    num_gt,
-                                    &params.rec_thrs,
-                                    &mut g.pr_scratch,
-                                    &mut g.curve,
+                                    matched,
+                                    Some(ignore),
+                                    tp,
+                                    fp,
                                 );
-                            (final_recall, -1.0)
-                        };
-                        staged.recall[m_idx * t + t_idx] = (final_recall, all_points_ap);
-                        for &(r_idx, pr_val, rc_ptr) in &g.curve {
-                            let i = (m_idx * t + t_idx) * r + r_idx;
-                            staged.precision[i] = pr_val;
-                            let (_, at) = g.keyed[inds[rc_ptr] as usize];
-                            staged.scores[i] = all_dt_scores[at as usize];
+                                let final_recall =
+                                    crate::metrics::counts::precision_recall_curve_into(
+                                        tp,
+                                        fp,
+                                        num_gt,
+                                        &params.rec_thrs,
+                                        pr_scratch,
+                                        curve,
+                                    );
+                                let ap = crate::metrics::counts::average_precision_all_points(
+                                    tp, fp, num_gt,
+                                );
+                                (final_recall, ap)
+                            } else {
+                                let final_recall =
+                                    crate::metrics::counts::precision_recall_curve_of_order_into(
+                                        inds.iter().map(|&i| i as usize),
+                                        matched,
+                                        Some(ignore),
+                                        num_gt,
+                                        &params.rec_thrs,
+                                        pr_scratch,
+                                        curve,
+                                    );
+                                (final_recall, -1.0)
+                            };
+                            staged.recall[m_idx * t + t_idx] = (final_recall, all_points_ap);
+                            for &(r_idx, pr_val, rc_ptr) in curve.iter() {
+                                let i = (m_idx * t + t_idx) * r + r_idx;
+                                staged.precision[i] = pr_val;
+                                let (_, at) = ranked.keyed[inds[rc_ptr] as usize];
+                                staged.scores[i] = ranked.scores[at as usize];
+                            }
                         }
                     }
                 }
-            }
 
-            // The M slots of an output cell are contiguous, so the slab lands
-            // as `m`-runs of each `(t, r)`.
-            // A poisoned lock means another item panicked, which rayon propagates.
-            let mut out = outputs.lock().unwrap_or_else(PoisonError::into_inner);
-            for t_idx in 0..t {
-                for r_idx in 0..r {
-                    let base = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, 0);
+                // The M slots of an output cell are contiguous, so the slab lands
+                // as `m`-runs of each `(t, r)`.
+                // A poisoned lock means another item panicked, which rayon propagates.
+                let mut out = outputs.lock().unwrap_or_else(PoisonError::into_inner);
+                for t_idx in 0..t {
+                    for r_idx in 0..r {
+                        let base = shape.precision_idx(t_idx, r_idx, k_idx, a_idx, 0);
+                        for m_idx in 0..m {
+                            let i = (m_idx * t + t_idx) * r + r_idx;
+                            out.precision[base + m_idx] = staged.precision[i];
+                            out.scores[base + m_idx] = staged.scores[i];
+                        }
+                    }
+                    let base = shape.recall_idx(t_idx, k_idx, a_idx, 0);
                     for m_idx in 0..m {
-                        let i = (m_idx * t + t_idx) * r + r_idx;
-                        out.precision[base + m_idx] = staged.precision[i];
-                        out.scores[base + m_idx] = staged.scores[i];
+                        let (recall, ap) = staged.recall[m_idx * t + t_idx];
+                        out.recall[base + m_idx] = recall;
+                        out.ap_all_points[base + m_idx] = ap;
                     }
                 }
-                let base = shape.recall_idx(t_idx, k_idx, a_idx, 0);
-                for m_idx in 0..m {
-                    let (recall, ap) = staged.recall[m_idx * t + t_idx];
-                    out.recall[base + m_idx] = recall;
-                    out.ap_all_points[base + m_idx] = ap;
-                }
-            }
-        });
+            });
+        },
+    );
 
     outputs.into_inner().unwrap_or_else(PoisonError::into_inner)
 }
@@ -870,14 +940,23 @@ mod tests {
         ev
     }
 
-    /// One bucket's cells with the image slot each carries.
+    /// One bucket's cells, as `accumulate_impl` composes them from
+    /// `pairs_into` and `area_cells`, with the image slot each carries.
     fn bucket(g: &EvalGrouping<'_>, k_idx: usize, a_idx: usize) -> Vec<(CellRef, u32)> {
-        let mut cells = Vec::new();
-        g.cells_into(k_idx, a_idx, |_| true, &mut cells);
+        let mut pairs = Vec::new();
+        g.pairs_into(k_idx, |_| true, &mut pairs);
         let slots = g.pairs[g.k_starts[k_idx]..g.k_starts[k_idx + 1]]
             .iter()
-            .flat_map(|&(_, slot)| g.area_cells[a_idx].iter().map(move |_| slot));
-        cells.into_iter().zip(slots).collect()
+            .map(|&(_, slot)| slot);
+        pairs
+            .iter()
+            .zip(slots)
+            .flat_map(|(&pair, slot)| {
+                g.area_cells[a_idx]
+                    .iter()
+                    .map(move |&at| (CellRef::new(pair as usize, at), slot))
+            })
+            .collect()
     }
 
     /// Every bucket, indexed `k_idx * a + a_idx` as the reference walk is.

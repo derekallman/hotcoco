@@ -60,21 +60,33 @@ impl AnnIndex {
             u32::try_from(anns.len()).is_ok(),
             "annotation index positions are u32"
         );
-        // Pass 1: one slot per distinct image, in first-seen order, and how
-        // many annotations each holds.
+        // Pass 1, the one read of `anns`: one slot per distinct image, in
+        // first-seen order, how many annotations each holds, and each
+        // annotation's `(slot, category, id)`, so the passes after it read 24
+        // bytes per annotation rather than a whole record. Consecutive
+        // annotations usually share an image, so the slot is looked up again
+        // only when the image changes.
         let mut img_ids = Vec::new();
         let mut img_slot = FxHashMap::default();
         let mut img_offsets: Vec<u32> = vec![0];
-        let slots: Vec<u32> = anns
+        let mut last: Option<(u64, u32)> = None;
+        let compact: Vec<(u32, u64, u64)> = anns
             .iter()
             .map(|ann| {
-                let slot = *img_slot.entry(ann.image_id).or_insert_with(|| {
-                    img_ids.push(ann.image_id);
-                    img_offsets.push(0);
-                    img_ids.len() as u32 - 1
-                });
+                let slot = match last {
+                    Some((id, slot)) if id == ann.image_id => slot,
+                    _ => {
+                        let slot = *img_slot.entry(ann.image_id).or_insert_with(|| {
+                            img_ids.push(ann.image_id);
+                            img_offsets.push(0);
+                            img_ids.len() as u32 - 1
+                        });
+                        last = Some((ann.image_id, slot));
+                        slot
+                    }
+                };
                 img_offsets[slot as usize + 1] += 1;
-                slot
+                (slot, ann.category_id, ann.id)
             })
             .collect();
         for i in 1..img_offsets.len() {
@@ -83,11 +95,12 @@ impl AnnIndex {
         // Pass 2: place every (category, id) at its image's next position.
         let mut cursor = img_offsets.clone();
         let mut keyed = vec![(0u64, 0u64); anns.len()];
-        for (ann, &slot) in anns.iter().zip(&slots) {
+        for &(slot, category_id, id) in &compact {
             let at = &mut cursor[slot as usize];
-            keyed[*at as usize] = (ann.category_id, ann.id);
+            keyed[*at as usize] = (category_id, id);
             *at += 1;
         }
+        drop(compact);
         let by_img: Vec<u64> = keyed.iter().map(|&(_, id)| id).collect();
         // Per image, in parallel past the shared threshold: stably sort its
         // slice by category and run-length encode the categories that sort

@@ -76,7 +76,17 @@ class TestFromArrays:
         assert [a["id"] for a in anns] == [1, 2, 3, 4]
         assert [a["area"] for a in anns] == [900.0, 400.0, 1600.0, 100.0]
 
-    @pytest.mark.parametrize("make", [lambda a: a.astype(np.int32), list, lambda a: a.tolist()])
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda a: a.astype(np.int32),
+            lambda a: a.astype(np.int16),
+            lambda a: a.astype(np.uint8),
+            lambda a: a.astype(np.uint64),
+            list,
+            lambda a: a.tolist(),
+        ],
+    )
     def test_other_integer_spellings(self, make):
         gt = COCO.from_arrays(IMAGES, CATEGORIES, make(IMAGE_IDS), make(CATEGORY_IDS), BOXES.tolist())
         assert gt.dataset == COCO(dict_dataset()).dataset

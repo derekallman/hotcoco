@@ -117,21 +117,32 @@ pub(crate) fn type_name(obj: &Bound<'_, PyAny>) -> String {
 /// keeps on the string object. `bytes` is checked first: it is the common
 /// spelling, and a failed `str` cast builds a Python error only to discard it.
 fn counts_str<'a>(counts: &'a Bound<'_, PyAny>) -> PyResult<Option<&'a str>> {
+    if !is_compressed(counts)? {
+        return Ok(None);
+    }
     if let Ok(b) = counts.cast::<PyBytes>() {
         let s = std::str::from_utf8(b.as_bytes()).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
         })?;
         return Ok(Some(s));
     }
-    if let Ok(s) = counts.cast::<PyString>() {
-        // A `str` with no UTF-8 form (a lone surrogate) is left to the list
-        // branch, which rejects it.
-        return Ok(s.to_str().ok());
+    // A `str` with no UTF-8 form (a lone surrogate) is left to the list
+    // branch, which rejects it.
+    Ok(counts.cast::<PyString>()?.to_str().ok())
+}
+
+/// Whether `counts` is a compressed string, `bytes` or `str`, judged by type
+/// alone, so a reader can classify it without scanning it. The one list of
+/// the types a `counts` may be: a byte buffer (`bytearray`, `memoryview`) is
+/// the `TypeError`, and anything else is left to the run-list branch.
+fn is_compressed(counts: &Bound<'_, PyAny>) -> PyResult<bool> {
+    if counts.is_instance_of::<PyBytes>() || counts.is_instance_of::<PyString>() {
+        return Ok(true);
     }
     if counts.is_instance_of::<PyByteArray>() || counts.is_instance_of::<PyMemoryView>() {
         return Err(counts_type_error(counts));
     }
-    Ok(None)
+    Ok(false)
 }
 
 /// The `TypeError` for RLE `counts` that is neither a string nor a run list.
@@ -760,19 +771,6 @@ impl<'py> RleDict<'py> {
     }
 }
 
-/// Whether `counts` is a compressed string, `bytes` or `str`, judged by type
-/// alone: [`counts_str`] validates it when the string is read. A byte buffer
-/// it rejects is the same `TypeError` here.
-fn is_compressed(counts: &Bound<'_, PyAny>) -> PyResult<bool> {
-    if counts.is_instance_of::<PyBytes>() || counts.is_instance_of::<PyString>() {
-        return Ok(true);
-    }
-    if counts.is_instance_of::<PyByteArray>() || counts.is_instance_of::<PyMemoryView>() {
-        return Err(counts_type_error(counts));
-    }
-    Ok(false)
-}
-
 /// The string of a `counts` that [`RleDict::read`] found compressed.
 fn compressed_counts<'a>(obj: &'a Bound<'_, PyAny>) -> PyResult<&'a str> {
     counts_str(obj)?.ok_or_else(|| counts_type_error(obj))
@@ -958,24 +956,6 @@ pub fn f64_array<D: numpy::ndarray::IntoDimension>(
     Ok(arr.reshape(dims)?.into_any().unbind())
 }
 
-/// A `Vec<Vec<f64>>` of uniform-length rows, flattened and reshaped to `dims`
-/// in one step.
-///
-/// The single owner of the flatten for `iou`/`bbox_iou`-shaped kernels,
-/// which produce a `D`-row, `G`-column `Vec<Vec<f64>>`. Call this rather
-/// than flattening at the call site before [`f64_array`].
-pub fn f64_matrix<D: numpy::ndarray::IntoDimension>(
-    py: Python<'_>,
-    rows: &[Vec<f64>],
-    dims: D,
-) -> PyResult<Py<PyAny>> {
-    let mut flat = Vec::with_capacity(rows.iter().map(Vec::len).sum());
-    for row in rows {
-        flat.extend_from_slice(row);
-    }
-    f64_array(py, flat, dims)
-}
-
 /// A key-value map as a Python dict.
 ///
 /// Eight sites hand-rolled the same three lines — `PyDict::new`, a `for` over a
@@ -1046,49 +1026,68 @@ pub fn f64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
     })
 }
 
-/// A 1-D non-negative integer argument — see [`f64_vec`]. numpy `int64` and
-/// `int32` (what detection code usually holds) in one copy, a sequence of ints
-/// otherwise. A negative value raises `ValueError`: ids are unsigned.
-pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
-    let signed: Vec<i64> = if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i64>>() {
-        arr.as_array().to_vec()
-    } else if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i32>>() {
-        arr.as_array().iter().map(|&v| i64::from(v)).collect()
-    } else {
-        obj.extract::<Vec<i64>>().map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err(format!(
-                "{name} must be a sequence of ints or a 1-D numpy int array"
-            ))
-        })?
+/// A 1-D numpy array whose dtype kind is one of `kinds` as a `T` array: the
+/// array itself when it already is one, otherwise numpy's `astype` copy of it
+/// — see [`numeric_array`]. `None` for anything else.
+fn array_of_kind<'py, T: numpy::Element>(
+    obj: &Bound<'py, PyAny>,
+    kinds: &[u8],
+) -> PyResult<Option<numpy::PyReadonlyArray1<'py, T>>> {
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<'py, T>>() {
+        return Ok(Some(arr));
+    }
+    let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
+        return Ok(None);
     };
-    signed
-        .into_iter()
-        .map(|v| {
-            u64::try_from(v).map_err(|_| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "{name} must not contain negative values, got {v}"
-                ))
-            })
+    if arr.ndim() != 1 || !kinds.contains(&arr.dtype().kind()) {
+        return Ok(None);
+    }
+    let py = obj.py();
+    let cast = obj.call_method1(pyo3::intern!(py, "astype"), (numpy::dtype::<T>(py),))?;
+    Ok(Some(cast.extract()?))
+}
+
+/// A 1-D non-negative integer argument — see [`f64_vec`]. A numpy array of
+/// any unsigned dtype is read as `uint64` and of any signed dtype as `int64`,
+/// each in one copy; a sequence of ints otherwise. A negative value raises
+/// `ValueError`: ids are unsigned.
+pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
+    if let Some(arr) = array_of_kind::<u64>(obj, b"u")? {
+        return Ok(arr.as_array().to_vec());
+    }
+    let non_negative = |v: i64| {
+        u64::try_from(v).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{name} must not contain negative values, got {v}"
+            ))
         })
-        .collect()
+    };
+    if let Some(arr) = array_of_kind::<i64>(obj, b"i")? {
+        return arr.as_array().iter().map(|&v| non_negative(v)).collect();
+    }
+    let signed: Vec<i64> = obj.extract().map_err(|_| {
+        pyo3::exceptions::PyTypeError::new_err(format!(
+            "{name} must be a sequence of ints or a 1-D numpy int array"
+        ))
+    })?;
+    signed.into_iter().map(non_negative).collect()
 }
 
 /// A 1-D flag argument — `iscrowd` for `from_arrays` and the IoU functions.
 ///
-/// A numpy bool array is read as is and an `int64`/`int32` array as non-zero
-/// means true, each in one copy; anything else (a list of `0`/`1` or bools,
-/// a float array read back from pandas) goes through [`extract_flag`] item by
-/// item, so every flag spelling the API accepts elsewhere works here too.
-/// COCO JSON stores `iscrowd` as `0`/`1`, and pycocotools takes
-/// `maskUtils.iou(dt, gt, [a["iscrowd"] for a in anns])` straight through.
+/// A numpy bool array is read as is and an array of any integer dtype as
+/// non-zero means true, each in one copy (an unsigned one wraps into `int64`,
+/// which keeps zero and only zero at zero); anything else (a list of `0`/`1`
+/// or bools, a float array read back from pandas) goes through
+/// [`extract_flag`] item by item, so every flag spelling the API accepts
+/// elsewhere works here too. COCO JSON stores `iscrowd` as `0`/`1`, and
+/// pycocotools takes `maskUtils.iou(dt, gt, [a["iscrowd"] for a in anns])`
+/// straight through.
 pub fn flag_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
     if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<bool>>() {
         return Ok(arr.as_array().to_vec());
     }
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i64>>() {
-        return Ok(arr.as_array().iter().map(|&v| v != 0).collect());
-    }
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<i32>>() {
+    if let Some(arr) = array_of_kind::<i64>(obj, b"iu")? {
         return Ok(arr.as_array().iter().map(|&v| v != 0).collect());
     }
     let iter = obj.try_iter().map_err(|_| {

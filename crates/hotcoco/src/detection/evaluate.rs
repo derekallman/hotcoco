@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use super::matching::{Cells, EvalImgContext, IouMatrix, lean_scores_len, push_pair_lean};
+use super::matching::{
+    Cells, EvalImgContext, IouMatrix, PairScratch, lean_scores_len, push_pair_lean,
+};
 use super::{COCOeval, EvalMode};
 use crate::primitives::sim::worth_parallel;
 
@@ -241,7 +243,7 @@ impl COCOeval {
         // Compute IoUs only for pairs where both GT and DT are non-empty.
         // Pairs with only GT or only DT produce empty IoU matrices — skip storing them.
         let iou_of = |&(img_id, cat_id): &(u64, u64)| {
-            let iou_matrix = Self::compute_iou_static(
+            Self::compute_iou_static(
                 &self.coco_gt,
                 &self.coco_dt,
                 &self.params,
@@ -249,12 +251,8 @@ impl COCOeval {
                 cat_id,
                 self.eval_mode,
                 self.segm_rles.as_ref(),
-            );
-            if iou_matrix.is_empty() {
-                None
-            } else {
-                Some(((img_id, cat_id), iou_matrix))
-            }
+            )
+            .map(|iou_matrix| ((img_id, cat_id), iou_matrix))
         };
         let iou_results: Vec<((u64, u64), IouMatrix)> = if self.parallel_pairs() {
             sparse_pairs.par_iter().filter_map(iou_of).collect()
@@ -352,13 +350,15 @@ impl COCOeval {
                     .then(|| super::run_len(inputs.sparse_pairs.len())),
                 |img_id, cat_id| lean_scores_len(ctx, img_id, cat_id, max_det),
                 |run, cells| {
+                    // One set of vectors, refilled for each pair of the run.
+                    let mut scratch = PairScratch::default();
                     for &(img_id, cat_id) in run {
                         push_pair_lean(
                             ctx,
-                            img_id,
-                            cat_id,
+                            (img_id, cat_id),
                             max_det,
                             self.not_exhaustive_cat(inputs, img_id, cat_id),
+                            &mut scratch,
                             cells,
                         );
                     }
@@ -391,17 +391,20 @@ impl COCOeval {
         self.with_cell_context(&inputs.params, |ctx, max_det| {
             out.par_chunks_mut(n)
                 .zip(inputs.sparse_pairs.par_iter())
-                .for_each(|(chunk, &(img_id, cat_id))| {
-                    super::matching::evaluate_pair_full(
-                        ctx,
-                        img_id,
-                        cat_id,
-                        max_det,
-                        self.not_exhaustive_cat(inputs, img_id, cat_id),
-                        area_idxs,
-                        chunk,
-                    );
-                });
+                .for_each_init(
+                    PairScratch::default,
+                    |scratch, (chunk, &(img_id, cat_id))| {
+                        super::matching::evaluate_pair_full(
+                            ctx,
+                            (img_id, cat_id),
+                            max_det,
+                            self.not_exhaustive_cat(inputs, img_id, cat_id),
+                            area_idxs,
+                            scratch,
+                            chunk,
+                        );
+                    },
+                );
         });
         out
     }

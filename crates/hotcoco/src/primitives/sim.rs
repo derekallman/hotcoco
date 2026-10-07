@@ -102,22 +102,42 @@ fn iou_from_areas(inter: f64, dt_area: f64, gt_area: f64, gt_is_crowd: bool) -> 
     }
 }
 
-/// Run a per-detection-row kernel, going parallel only past [`MIN_PARALLEL_WORK`].
+/// Run a per-detection-row kernel into one row-major `d × g` buffer, going
+/// parallel only past [`MIN_PARALLEL_WORK`]. `fill_row(i, row)` writes
+/// detection `i`'s `g` values.
 ///
 /// `pub(crate)` so a future kernel outside this module (panoptic, a
 /// distance-derived kind) can obey the one-threshold rule that
 /// `tests/architecture.rs` enforces, instead of being forced to redeclare the
 /// constant and trip the guard.
 #[inline]
-pub(crate) fn rows<F>(d: usize, g: usize, compute_row: F) -> Vec<Vec<f64>>
+pub(crate) fn rows<F>(d: usize, g: usize, fill_row: F) -> Vec<f64>
 where
-    F: Fn(usize) -> Vec<f64> + Sync + Send,
+    F: Fn(usize, &mut [f64]) + Sync + Send,
 {
-    if worth_parallel(d * g) {
-        (0..d).into_par_iter().map(compute_row).collect()
-    } else {
-        (0..d).map(compute_row).collect()
+    let mut out = vec![0.0; d * g];
+    if g == 0 {
+        return out;
     }
+    if worth_parallel(d * g) {
+        out.par_chunks_mut(g)
+            .enumerate()
+            .for_each(|(i, row)| fill_row(i, row));
+    } else {
+        for (i, row) in out.chunks_mut(g).enumerate() {
+            fill_row(i, row);
+        }
+    }
+    out
+}
+
+/// A row-major `d × g` buffer as one vector per detection: the shape the
+/// public kernels return.
+fn nested(flat: Vec<f64>, d: usize, g: usize) -> Vec<Vec<f64>> {
+    if g == 0 {
+        return vec![Vec::new(); d];
+    }
+    flat.chunks_exact(g).map(<[f64]>::to_vec).collect()
 }
 
 /// Compute IoU between `dt` and `gt` RLE masks.
@@ -130,26 +150,31 @@ where
 /// `rleIou` returns for it — the overlap of two masks on different canvases is
 /// undefined, and a run-stream walk over them would report a plausible number.
 pub fn mask_iou(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<Vec<f64>> {
+    nested(mask_iou_flat(dt, gt, iscrowd), dt.len(), gt.len())
+}
+
+/// [`mask_iou`] as one row-major `D×G` buffer, empty when either side is:
+/// the shape a dense array wants, with no vector per detection.
+pub fn mask_iou_flat(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<f64> {
     let d = dt.len();
     let g = gt.len();
     if d == 0 || g == 0 {
-        return vec![vec![]; d];
+        return Vec::new();
     }
 
     let dt_areas: Vec<u64> = dt.iter().map(rle_area).collect();
     let gt_areas: Vec<u64> = gt.iter().map(rle_area).collect();
 
-    rows(d, g, |i| {
+    rows(d, g, |i, row| {
         let dt_a = dt_areas[i] as f64;
-        (0..g)
-            .map(|j| {
-                if dt[i].h != gt[j].h || dt[i].w != gt[j].w {
-                    return -1.0;
-                }
+        for (j, out) in row.iter_mut().enumerate() {
+            *out = if dt[i].h != gt[j].h || dt[i].w != gt[j].w {
+                -1.0
+            } else {
                 let inter = intersection_area(&dt[i], &gt[j]) as f64;
                 iou_from_areas(inter, dt_a, gt_areas[j] as f64, iscrowd[j])
-            })
-            .collect()
+            };
+        }
     })
 }
 
@@ -177,16 +202,22 @@ pub fn bbox_iou_pair(a: [f64; 4], b: [f64; 4], b_is_crowd: bool) -> f64 {
 ///
 /// Each bbox is `[x, y, w, h]`. Returns D×G matrix.
 pub fn bbox_iou(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<Vec<f64>> {
+    nested(bbox_iou_flat(dt, gt, iscrowd), dt.len(), gt.len())
+}
+
+/// [`bbox_iou`] as one row-major `D×G` buffer, empty when either side is:
+/// the shape a dense array wants, with no vector per detection.
+pub fn bbox_iou_flat(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<f64> {
     let d = dt.len();
     let g = gt.len();
     if d == 0 || g == 0 {
-        return vec![vec![]; d];
+        return Vec::new();
     }
 
-    rows(d, g, |i| {
-        (0..g)
-            .map(|j| bbox_iou_pair(dt[i], gt[j], iscrowd[j]))
-            .collect()
+    rows(d, g, |i, row| {
+        for (j, out) in row.iter_mut().enumerate() {
+            *out = bbox_iou_pair(dt[i], gt[j], iscrowd[j]);
+        }
     })
 }
 
@@ -220,22 +251,27 @@ pub(crate) fn obb_iou_pair(
 ///
 /// When `iscrowd[j]` is true, IoU = intersection / dt_area (matching bbox crowd semantics).
 pub fn obb_iou(dt: &[[f64; 5]], gt: &[[f64; 5]], iscrowd: &[bool]) -> Vec<Vec<f64>> {
+    nested(obb_iou_flat(dt, gt, iscrowd), dt.len(), gt.len())
+}
+
+/// [`obb_iou`] as one row-major `D×G` buffer, empty when either side is.
+pub(crate) fn obb_iou_flat(dt: &[[f64; 5]], gt: &[[f64; 5]], iscrowd: &[bool]) -> Vec<f64> {
     let d = dt.len();
     let g = gt.len();
     if d == 0 || g == 0 {
-        return vec![vec![]; d];
+        return Vec::new();
     }
 
     // Pre-compute GT corners and areas (loop-invariant over DT rows).
     let gt_corners: Vec<[(f64, f64); 4]> = gt.iter().map(obb_to_corners).collect();
     let gt_areas: Vec<f64> = gt.iter().map(|b| b[2] * b[3]).collect();
 
-    rows(d, g, |i| {
+    rows(d, g, |i, row| {
         let corners_a = obb_to_corners(&dt[i]);
         let area_a = dt[i][2] * dt[i][3];
-        (0..g)
-            .map(|j| obb_iou_pair(&corners_a, area_a, &gt_corners[j], gt_areas[j], iscrowd[j]))
-            .collect()
+        for (j, out) in row.iter_mut().enumerate() {
+            *out = obb_iou_pair(&corners_a, area_a, &gt_corners[j], gt_areas[j], iscrowd[j]);
+        }
     })
 }
 
@@ -333,6 +369,19 @@ pub struct GtPose<'a> {
 ///
 /// Similarity is in `[0, 1]`, higher = better — the [module contract](self).
 pub fn oks_matrix(dt_keypoints: &[&[f64]], gt: &[GtPose<'_>], sigmas: &[f64]) -> Vec<Vec<f64>> {
+    nested(
+        oks_matrix_flat(dt_keypoints, gt, sigmas),
+        dt_keypoints.len(),
+        gt.len(),
+    )
+}
+
+/// [`oks_matrix`] as one row-major `D×G` buffer, empty when either side is.
+pub(crate) fn oks_matrix_flat(
+    dt_keypoints: &[&[f64]],
+    gt: &[GtPose<'_>],
+    sigmas: &[f64],
+) -> Vec<f64> {
     let num_kpts = sigmas.len();
     // vars = (sigmas * 2)**2 = 4 * sigma^2  (matching pycocotools)
     let vars: Vec<f64> = sigmas.iter().map(|s| (2.0 * s).powi(2)).collect();
@@ -340,7 +389,7 @@ pub fn oks_matrix(dt_keypoints: &[&[f64]], gt: &[GtPose<'_>], sigmas: &[f64]) ->
     let d = dt_keypoints.len();
     let g = gt.len();
     if d == 0 || g == 0 {
-        return vec![vec![]; d];
+        return Vec::new();
     }
 
     /// Per-GT quantities that are loop-invariant over detection rows, hoisted
@@ -381,50 +430,51 @@ pub fn oks_matrix(dt_keypoints: &[&[f64]], gt: &[GtPose<'_>], sigmas: &[f64]) ->
     // Detection-major through the shared parallel dispatcher, like every
     // sibling kernel. The per-cell arithmetic is order-independent, so this
     // matches the historic GT-major loop bit for bit.
-    rows(d, g, |i| {
+    rows(d, g, |i, row| {
         let dt_kpts = dt_keypoints[i];
-        prep.iter()
-            .map(|p| {
-                if dt_kpts.is_empty() || p.kpts.is_empty() {
-                    return 0.0;
+        let oks = |p: &GtPrep<'_>| {
+            if dt_kpts.is_empty() || p.kpts.is_empty() {
+                return 0.0;
+            }
+
+            let mut oks_sum = 0.0_f64;
+            let mut oks_count = 0_usize;
+
+            for (ki, &var_k) in vars.iter().enumerate() {
+                // When k1 > 0, only include visible GT keypoints.
+                let visible = p.kpts.get(ki * 3 + 2).copied().unwrap_or(0.0) > 0.0;
+                if p.k1 > 0 && !visible {
+                    continue;
                 }
 
-                let mut oks_sum = 0.0_f64;
-                let mut oks_count = 0_usize;
+                let gx = p.kpts.get(ki * 3).copied().unwrap_or(0.0);
+                let gy = p.kpts.get(ki * 3 + 1).copied().unwrap_or(0.0);
+                let xd = dt_kpts.get(ki * 3).copied().unwrap_or(0.0);
+                let yd = dt_kpts.get(ki * 3 + 1).copied().unwrap_or(0.0);
 
-                for (ki, &var_k) in vars.iter().enumerate() {
-                    // When k1 > 0, only include visible GT keypoints.
-                    let visible = p.kpts.get(ki * 3 + 2).copied().unwrap_or(0.0) > 0.0;
-                    if p.k1 > 0 && !visible {
-                        continue;
-                    }
-
-                    let gx = p.kpts.get(ki * 3).copied().unwrap_or(0.0);
-                    let gy = p.kpts.get(ki * 3 + 1).copied().unwrap_or(0.0);
-                    let xd = dt_kpts.get(ki * 3).copied().unwrap_or(0.0);
-                    let yd = dt_kpts.get(ki * 3 + 1).copied().unwrap_or(0.0);
-
-                    let (dx, dy) = if p.k1 > 0 {
-                        (xd - gx, yd - gy)
-                    } else {
-                        // No visible GT keypoints: distance to bbox boundary.
-                        let dx = 0.0_f64.max(p.x0 - xd) + 0.0_f64.max(xd - p.x1);
-                        let dy = 0.0_f64.max(p.y0 - yd) + 0.0_f64.max(yd - p.y1);
-                        (dx, dy)
-                    };
-
-                    let e = (dx * dx + dy * dy) / var_k / p.area / 2.0;
-                    oks_sum += (-e).exp();
-                    oks_count += 1;
-                }
-
-                if oks_count > 0 {
-                    oks_sum / oks_count as f64
+                let (dx, dy) = if p.k1 > 0 {
+                    (xd - gx, yd - gy)
                 } else {
-                    0.0
-                }
-            })
-            .collect()
+                    // No visible GT keypoints: distance to bbox boundary.
+                    let dx = 0.0_f64.max(p.x0 - xd) + 0.0_f64.max(xd - p.x1);
+                    let dy = 0.0_f64.max(p.y0 - yd) + 0.0_f64.max(yd - p.y1);
+                    (dx, dy)
+                };
+
+                let e = (dx * dx + dy * dy) / var_k / p.area / 2.0;
+                oks_sum += (-e).exp();
+                oks_count += 1;
+            }
+
+            if oks_count > 0 {
+                oks_sum / oks_count as f64
+            } else {
+                0.0
+            }
+        };
+        for (out, p) in row.iter_mut().zip(&prep) {
+            *out = oks(p);
+        }
     })
 }
 

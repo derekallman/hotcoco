@@ -106,7 +106,12 @@ Pairwise IoU between two sets of boxes.
 
     ```rust
     primitives::sim::bbox_iou(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<Vec<f64>>
+    primitives::sim::bbox_iou_flat(dt: &[[f64; 4]], gt: &[[f64; 4]], iscrowd: &[bool]) -> Vec<f64>
     ```
+
+    `bbox_iou_flat` is the same matrix as one row-major `D × G` buffer, empty
+    when either side is: the shape a dense array wants, with no vector per
+    detection.
 
 Boxes are `[x, y, width, height]`: an `(N, 4)` array or a sequence of 4-element
 rows. A numpy array of any integer or float dtype is read in one pass; anything
@@ -135,7 +140,11 @@ Pairwise IoU between two sets of RLE masks.
 
     ```rust
     primitives::sim::mask_iou(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<Vec<f64>>
+    primitives::sim::mask_iou_flat(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<f64>
     ```
+
+    `mask_iou_flat` is the same matrix as one row-major `D × G` buffer, as
+    `bbox_iou_flat` is.
 
 Same crowd convention as `bbox_iou`. Inputs are RLE dicts as produced by
 [`mask.encode`](mask.md#encode); boxes are not accepted. To pass either kind with

@@ -159,8 +159,9 @@ impl StreamingEval {
     /// with, sorted and without duplicates.
     ///
     /// [`update`](Self::update) rejects a batch whose annotations name any of
-    /// them. Exposed so a binding, or a caller validating data before streaming
-    /// it, can ask the same question without sending a batch.
+    /// them, with [`Error::UnknownCategoryIds`](crate::Error::UnknownCategoryIds).
+    /// Exposed so a caller validating data before streaming it can ask the
+    /// same question without sending a batch.
     ///
     /// Empty whenever `params.use_cats` is false: every annotation pools into
     /// one placeholder category then, so no id can be lost. The list checked is
@@ -222,10 +223,7 @@ impl StreamingEval {
     ) -> crate::error::Result<()> {
         let unknown = self.unknown_category_ids(gt_anns.iter().chain(&dt_anns));
         if !unknown.is_empty() {
-            return Err(crate::error::Error::Other(format!(
-                "category id(s) {unknown:?} are not in this StreamingEval's categories; pass \
-                 every category the run will see to `categories`"
-            )));
+            return Err(crate::error::Error::UnknownCategoryIds(unknown));
         }
 
         let mut ids: Vec<u64> = images.iter().map(|img| img.id).collect();
@@ -600,7 +598,7 @@ impl From<&Params> for ParamsState {
             area_ranges: area_ranges
                 .iter()
                 .map(|AreaRange { label, range }| {
-                    (label.clone(), [range[0].to_bits(), range[1].to_bits()])
+                    (label.clone(), super::accumulate::area_key(*range))
                 })
                 .collect(),
             use_cats: *use_cats,

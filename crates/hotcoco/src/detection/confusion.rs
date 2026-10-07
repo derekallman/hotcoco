@@ -83,33 +83,29 @@ impl COCOeval {
         };
 
         // A short matrix would mean some row or column lands under the wrong
-        // index once flattened. The builders guarantee full shape today; if a
-        // regression ever reintroduces a short matrix, zeros are the honest
-        // answer for a matrix we cannot align.
-        let full = |nested: &[Vec<f64>]| nested.len() == d && nested[0].len() == g;
-        let zero_if_short = |nested: Vec<Vec<f64>>| {
-            if full(&nested) {
-                nested
-            } else {
-                vec![vec![0.0; g]; d]
-            }
+        // index. The builders guarantee full shape today; if a regression ever
+        // reintroduces a short matrix, zeros are the honest answer for a
+        // matrix we cannot align.
+        let full = |flat: &[f64]| flat.len() == d * g;
+        let zero_if_short = |flat: Vec<f64>| {
+            if full(&flat) { flat } else { vec![0.0; d * g] }
         };
 
-        let nested = match SimKind::from(iou_type) {
+        match SimKind::from(iou_type) {
             SimKind::Bbox | SimKind::Oks => zero_if_short(bbox()),
             SimKind::Mask => {
                 // The last `evaluate()` already rasterized these; the
-                // cache-or-convert policy lives on `SegmRles`.
-                let masks = Self::compute_segm_iou_static(
+                // cache-or-convert policy lives on `SegmRles`. An annotation
+                // with no mask gets zero IoU in every cell, as the scaffold
+                // behind every kernel gives it.
+                zero_if_short(Self::compute_segm_iou_static(
                     coco_gt,
                     coco_dt,
                     dt_ann_ids,
                     gt_ann_ids,
                     super::EvalMode::Coco,
                     segm_rles,
-                );
-                // Bbox fallback when any RLE is missing.
-                if full(&masks) { masks } else { bbox() }
+                ))
             }
             SimKind::Obb => zero_if_short(Self::compute_obb_iou_static(
                 coco_gt,
@@ -118,9 +114,7 @@ impl COCOeval {
                 gt_ann_ids,
                 super::EvalMode::Coco,
             )),
-        };
-
-        flatten_iou(nested, d, g)
+        }
     }
 
     /// Collect one image's ground truths and detections across **all**
@@ -356,22 +350,6 @@ impl COCOeval {
             iou_thr,
         }
     }
-}
-
-/// Row-major flattening of a `sim` kernel's nested `[D][G]` output.
-///
-/// The result is always exactly `d * g` long: a short row, or fewer rows than
-/// `d`, leaves zeros rather than shifting every later entry into the wrong cell.
-/// That is what lets callers index `flat[di * g + gi]` with no shape test.
-fn flatten_iou(nested: Vec<Vec<f64>>, d: usize, g: usize) -> Vec<f64> {
-    let mut flat = vec![0.0_f64; d * g];
-    for (di, row) in nested.into_iter().take(d).enumerate() {
-        let base = di * g;
-        for (gi, v) in row.into_iter().take(g).enumerate() {
-            flat[base + gi] = v;
-        }
-    }
-    flat
 }
 
 /// The parallel fold's per-split accumulator: match records, not counts.

@@ -136,6 +136,17 @@ pub struct ThreshMatrix<T> {
     data: Vec<T>,
 }
 
+impl<T> Default for ThreshMatrix<T> {
+    /// A 0 × 0 matrix with no allocation.
+    fn default() -> Self {
+        Self {
+            rows: 0,
+            row_len: 0,
+            data: Vec::new(),
+        }
+    }
+}
+
 impl<T: Clone> ThreshMatrix<T> {
     /// A `rows × row_len` matrix with every cell set to `fill`.
     pub fn new(rows: usize, row_len: usize, fill: T) -> Self {
@@ -149,14 +160,30 @@ impl<T: Clone> ThreshMatrix<T> {
     /// A matrix whose every row is a copy of `row` — one allocation instead of
     /// one clone per threshold.
     pub fn repeat_row(rows: usize, row: &[T]) -> Self {
-        let mut data = Vec::with_capacity(rows * row.len());
+        let mut m = Self {
+            rows: 0,
+            row_len: 0,
+            data: Vec::with_capacity(rows * row.len()),
+        };
+        m.reset_repeat_row(rows, row);
+        m
+    }
+
+    /// [`new`](Self::new) in place, keeping the allocation.
+    pub(crate) fn reset(&mut self, rows: usize, row_len: usize, fill: T) {
+        self.rows = rows;
+        self.row_len = row_len;
+        self.data.clear();
+        self.data.resize(rows * row_len, fill);
+    }
+
+    /// [`repeat_row`](Self::repeat_row) in place, keeping the allocation.
+    pub(crate) fn reset_repeat_row(&mut self, rows: usize, row: &[T]) {
+        self.rows = rows;
+        self.row_len = row.len();
+        self.data.clear();
         for _ in 0..rows {
-            data.extend_from_slice(row);
-        }
-        Self {
-            rows,
-            row_len: row.len(),
-            data,
+            self.data.extend_from_slice(row);
         }
     }
 }
@@ -206,6 +233,7 @@ impl<T> std::ops::IndexMut<(usize, usize)> for ThreshMatrix<T> {
 }
 
 /// Per-threshold greedy match results, indexed `[T]` over IoU thresholds.
+#[derive(Debug, Clone, Default)]
 pub struct GreedyMatches {
     /// `[T][D]`: for each threshold and detection (caller's score-descending
     /// order), the matched ground-truth index (caller's GT order) or `None`.
@@ -237,7 +265,8 @@ pub struct GtMasks<'a> {
 
 /// Greedy-match detections to ground-truths, pycocotools-exact.
 ///
-/// The canonical entry point; every caller in the crate uses this one.
+/// The canonical entry point. The detection driver calls the same matcher
+/// through `greedy_match_into`, which reuses the result's buffers.
 ///
 /// # Caller ordering contract
 /// - Detections are ordered **score-descending** — matching iterates in this order.
@@ -282,6 +311,31 @@ pub fn greedy_match_masked(
     masks: GtMasks<'_>,
     iou_thrs: &[f64],
 ) -> GreedyMatches {
+    let mut out = GreedyMatches::default();
+    greedy_match_into(
+        iou_flat,
+        d,
+        g,
+        num_gt_not_ignored,
+        masks,
+        iou_thrs,
+        &mut out,
+    );
+    out
+}
+
+/// [`greedy_match_masked`] into `out`, reusing its buffers: the detection
+/// driver matches one small cell after another, and allocating the result per
+/// cell cost more than matching it.
+pub(crate) fn greedy_match_into(
+    iou_flat: &[f64],
+    d: usize,
+    g: usize,
+    num_gt_not_ignored: usize,
+    masks: GtMasks<'_>,
+    iou_thrs: &[f64],
+    out: &mut GreedyMatches,
+) {
     assert_eq!(
         iou_flat.len(),
         d * g,
@@ -309,8 +363,9 @@ pub fn greedy_match_masked(
     }
 
     let t = iou_thrs.len();
-    let mut dt_gt = ThreshMatrix::new(t, d, None);
-    let mut gt_matched = ThreshMatrix::new(t, g, false);
+    let GreedyMatches { dt_gt, gt_matched } = out;
+    dt_gt.reset(t, d, None);
+    gt_matched.reset(t, g, false);
 
     // `None` becomes the empty slice; the `unwrap_or` defaults below carry its
     // documented meaning (a supplied mask is asserted to length `g` above, so
@@ -318,13 +373,30 @@ pub fn greedy_match_masked(
     let rematchable = masks.rematchable.unwrap_or(&[]);
     let phase2_eligible = masks.phase2_eligible.unwrap_or(&[]);
 
+    // How many ground truths a scan below can take: every non-ignored one,
+    // and each ignored one phase 2 may consider. Once all are taken, no later
+    // detection at that threshold can match, so the scan stops there. With
+    // many detections and few ground truths, that skips most of the T×D×G
+    // work. A rematchable ground truth is never used up, so one turns the
+    // stop off (`None`).
+    let takeable = (!rematchable.contains(&true)).then(|| {
+        num_gt_not_ignored
+            + (num_gt_not_ignored..g)
+                .filter(|&gi| phase2_eligible.get(gi).copied().unwrap_or(true))
+                .count()
+    });
+
     for (ti, &iou_thr) in iou_thrs.iter().enumerate() {
         // One row borrow per threshold keeps the T×D×G inner scans on plain
         // slice indexing instead of paying the strided-index arithmetic and
         // bounds check on every probe.
         let dt_row = dt_gt.row_mut(ti);
         let gt_row = gt_matched.row_mut(ti);
+        let mut open = takeable;
         for (di, dt_slot) in dt_row.iter_mut().enumerate() {
+            if open == Some(0) {
+                break;
+            }
             let base = di * g;
             let mut best_iou = iou_thr;
             let mut best_gi: Option<usize> = None;
@@ -361,11 +433,14 @@ pub fn greedy_match_masked(
             if let Some(gi) = best_gi {
                 *dt_slot = Some(gi);
                 gt_row[gi] = true;
+                // Without a rematchable ground truth, the scans skip a taken
+                // one, so this match used up a ground truth that was open.
+                if let Some(n) = &mut open {
+                    *n -= 1;
+                }
             }
         }
     }
-
-    GreedyMatches { dt_gt, gt_matched }
 }
 
 #[cfg(test)]
@@ -483,6 +558,94 @@ mod tests {
                         "{ctx}: gt_matched[{gi}] disagrees with dt_gt"
                     );
                 }
+            }
+        }
+    }
+
+    /// The matcher equals the plain scan it optimizes: every detection against
+    /// every ground truth at every threshold, no early stop. The contract test
+    /// above checks properties, which a matcher that stops too early still
+    /// satisfies. The shapes run past the early stop: many detections, few
+    /// ground truths, rematchable ground truths on some cases and none on
+    /// others.
+    #[test]
+    fn greedy_match_equals_plain_scan() {
+        fn plain_scan(
+            iou_flat: &[f64],
+            d: usize,
+            g: usize,
+            num_ni: usize,
+            rematchable: &[bool],
+            phase2: &[bool],
+            thrs: &[f64],
+        ) -> (Vec<Option<usize>>, Vec<bool>) {
+            let mut dt_gt = vec![None; thrs.len() * d];
+            let mut gt_matched = vec![false; thrs.len() * g];
+            for (ti, &thr) in thrs.iter().enumerate() {
+                for di in 0..d {
+                    let open = |gi: usize| !gt_matched[ti * g + gi] || rematchable[gi];
+                    let mut best = (thr, None);
+                    // Phase 1: non-ignored ground truths.
+                    for gi in 0..num_ni {
+                        if open(gi) && iou_flat[di * g + gi] >= best.0 {
+                            best = (iou_flat[di * g + gi], Some(gi));
+                        }
+                    }
+                    // Phase 2: eligible ignored ones, only if phase 1 found none.
+                    if best.1.is_none() {
+                        for gi in num_ni..g {
+                            if phase2[gi] && open(gi) && iou_flat[di * g + gi] >= best.0 {
+                                best = (iou_flat[di * g + gi], Some(gi));
+                            }
+                        }
+                    }
+                    if let (_, Some(gi)) = best {
+                        dt_gt[ti * d + di] = Some(gi);
+                        gt_matched[ti * g + gi] = true;
+                    }
+                }
+            }
+            (dt_gt, gt_matched)
+        }
+
+        let mut rng = StdRng::seed_from_u64(0x5CA7);
+        for case in 0..5000 {
+            let d = rng.random_range(0..=40);
+            let g = rng.random_range(0..=4);
+            let num_ni = rng.random_range(0..=g);
+            let iou_flat: Vec<f64> = (0..d * g)
+                .map(|_| rng.random_range(0..=8) as f64 / 8.0)
+                .collect();
+            let crowd_rate = if rng.random_bool(0.5) { 0.0 } else { 0.3 };
+            let rematchable: Vec<bool> = (0..g).map(|_| rng.random_bool(crowd_rate)).collect();
+            let phase2: Vec<bool> = (0..g).map(|_| rng.random_bool(0.75)).collect();
+            let thrs: Vec<f64> = (0..10).map(|i| 0.5 + 0.05 * i as f64).collect();
+
+            let m = greedy_match_masked(
+                &iou_flat,
+                d,
+                g,
+                num_ni,
+                GtMasks {
+                    rematchable: Some(&rematchable),
+                    phase2_eligible: Some(&phase2),
+                },
+                &thrs,
+            );
+            let (dt_gt, gt_matched) =
+                plain_scan(&iou_flat, d, g, num_ni, &rematchable, &phase2, &thrs);
+            let ctx = format!("case {case}: d={d} g={g} num_ni={num_ni}");
+            for ti in 0..thrs.len() {
+                assert_eq!(
+                    m.dt_gt.row(ti),
+                    &dt_gt[ti * d..(ti + 1) * d],
+                    "{ctx} t={ti}"
+                );
+                assert_eq!(
+                    m.gt_matched.row(ti),
+                    &gt_matched[ti * g..(ti + 1) * g],
+                    "{ctx} t={ti}"
+                );
             }
         }
     }

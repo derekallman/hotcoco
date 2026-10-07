@@ -641,18 +641,18 @@ fn primitives_never_names_metrics_inline() {
 }
 
 /// The semver lint override in `Cargo.toml` exists only while the published
-/// baseline is 1.0.1. Once the version bumps, the override would silently keep
-/// downgrading every removed public field to a warning, so it must go in the
-/// same commit.
+/// baseline is 1.1.0. Once the version bumps, the override would silently keep
+/// downgrading every added public enum variant to a warning, so it must go in
+/// the same commit.
 #[test]
-fn semver_override_expires_with_1_0_1() {
+fn semver_override_expires_with_1_1_0() {
     let manifest = fs::read_to_string(workspace_root().join("crates/hotcoco/Cargo.toml"))
         .expect("crate manifest");
     if manifest.contains("[package.metadata.cargo-semver-checks.lints]") {
         assert_eq!(
             env!("CARGO_PKG_VERSION"),
-            "1.0.1",
-            "1.1.0 shipped: delete the [package.metadata.cargo-semver-checks.lints] block \
+            "1.1.0",
+            "1.2.0 shipped: delete the [package.metadata.cargo-semver-checks.lints] block \
              from crates/hotcoco/Cargo.toml"
         );
     }

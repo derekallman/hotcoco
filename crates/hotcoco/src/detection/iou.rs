@@ -8,6 +8,7 @@ use crate::params::Params;
 use crate::primitives::sim::{self, SimKind};
 use crate::types::Rle;
 
+use super::matching::IouMatrix;
 use super::{COCOeval, EvalMode};
 
 /// Every annotation's mask that a both-non-empty `(img, cat)` cell will
@@ -112,7 +113,8 @@ fn uses_ioa(ann: &crate::types::Annotation, eval_mode: EvalMode) -> bool {
 }
 
 /// Scatter a kernel's valid-only matrix back to the full `d × g` shape, with
-/// zero rows/columns for annotations that contributed no geometry.
+/// zero rows/columns for annotations that contributed no geometry. Both are
+/// row-major buffers.
 ///
 /// `dt_rows[i]` / `gt_cols[j]` are the original positions (index into the raw id
 /// slice) of the kernel's row `i` / column `j`. This is what keeps every matrix
@@ -123,21 +125,22 @@ fn uses_ioa(ann: &crate::types::Annotation, eval_mode: EvalMode) -> bool {
 /// floors are strictly positive — so a geometry-less annotation scores as
 /// unmatched rather than borrowing someone else's overlap.
 fn scatter_full(
-    valid: Vec<Vec<f64>>,
+    valid: Vec<f64>,
     dt_rows: &[usize],
     gt_cols: &[usize],
     d: usize,
     g: usize,
-) -> Vec<Vec<f64>> {
+) -> Vec<f64> {
     if dt_rows.len() == d && gt_cols.len() == g {
         // Every annotation had geometry: the index lists are strictly increasing
         // subsequences of 0..d / 0..g, so full length means identity.
         return valid;
     }
-    let mut full = vec![vec![0.0_f64; g]; d];
+    let mut full = vec![0.0_f64; d * g];
+    let valid_g = gt_cols.len();
     for (vi, &di) in dt_rows.iter().enumerate() {
         for (vj, &gj) in gt_cols.iter().enumerate() {
-            full[di][gj] = valid[vi][vj];
+            full[di * g + gj] = valid[vi * valid_g + vj];
         }
     }
     full
@@ -160,8 +163,8 @@ fn iou_scaffold<D, G>(
     eval_mode: EvalMode,
     dt_geom: impl Fn(u64) -> Option<D>,
     gt_geom: impl Fn(&crate::types::Annotation, u64) -> Option<G>,
-    kernel: impl FnOnce(&[D], &[G], &[bool]) -> Vec<Vec<f64>>,
-) -> Vec<Vec<f64>> {
+    kernel: impl FnOnce(&[D], &[G], &[bool]) -> Vec<f64>,
+) -> Vec<f64> {
     let (dt_rows, dt_geoms): (Vec<usize>, Vec<D>) = dt_ids
         .iter()
         .enumerate()
@@ -193,7 +196,7 @@ pub(super) type AnnIds<'a> = Cow<'a, [u64]>;
 impl COCOeval {
     /// Compute the IoU/OKS matrix for a given image and category.
     ///
-    /// **Shape contract:** the result is either empty (no ids on one side) or
+    /// **Shape contract:** the result is `None` (no ids on one side) or
     /// exactly `dt_ids.len() × gt_ids.len()`, with row `i` / column `j`
     /// corresponding to the `i`-th detection id / `j`-th ground-truth id —
     /// including annotations whose geometry is missing, which occupy all-zero
@@ -209,20 +212,20 @@ impl COCOeval {
         cat_id: u64,
         eval_mode: EvalMode,
         segm_rles: Option<&SegmRles>,
-    ) -> Vec<Vec<f64>> {
+    ) -> Option<IouMatrix> {
         let gt_anns = Self::get_anns_static(coco_gt, params, img_id, cat_id);
         let dt_anns = Self::get_anns_static(coco_dt, params, img_id, cat_id);
         let (gt_anns, dt_anns) = (&*gt_anns, &*dt_anns);
 
         if gt_anns.is_empty() || dt_anns.is_empty() {
-            return Vec::new();
+            return None;
         }
 
         // Dispatch on the geometry axis, not the eval-config one: `SimKind` is
         // what selects a kernel, and every family (detection here, tracking and
         // panoptic later) branches on the same four values. The helpers below do
         // marshaling only — reshaping annotations into the kernel's input types.
-        match SimKind::from(params.iou_type) {
+        let values = match SimKind::from(params.iou_type) {
             SimKind::Mask => Self::compute_segm_iou_static(
                 coco_gt, coco_dt, dt_anns, gt_anns, eval_mode, segm_rles,
             ),
@@ -233,7 +236,8 @@ impl COCOeval {
             SimKind::Obb => {
                 Self::compute_obb_iou_static(coco_gt, coco_dt, dt_anns, gt_anns, eval_mode)
             }
-        }
+        };
+        Some(IouMatrix::new(values, gt_anns.len()))
     }
 
     /// The annotation ids one cell evaluates, as [`AnnIds`], in the order pycocotools lists
@@ -252,7 +256,7 @@ impl COCOeval {
         }
         // The index groups an image's ids by category, ascending, so under the
         // default `cat_ids` — every category, ascending — the list is its slice.
-        let ascending = params.cat_ids.windows(2).all(|w| w[0] < w[1]);
+        let ascending = params.cat_ids.is_sorted_by(|a, b| a < b);
         if ascending
             && coco
                 .cat_ids_of_img(img_id)
@@ -281,7 +285,7 @@ impl COCOeval {
         gt_ids: &[u64],
         eval_mode: EvalMode,
         segm_rles: Option<&SegmRles>,
-    ) -> Vec<Vec<f64>> {
+    ) -> Vec<f64> {
         iou_scaffold(
             coco_gt,
             dt_ids,
@@ -289,7 +293,7 @@ impl COCOeval {
             eval_mode,
             |id| SegmRles::dt_rle_or_convert(segm_rles, coco_dt, id),
             |_ann, id| SegmRles::gt_rle_or_convert(segm_rles, coco_gt, id),
-            sim::mask_iou,
+            sim::mask_iou_flat,
         )
     }
 
@@ -300,7 +304,7 @@ impl COCOeval {
         dt_ids: &[u64],
         gt_ids: &[u64],
         eval_mode: EvalMode,
-    ) -> Vec<Vec<f64>> {
+    ) -> Vec<f64> {
         iou_scaffold(
             coco_gt,
             dt_ids,
@@ -308,7 +312,7 @@ impl COCOeval {
             eval_mode,
             |id| coco_dt.get_ann(id)?.bbox,
             |ann, _id| ann.bbox,
-            sim::bbox_iou,
+            sim::bbox_iou_flat,
         )
     }
 
@@ -324,7 +328,7 @@ impl COCOeval {
         params: &Params,
         dt_ids: &[u64],
         gt_ids: &[u64],
-    ) -> Vec<Vec<f64>> {
+    ) -> Vec<f64> {
         // The OKS math lives in the shared `primitives::sim::oks_matrix` kernel
         // (COCO-decoupled, matrix-shaped). Here we only marshal the annotations
         // into the kernel's flat-slice form. A missing `keypoints` field maps to
@@ -355,7 +359,7 @@ impl COCOeval {
             .map(|a| a.keypoints.as_deref().unwrap_or(&[]))
             .collect();
 
-        let valid = crate::primitives::sim::oks_matrix(&dt_keypoints, &gt, &params.kpt_oks_sigmas);
+        let valid = sim::oks_matrix_flat(&dt_keypoints, &gt, &params.kpt_oks_sigmas);
         scatter_full(valid, &dt_rows, &gt_cols, dt_ids.len(), gt_ids.len())
     }
 
@@ -366,7 +370,7 @@ impl COCOeval {
         dt_ids: &[u64],
         gt_ids: &[u64],
         eval_mode: EvalMode,
-    ) -> Vec<Vec<f64>> {
+    ) -> Vec<f64> {
         iou_scaffold(
             coco_gt,
             dt_ids,
@@ -374,7 +378,7 @@ impl COCOeval {
             eval_mode,
             |id| coco_dt.get_ann(id)?.obb.as_deref().copied(),
             |ann, _id| ann.obb.as_deref().copied(),
-            sim::obb_iou,
+            sim::obb_iou_flat,
         )
     }
 }
@@ -457,7 +461,10 @@ mod tests {
         );
         ev.evaluate();
 
-        let cache = ev.segm_rles.expect("segm run always builds the RLE cache");
+        let cache = ev
+            .segm_rles
+            .take()
+            .expect("segm run always builds the RLE cache");
         assert!(
             cache.gt.contains_key(&1),
             "GT id in a both-non-empty cell must be cached"

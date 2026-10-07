@@ -913,7 +913,8 @@ built for, see
     `StreamingEval::unknown_category_ids(anns) -> Vec<u64>` returns the ids in
     `anns` that `categories` does not list, sorted and without duplicates —
     the same check `update()` makes, for validating data before streaming it.
-    It is empty when `params.use_cats` is false.
+    `update()` returns them as `Error::UnknownCategoryIds`. It is empty when
+    `params.use_cats` is false.
 
     `StreamingEval::merge(&mut self, other)`, `to_bytes(&self)`, and
     `from_bytes(&[u8])` match the Python methods in the following sections,

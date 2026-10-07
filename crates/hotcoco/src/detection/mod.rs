@@ -141,6 +141,27 @@ fn fill_areas(coco: &mut Arc<COCO>, rule: AreaRule) {
     }
 }
 
+/// A large evaluation's working state is freed off the caller's thread, as a
+/// large [`COCO`]'s annotations are: the IoU cache alone holds a vector per
+/// detection row of every scored pair, and a Python caller would hold the GIL
+/// while they are freed one by one.
+impl Drop for COCOeval {
+    fn drop(&mut self) {
+        let full = self.eval_imgs.get().map_or(0, Vec::len);
+        if self.cells.len() + full >= crate::coco::BACKGROUND_DROP {
+            let state = (
+                std::mem::take(&mut self.ious),
+                std::mem::take(&mut self.cells),
+                self.eval_inputs.take(),
+                std::mem::take(&mut self.eval_imgs),
+                std::mem::take(&mut self.default_eval_imgs),
+                self.segm_rles.take(),
+            );
+            rayon::spawn(move || drop(state));
+        }
+    }
+}
+
 impl COCOeval {
     /// The one struct literal behind all three public constructors. What they
     /// differ in is a parameter here; everything else is the same empty

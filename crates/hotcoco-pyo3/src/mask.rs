@@ -331,7 +331,7 @@ fn encode_fortran_stack(
             out.extend(py.detach(|| encode_slices(&rest, h, w, n - i))?);
             break;
         }
-        out.extend(encode_slices(&stack[i * hw..(i + 1) * hw], h, w, 1)?);
+        out.push(encode_slice(&stack[i * hw..(i + 1) * hw], h, w)?);
     }
     Ok(out)
 }
@@ -347,11 +347,14 @@ fn encode_slices(
 ) -> hotcoco_core::error::Result<Vec<String>> {
     let hw = h * w;
     (0..n)
-        .map(|i| {
-            let rle = rmask::encode(&stack[i * hw..(i + 1) * hw], h as u32, w as u32)?;
-            Ok(rmask::rle_to_string(&rle))
-        })
+        .map(|i| encode_slice(&stack[i * hw..(i + 1) * hw], h, w))
         .collect()
+}
+
+/// The compressed `counts` string of one `h × w` column-major block.
+fn encode_slice(block: &[u8], h: usize, w: usize) -> hotcoco_core::error::Result<String> {
+    let rle = rmask::encode(block, h as u32, w as u32)?;
+    Ok(rmask::rle_to_string(&rle))
 }
 
 // ---------------------------------------------------------------------------

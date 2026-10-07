@@ -67,6 +67,11 @@ at the moment.
 - **Bounded-memory evaluation** — a chunked results-file reader for
   `StreamingEval`, and an `accumulate()` whose working set does not scale with
   total detections, for evaluation sets past Objects365 scale.
+- **Compact detection results** — keep a results set's detections as columns
+  (ids, boxes, scores, categories) instead of one 200-byte annotation record
+  each, sized for segmentations, keypoints, and extra keys a box detection
+  never has. For RF-DETR's 1.5 million detections, the records and their index
+  take about 370 MB, most of what evaluation adds to peak memory.
 - **Browse enhancements** — model A/B overlay toggle, failure clustering by
   TIDE error type, PR-curve click-through, aggregate → category → image
   drill-down.

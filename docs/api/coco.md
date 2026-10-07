@@ -453,11 +453,11 @@ same annotations.
     | Parameter | Type | Description |
     |---|---|---|
     | `images`, `categories` | `list[dict]` | Image and category dicts, as `COCO(dict)` takes them. There is one per image and category, not per annotation. |
-    | `image_ids`, `category_ids` | `ArrayLike` | One integer per annotation. numpy `int64` and `int32` arrays are read without a per-element cost. |
+    | `image_ids`, `category_ids` | `ArrayLike` | One integer per annotation. A numpy array of any integer dtype is read without a per-element cost. |
     | `boxes` | `ArrayLike` | Shape `(N, 4)`, COCO `[x, y, w, h]`. A numpy array of any integer or float dtype is read without a per-element cost. |
     | `ids` | <code>ArrayLike &#124; None</code> | Annotation ids. Default: `1` to `N`. |
     | `area` | <code>ArrayLike &#124; None</code> | Default: each box's `w * h`. |
-    | `iscrowd` | <code>ArrayLike &#124; None</code> | Ints or bools. Default: none are crowds. |
+    | `iscrowd` | <code>ArrayLike &#124; None</code> | Ints or bools; a numpy array of any integer or bool dtype is read without a per-element cost. Default: none are crowds. |
     | `segmentation` | <code>list[dict &#124; list[list[float]]] &#124; None</code> | `N` RLE or polygon segmentations, for `segm`. `area` is then required, because the box area would not match the mask. |
 
     Raises `ValueError` for columns of different lengths, a `boxes` array that

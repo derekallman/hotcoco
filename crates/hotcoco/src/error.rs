@@ -24,6 +24,16 @@ pub enum Error {
     #[error("annotation id(s) not in this dataset: {0:?}")]
     UnknownAnnIds(Vec<u64>),
 
+    /// Category ids in a batch handed to
+    /// [`StreamingEval::update`](crate::StreamingEval::update) that the
+    /// evaluator was not constructed with. Its own variant for the same
+    /// reason as `UnknownAnnIds`.
+    #[error(
+        "category id(s) {0:?} are not in this StreamingEval's categories; pass every \
+         category the run will see to `categories`"
+    )]
+    UnknownCategoryIds(Vec<u64>),
+
     /// Any other error with a human-readable message.
     #[error("{0}")]
     Other(String),

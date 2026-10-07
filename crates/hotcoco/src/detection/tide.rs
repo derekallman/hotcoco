@@ -502,8 +502,8 @@ impl COCOeval {
                         // did.
                         let row = same_iou_mat
                             .zip(orig_pos(dt_orig_ids, dt_ann_id))
-                            .and_then(|(mat, di_orig)| mat.get(di_orig))
-                            .map_or(&[][..], Vec::as_slice);
+                            .and_then(|(mat, di_orig)| mat.row(di_orig))
+                            .unwrap_or(&[]);
                         let same =
                             same_class_scan(row, &gt_sorted_to_orig, eval_img, t_idx, pos_thr);
 
@@ -825,7 +825,7 @@ fn resolve_fixes(cat_data: &mut HashMap<u64, CatData>) -> HashSet<u64> {
     for (cat_id, mut scores) in incoming {
         // Every incoming entry is a TP, so the order among equal scores is
         // immaterial; descending is what the merge in `fix_fp` needs.
-        scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        scores.sort_by_key(|&s| crate::metrics::counts::descending_score_key(s));
         cat_data
             .entry(cat_id)
             .or_insert_with(CatData::new)

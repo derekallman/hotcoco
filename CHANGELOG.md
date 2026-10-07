@@ -126,6 +126,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     sort, stores each detection's matched and ignore flags for every IoU
     threshold side by side so it reads them in one go, and sorts
     detections on integer keys: about 34 ms instead of 49 ms at 10×.
+- **A detection array loads faster, and large result sets are freed off the
+  caller's thread.** On RF-DETR's `compute()` benchmark — 5,000 images of 300
+  box detections, `max_dets` [1, 10, 500], handed over as one array as
+  RF-DETR's #1584 does — `compute()` takes about 0.54 s where it took about
+  0.68 s, within about 5% of ultrafast-pycocotools in the same runs. Measured
+  on an M1, alternating the two:
+  - `load_res` converts the array's rows to records in parallel, validates
+    them and assigns ids in parallel passes, and its index reads each record
+    once: about 70 ms where it took about 96 ms for 1.5 million rows.
+  - `accumulate()` ranks a category's detections once for all its area ranges
+    instead of once per area range: about 72 ms where it took about 103 ms.
+  - `evaluate()` matches each (image, category, area range) cell in buffers
+    it reuses rather than about a dozen new vectors, stops scanning a
+    threshold's detections once no ground truth is left to match, and keeps
+    each cell's IoU matrix in one buffer rather than one vector per
+    detection: about 65 ms where it took about 105 ms, and about 30 MB less
+    memory.
+  - Dropping a `COCO` with 100,000 annotations or more, or a `COCOeval` with
+    100,000 evaluated pairs or more, frees their large buffers on the thread
+    pool rather than the calling thread, where Python held the GIL for about
+    25 ms per 1.5 million records. The memory comes back just after the drop
+    rather than during it.
+
+  *Rust API:* `COCO::detections_from_rows` is the row conversion. `COCO` and
+  `COCOeval` implement `Drop`, so a field can no longer be moved out of one;
+  `std::mem::take(&mut coco.dataset)` takes the dataset.
 - **`mask.encode`, `mask.area`, and reading and writing `COCO` records are
   faster on the calls TorchMetrics makes for every validation batch.**
   Measured on 46,000 full-image masks and their detections from COCO val2017
@@ -175,7 +201,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `float32` straight from a detector included, went through Python one
   element at a time: `COCO.from_arrays` with 100,000 `float32` boxes takes
   about 5 ms where it took about 45 ms. The cast is exact for `float32` and
-  for integers up to 2^53, so the results are unchanged.
+  for integers up to 2^53, so the results are unchanged. The id columns of
+  `COCO.from_arrays` and `update_anns` and the `iscrowd` flags read any
+  integer dtype in one pass too, an unsigned one as `uint64`, so a `uint64`
+  id above 2^63 is kept exactly. *Rust API:*
+  `primitives::sim::{mask_iou_flat, bbox_iou_flat}` are the IoU kernels as
+  one row-major buffer, what `mask.iou` now hands numpy with no copy.
 - **`mask.area` and `mask.toBbox` decode a list of 1,024 RLEs or more across
   threads,** and `update_anns(ids=, area=)` writes the areas in place instead
   of copying each annotation, segmentation included. On 46,000 detection
@@ -217,7 +248,9 @@ produced a plausible number instead of the right one, or instead of an error.
   such an annotation silently. A category that is listed but excluded by
   `params.cat_ids` is not an error, and with `use_cats` false nothing is
   checked. Based on [#23](https://github.com/derekallman/hotcoco/pull/23) by
-  Jirka Borovec.
+  Jirka Borovec. *Rust API:* `StreamingEval::update` returns
+  `Error::UnknownCategoryIds` for it, the way `COCO::update_anns` returns
+  `Error::UnknownAnnIds`.
 - **`load_res()` raises `ValueError` for an array row whose `image_id` or
   `category_id` is NaN or negative.** The float was cast to an integer that
   saturated at 0, so such a row became image or category 0, which is a real id

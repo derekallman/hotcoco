@@ -12,7 +12,7 @@ use hotcoco_core::Rle;
 use hotcoco_core::primitives::{assign, sim};
 
 use crate::convert::{
-    boxes_arg, check_parallel, extract_rle_list, f64_matrix, f64_matrix_arg, flag_vec,
+    boxes_arg, check_parallel, extract_rle_list, f64_array, f64_matrix_arg, flag_vec,
 };
 
 /// `iscrowd` as one flag per ground truth — see [`flag_vec`] for the accepted
@@ -34,8 +34,8 @@ pub(crate) fn rle_iou_matrix(
     let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
     // All inputs are owned by now; the O(D*G) kernel runs GIL-free like the
     // COCOeval paths.
-    let result = py.detach(|| sim::mask_iou(dt, gt, &iscrowd));
-    f64_matrix(py, &result, [dt.len(), gt.len()])
+    let flat = py.detach(|| sim::mask_iou_flat(dt, gt, &iscrowd));
+    f64_array(py, flat, [dt.len(), gt.len()])
 }
 
 /// The box IoU kernel as a `(D, G)` `float64` array. Shared by
@@ -47,8 +47,8 @@ pub(crate) fn box_iou_matrix(
     iscrowd: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
-    let result = sim::bbox_iou(dt, gt, &iscrowd);
-    f64_matrix(py, &result, [dt.len(), gt.len()])
+    let flat = sim::bbox_iou_flat(dt, gt, &iscrowd);
+    f64_array(py, flat, [dt.len(), gt.len()])
 }
 
 #[pyfunction]

@@ -78,7 +78,9 @@ pub(crate) fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
         Error::Json(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
         Error::Convert(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
         // A lookup failure, so the exception a mapping lookup raises.
-        e @ Error::UnknownAnnIds(_) => pyo3::exceptions::PyKeyError::new_err(e.to_string()),
+        e @ (Error::UnknownAnnIds(_) | Error::UnknownCategoryIds(_)) => {
+            pyo3::exceptions::PyKeyError::new_err(e.to_string())
+        }
         Error::Other(msg) => pyo3::exceptions::PyRuntimeError::new_err(msg),
     }
 }
@@ -1606,32 +1608,15 @@ fn anns_from_rows(
             )));
         }
     }
-    // `as u64` saturates: NaN and -1 would both become id 0, which is a real
-    // image or category in some datasets. pycocotools' `int()` raises on NaN.
-    let id = |v: f64, row: usize, col: &str| {
-        if v.is_finite() && v >= 0.0 {
-            Ok(v as u64)
-        } else {
-            Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "{what}: row {row} has {col} {v}; ids must be finite and non-negative"
-            )))
-        }
-    };
-    let mut anns = Vec::with_capacity(arr.nrows());
-    for (i, row) in arr.rows().into_iter().enumerate() {
-        anns.push(Annotation {
-            id: 0,
-            image_id: id(row[0], i, "image_id")?,
-            category_id: if ncols == 7 {
-                id(row[6], i, "category_id")?
-            } else {
-                1
-            },
-            bbox: Some([row[1], row[2], row[3], row[4]]),
-            score: Some(row[5]),
-            ..Default::default()
-        });
-    }
+    let rows = arr.as_standard_layout();
+    let rows = rows
+        .as_slice()
+        .expect("a standard-layout array is one slice");
+    // The rows are numpy's memory, so they are read under the GIL — see the
+    // GIL rule in `mask.rs`. The conversion is parallel on the thread pool
+    // either way; only this thread holds the GIL.
+    let mut anns = hotcoco_core::COCO::detections_from_rows(rows, ncols)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{what}: {e}")))?;
     if let Some(segs) = segmentation {
         for (ann, seg) in anns.iter_mut().zip(segs) {
             ann.segmentation = Some(convert::py_to_segmentation(&seg)?);
@@ -3169,17 +3154,7 @@ after ``finalize()``."]
         };
 
         let inner = self.inner.as_mut().ok_or_else(spent)?;
-        // The core rejects an unknown category before anything else, as a bare
-        // `Error::Other`. Ask first so that error surfaces as the lookup failure
-        // `update_anns` raises for an unknown id, with the core's message.
-        let unknown_category = !inner.unknown_category_ids(gt.iter().chain(&dt)).is_empty();
-        py.detach(|| inner.update(images, gt, dt)).map_err(|e| {
-            if unknown_category {
-                pyo3::exceptions::PyKeyError::new_err(e.to_string())
-            } else {
-                to_pyerr(e)
-            }
-        })
+        py.detach(|| inner.update(images, gt, dt)).map_err(to_pyerr)
     }
 
     #[classmethod]

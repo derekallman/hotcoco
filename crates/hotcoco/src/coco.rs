@@ -11,6 +11,7 @@ use rustc_hash::{FxBuildHasher, FxHashMap};
 use crate::ann_index::{AnnIndex, Duplicates, IdIndex};
 use crate::error::Error;
 use crate::mask;
+use crate::metrics::counts::descending_score_key;
 use crate::primitives::sim::worth_parallel;
 use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
 
@@ -115,6 +116,24 @@ pub(crate) enum AreaRule {
 /// place every annotation in an area range.
 fn area_in_range(ann: &Annotation, rng: [f64; 2]) -> bool {
     ann.area.is_some_and(|a| a >= rng[0] && a <= rng[1])
+}
+
+/// How many annotations a `COCO`, or evaluated pairs a `COCOeval`, must hold
+/// before dropping it frees them on the thread pool rather than the caller's
+/// thread.
+pub(crate) const BACKGROUND_DROP: usize = 100_000;
+
+/// A large annotation list is freed off the caller's thread. Freeing 1.5M
+/// annotations walks every record for the parts it may own — about 25 ms on
+/// an M1 — and a Python caller would hold the GIL throughout; evaluation
+/// frameworks drop their result sets at the end of every `compute()`.
+impl Drop for COCO {
+    fn drop(&mut self) {
+        if self.dataset.annotations.len() >= BACKGROUND_DROP {
+            let annotations = std::mem::take(&mut self.dataset.annotations);
+            rayon::spawn(move || drop(annotations));
+        }
+    }
 }
 
 impl COCO {
@@ -542,6 +561,71 @@ impl COCO {
         Ok(res)
     }
 
+    /// Detections from rows of `[image_id, x, y, w, h, score]` or
+    /// `[image_id, x, y, w, h, score, category_id]`, back to back in `rows`:
+    /// the array [`load_res_anns`](Self::load_res_anns) takes in Python, the
+    /// pycocotools `loadNumpyAnnotations` convention. Six-column rows get
+    /// category 1, as in pycocotools. Rows are converted in parallel past the
+    /// shared fan-out threshold.
+    ///
+    /// # Errors
+    ///
+    /// An `image_id` or `category_id` that is NaN, infinite, or negative,
+    /// naming the first such row: cast to an integer it would saturate to 0,
+    /// which is a real id in some datasets. pycocotools' `int()` raises on NaN.
+    ///
+    /// # Panics
+    ///
+    /// If `ncols` is not 6 or 7, or `rows` is not a whole number of rows.
+    pub fn detections_from_rows(
+        rows: &[f64],
+        ncols: usize,
+    ) -> crate::error::Result<Vec<Annotation>> {
+        assert!(
+            ncols == 6 || ncols == 7,
+            "detections_from_rows: 6 or 7 columns, got {ncols}"
+        );
+        assert_eq!(rows.len() % ncols, 0, "detections_from_rows: a partial row");
+        let valid = |v: f64| v.is_finite() && v >= 0.0;
+        // Ids are checked in a read of the rows first, so the records can be
+        // written straight into the result: collecting a fallible map in
+        // parallel would gather chunks and copy them all again.
+        let first_bad = |(i, row): (usize, &[f64])| {
+            if !valid(row[0]) {
+                Some((i, "image_id", row[0]))
+            } else if ncols == 7 && !valid(row[6]) {
+                Some((i, "category_id", row[6]))
+            } else {
+                None
+            }
+        };
+        let parallel = worth_parallel(rows.len() / ncols);
+        let bad = if parallel {
+            rows.par_chunks_exact(ncols)
+                .enumerate()
+                .find_map_first(first_bad)
+        } else {
+            rows.chunks_exact(ncols).enumerate().find_map(first_bad)
+        };
+        if let Some((row, column, value)) = bad {
+            return Err(Error::Other(format!(
+                "row {row} has {column} {value}; ids must be finite and non-negative"
+            )));
+        }
+        let detection = |row: &[f64]| Annotation {
+            image_id: row[0] as u64,
+            category_id: if ncols == 7 { row[6] as u64 } else { 1 },
+            bbox: Some([row[1], row[2], row[3], row[4]]),
+            score: Some(row[5]),
+            ..Default::default()
+        };
+        Ok(if parallel {
+            rows.par_chunks_exact(ncols).map(detection).collect()
+        } else {
+            rows.chunks_exact(ncols).map(detection).collect()
+        })
+    }
+
     /// Load detection results from an already-parsed list of annotations.
     ///
     /// This is the in-memory equivalent of [`load_res`](Self::load_res). It applies
@@ -556,64 +640,84 @@ impl COCO {
         // does — then fill in whatever geometry that kind implies.
         let kind = anns.first().and_then(ResultKind::of);
         let has_cats = !self.cats.is_empty();
+
+        // Validate in one read-only pass, probing the index maps this `COCO`
+        // already built (`self.imgs`/`self.cats`) rather than building a
+        // `HashSet` of GT ids per call, then assign ids and derive geometry in
+        // one writing pass. Both fan out past the shared threshold; the
+        // first offender of each kind is the one reported either way.
+        // `COCO::from_dataset` below walks `anns` again to build the result's
+        // own index; that walk is `create_index`'s.
+        //
+        // A NaN score is rejected rather than warned about: it corrupts the
+        // whole run, not one annotation. NaN has no place in a score order: a
+        // sort with `partial_cmp(..).unwrap_or(Equal)` is not transitive once
+        // it is present, and the bit keys `accumulate()` sorts on put it
+        // wherever its bits fall, so AP becomes a function of the sort
+        // implementation. (`healthcheck` reports the same condition as an
+        // error and points here.) An image_id or category_id not in the GT is
+        // a common mistake that makes the detections silently score low, so
+        // the first of each is a warning.
+        let check = |i: usize, ann: &Annotation| {
+            [
+                ann.score.is_some_and(f64::is_nan).then_some(i),
+                (!self.imgs.contains_key(&ann.image_id)).then_some(i),
+                (has_cats && !self.cats.contains_key(&ann.category_id)).then_some(i),
+            ]
+        };
+        let earliest = |a: [Option<usize>; 3], b: [Option<usize>; 3]| {
+            std::array::from_fn(|j| match (a[j], b[j]) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            })
+        };
+        let [first_nan, first_img, first_cat] = if worth_parallel(anns.len()) {
+            anns.par_iter()
+                .enumerate()
+                .map(|(i, ann)| check(i, ann))
+                .reduce(|| [None; 3], earliest)
+        } else {
+            anns.iter()
+                .enumerate()
+                .map(|(i, ann)| check(i, ann))
+                .fold([None; 3], earliest)
+        };
+        if let Some(i) = first_nan {
+            let ann = &anns[i];
+            return Err(format!(
+                "load_res(): annotation {} (id {}, image_id {}) has a NaN score. \
+                 Scores order the detection ranking, and NaN makes that order \
+                 undefined — every metric downstream would be meaningless. Filter \
+                 or repair these detections before evaluating.",
+                i, ann.id, ann.image_id
+            )
+            .into());
+        }
         let mut warnings = Vec::new();
-        let mut img_mismatch_warned = false;
-        let mut cat_mismatch_warned = false;
-
-        // Validate and assign ids in one pass, probing the index maps this
-        // `COCO` already built (`self.imgs`/`self.cats`) rather than building a
-        // `HashSet` of GT ids per call. `COCO::from_dataset` below walks `anns`
-        // again to build the result's own index; that walk is `create_index`'s.
-        for (i, ann) in anns.iter_mut().enumerate() {
-            // A NaN score is rejected rather than warned about: it corrupts the
-            // whole run, not one annotation. NaN has no place in a score order:
-            // a sort with `partial_cmp(..).unwrap_or(Equal)` is not transitive
-            // once it is present, and the bit keys `accumulate()` sorts on put it
-            // wherever its bits fall, so AP becomes a function of the sort
-            // implementation. (`healthcheck`
-            // reports the same condition as an error and points here.)
-            if ann.score.is_some_and(f64::is_nan) {
-                return Err(format!(
-                    "load_res(): annotation {} (id {}, image_id {}) has a NaN score. \
-                     Scores order the detection ranking, and NaN makes that order \
-                     undefined — every metric downstream would be meaningless. Filter \
-                     or repair these detections before evaluating.",
-                    i, ann.id, ann.image_id
-                )
-                .into());
-            }
-
-            // Warn on the first annotation whose image_id or category_id isn't in
-            // the GT — a common mistake that causes DTs to silently produce
-            // misleadingly low metrics.
-            if !img_mismatch_warned && !self.imgs.contains_key(&ann.image_id) {
-                warnings.push(format!(
-                    "load_res() warning — found annotation with image_id {} not in the \
-                     GT dataset. These DTs will never match. Check your results file matches the \
-                     correct GT split.",
-                    ann.image_id
-                ));
-                img_mismatch_warned = true;
-            }
-            if has_cats && !cat_mismatch_warned && !self.cats.contains_key(&ann.category_id) {
-                warnings.push(format!(
-                    "load_res() warning — found annotation with category_id {} not \
-                     in the GT dataset. These DTs will never match.",
-                    ann.category_id
-                ));
-                cat_mismatch_warned = true;
-            }
-
-            // Assign IDs to result annotations (1-indexed, unconditional like pycocotools)
-            ann.id = (i + 1) as u64;
+        if let Some(i) = first_img {
+            warnings.push(format!(
+                "load_res() warning — found annotation with image_id {} not in the \
+                 GT dataset. These DTs will never match. Check your results file matches the \
+                 correct GT split.",
+                anns[i].image_id
+            ));
+        }
+        if let Some(i) = first_cat {
+            warnings.push(format!(
+                "load_res() warning — found annotation with category_id {} not \
+                 in the GT dataset. These DTs will never match.",
+                anns[i].category_id
+            ));
         }
 
-        if let Some(kind) = kind {
-            // Per annotation and, for masks, an RLE decode each: the one
-            // expensive step of loading results. A decode costs enough to fan
-            // out at any batch size; the other kinds derive a few numbers per
-            // annotation, so they fan out only past the shared threshold.
-            let derive = |ann: &mut Annotation| {
+        // Per annotation and, for masks, an RLE decode each: the one expensive
+        // step of loading results. A decode costs enough to fan out at any
+        // batch size; the other kinds derive a few numbers per annotation, so
+        // they fan out only past the shared threshold.
+        let fill = |(i, ann): (usize, &mut Annotation)| {
+            // Ids are 1-indexed and assigned unconditionally, as pycocotools does.
+            ann.id = (i + 1) as u64;
+            if let Some(kind) = kind {
                 // Detection results are never crowd regions, whatever the input
                 // file claimed.
                 ann.iscrowd = false;
@@ -623,12 +727,12 @@ impl COCO {
                     ResultKind::Keypoints => Self::derive_from_keypoints(ann),
                     ResultKind::Obb => Self::derive_from_obb(ann),
                 }
-            };
-            if matches!(kind, ResultKind::Segm) || worth_parallel(anns.len()) {
-                anns.par_iter_mut().for_each(derive);
-            } else {
-                anns.iter_mut().for_each(derive);
             }
+        };
+        if matches!(kind, Some(ResultKind::Segm)) || worth_parallel(anns.len()) {
+            anns.par_iter_mut().enumerate().for_each(fill);
+        } else {
+            anns.iter_mut().enumerate().for_each(fill);
         }
 
         let dataset = Dataset {
@@ -671,9 +775,16 @@ impl COCO {
     /// Masks are drawn in parallel past the shared fan-out threshold.
     pub(crate) fn missing_areas(&self, rule: AreaRule) -> Vec<(usize, f64)> {
         let anns = &self.dataset.annotations;
-        let missing: Vec<usize> = (0..anns.len())
-            .filter(|&i| anns[i].area.is_none())
-            .collect();
+        // Usually none: every evaluator runs this over both datasets.
+        let missing: Vec<usize> = if worth_parallel(anns.len()) {
+            anns.par_iter()
+                .positions(|ann| ann.area.is_none())
+                .collect()
+        } else {
+            (0..anns.len())
+                .filter(|&i| anns[i].area.is_none())
+                .collect()
+        };
         let derive = |&i: &usize| {
             let ann = &anns[i];
             let from_box = || ann.bbox.map(|bb| bb[2] * bb[3]);
@@ -744,18 +855,13 @@ impl COCO {
         }
         // A given box is kept, as pycocotools keeps it; only the area comes
         // from the mask.
-        let derived = if ann.bbox.is_some() {
-            rle.area().ok().map(|area| (area, None))
-        } else {
-            rle.area_and_bbox()
-                .ok()
-                .map(|(area, bbox)| (area, Some(bbox)))
-        };
-        if let Some((area, bbox)) = derived {
-            ann.area = Some(area as f64);
-            if bbox.is_some() {
-                ann.bbox = bbox;
+        if ann.bbox.is_some() {
+            if let Ok(area) = rle.area() {
+                ann.area = Some(area as f64);
             }
+        } else if let Ok((area, bbox)) = rle.area_and_bbox() {
+            ann.area = Some(area as f64);
+            ann.bbox = Some(bbox);
         }
     }
 
@@ -950,6 +1056,9 @@ impl COCO {
     }
 
     /// The images holding more than `max_det` annotations, with their counts.
+    /// Counted from the annotations, not the index: `dataset` is public, and a
+    /// caller that trimmed it without `create_index` must still get a cap that
+    /// agrees with what it holds.
     fn images_over(&self, max_det: usize) -> FxHashMap<u64, usize> {
         let mut per_img: FxHashMap<u64, usize> = FxHashMap::default();
         for ann in &self.dataset.annotations {
@@ -980,7 +1089,7 @@ impl COCO {
         }
         let mut keep = vec![true; anns.len()];
         for dets in over.values_mut() {
-            dets.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            dets.sort_by_key(|&(score, _)| descending_score_key(score));
             for &(_, pos) in &dets[max_det..] {
                 keep[pos] = false;
             }
