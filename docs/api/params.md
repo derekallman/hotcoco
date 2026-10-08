@@ -89,7 +89,7 @@ IoU thresholds for evaluation.
 | **Type** | `list[float]` | `Vec<f64>` |
 | **Default** | `[0.5, 0.55, 0.6, ..., 0.95]` (10 values) | Same |
 
-A grid is stored and evaluated exactly as given, as pycocotools does. That includes the default grid rounded through `float32`, which is what `torch.linspace(...).tolist()` returns and what torchmetrics hands every COCO backend: every point sits within about 4e-8 of the default. The rounding is not harmless. An IoU or recall `k / n` that lands exactly on a grid point is excluded by a point one ulp higher, so on a category with 20 ground truths a `float32` recall grid moves some precision cells by up to 0.33. `summarize()` warns once for such a grid, naming the rounding. Pass a `float64` grid, such as `numpy.linspace(0.5, 0.95, 10)`, for the reference numbers.
+A grid is stored and evaluated exactly as given, as pycocotools does. That includes the default grid rounded through `float32`, which is what `torch.linspace(...).tolist()` returns and what torchmetrics hands every COCO backend: every point sits within about 4e-8 of the default. The rounding is not harmless. An IoU or recall `k / n` that lands exactly on a grid point is excluded by a point one ulp higher, so on a category with 20 ground truths a `float32` recall grid moves some precision cells by up to 0.33. pycocotools moves the same cells, so such a grid counts as the default: `reference_deviations()` does not list it, `summarize()` does not warn, and `provenance()` stays `'parity_verified'`. The allowance is 1e-6 per point, a few `float32` ulps and far below any deliberate edit to a grid; a grid further off than that is a deviation. Pass a `float64` grid, such as `numpy.linspace(0.5, 0.95, 10)`, for the numbers on the exact default grid.
 
 ---
 

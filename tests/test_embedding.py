@@ -3,8 +3,8 @@
 Three small contracts, none needing `data/`:
 
 - A threshold grid built in `float32` is evaluated as given, as pycocotools
-  evaluates it, and gets one warning that names the rounding instead of the
-  generic "differs from default" ones.
+  evaluates it, and is not a deviation: no warning, and the run stays
+  `parity_verified`.
 - `summary_lines()` is the quiet path: it fills `stats` without printing or
   warning, and `reference_deviations()` still reports what a warning would have.
 - `hotcoco.__version__` exists and names the binary that is loaded.
@@ -40,9 +40,6 @@ def bits(array):
     return np.ascontiguousarray(array, dtype=np.float64).view(np.uint64).tolist()
 
 
-ROUNDED = "rounded through float32"
-
-
 def test_fixture_grids_really_drift():
     """A rounding test on a grid that was already exact would pass for nothing."""
     default = Params()
@@ -72,23 +69,21 @@ class TestFloat32Grids:
 
     @pytest.mark.parametrize("n_gt", [20, 25, 50, 100])
     def test_float32_grids_change_the_numbers(self, n_gt):
-        """Why the rounding still warns: recall `k / n_gt` is exactly a grid point, and a
-        grid point one ulp higher excludes it, so 60-240 precision cells move here, by up
-        to 0.33."""
+        """Why the grid must be kept rather than snapped: recall `k / n_gt` is exactly a
+        grid point, and a grid point one ulp higher excludes it, so 60-240 precision
+        cells move here, by up to 0.33. pycocotools moves the same cells."""
         default = tie_sensitive_eval(n_gt)
         float32 = tie_sensitive_eval(n_gt, iou_thrs=IOU_F32, rec_thrs=REC_F32)
         assert bits(float32.eval["precision"]) != bits(default.eval["precision"])
 
-    def test_float32_grids_get_one_warning_that_names_them(self, capsys):
+    def test_float32_grids_are_not_a_deviation(self, capsys):
         ev = tie_sensitive_eval(20, iou_thrs=IOU_F32, rec_thrs=REC_F32)
-        deviations = ev.reference_deviations()
-        assert len(deviations) == 1, deviations
-        assert deviations[0].startswith(f"iou_thrs and rec_thrs are the default grids {ROUNDED}")
-        with warnings.catch_warnings(record=True) as raised:
-            warnings.simplefilter("always")
+        assert ev.reference_deviations() == []
+        assert ev.provenance() == "parity_verified"
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
             ev.summarize()
         capsys.readouterr()
-        assert [str(w.message) for w in raised] == [f"hotcoco: {deviations[0]}"]
         assert ev.stats[1] >= 0 and ev.stats[2] >= 0, "AP50 and AP75 are found: 0.5 and 0.75 are exact in float32"
 
     def test_a_real_deviation_still_warns(self, capsys):

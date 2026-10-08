@@ -158,12 +158,11 @@ const ROUNDED_GRID_TOL: f64 = 1e-6;
 /// the `f32` grid `torch.linspace` builds: same length, every point within
 /// [`ROUNDED_GRID_TOL`]. NaN never counts.
 ///
-/// Such a grid is evaluated as given, the way pycocotools evaluates it, so a
-/// caller driving several COCO backends with one grid gets one answer. It still
-/// counts as a deviation: recall `k / n` lands exactly on a recall-grid point,
-/// and a grid point one ulp higher excludes it, so `accumulate()` picks the next
-/// precision. On a category with 20 ground truths that moves 240 of 12,120
-/// precision cells, by up to 0.33.
+/// Such a grid is evaluated as given, not snapped: the rounding moves precision
+/// cells, since a recall `k / n` that lands exactly on a grid point is excluded
+/// by a point one ulp higher. pycocotools evaluates it the same way, bit for
+/// bit, so [`COCOeval::reference_deviations`](crate::COCOeval::reference_deviations)
+/// counts it as the default.
 pub(crate) fn is_rounded_default(grid: &[f64], default: &[f64]) -> bool {
     grid.len() == default.len()
         && grid

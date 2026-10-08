@@ -345,12 +345,10 @@ fn through_f32(grid: &[f64]) -> Vec<f64> {
 }
 
 /// torchmetrics hands every COCO backend `f32` grids, and pycocotools evaluates
-/// them as given. Replacing them with the default grid made hotcoco the one
-/// backend that disagreed. The grid stays as set, and the run reports one
-/// deviation that names the rounding: `AP50` and `AP75` are found, since 0.5
-/// and 0.75 are exact in `f32`, so the generic `iou_thrs` message would be wrong.
+/// them as given (`tests/test_parity.py`, bit for bit). The grid stays as set
+/// and the run is not a deviation, so it stays `ParityVerified`.
 #[test]
-fn float32_grids_are_kept_and_named_once() {
+fn float32_grids_are_kept_and_not_a_deviation() {
     let mut ev = fixture_eval();
     let iou = through_f32(&ev.params.iou_thrs);
     let rec = through_f32(&ev.params.rec_thrs);
@@ -362,13 +360,8 @@ fn float32_grids_are_kept_and_named_once() {
     assert_eq!(ev.params.iou_thrs, iou);
     assert_eq!(ev.params.rec_thrs, rec);
     let deviations = ev.reference_deviations();
-    assert_eq!(deviations.len(), 1, "{deviations:?}");
-    assert!(
-        deviations[0]
-            .starts_with("iou_thrs and rec_thrs are the default grids rounded through float32"),
-        "{deviations:?}"
-    );
-    assert_eq!(ev.provenance(), hotcoco::Provenance::Extension);
+    assert!(deviations.is_empty(), "{deviations:?}");
+    assert_eq!(ev.provenance(), hotcoco::Provenance::ParityVerified);
     let stats = ev.stats().unwrap();
     assert!(
         stats[1] >= 0.0 && stats[2] >= 0.0,
@@ -376,19 +369,9 @@ fn float32_grids_are_kept_and_named_once() {
     );
 }
 
-/// One rounded grid is named alone; a grid off by more than rounding keeps the
-/// generic message.
+/// A grid off by more than rounding keeps the generic message.
 #[test]
-fn rounding_and_real_deviations_are_told_apart() {
-    let mut ev = fixture_eval();
-    ev.params.rec_thrs = through_f32(&ev.params.rec_thrs);
-    let deviations = ev.reference_deviations();
-    assert_eq!(deviations.len(), 1, "{deviations:?}");
-    assert!(
-        deviations[0].starts_with("rec_thrs is the default grid rounded through float32"),
-        "{deviations:?}"
-    );
-
+fn a_grid_off_by_more_than_rounding_is_still_flagged() {
     let mut ev = fixture_eval();
     ev.params.iou_thrs[3] += 2e-6;
     let deviations = ev.reference_deviations();

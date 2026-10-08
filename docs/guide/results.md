@@ -176,7 +176,9 @@ it. That covers more than geometry:
   rule is not implemented; see [Verification](lvis-open-images.md#verification)
 - any run with non-default `iou_thrs`, `rec_thrs`, `max_dets`, area-range labels
   or bounds, `use_cats=False`, or custom `kpt_oks_sigmas` — the metric is real,
-  but nobody checked *that* configuration against a reference
+  but nobody checked *that* configuration against a reference. The default
+  grids rounded through `float32`, as torchmetrics builds them, count as the
+  defaults; see [`iou_thrs`](../api/params.md#iou_thrs)
 
 Extension numbers are fine for comparing your own models against each other; they
 are not leaderboard numbers.

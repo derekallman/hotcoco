@@ -333,9 +333,10 @@ class Params:
     temporary and is a silent no-op. Assign whole values instead:
     ``p.max_dets = [1, 10, 100, 200]``.
 
-    ``iou_thrs`` and ``rec_thrs`` are stored as given. A ``float32`` grid, as
-    ``torch.linspace`` builds, is evaluated as pycocotools evaluates it, and
-    ``summarize()`` warns that it is not the reference grid.
+    ``iou_thrs`` and ``rec_thrs`` are stored as given. The default grid rounded
+    through ``float32``, as ``torch.linspace`` builds it, is evaluated as
+    pycocotools evaluates it and counts as the default: no warning, and
+    ``provenance()`` stays ``'parity_verified'``.
     """
 
     def __init__(self, iou_type: str = "bbox") -> None: ...

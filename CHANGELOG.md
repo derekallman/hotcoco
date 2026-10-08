@@ -7,11 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Added
-
 ### Changed
 
-### Fixed
+- **A `float32` threshold grid is no longer a deviation.** 1.2.0 evaluated the
+  default grid rounded through `float32` — the grid torchmetrics hands every
+  COCO backend — as given, and still warned once and marked the run an
+  `extension`. pycocotools evaluates that grid identically, bit for bit, so
+  there is no reference the run departs from: `reference_deviations()` leaves
+  it out, `summarize()` says nothing, and `provenance()` stays
+  `'parity_verified'`. A grid off by more than rounding (1e-6) is flagged as
+  before. RF-DETR had wrapped every hotcoco call in a warning filter to hide
+  this message; with it gone, only a genuine `max_dets` deviation remains for
+  it to see.
 
 ## [1.2.0] - 2026-10-07
 
