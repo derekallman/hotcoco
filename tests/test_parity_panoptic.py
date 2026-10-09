@@ -415,6 +415,50 @@ def test_missing_isthing_is_an_extension(tmp_path):
     assert report["metrics"]["PQ"] == 1.0
 
 
+def semantic_from_panoptic(case: Case) -> dict:
+    """mIoU the way a panoptic→semantic conversion computes it: every segment
+    painted with its category (crowd included), ground-truth void ignored, a
+    predicted void counted as a miss for the ground-truth class and a false
+    positive for nothing. Per-class IoU and mIoU by the usual formulas."""
+    cat_ids = sorted({c["id"] for c in case.categories})
+    n = len(cat_ids)
+    conf = np.zeros((n, n + 1), dtype=np.int64)  # column n: predicted void
+    for image_id, (gt_map, gt_segs) in case.gt.items():
+        pred_map, pred_segs = case.pred[image_id]
+        gt_cat = {s["id"]: cat_ids.index(s["category_id"]) for s in gt_segs}
+        pred_cat = {s["id"]: cat_ids.index(s["category_id"]) for s in pred_segs}
+        for g, p in zip(gt_map.ravel().tolist(), pred_map.ravel().tolist()):
+            if g not in gt_cat:  # void, or a PNG id with no segments_info entry
+                continue
+            conf[gt_cat[g], pred_cat[p] if p != 0 else n] += 1
+    tp = np.diag(conf[:, :n]).astype(float)
+    gt_area = conf.sum(1).astype(float)
+    pred_area = conf[:, :n].sum(0).astype(float)
+    union = gt_area + pred_area - tp
+    iou = np.where(union > 0, tp / np.where(union > 0, union, 1), np.nan)
+    return {"IoU": iou, "mIoU": float(np.nanmean(iou)), "aAcc": tp.sum() / gt_area.sum(), "cat_ids": cat_ids}
+
+
+@pytest.mark.parametrize("case", RANDOM_CASES[:12], ids=lambda c: c.name)
+def test_panoptic_report_carries_semantic_miou(tmp_path, case):
+    """`report()["metrics"]["mIoU"]` is the panoptic prediction scored as a semantic
+    one — PQ and mIoU from one pass, as panoptic papers report them."""
+    paths = case.write(tmp_path)
+    ev = panoptic.PanopticEval(paths["gt"][0], paths["pred"][0], gt_folder=paths["gt"][1], pred_folder=paths["pred"][1])
+    ev.evaluate()
+    report = ev.report()
+    want = semantic_from_panoptic(case)
+    assert abs(report["metrics"]["mIoU"] - want["mIoU"]) < TOL
+    assert abs(report["metrics"]["aAcc"] - want["aAcc"]) < TOL
+    names = {c["id"]: c["name"] for c in case.categories}
+    for cat_id, iou in zip(want["cat_ids"], want["IoU"]):
+        got = report["per_class"].get(names[cat_id], {}).get("IoU")
+        if np.isnan(iou):
+            assert got is None, names[cat_id]
+        else:
+            assert got is not None and abs(got - iou) < TOL, names[cat_id]
+
+
 def test_report_has_the_family_shape(tmp_path):
     case = RANDOM_CASES[2]
     paths = case.write(tmp_path)
@@ -423,12 +467,12 @@ def test_report_has_the_family_shape(tmp_path):
     report = ev.report()
     assert report["task"] == "panoptic"
     assert report["provenance"] == "parity_verified"
-    assert list(report["metrics"]) == sorted(panoptic.METRIC_NAMES)
+    assert set(report["metrics"]) == set(panoptic.METRIC_NAMES) | {"mIoU", "fwIoU", "mAcc", "aAcc"}
     assert ev.stats == [report["metrics"][k] for k in panoptic.METRIC_NAMES]
     assert set(report["per_group"]) <= {"all", "things", "stuff"}
     assert set(report["per_group"]["all"]) == {"PQ", "SQ", "RQ", "n"}
     for name, scores in report["per_class"].items():
-        assert set(scores) == {"PQ", "SQ", "RQ"}, name
+        assert set(scores) <= {"PQ", "SQ", "RQ", "IoU", "Acc"}, name
         assert all(0.0 <= v <= 1.0 for v in scores.values()), name
     assert report["curves"] == {}
     assert report["params"]["n_images"] == 2

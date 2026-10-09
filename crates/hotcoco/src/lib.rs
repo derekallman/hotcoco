@@ -75,6 +75,7 @@ pub mod params;
 pub mod primitives;
 pub mod quality;
 pub mod report;
+pub mod semantic;
 pub mod types;
 
 /// How many parallel runs each thread draws when work is cut into runs: a
@@ -112,4 +113,5 @@ pub use quality::{
     CategoryStats, DatasetStats, DatasetSummary, Finding, HealthReport, Layer, SummaryStats,
 };
 pub use report::{EvalReport, Provenance};
+pub use semantic::{SemanticEval, SemanticResults};
 pub use types::{Annotation, Category, Dataset, Extra, Image, Rle, Segmentation};

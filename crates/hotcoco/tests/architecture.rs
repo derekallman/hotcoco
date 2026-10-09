@@ -479,6 +479,12 @@ fn metrics_allowed() -> Vec<&'static str> {
             "crate::metrics", // sibling metric functions
             "crate::error",   // the crate's Result type
             "crate::report",  // the cross-family output contract
+            // The one similarity kernel a metric computes from counts it
+            // already holds — `semantic`'s per-class IoU off a confusion
+            // matrix. The dependency runs the documented way (`metrics` →
+            // `primitives`); what the allowlist forbids is a second formula,
+            // which `iou_formula_only_in_primitives_sim` would also catch.
+            "crate::primitives::sim",
         ],
     ]
     .concat()
@@ -506,7 +512,7 @@ fn primitives_allowed() -> Vec<&'static str> {
 
 /// The family drivers held to [`family_allowed`]: every driver but
 /// detection, which the rule is about. A new family is one entry here.
-const FAMILY_DIRS: &[&str] = &["/panoptic/"];
+const FAMILY_DIRS: &[&str] = &["/panoptic/", "/semantic/"];
 
 /// What a family driver other than detection may reach: the two shared
 /// layers, the output contract, and the data layer. Not another driver —

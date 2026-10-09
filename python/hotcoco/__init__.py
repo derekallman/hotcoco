@@ -103,7 +103,7 @@ def _per_image_cap(max_dets):
 
 import sys as _sys  # noqa: E402
 
-from . import detection, metrics, panoptic, primitives  # noqa: E402, F401
+from . import detection, metrics, panoptic, primitives, semantic  # noqa: E402, F401
 
 # `mask` is a PyO3 submodule object, which `from hotcoco import mask` finds as an
 # attribute but `import hotcoco.mask` does not — the import system looks in

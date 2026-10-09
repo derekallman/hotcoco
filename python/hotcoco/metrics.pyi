@@ -31,6 +31,16 @@ def panoptic_quality(iou_sum: float, tp: int, fp: int, fn_: int) -> tuple[float,
     """``(PQ, SQ, RQ)`` from match counts; ``(-1.0, -1.0, -1.0)`` when there is nothing to score."""
     ...
 
+def pixel_confusion(
+    gt: npt.ArrayLike, pred: npt.ArrayLike, num_classes: int, *, ignore_index: int | None = None
+) -> npt.NDArray[np.uint64]:
+    """The ``(num_classes, num_classes)`` pixel confusion matrix of one label-map pair; row the ground truth."""
+    ...
+
+def mean_iou(confusion: npt.ArrayLike) -> dict[str, Any]:
+    """``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc`` and per-class ``IoU``/``Acc`` lists from a square count matrix."""
+    ...
+
 def is_computed(v: float) -> bool:
     """Whether a metric value was actually computed (``-1.0`` means "not computed")."""
     ...
@@ -46,5 +56,8 @@ __all__ = [
     "confusion_matrix",
     "is_computed",
     "is_missing",
+    "mean_iou",
+    "panoptic_quality",
+    "pixel_confusion",
     "precision_recall_curve",
 ]

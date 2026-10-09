@@ -13,7 +13,7 @@ Perception evaluation for Python, written in Rust.
 </p>
 
 <p class="hero-sub">
-hotcoco evaluates perception models: detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — and panoptic segmentation. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 113× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
+hotcoco evaluates perception models: detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — panoptic segmentation, and semantic segmentation. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 113× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
 </p>
 
 <div class="hero-actions" markdown>
@@ -81,7 +81,7 @@ pip install hotcoco
 
 <div class="feature-card" markdown>
 <strong>Evaluate</strong>
-<p>COCO, LVIS, and Open Images protocols over boxes, masks, keypoints, and oriented boxes, and panoptic quality against panopticapi. <code>init_as_pycocotools()</code> patches existing pycocotools imports in place — no code changes.</p>
+<p>COCO, LVIS, and Open Images protocols over boxes, masks, keypoints, and oriented boxes; panoptic quality against panopticapi; semantic mIoU against mmsegmentation. <code>init_as_pycocotools()</code> patches existing pycocotools imports in place — no code changes.</p>
 </div>
 
 <div class="feature-card" markdown>
@@ -187,5 +187,23 @@ ev.run()
 ev.report()["metrics"]["PQ"]
 ```
 
-See the [panoptic guide](guide/panoptic.md). Tracking is next —
+See the [panoptic guide](guide/panoptic.md).
+
+## Semantic segmentation
+
+The third family: mIoU, fwIoU, mAcc, and aAcc from class-id label maps,
+matching mmsegmentation's `IoUMetric`. Fed one batch at a time from a
+validation loop, or from folders of PNG files; the state is one confusion
+matrix, so shards merge and the evaluator pickles:
+
+```python
+from hotcoco import semantic
+
+ev = semantic.SemanticEval(19)
+for gt, pred in loader:
+    ev.update(gt, pred)
+ev.report()["metrics"]["mIoU"]
+```
+
+See the [semantic guide](guide/semantic.md). Tracking is next —
 see the [roadmap](https://github.com/derekallman/hotcoco/blob/main/ROADMAP.md).

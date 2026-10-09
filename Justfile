@@ -125,6 +125,11 @@ hooks:
 gen-oid-fixtures: build
     uv run python scripts/gen_oid_fixtures.py
 
+# Regenerate the semantic segmentation fixtures from mmseg, torchmetrics, and
+# detectron2 (needs network and the torch in the `torchmetrics` dependency group)
+gen-semantic-fixtures: build
+    PYTHONPATH=scripts uv run --with torchmetrics python scripts/gen_semantic_fixtures.py
+
 # Verify TIDE error-type parity vs tidecv (needs data/)
 parity-tide: build
     uv run python scripts/parity_tide.py

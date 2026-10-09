@@ -286,6 +286,67 @@ panopticapi leaves out of its averages. To reproduce its `All`, `Things`, and
 `fn_` carries a trailing underscore because `fn` is a Rust keyword and the
 same counts live there.
 
+### `pixel_confusion`
+
+The pixel confusion matrix of one label-map pair.
+
+=== "Python"
+
+    ```python
+    pixel_confusion(gt, pred, num_classes: int, *, ignore_index: int | None = None) -> ndarray[uint64]
+    ```
+
+=== "Rust"
+
+    ```rust
+    metrics::semantic::PixelConfusion::new(num_classes) -> PixelConfusion
+    PixelConfusion::update(&mut self, gt: &[G], pred: &[P], ignore_index: Option<u64>) -> Result<()>
+    PixelConfusion::add(&mut self, other: &PixelConfusion)
+    ```
+
+A `(num_classes, num_classes)` array, row the ground-truth class, column the
+predicted class, over integer arrays of any shape. Pixels whose ground truth
+is `ignore_index` are left out on both sides; every other label must be
+below `num_classes`, on either side, or `ValueError` names the pixel. The
+matrix behind [`semantic`](semantic.md), for a loop that keeps its own: sum
+the arrays across images, then hand the total to `mean_iou`.
+
+```python
+>>> metrics.pixel_confusion([[0, 1], [1, 255]], [[0, 1], [0, 1]], num_classes=2, ignore_index=255).tolist()
+[[1, 0], [1, 1]]
+```
+
+### `mean_iou`
+
+mIoU, fwIoU, mAcc, aAcc, and the per-class pair from a confusion matrix.
+
+=== "Python"
+
+    ```python
+    mean_iou(confusion) -> dict
+    ```
+
+=== "Rust"
+
+    ```rust
+    PixelConfusion::scores(&self) -> SemanticScores
+    metrics::semantic::semantic_scores(classes: &[ClassCounts]) -> SemanticScores
+    ```
+
+Takes a square integer array as `pixel_confusion` and
+`SemanticEval.confusion()` produce it and returns
+`{"mIoU", "fwIoU", "mAcc", "aAcc", "IoU": [...], "Acc": [...]}`, the lists
+by class id. mmsegmentation's conventions: a class on neither side has no
+IoU, a class with no ground truth has no accuracy, and either is `-1.0` and
+left out of its mean; a class predicted but never in the ground truth scores
+IoU `0` and counts toward `mIoU`. The [semantic guide](../guide/semantic.md#what-miou-measures)
+has the formulas.
+
+```python
+>>> metrics.mean_iou([[3, 1], [0, 2]])["mIoU"]
+0.7083333333333333
+```
+
 ### `is_computed` and `is_missing`
 
 ```python

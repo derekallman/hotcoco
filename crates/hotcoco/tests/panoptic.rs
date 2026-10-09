@@ -212,12 +212,36 @@ fn worked_example_scores_by_hand() {
     assert_eq!(r.stuff.n, 1);
     assert_eq!(r.n_images, 1);
 
+    // The same pixels as semantic segmentation. Ground-truth void (rows 4..8,
+    // cols 0..4, 16 px — pred 9's 4 px among them) is ignored. Category 10
+    // (16 px): 12 predicted 10, 4 predicted void (column 0). Category 20
+    // (32 px): all 32 predicted 20. Rows and columns are category rank; the
+    // last column is the predicted void.
+    assert_eq!(r.pixels.num_classes(), 2);
+    assert_eq!(r.pixels.unlabeled_pred(), Some(2));
+    assert_eq!(r.pixels.get(0, 0), 12);
+    assert_eq!(r.pixels.get(0, 2), 4);
+    assert_eq!(r.pixels.get(1, 1), 32);
+    assert_eq!(r.pixels.total(), 48);
+    let sem = r.semantic();
+    assert_eq!(sem.per_class.len(), 2, "the void column is not a class");
+    assert_eq!(sem.per_class[0].iou, 0.75); // 12 / (16 + 12 - 12)
+    assert_eq!(sem.per_class[0].acc, 0.75); // 12 / 16
+    assert_eq!(sem.per_class[1].iou, 1.0);
+    assert_eq!(sem.miou, 0.875);
+    assert!((sem.aacc - 44.0 / 48.0).abs() < 1e-12);
+    assert!((sem.fwiou - 44.0 / 48.0).abs() < 1e-12);
+
     assert_eq!(ev.provenance(), Provenance::ParityVerified);
     let report = ev.report().expect("report");
     assert_eq!(report.task, "panoptic");
     assert!((report.metric("PQ").expect("PQ") - 0.875).abs() < 1e-12);
     assert!((report.metric("PQ_th").expect("PQ_th") - 0.75).abs() < 1e-12);
+    assert_eq!(report.metric("mIoU"), Some(0.875));
+    assert!((report.metric("aAcc").expect("aAcc") - 44.0 / 48.0).abs() < 1e-12);
     assert_eq!(report.per_class["c10"]["PQ"], 0.75);
+    assert_eq!(report.per_class["c10"]["IoU"], 0.75);
+    assert_eq!(report.per_class["c20"]["Acc"], 1.0);
     assert_eq!(report.per_group["things"]["n"], 1.0);
 
     let lines = ev.summarize_lines();

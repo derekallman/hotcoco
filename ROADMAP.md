@@ -52,8 +52,9 @@ at the moment.
 - **Open-vocabulary detection guide** — evaluating open-vocabulary detector
   outputs (Grounding DINO, OWL-ViT, YOLO-World) with hotcoco. OV-LVIS is
   federated LVIS AP over rare categories, which hotcoco already computes; the
-  work is documentation, with a `grounding` family (Recall@k over box–phrase
-  matches, RefCOCO-style accuracy) to follow only if demand shows up.
+  work is documentation. Grounding metrics (Recall@k over box–phrase matches,
+  RefCOCO-style accuracy) would join the concept segmentation family above,
+  and only if demand shows up.
 - **Ecosystem backends** — a FiftyOne evaluation backend surfacing TIDE errors
   and confusion matrices in its UI; `MeanAveragePrecision(backend="hotcoco")`
   for torchmetrics; a Hugging Face `evaluate` metric module. The torchmetrics
@@ -71,6 +72,17 @@ at the moment.
 - **Browse enhancements** — model A/B overlay toggle, failure clustering by
   TIDE error type, PR-curve click-through, aggregate → category → image
   drill-down.
+- **Report tables as DataFrames** — `report()`'s `per_class` and `per_group`
+  are tables in disguise (rows are categories or groups, columns are the
+  metrics), and the idiom today is `pd.DataFrame(report["per_class"]).T`. A
+  helper that returns those two as frames, pandas optional, the way sklearn's
+  `classification_report(output_dict=True)` is used. The headline `metrics`
+  stay a dict and `curves` stay arrays; neither is a table.
+- **Dice and boundary IoU** for the semantic family, if asked for. Dice is the
+  same confusion matrix read differently (`2·IoU / (1 + IoU)` per class), the
+  convention of medical segmentation. Boundary IoU restricts IoU to a band
+  along each mask's contour and needs an erosion primitive and detectron2's
+  `SemSegEvaluator` as the reference.
 - **CrowdPose** — crowded-scene keypoint evaluation with the modified OKS
   crowd factor.
 - **Per-sequence video breakdowns** — per-clip metric trends, following the

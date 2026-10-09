@@ -271,39 +271,49 @@ def test_primitives_stub_matches_runtime():
     assert not missing, f"Names missing from primitives.pyi: {sorted(missing)}"
 
 
-def test_panoptic_namespace_importable_both_ways():
-    import hotcoco.panoptic
-    from hotcoco import panoptic
-
-    assert "hotcoco.panoptic" in sys.modules
-    assert panoptic is hotcoco.panoptic
+FAMILIES = [("panoptic", "PanopticEval"), ("semantic", "SemanticEval")]
 
 
-def test_panoptic_stub_matches_runtime():
-    """panoptic.pyi lists every name the facade exports, and nothing more."""
-    from hotcoco import panoptic
+@pytest.mark.parametrize(("family", "_cls"), FAMILIES)
+def test_family_namespace_importable_both_ways(family, _cls):
+    """Same check as for `detection`, for every family the extension adds."""
+    import importlib
 
-    stub = _parse_stub_file("panoptic.pyi")
-    missing = set(panoptic.__all__) - stub["__top__"]
-    assert not missing, f"Names missing from panoptic.pyi: {sorted(missing)}"
-    phantom = {n for n in stub["__top__"] if not n.startswith("_")} - set(panoptic.__all__)
-    assert not phantom, f"Names stubbed in panoptic.pyi but not exported: {sorted(phantom)}"
+    module = importlib.import_module(f"hotcoco.{family}")
+    assert f"hotcoco.{family}" in sys.modules
+    assert module is getattr(hotcoco, family)
 
-    runtime_members = _public_names(panoptic.PanopticEval)
-    stub_members = stub["PanopticEval"]
+
+@pytest.mark.parametrize(("family", "cls"), FAMILIES)
+def test_family_stub_matches_runtime(family, cls):
+    """`<family>.pyi` lists every name the facade exports, and nothing more, and
+    the evaluator class's members both ways."""
+    import importlib
+
+    module = importlib.import_module(f"hotcoco.{family}")
+    stub = _parse_stub_file(f"{family}.pyi")
+    missing = set(module.__all__) - stub["__top__"]
+    assert not missing, f"Names missing from {family}.pyi: {sorted(missing)}"
+    phantom = {n for n in stub["__top__"] if not n.startswith("_")} - set(module.__all__)
+    assert not phantom, f"Names stubbed in {family}.pyi but not exported: {sorted(phantom)}"
+
+    runtime_members = _public_names(getattr(module, cls))
+    stub_members = stub[cls]
     missing = runtime_members - stub_members
-    assert not missing, f"PanopticEval members missing from stub: {sorted(missing)}"
+    assert not missing, f"{cls} members missing from stub: {sorted(missing)}"
     phantom = {m for m in stub_members if not m.startswith("_")} - runtime_members
-    assert not phantom, f"PanopticEval members stubbed but not defined: {sorted(phantom)}"
+    assert not phantom, f"{cls} members stubbed but not defined: {sorted(phantom)}"
 
 
-def test_panoptic_facade_reexports_every_extension_name():
-    from hotcoco import panoptic
-    from hotcoco.hotcoco import panoptic as _ext
+@pytest.mark.parametrize(("family", "_cls"), FAMILIES)
+def test_family_facade_reexports_every_extension_name(family, _cls):
+    import importlib
 
-    exported = {n for n in dir(_ext) if not n.startswith("_")}
-    missing = exported - set(panoptic.__all__)
-    assert not missing, f"In the extension but not re-exported by panoptic.py: {sorted(missing)}"
+    module = importlib.import_module(f"hotcoco.{family}")
+    ext = getattr(importlib.import_module("hotcoco.hotcoco"), family)
+    exported = {n for n in dir(ext) if not n.startswith("_")}
+    missing = exported - set(module.__all__)
+    assert not missing, f"In the extension but not re-exported by {family}.py: {sorted(missing)}"
 
 
 def test_functional_layer_needs_no_evaluator():

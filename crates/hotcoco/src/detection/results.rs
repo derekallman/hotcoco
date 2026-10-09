@@ -84,10 +84,7 @@ impl EvalResults {
 
     /// Write results as pretty-printed JSON to a file.
     pub fn save(&self, path: &Path) -> crate::error::Result<()> {
-        let file = std::fs::File::create(path)?;
-        let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, self)?;
-        Ok(())
+        crate::report::save_json(self, path)
     }
 }
 

@@ -383,6 +383,33 @@ coco panoptic eval --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-fold
 
 ---
 
+### `coco semantic eval`
+
+Semantic segmentation — mIoU, fwIoU, mAcc, aAcc — from two folders of PNG
+label maps paired by file name, as mmsegmentation's `IoUMetric` computes it.
+See the [semantic guide](guide/semantic.md).
+
+```bash
+coco semantic eval --gt <dir> --pred <dir> --classes <N | names.txt> [options]
+```
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--gt DIR` | Ground truth PNG folder | *required* |
+| `--pred DIR` | Prediction PNG folder, files named as in `--gt` | *required* |
+| `--classes` | Number of classes, or a text file with one class name per line | *required* |
+| `--ignore-index N` | Ground truth label of unlabeled pixels; `-1` counts every pixel | `255` |
+| `--reduce-zero-label` | mmseg's rule for files with "other" at `0` (ADE20K): `0` is ignored, other labels shift down by one | off |
+| `--json` | `results()` plus the `report` as JSON | off |
+
+```bash
+coco semantic eval --gt gtFine/val --pred preds/ --classes 19
+coco semantic eval --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label
+coco semantic eval --gt gt/ --pred pred/ --classes names.txt --json
+```
+
+---
+
 ### `coco convert`
 
 Convert between annotation formats. Supports COCO JSON ↔ YOLO labels, Pascal VOC XML, CVAT for Images XML, DOTA oriented-box labels, and Open Images CSV.
@@ -533,8 +560,9 @@ coco-eval eval --gt annotations.json --dt detections.json --iou-type bbox
 
 ### Options
 
-These apply to `eval` and to the bare form. The other subcommands are `panoptic`,
-below, and `completions`, covered under [Shell completions](#shell-completions).
+These apply to `eval` and to the bare form. The other subcommands are `panoptic`
+and `semantic`, below, and `completions`, covered under
+[Shell completions](#shell-completions).
 
 | Flag | Description | Default |
 |------|-------------|---------|
@@ -591,6 +619,18 @@ coco-eval panoptic --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-fold
 
 Prints the panopticapi table and a `stats:` line with the nine headline values;
 `-o` writes the results — the same content as `results()` in Python — as JSON.
+
+### `coco-eval semantic`
+
+The semantic family, with the same flags as [`coco semantic eval`](#coco-semantic-eval):
+
+```bash
+coco-eval semantic --gt gtFine/val --pred preds/ --classes 19
+coco-eval semantic --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label -o report.json
+```
+
+Prints the per-class table and a `stats:` line with the four means; `-o` writes
+the results — the same content as `results()` in Python — as JSON.
 
 ---
 

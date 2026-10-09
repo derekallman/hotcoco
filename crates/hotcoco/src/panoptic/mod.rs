@@ -55,6 +55,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::metrics::panoptic::{PqCounts, PqScores, pq_average};
+use crate::metrics::semantic::{PixelConfusion, SemanticScores};
 use crate::primitives::panoptic::{Overlaps, Segment, VOID, match_segments};
 use crate::report::{EvalReport, Provenance};
 use crate::types::{Category, Segmentation, placeholder_cat_name};
@@ -96,9 +97,27 @@ pub struct PanopticResult {
     pub stuff: PqSplit,
     /// Images evaluated: one per ground-truth annotation.
     pub n_images: usize,
+    /// The same pixels read as semantic segmentation: every segment painted
+    /// with its category, crowd included, and the two label maps compared
+    /// pixel by pixel. Row and column `i` are the `i`th key of
+    /// `per_category`; the matrix has the unlabeled-prediction column, where a
+    /// predicted void lands, so a void prediction is a miss for the
+    /// ground-truth class and a false positive for none. Ground-truth void is
+    /// ignored, as are PNG ids with no `segments_info` entry.
+    /// [`semantic`](Self::semantic) reads mIoU off it.
+    pub pixels: PixelConfusion,
 }
 
 impl PanopticResult {
+    /// mIoU, fwIoU, mAcc, aAcc, and per-category IoU and Acc, over the
+    /// categories in `per_category` order — the panoptic prediction scored as
+    /// a semantic one, the way Mask2Former's and Panoptic-DeepLab's papers
+    /// report mIoU beside PQ. The predicted-void column is not a class: it
+    /// feeds each category's `FN` and nothing else.
+    pub fn semantic(&self) -> SemanticScores {
+        self.pixels.scores()
+    }
+
     /// The nine headline values, in [`METRIC_NAMES`] order.
     pub fn stats(&self) -> [f64; 9] {
         let s = |split: &PqSplit| [split.scores.pq, split.scores.sq, split.scores.rq];
@@ -155,9 +174,7 @@ impl PanopticResults {
 
     /// Write as pretty-printed JSON to a file.
     pub fn save(&self, path: &Path) -> crate::error::Result<()> {
-        let file = std::fs::File::create(path)?;
-        serde_json::to_writer_pretty(std::io::BufWriter::new(file), self)?;
-        Ok(())
+        crate::report::save_json(self, path)
     }
 }
 
@@ -218,7 +235,19 @@ struct Context<'a> {
     /// canvas a mask-backed ground truth is painted on. A prediction is
     /// painted on whatever canvas the ground truth turned out to have.
     gt_dims: FxHashMap<u64, (u32, u32)>,
-    category_ids: FxHashSet<u64>,
+    /// Category id → its row and column in [`PanopticResult::pixels`]: the
+    /// rank of the id among the ground truth's categories, whose set this
+    /// also is.
+    cat_index: FxHashMap<u64, usize>,
+}
+
+/// What one image contributes: PQ counts by category id, and pixel counts by
+/// `(gt category index, pred category index)`, the predicted void in the
+/// unlabeled column. Sparse, since an image touches a few dozen category
+/// pairs and the dense matrix is summed once in `run()`.
+struct ImageCounts {
+    pq: FxHashMap<u64, PqCounts>,
+    pixels: FxHashMap<(usize, usize), u64>,
 }
 
 impl PanopticEval {
@@ -266,6 +295,9 @@ impl PanopticEval {
             pairs.push((gt_ann, *pred_ann));
         }
 
+        let cats: Vec<&Category> = unique_categories(&self.gt.categories).collect();
+        let mut per_category: BTreeMap<u64, PqCounts> =
+            cats.iter().map(|c| (c.id, PqCounts::default())).collect();
         let ctx = Context {
             gt_folder: self.gt.folder.as_deref(),
             pred_folder: self.pred.folder.as_deref(),
@@ -275,26 +307,31 @@ impl PanopticEval {
                 .iter()
                 .map(|img| (img.id, (img.height, img.width)))
                 .collect(),
-            category_ids: self.gt.categories.iter().map(|c| c.id).collect(),
+            cat_index: per_category
+                .keys()
+                .enumerate()
+                .map(|(i, &id)| (id, i))
+                .collect(),
         };
 
         // `collect` into a `Result` stops at the first failing image instead
         // of finishing the corpus to report it.
-        let per_image: Vec<Vec<(u64, PqCounts)>> = pairs
+        let per_image: Vec<ImageCounts> = pairs
             .par_iter()
             .map(|(gt_ann, pred_ann)| eval_image(gt_ann, pred_ann, &ctx))
             .collect::<crate::error::Result<_>>()?;
 
-        let cats: Vec<&Category> = unique_categories(&self.gt.categories).collect();
-        let mut per_category: BTreeMap<u64, PqCounts> =
-            cats.iter().map(|c| (c.id, PqCounts::default())).collect();
+        let mut pixels = PixelConfusion::with_unlabeled_pred(per_category.len());
         for counts in per_image {
-            for (category_id, c) in counts {
+            for (category_id, c) in counts.pq {
                 // A ground-truth category the file does not define is counted
                 // by panopticapi and never reported; the same here.
                 if let Some(total) = per_category.get_mut(&category_id) {
                     total.add(&c);
                 }
+            }
+            for ((g, p), count) in counts.pixels {
+                pixels.add_count(g, p, count);
             }
         }
 
@@ -312,6 +349,7 @@ impl PanopticEval {
             stuff: split(Some(false)),
             per_category,
             n_images: pairs.len(),
+            pixels,
         });
         Ok(())
     }
@@ -442,6 +480,16 @@ impl PanopticEval {
             .result
             .as_ref()
             .ok_or("run() must be called before report()")?;
+        let names: BTreeMap<u64, String> = unique_categories(&self.gt.categories)
+            .map(|cat| {
+                let name = if cat.name.is_empty() {
+                    placeholder_cat_name(cat.id)
+                } else {
+                    cat.name.clone()
+                };
+                (cat.id, name)
+            })
+            .collect();
         let mut report = EvalReport::new("panoptic", self.provenance())
             .with_metrics(METRIC_NAMES.iter().copied().zip(result.stats()))
             .with_params(serde_json::json!({
@@ -450,20 +498,19 @@ impl PanopticEval {
                 "gt_folder": self.gt.folder.as_ref().map(|p| p.display().to_string()),
                 "pred_folder": self.pred.folder.as_ref().map(|p| p.display().to_string()),
             }));
-        for cat in unique_categories(&self.gt.categories) {
-            let Some(scores) = result.per_category[&cat.id].scores() else {
-                continue;
-            };
-            let name = if cat.name.is_empty() {
-                placeholder_cat_name(cat.id)
-            } else {
-                cat.name.clone()
-            };
-            report = report
-                .with_class_metric(name.clone(), "PQ", scores.pq)
-                .with_class_metric(name.clone(), "SQ", scores.sq)
-                .with_class_metric(name, "RQ", scores.rq);
+        for (id, counts) in &result.per_category {
+            if let Some(scores) = counts.scores() {
+                let name = &names[id];
+                report = report
+                    .with_class_metric(name.clone(), "PQ", scores.pq)
+                    .with_class_metric(name.clone(), "SQ", scores.sq)
+                    .with_class_metric(name.clone(), "RQ", scores.rq);
+            }
         }
+        // `pixels` rows follow `per_category`'s key order, and so do `names`'.
+        report = result
+            .semantic()
+            .add_to_report(report, names.values().cloned());
         for (group, split) in [
             ("all", &result.all),
             ("things", &result.things),
@@ -571,7 +618,7 @@ fn eval_image(
     gt_ann: &PanopticAnnotation,
     pred_ann: &PanopticAnnotation,
     ctx: &Context<'_>,
-) -> crate::error::Result<Vec<(u64, PqCounts)>> {
+) -> crate::error::Result<ImageCounts> {
     let image_id = gt_ann.image_id;
     let gt = load_side(
         gt_ann,
@@ -617,7 +664,7 @@ fn eval_image(
                 seg.id
             )
         })?;
-        if !ctx.category_ids.contains(&seg.category_id) {
+        if !ctx.cat_index.contains_key(&seg.category_id) {
             return Err(format!(
                 "image {image_id}: predicted segment {} has unknown category_id {}",
                 seg.id, seg.category_id
@@ -646,6 +693,28 @@ fn eval_image(
         })
         .collect();
 
+    // The same overlaps read by category: a ground-truth void or unlisted id
+    // is ignored; a predicted void lands in the last column. Both category
+    // lookups hit, since an unlisted prediction id was an error above and a
+    // ground-truth id is listed by construction of `labels`.
+    let n_cats = ctx.cat_index.len();
+    let gt_cat: FxHashMap<u32, usize> = gt_segments
+        .iter()
+        .filter_map(|s| ctx.cat_index.get(&s.category_id).map(|&i| (s.label, i)))
+        .collect();
+    let pred_cat: FxHashMap<u32, usize> = pred_segments
+        .iter()
+        .map(|s| (s.label, ctx.cat_index[&s.category_id]))
+        .collect();
+    let mut pixels: FxHashMap<(usize, usize), u64> = FxHashMap::default();
+    for (g, p, count) in overlaps.iter() {
+        let Some(&gi) = gt_cat.get(&g) else {
+            continue;
+        };
+        let pi = if p == VOID { n_cats } else { pred_cat[&p] };
+        *pixels.entry((gi, pi)).or_default() += count;
+    }
+
     let matches = match_segments(&gt_segments, &pred_segments, &overlaps);
     let mut counts: FxHashMap<u64, PqCounts> = FxHashMap::default();
     for (gi, _, iou) in matches.matched {
@@ -667,5 +736,5 @@ fn eval_image(
     for pi in matches.false_positives {
         counts.entry(pred_segments[pi].category_id).or_default().fp += 1;
     }
-    Ok(counts.into_iter().collect())
+    Ok(ImageCounts { pq: counts, pixels })
 }

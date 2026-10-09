@@ -67,7 +67,9 @@ signatures and return shapes.
 In Rust the same names return `Result` where Python raises: `results()`
 returns a `PanopticResults` with `to_json()` and `save()`, `result()` exposes
 the raw `PanopticResult` counts behind it, and `summary_lines()` is spelled
-`summarize_lines()`.
+`summarize_lines()`. `PanopticResult.pixels` is the category confusion matrix
+the mIoU comes from, with the unlabeled-prediction column a predicted void
+lands in, and `PanopticResult::semantic()` reads the `SemanticScores` off it.
 
 ### `results()`
 
@@ -98,8 +100,8 @@ four counts are hotcoco's additions to panopticapi's dict.
 |-----|----------|
 | `task` | `"panoptic"` |
 | `provenance` | `"parity_verified"`, or `"extension"` when a category lacks `isthing` |
-| `metrics` | `PQ`, `SQ`, `RQ`, `PQ_th`, `SQ_th`, `RQ_th`, `PQ_st`, `SQ_st`, `RQ_st` — `-1.0` for a split with nothing to average |
-| `per_class` | category name → `{"PQ", "SQ", "RQ"}`, evaluable categories only |
+| `metrics` | `PQ`, `SQ`, `RQ`, `PQ_th`, `SQ_th`, `RQ_th`, `PQ_st`, `SQ_st`, `RQ_st` — `-1.0` for a split with nothing to average — plus `mIoU`, `fwIoU`, `mAcc`, `aAcc`, the same pixels scored as [semantic segmentation](../guide/panoptic.md#miou-from-the-same-pixels) |
+| `per_class` | category name → `PQ`, `SQ`, `RQ` for evaluable categories, and `IoU`, `Acc` where computed |
 | `per_group` | `all`, `things`, `stuff` → `{"PQ", "SQ", "RQ", "n"}`, splits with `n > 0` only |
 | `curves` | empty; PQ has no curve |
 | `params` | `n_images`, `n_categories`, `gt_folder`, `pred_folder` |

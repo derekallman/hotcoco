@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `metrics::panoptic::{PqCounts, PqScores, pq_average}`. Two PNG sides are
     scanned straight off their decoded bytes; only a PNG paired with a mask
     side is transposed.
+  - `report()` also carries `mIoU`, `fwIoU`, `mAcc`, and `aAcc`, with `IoU`
+    and `Acc` per class: the panoptic prediction scored as a semantic one, as
+    panoptic papers report it, from the same pass over the pixels. Every
+    segment is painted with its category (crowd included), ground-truth void
+    is ignored, and a predicted void counts as a miss for its class and a
+    false positive for nothing. Rust: `PanopticResult.pixels` (the category
+    confusion matrix) and `PanopticResult::semantic()`.
   - Where panopticapi raises — a predicted segment in the JSON but not the PNG
     or the reverse, an unknown prediction category, an image with no
     prediction — `evaluate()` raises too, naming the image. Where it would
@@ -60,6 +67,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   round-tripped through `COCO` dicts. `None` on every detection file.
 - Rust: `Segmentation::to_rle(h, w)` rasterizes any segmentation variant onto
   a canvas; `COCO::ann_to_rle` now goes through it.
+
+- **Semantic segmentation — the third metric family.** `hotcoco.semantic`
+  computes mIoU, fwIoU, mAcc, and aAcc from class-id label maps, matching
+  [mmsegmentation](https://github.com/open-mmlab/mmsegmentation)'s `IoUMetric`
+  and torchmetrics' `multiclass_jaccard_index` on frozen label maps, with one
+  documented convention choice where detectron2 differs (a class predicted but
+  never in the ground truth counts toward mIoU with IoU 0; detectron2 drops it).
+  - `semantic.SemanticEval(classes, *, ignore_index=255, reduce_zero_label=False)`
+    is fed incrementally: `update(gt, pred)` takes integer arrays of the same
+    shape, `(H, W)` or `(N, H, W)`, in any integer dtype; `update_png` and
+    `update_folders` read 8- or 16-bit grayscale and palette PNG label maps,
+    the folder form pairing files by name in parallel. `merge()` adds another
+    evaluator's counts and the evaluator pickles, for DDP. `confusion()`
+    returns the `uint64` matrix behind every number. `summarize()`,
+    `summary_lines()`, `stats`, `results()`, `report()`, `reference_deviations()`,
+    `provenance()` mirror the other families; `report()` is the shared `EvalReport`.
+  - `metrics.pixel_confusion(gt, pred, num_classes, *, ignore_index=None)` and
+    `metrics.mean_iou(confusion)`, the functional spelling.
+  - `coco semantic eval --gt DIR --pred DIR --classes N|names.txt
+    [--ignore-index N] [--reduce-zero-label] [--json]` in the Python CLI and
+    `coco-eval semantic` in the Rust one.
+  - Rust: `hotcoco::semantic::{SemanticEval, SemanticResults, ClassResult,
+    METRIC_NAMES}`; `metrics::semantic::{PixelConfusion, ClassCounts,
+    ClassScores, SemanticScores, semantic_scores, Label}`; and
+    `primitives::sim::iou_from_counts`, the count-based scalar IoU, so no
+    second IoU formula appears. The architecture test gains `semantic/` as a
+    family directory and lets `metrics` reach `primitives::sim`.
+  - Oracle: `scripts/gen_semantic_fixtures.py` runs the three references from
+    pinned sources and freezes `tests/fixtures/semantic_expected.json`;
+    `tests/test_parity_semantic.py` and `crates/hotcoco/tests/semantic.rs`
+    check against it with no torch installed (`just gen-semantic-fixtures`).
 
 ### Changed
 

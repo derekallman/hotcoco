@@ -8,12 +8,15 @@ use pyo3::prelude::*;
 use pyo3::types::PyList;
 
 use hotcoco_core::metrics::panoptic::PqCounts;
+use hotcoco_core::metrics::semantic::PixelConfusion;
 use hotcoco_core::metrics::{calibration as rcal, confusion as rconf, counts as rcounts};
 use hotcoco_core::params::default_rec_thrs;
 
 use crate::convert::{
-    bool_vec, calibration_bin_to_py, check_parallel, confusion_counts_to_py, f64_vec,
+    Labels, bool_vec, calibration_bin_to_py, check_parallel, confusion_counts_to_py, f64_vec,
+    label_pair, with_label_pair,
 };
+use crate::to_input_err;
 
 #[pyfunction]
 #[pyo3(
@@ -281,6 +284,88 @@ fn panoptic_quality(iou_sum: f64, tp: u64, fp: u64, fn_: u64) -> (f64, f64, f64)
 }
 
 #[pyfunction]
+#[pyo3(
+    signature = (gt, pred, num_classes, *, ignore_index=None),
+    text_signature = "(gt, pred, num_classes, *, ignore_index=None)"
+)]
+#[doc = "The pixel confusion matrix of one label-map pair: a ``uint64`` array of
+shape ``(num_classes, num_classes)``, row the ground-truth class, column the
+predicted class.
+
+The matrix behind ``hotcoco.semantic``, for a loop that keeps its own: sum the
+arrays across images, then hand the total to :func:`mean_iou`.
+
+Args:
+    gt: Ground-truth class ids, an integer array of any shape.
+    pred: Predicted class ids, the same shape.
+    num_classes: Every label must be below this, except ``ignore_index`` in ``gt``.
+    ignore_index: A ground-truth label whose pixels are left out on both sides.
+
+Example:
+    >>> from hotcoco import metrics
+    >>> m = metrics.pixel_confusion([[0, 1], [1, 255]], [[0, 1], [0, 1]], num_classes=2, ignore_index=255)
+    >>> m.tolist()
+    [[1, 0], [1, 1]]
+"]
+fn pixel_confusion(
+    py: Python<'_>,
+    gt: &Bound<'_, PyAny>,
+    pred: &Bound<'_, PyAny>,
+    num_classes: usize,
+    ignore_index: Option<u64>,
+) -> PyResult<Py<PyAny>> {
+    // Lists are welcome here as they are everywhere in `metrics`; the label
+    // readers want an array, and `asarray` hands an array back unchanged.
+    let asarray = py.import("numpy")?.getattr("asarray")?;
+    let as_array =
+        |obj: &Bound<'_, PyAny>| -> PyResult<Py<PyAny>> { Ok(asarray.call1((obj,))?.unbind()) };
+    let (gt, pred) = (as_array(gt)?, as_array(pred)?);
+    let (g, p) = label_pair(gt.bind(py), pred.bind(py))?;
+    let mut m = PixelConfusion::new(num_classes);
+    with_label_pair!(&g, &p, |g, p| m.update(g, p, ignore_index)).map_err(to_input_err)?;
+    confusion_counts_to_py(py, m.into_counts(), num_classes)
+}
+
+#[pyfunction]
+#[doc = "mIoU, fwIoU, mAcc, and aAcc from a pixel confusion matrix.
+
+Takes a square integer array — row the ground-truth class, column the
+predicted class, as :func:`pixel_confusion` and ``SemanticEval.confusion()``
+produce — and returns a dict::
+
+    {\"mIoU\": 0.62, \"fwIoU\": 0.81, \"mAcc\": 0.74, \"aAcc\": 0.90,
+     \"IoU\": [0.9, 0.5, ...], \"Acc\": [0.95, 0.6, ...]}   # per class, by id
+
+mmsegmentation's conventions: a class on neither side has no IoU, one with no
+ground truth has no accuracy, and either is ``-1.0`` here and left out of its
+mean. A class predicted but never in the ground truth scores IoU ``0`` and
+counts toward ``mIoU``.
+
+Example:
+    >>> from hotcoco import metrics
+    >>> metrics.mean_iou([[3, 1], [0, 2]])[\"mIoU\"]
+    0.7083333333333333
+"]
+fn mean_iou(py: Python<'_>, confusion: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let (counts, rows, cols) = crate::convert::u64_matrix_arg(confusion, "confusion")?;
+    if rows != cols {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "confusion must be square, got {rows}×{cols}"
+        )));
+    }
+    let m = PixelConfusion::from_counts(rows, counts).map_err(to_input_err)?;
+    let s = m.scores();
+    let d = pyo3::types::PyDict::new(py);
+    d.set_item("mIoU", s.miou)?;
+    d.set_item("fwIoU", s.fwiou)?;
+    d.set_item("mAcc", s.macc)?;
+    d.set_item("aAcc", s.aacc)?;
+    d.set_item("IoU", s.per_class.iter().map(|c| c.iou).collect::<Vec<_>>())?;
+    d.set_item("Acc", s.per_class.iter().map(|c| c.acc).collect::<Vec<_>>())?;
+    Ok(d.into_any().unbind())
+}
+
+#[pyfunction]
 #[doc = "Whether a metric value was actually computed.
 
 hotcoco reports ``-1.0`` for a metric that was *not computed for this
@@ -314,6 +399,8 @@ pub fn register(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     m.add_function(wrap_pyfunction!(calibration_error, &m)?)?;
     m.add_function(wrap_pyfunction!(confusion_matrix, &m)?)?;
     m.add_function(wrap_pyfunction!(panoptic_quality, &m)?)?;
+    m.add_function(wrap_pyfunction!(pixel_confusion, &m)?)?;
+    m.add_function(wrap_pyfunction!(mean_iou, &m)?)?;
     m.add_function(wrap_pyfunction!(is_computed, &m)?)?;
     m.add_function(wrap_pyfunction!(is_missing, &m)?)?;
     Ok(m)

@@ -12,7 +12,7 @@ ultrafast-pycocotools 0.1.13, vernier 0.5.4, hotcoco `main` (1.3 development).
 | **Metric parity** | Reference | Exact | `precision`/`recall`/`scores` bit-identical on x86-64; segm differs on arm64 (see [Segmentation](#segmentation)) | Bit-identical in `parity_mode="strict"` on x86-64; segm differs on arm64 | `precision`/`recall`/`scores` bit-identical on x86-64 and arm64; summary metrics bit-identical (measured on arm64) |
 | **LVIS evaluation** | No | Yes — via `lvis_style=True` flag | Yes — via `lvis_style=True` flag | Yes — federated AP | Yes — 13 metrics, `LVISeval` class, `init_as_lvis()` |
 | **Open Images, oriented boxes** | No | No | No | No | Yes — Challenge protocol with group-of; OBB IoU |
-| **Panoptic, semantic** | No | No | No | Yes — PQ, mIoU | PQ/SQ/RQ matching panopticapi ([parity](#panoptic)); from PNG files or from masks with no PNG files |
+| **Panoptic, semantic** | No | No | No | Yes — PQ, mIoU | PQ/SQ/RQ matching panopticapi ([parity](#panoptic)), from PNG files or from masks with no PNG files; mIoU/fwIoU/mAcc/aAcc matching mmsegmentation ([parity](#semantic)), from arrays or PNG label maps |
 | **TIDE error analysis** | No | No | No | Yes | Yes — 6 error types, ΔAP per type |
 | **Confusion matrix** | No | No | Yes | Yes | Yes — cross-category, configurable threshold |
 | **Calibration** | No | No | No | Yes — ECE/MCE | Yes — ECE/MCE, reliability curve |
@@ -312,6 +312,29 @@ processes, one session); PNG decoding is most of hotcoco's time. The synthetic
 version of this comparison — 50 random cases and 5 hand-built ones, counts exact,
 plus the PNG-free mask path against the PNG path — runs in CI on every commit.
 
+### Semantic
+
+**References:** [mmsegmentation](https://github.com/open-mmlab/mmsegmentation) `IoUMetric`
+at v1.2.2 (`c685fe6`), [torchmetrics](https://github.com/Lightning-AI/torchmetrics)
+1.9.0 `multiclass_jaccard_index`, and [detectron2](https://github.com/facebookresearch/detectron2)
+`SemSegEvaluator` at `1e3e13b`, each run from its pinned source by
+`scripts/gen_semantic_fixtures.py` and frozen to `tests/fixtures/semantic_expected.json`.
+**Inputs:** 64 synthetic cases — 2 to 9 classes, 1 to 4 label maps each, ignored
+pixels in half of them, `reduce_zero_label` in a fifth, classes present on one side
+only, and four hand-built corners (a perfect prediction, an all-ignored split, a class
+never predicted, a class never in the ground truth).
+
+Against mmseg, the reference hotcoco follows: every per-class IoU and Acc, `mIoU`,
+`mAcc`, and `aAcc` within 1e-9 on all 64 cases (the differences are 0 or one
+`float64` ulp). Against torchmetrics, per-class IoU and `mIoU` within 1e-6 — it
+reduces in `float32`, and sits about 1e-8 from mmseg. Against detectron2, `fwIoU`,
+`mAcc`, and `aAcc` within 1e-9, and `mIoU` identical on the 35 cases with no
+predicted-but-absent class and different on all 29 that have one, which is the
+[documented convention choice](guide/semantic.md#verification) being observed. The
+metric is a pure function of the confusion matrix, so this synthetic comparison
+covers it; there is no real-dataset run for the family. Both suites run on every
+commit.
+
 ### Verify it yourself
 
 You do not have to take these numbers on faith, and you should not have to clone
@@ -398,6 +421,7 @@ just download-panoptic                      # 35 MB — panoptic val2017 + pertu
 just parity-panoptic                        # PQ/SQ/RQ vs panopticapi
 uv run pytest tests/test_mask_parity.py     # hotcoco.mask vs pycocotools.mask, bit for bit
 uv run pytest tests/test_parity_oid.py      # Open Images vs the TF Object Detection API
+uv run pytest tests/test_parity_semantic.py # mIoU vs mmseg, torchmetrics, detectron2 (frozen)
 just fuzz                                   # hypothesis fuzzer, ~10,000 generated datasets
 ```
 

@@ -7,7 +7,7 @@ use anstyle::{AnsiColor, Color, Style};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use hotcoco::params::IouType;
-use hotcoco::{COCO, COCOeval, PanopticDataset, PanopticEval};
+use hotcoco::{COCO, COCOeval, PanopticDataset, PanopticEval, SemanticEval};
 use indicatif::{ProgressBar, ProgressStyle};
 
 const GREEN: Style = Style::new().fg_color(Some(Color::Ansi(AnsiColor::Green)));
@@ -66,6 +66,9 @@ enum Command {
 
     /// Panoptic quality: PQ, SQ, RQ from two COCO panoptic JSON files
     Panoptic(PanopticArgs),
+
+    /// Semantic segmentation: mIoU, fwIoU, mAcc, aAcc from two folders of PNG label maps
+    Semantic(SemanticArgs),
 
     /// Print a shell completion script
     Completions {
@@ -135,6 +138,33 @@ struct PanopticArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(clap::Args)]
+struct SemanticArgs {
+    /// Folder of ground-truth PNG label maps
+    #[arg(long)]
+    gt: PathBuf,
+
+    /// Folder of predicted PNG label maps, named as the ground truth's
+    #[arg(long)]
+    pred: PathBuf,
+
+    /// Number of classes, or a text file with one class name per line
+    #[arg(long)]
+    classes: String,
+
+    /// Ground-truth label of unlabeled pixels; a negative value counts every pixel
+    #[arg(long, default_value_t = 255)]
+    ignore_index: i64,
+
+    /// mmseg's rule for files with "other" at 0 (ADE20K): 0 is ignored, other labels shift down by one
+    #[arg(long)]
+    reduce_zero_label: bool,
+
+    /// Write the results (the four means, every class with its counts) to a JSON file
+    #[arg(long, short)]
+    output: Option<PathBuf>,
+}
+
 /// Write a completion script for `shell` to stdout.
 fn print_completions(shell: Shell) {
     generate(
@@ -155,6 +185,7 @@ fn main() -> std::process::ExitCode {
         }
         Some(Command::Eval(args)) => run_eval(args),
         Some(Command::Panoptic(args)) => run_panoptic(args),
+        Some(Command::Semantic(args)) => run_semantic(args),
         // No subcommand: the historic bare form.
         None => run_eval(cli.eval),
     };
@@ -215,16 +246,7 @@ fn run_eval(args: EvalArgs) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(ref output_path) = args.output {
-        let start = Instant::now();
-        let results = coco_eval
-            .results(true)
-            .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-        results.save(output_path)?;
-        status(
-            "Saved",
-            &format!("results to {DIM}{}{RESET}", output_path.display()),
-            start.elapsed(),
-        );
+        save_results(output_path, |path| coco_eval.results(true)?.save(path))?;
     }
 
     Ok(())
@@ -253,6 +275,36 @@ fn timed_load<T>(
     Ok(value)
 }
 
+/// Run `evaluate` behind a spinner and report how long it took.
+fn timed_eval<T>(
+    message: &str,
+    what: &str,
+    evaluate: impl FnOnce() -> hotcoco::error::Result<T>,
+) -> hotcoco::error::Result<T> {
+    let pb = spinner(message);
+    let start = Instant::now();
+    let outcome = evaluate();
+    pb.finish_and_clear();
+    let value = outcome?;
+    status("Evaluated", what, start.elapsed());
+    Ok(value)
+}
+
+/// Write results with `save` and report it — the one "Saved" line.
+fn save_results(
+    path: &Path,
+    save: impl FnOnce(&Path) -> hotcoco::error::Result<()>,
+) -> hotcoco::error::Result<()> {
+    let start = Instant::now();
+    save(path)?;
+    status(
+        "Saved",
+        &format!("results to {DIM}{}{RESET}", path.display()),
+        start.elapsed(),
+    );
+    Ok(())
+}
+
 /// The machine-readable `stats:` line the parity scripts read.
 fn print_stats(stats: &[f64]) {
     let stats_strs: Vec<String> = stats.iter().map(|v| format!("{v:.15}")).collect();
@@ -271,12 +323,9 @@ fn run_panoptic(args: PanopticArgs) -> Result<(), Box<dyn std::error::Error>> {
     let pred = load(&args.pred, args.pred_folder, "predictions")?;
 
     let mut ev = PanopticEval::new(gt, pred);
-    let pb = spinner("Evaluating panoptic quality...");
-    let start = Instant::now();
-    let outcome = ev.run();
-    pb.finish_and_clear();
-    outcome?;
-    status("Evaluated", "panoptic quality", start.elapsed());
+    timed_eval("Evaluating panoptic quality...", "panoptic quality", || {
+        ev.run()
+    })?;
 
     let _ = writeln!(stderr());
     ev.summarize();
@@ -285,13 +334,41 @@ fn run_panoptic(args: PanopticArgs) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if let Some(ref output_path) = args.output {
-        let start = Instant::now();
-        ev.results()?.save(output_path)?;
-        status(
-            "Saved",
-            &format!("results to {DIM}{}{RESET}", output_path.display()),
-            start.elapsed(),
-        );
+        save_results(output_path, |path| ev.results()?.save(path))?;
+    }
+    Ok(())
+}
+
+fn run_semantic(args: SemanticArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let mut ev = match args.classes.parse::<usize>() {
+        Ok(n) => SemanticEval::new(n),
+        Err(_) => {
+            let text = std::fs::read_to_string(&args.classes)
+                .map_err(|e| format!("cannot read class names {}: {e}", args.classes))?;
+            let names: Vec<String> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect();
+            if names.is_empty() {
+                return Err(format!("{} names no classes", args.classes).into());
+            }
+            SemanticEval::with_class_names(names)
+        }
+    }
+    .ignore_index(u64::try_from(args.ignore_index).ok())
+    .reduce_zero_label(args.reduce_zero_label);
+
+    let n = timed_eval("Evaluating label maps...", "label maps", || {
+        ev.update_folders(&args.gt, &args.pred)
+    })?;
+    let _ = writeln!(stderr(), "{DIM}{n} label-map pairs{RESET}");
+    ev.summarize();
+    print_stats(&ev.stats());
+
+    if let Some(ref output_path) = args.output {
+        save_results(output_path, |path| ev.results().save(path))?;
     }
     Ok(())
 }

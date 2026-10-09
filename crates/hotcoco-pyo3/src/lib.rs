@@ -15,6 +15,7 @@ mod mask;
 mod metrics;
 mod panoptic;
 mod primitives;
+mod semantic;
 
 /// Read `(width, height)` for every image in `dir`, keyed by file stem.
 ///
@@ -3545,6 +3546,8 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_submodule(&primitives_mod)?;
     let panoptic_mod = panoptic::register(py)?;
     m.add_submodule(&panoptic_mod)?;
+    let semantic_mod = semantic::register(py)?;
+    m.add_submodule(&semantic_mod)?;
 
     // mask submodule — the pycocotools.mask mirror. `bbox_iou` is the
     // primitive object itself, not a second binding of the kernel.

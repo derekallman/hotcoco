@@ -7,7 +7,7 @@
 
 **hotcoco is a perception evaluation toolkit, written in Rust with Python bindings.** It's a drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi) — the same numbers bit for bit, up to 113× faster — plus the analysis that usually lives in separate tools: TIDE error analysis, confusion matrices, confidence calibration, model comparison, label-error detection, and a dataset browser.
 
-It covers detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — and panoptic segmentation, verified against panopticapi. Tracking is planned, on the same engine.
+It covers detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — panoptic segmentation, verified against panopticapi, and semantic segmentation, verified against mmsegmentation. Tracking is planned, on the same engine.
 
 Pure Rust, available as a **Python package**, **CLI tool**, and **Rust library**.
 
@@ -52,6 +52,7 @@ ev.run()
 
 - **COCO, LVIS, and Open Images evaluation** — bbox, segmentation, keypoints, and oriented bounding box (OBB); all standard metrics plus LVIS federated eval (APr/APc/APf) and Open Images hierarchy-aware eval (group-of matching, GT expansion). OBB evaluation uses rotated IoU via polygon clipping for aerial imagery, document analysis, and scene text. See the [evaluation guide](https://derekallman.github.io/hotcoco/guide/evaluation/) and [LVIS and Open Images](https://derekallman.github.io/hotcoco/guide/lvis-open-images/).
 - **Panoptic quality** — `hotcoco.panoptic.PanopticEval` computes PQ, SQ, and RQ for all, things, and stuff from COCO panoptic JSON + PNG files, or from annotations carrying RLE or polygon masks with no PNG files; `pq_compute` is a drop-in for panopticapi's. The numbers match panopticapi on COCO val2017. See the [panoptic guide](https://derekallman.github.io/hotcoco/guide/panoptic/).
+- **Semantic segmentation** — `hotcoco.semantic.SemanticEval` computes mIoU, fwIoU, mAcc, and aAcc from class-id label maps, fed one batch at a time from a validation loop or read from folders of PNG files; the state is one confusion matrix, so shards merge and the evaluator pickles. The numbers match mmsegmentation and torchmetrics on frozen label maps. See the [semantic guide](https://derekallman.github.io/hotcoco/guide/semantic/).
 - **Streaming evaluation** — `StreamingEval` matches each image as its detections arrive, so a validation epoch ends with only `accumulate()` and `summarize()` left to run; the numbers are identical to a batch run. It takes the detector's prediction array directly, and shards streamed on separate ranks merge into one result. See [streaming evaluation](https://derekallman.github.io/hotcoco/guide/evaluation/#streaming-evaluation).
 - **Evaluation reports** — `ev.report()` returns metrics, per-class and per-group breakdowns, plottable PR curves, and a `provenance` field that says whether each number is comparable to a published leaderboard or is a hotcoco extension. See [the evaluation report](https://derekallman.github.io/hotcoco/guide/results/#the-evaluation-report).
 
@@ -77,8 +78,8 @@ ev.run()
 - **Metric functions on plain arrays** — `hotcoco.metrics` and `hotcoco.primitives` expose the engine as free functions, the way `sklearn.metrics` and `torchmetrics.functional` do. No evaluator, no dataset, no COCO JSON: `metrics.average_precision(scores, matched, num_gt=...)`, `primitives.lsap(cost)`. `COCOeval` calls the same functions, so the numbers cannot diverge. See [metrics](https://derekallman.github.io/hotcoco/api/metrics/) and [primitives](https://derekallman.github.io/hotcoco/api/primitives/).
 - **PyTorch integrations** — `CocoDetection` and `CocoEvaluator` drop-in replacements for torchvision's detection classes; no torchvision or pycocotools dependency required. See [PyTorch integration](https://derekallman.github.io/hotcoco/guide/pytorch/).
 - **Experiment tracker integration** — `get_results(prefix="val/bbox", per_class=True)` returns a flat dict ready for W&B, MLflow, or any logger. See [logging metrics](https://derekallman.github.io/hotcoco/guide/results/#logging-metrics).
-- **Python CLI** (`coco`) — included with `pip install hotcoco`; `eval`, `panoptic eval`, `healthcheck`, `stats`, `filter`, `merge`, `split`, `sample`, `convert`, `compare`, and `explore` subcommands. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
-- **Rust CLI** (`coco-eval`) — lightweight eval-only binary with `eval` and `panoptic` subcommands; `cargo install hotcoco-cli`. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
+- **Python CLI** (`coco`) — included with `pip install hotcoco`; `eval`, `panoptic eval`, `semantic eval`, `healthcheck`, `stats`, `filter`, `merge`, `split`, `sample`, `convert`, `compare`, and `explore` subcommands. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
+- **Rust CLI** (`coco-eval`) — lightweight eval-only binary with `eval`, `panoptic`, and `semantic` subcommands; `cargo install hotcoco-cli`. See [CLI reference](https://derekallman.github.io/hotcoco/cli/).
 - **Type stubs** — ships with `.pyi` stubs and `py.typed` marker for full autocomplete and type checking in VS Code, PyCharm, and other IDEs.
 - **Rust library** — use hotcoco directly in your Rust projects via `cargo add hotcoco`. See [Rust API](https://docs.rs/hotcoco).
 

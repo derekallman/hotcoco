@@ -102,6 +102,16 @@ fn iou_from_areas(inter: f64, dt_area: f64, gt_area: f64, gt_is_crowd: bool) -> 
     }
 }
 
+/// IoU of two sets from their sizes and their overlap, for a caller holding
+/// counts rather than geometry: the pixels of one class on each side of a
+/// confusion matrix, or two segment areas. The same closing formula as
+/// [`bbox_iou_pair`] and the mask kernel, so a count-based IoU is never
+/// written out again. `0.0` when both sets are empty.
+#[inline]
+pub fn iou_from_counts(intersection: u64, a: u64, b: u64) -> f64 {
+    iou_from_areas(intersection as f64, a as f64, b as f64, false)
+}
+
 /// Run a per-detection-row kernel into one row-major `d × g` buffer, going
 /// parallel only past [`MIN_PARALLEL_WORK`]. `fill_row(i, row)` writes
 /// detection `i`'s `g` values.

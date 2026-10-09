@@ -943,6 +943,101 @@ pub fn calibration_bin_to_py<'py>(
     Ok(d)
 }
 
+/// A label map's pixels, in the two types every integer dtype narrows to.
+///
+/// `uint8` is what a PNG-backed ground truth is and stays as is; everything
+/// else — `int64` from `argmax`, `int32`, `uint16` for wide label sets, bool —
+/// is read as `int64` in one `astype` pass, so negative labels survive to be
+/// reported rather than wrapping.
+pub(crate) enum Labels {
+    U8(Vec<u8>),
+    I64(Vec<i64>),
+}
+
+/// Call `$f(gt, pred)` with both sides as slices, whatever pair of
+/// [`Labels`] variants they are.
+macro_rules! with_label_pair {
+    ($gt:expr, $pred:expr, |$g:ident, $p:ident| $body:expr) => {
+        match ($gt, $pred) {
+            (Labels::U8($g), Labels::U8($p)) => $body,
+            (Labels::U8($g), Labels::I64($p)) => $body,
+            (Labels::I64($g), Labels::U8($p)) => $body,
+            (Labels::I64($g), Labels::I64($p)) => $body,
+        }
+    };
+}
+pub(crate) use with_label_pair;
+
+/// A label map — a numpy integer or bool array of any shape — as its pixels
+/// and its shape. Shape and pixel order are the caller's to compare: a pair
+/// of maps need only agree with each other.
+///
+/// One copy is made: the counting runs with the GIL released, so it cannot
+/// borrow the Python buffer. A `uint8` map is copied as is; any other dtype
+/// is read as `int64`, in place when it already is one.
+pub(crate) fn label_array(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Labels, Vec<usize>)> {
+    let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
+        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "{name} must be a numpy integer array (a label map), got {}",
+            type_name(obj)
+        )));
+    };
+    let shape = arr.shape().to_vec();
+    fn pixels<T: Copy + numpy::Element>(a: &numpy::PyReadonlyArrayDyn<'_, T>) -> Vec<T> {
+        let view = a.as_array();
+        match view.as_slice() {
+            Some(s) => s.to_vec(),
+            None => view.iter().copied().collect(),
+        }
+    }
+    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'_, u8>>() {
+        return Ok((Labels::U8(pixels(&a)), shape));
+    }
+    match array_of_kind::<i64, numpy::IxDyn>(obj, b"iub")? {
+        Some(a) => Ok((Labels::I64(pixels(&a)), shape)),
+        None => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "{name} has dtype {}; a label map holds integer class ids",
+            arr.dtype()
+        ))),
+    }
+}
+
+/// A 2-D count matrix — `metrics.mean_iou`'s argument — as a row-major
+/// `(flat, nr, nc)` triple: a numpy integer array of any dtype in one pass,
+/// a nested sequence of ints otherwise. The integer twin of
+/// [`f64_matrix_arg`]; a negative count is a `ValueError`, counts are
+/// unsigned.
+pub fn u64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<u64>, usize, usize)> {
+    let (signed, nr, nc) = match array_of_kind::<i64, numpy::Ix2>(obj, b"iu")? {
+        Some(arr) => {
+            let view = arr.as_array();
+            let (nr, nc) = view.dim();
+            (view.iter().copied().collect::<Vec<_>>(), nr, nc)
+        }
+        None => nested_matrix::<i64>(obj, name, "ints or a 2-D numpy integer array")?,
+    };
+    let flat = signed
+        .into_iter()
+        .map(|v| non_negative(name, v))
+        .collect::<PyResult<Vec<_>>>()?;
+    Ok((flat, nr, nc))
+}
+
+/// Both sides of one label-map pair, checked to be the same shape.
+pub(crate) fn label_pair(
+    gt: &Bound<'_, PyAny>,
+    pred: &Bound<'_, PyAny>,
+) -> PyResult<(Labels, Labels)> {
+    let (g, g_shape) = label_array(gt, "gt")?;
+    let (p, p_shape) = label_array(pred, "pred")?;
+    if g_shape != p_shape {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "gt and pred must have the same shape, got {g_shape:?} and {p_shape:?}"
+        )));
+    }
+    Ok((g, p))
+}
+
 /// A flat `(side, side)` block of confusion counts as a numpy `uint64` array.
 ///
 /// The one marshaling site for `COCOeval.confusion_matrix()` and
@@ -1041,20 +1136,20 @@ pub fn f64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
     })
 }
 
-/// A 1-D numpy array whose dtype kind is one of `kinds` as a `T` array: the
-/// array itself when it already is one, otherwise numpy's `astype` copy of it
-/// — see [`numeric_array`]. `None` for anything else.
-fn array_of_kind<'py, T: numpy::Element>(
+/// A numpy array of `D` dimensions whose dtype kind is one of `kinds` as a
+/// `T` array: the array itself when it already is one, otherwise numpy's
+/// `astype` copy of it — see [`numeric_array`]. `None` for anything else.
+fn array_of_kind<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
     obj: &Bound<'py, PyAny>,
     kinds: &[u8],
-) -> PyResult<Option<numpy::PyReadonlyArray1<'py, T>>> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<'py, T>>() {
+) -> PyResult<Option<numpy::PyReadonlyArray<'py, T, D>>> {
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, T, D>>() {
         return Ok(Some(arr));
     }
     let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
         return Ok(None);
     };
-    if arr.ndim() != 1 || !kinds.contains(&arr.dtype().kind()) {
+    if D::NDIM.is_some_and(|ndim| ndim != arr.ndim()) || !kinds.contains(&arr.dtype().kind()) {
         return Ok(None);
     }
     let py = obj.py();
@@ -1062,22 +1157,25 @@ fn array_of_kind<'py, T: numpy::Element>(
     Ok(Some(cast.extract()?))
 }
 
+/// `v` as an unsigned value, or the `ValueError` every unsigned reader raises.
+fn non_negative(name: &str, v: i64) -> PyResult<u64> {
+    u64::try_from(v).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} must not contain negative values, got {v}"
+        ))
+    })
+}
+
 /// A 1-D non-negative integer argument — see [`f64_vec`]. A numpy array of
 /// any unsigned dtype is read as `uint64` and of any signed dtype as `int64`,
 /// each in one copy; a sequence of ints otherwise. A negative value raises
 /// `ValueError`: ids are unsigned.
 pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
-    if let Some(arr) = array_of_kind::<u64>(obj, b"u")? {
+    if let Some(arr) = array_of_kind::<u64, numpy::Ix1>(obj, b"u")? {
         return Ok(arr.as_array().to_vec());
     }
-    let non_negative = |v: i64| {
-        u64::try_from(v).map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "{name} must not contain negative values, got {v}"
-            ))
-        })
-    };
-    if let Some(arr) = array_of_kind::<i64>(obj, b"i")? {
+    let non_negative = |v: i64| non_negative(name, v);
+    if let Some(arr) = array_of_kind::<i64, numpy::Ix1>(obj, b"i")? {
         return arr.as_array().iter().map(|&v| non_negative(v)).collect();
     }
     let signed: Vec<i64> = obj.extract().map_err(|_| {
@@ -1102,7 +1200,7 @@ pub fn flag_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
     if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<bool>>() {
         return Ok(arr.as_array().to_vec());
     }
-    if let Some(arr) = array_of_kind::<i64>(obj, b"iu")? {
+    if let Some(arr) = array_of_kind::<i64, numpy::Ix1>(obj, b"iu")? {
         return Ok(arr.as_array().iter().map(|&v| v != 0).collect());
     }
     let iter = obj.try_iter().map_err(|_| {
@@ -1147,15 +1245,25 @@ pub fn f64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<f64>,
         let (nr, nc) = view.dim();
         return Ok((view.iter().copied().collect(), nr, nc));
     }
+    nested_matrix(obj, name, "floats or a 2-D numpy array")
+}
 
-    let rows: Vec<Vec<f64>> = obj.extract().map_err(|_| {
+/// A nested sequence (list of lists, tuple of tuples, ...) as a row-major
+/// `(flat, nr, nc)` triple: the sequence path of [`f64_matrix_arg`] and
+/// [`u64_matrix_arg`]. Mismatched row lengths raise `ValueError`, not
+/// `TypeError` — the type is right, the shape is not.
+fn nested_matrix<T: Clone + for<'a, 'py> FromPyObject<'a, 'py>>(
+    obj: &Bound<'_, PyAny>,
+    name: &str,
+    expected: &str,
+) -> PyResult<(Vec<T>, usize, usize)> {
+    let rows: Vec<Vec<T>> = obj.extract().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err(format!(
-            "{name} must be a 2-D sequence of floats or a 2-D numpy array"
+            "{name} must be a 2-D sequence of {expected}"
         ))
     })?;
     let nr = rows.len();
     let nc = rows.first().map_or(0, Vec::len);
-
     let mut flat = Vec::with_capacity(nr * nc);
     for (i, row) in rows.iter().enumerate() {
         if row.len() != nc {

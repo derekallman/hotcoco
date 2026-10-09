@@ -122,6 +122,25 @@ r["provenance"]                    # "parity_verified"
 — `PQ, SQ, RQ, PQ_th, SQ_th, RQ_th, PQ_st, SQ_st, RQ_st`, fractions in
 `[0, 1]` — which is what detection frameworks log, usually multiplied by 100.
 
+### mIoU from the same pixels
+
+Panoptic papers report mIoU beside PQ: the panoptic prediction scored as a
+semantic one. `report()` carries it, with no second pass over the pixels:
+
+```python
+r["metrics"]["mIoU"], r["metrics"]["fwIoU"], r["metrics"]["mAcc"], r["metrics"]["aAcc"]
+r["per_class"]["person"]["IoU"]
+```
+
+The conversion is the one Mask2Former's and Panoptic-DeepLab's evaluation
+scripts make. Every segment is painted with its category, crowd segments
+included, and the two maps are compared pixel by pixel. Ground-truth void is
+ignored, as is a PNG id with no `segments_info` entry. A *predicted* void is
+not a class: a pixel the model left unlabeled counts as a miss for its
+ground-truth class and a false positive for nothing. The formulas and their
+conventions are the [semantic family](semantic.md#what-miou-measures)'s, so a
+model evaluated both ways gets one definition of mIoU.
+
 ## From the CLI
 
 ```bash

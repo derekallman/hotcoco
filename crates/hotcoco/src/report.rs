@@ -198,6 +198,17 @@ impl EvalReport {
     }
 }
 
+/// Write any results value as pretty-printed JSON to `path` — the one
+/// spelling of "save results" every family's `save()` uses.
+pub(crate) fn save_json<T: serde::Serialize>(
+    value: &T,
+    path: &std::path::Path,
+) -> crate::error::Result<()> {
+    let file = std::fs::File::create(path)?;
+    serde_json::to_writer_pretty(std::io::BufWriter::new(file), value)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

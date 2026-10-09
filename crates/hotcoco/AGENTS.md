@@ -7,10 +7,11 @@
 | Layer | Produces | Contents |
 |---|---|---|
 | `primitives` | matches and similarities | `sim`, `greedy`, `assign`, `panoptic` |
-| `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic` |
+| `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic`, `semantic` |
 | `report` | the cross-family output contract | `EvalReport`, `Provenance` |
 | `detection` | the detection family driver | `COCOeval` + AP/AR, LVIS, Open Images, TIDE |
 | `panoptic` | the panoptic family driver | `PanopticEval` + PQ/SQ/RQ, PNG and mask inputs |
+| `semantic` | the semantic family driver | `SemanticEval` + mIoU/fwIoU/mAcc/aAcc, array and PNG label-map inputs |
 | `quality` | dataset introspection | health checks, statistics |
 
 `primitives` and `metrics` are **free functions over flat arrays** — callable with no
@@ -21,8 +22,11 @@ shared function. **Put metric math in `metrics`, never in a `COCOeval` method** 
 alternative is what 1.0 spent its whole cycle undoing.
 
 Dependencies run one way: `detection` → `metrics` → `primitives`, and `panoptic` →
-`metrics` → `primitives` beside it — `tests/architecture.rs` holds `panoptic/` to an
-allowlist that excludes `detection`. Tracking and concepts will be further siblings,
+`metrics` → `primitives` and `semantic` → `metrics` → `primitives` beside it —
+`tests/architecture.rs` holds `panoptic/` and `semantic/` to an allowlist that
+excludes `detection`. `metrics` may reach `primitives::sim` for the one count-based
+IoU kernel (`iou_from_counts`); a second IoU formula anywhere else still fails the
+build. Tracking and concepts will be further siblings,
 composing the same two layers, each with an allowlist entry of its own.
 
 Detection keeps what is genuinely detection-shaped: TIDE's Cls/Loc/Both/Dupe/Bkg

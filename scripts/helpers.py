@@ -5,11 +5,14 @@ both import `helpers` by the same name and there is one copy of these.
 """
 
 import contextlib
+import importlib.util
 import io
 import json
 import os
 import sys
 import tempfile
+import types
+import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
@@ -516,3 +519,38 @@ def perturb_label_map(gt_map, gt_segs, category_ids, rng, *, shift: int, erode_p
         next_id += 1
     present = set(np.unique(pred).tolist())
     return pred, [s for s in segs if s["id"] in present]
+
+
+# ── running a reference from its pinned source ────────────────────────────────
+#
+# Some references are not pip-installable, or drag in a framework the metric code
+# never calls. A fixture generator downloads the file it needs at a pinned commit,
+# stands in for the imports that would pull the framework, and loads the module;
+# `scripts/gen_semantic_fixtures.py` is the pattern.
+
+
+def fetch_source(url: str, dest: Path) -> None:
+    """Download one source file to `dest`."""
+    with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310
+        dest.write_bytes(r.read())
+
+
+def stub_module(name: str, **attrs) -> types.ModuleType:
+    """Register a bare module under `name` carrying `attrs`, for an import the
+    code under test makes and never uses."""
+    mod = types.ModuleType(name)
+    for k, v in attrs.items():
+        setattr(mod, k, v)
+    sys.modules[name] = mod
+    return mod
+
+
+def load_module(path: Path, name: str):
+    """Import the file at `path` as `name`; a dotted name makes relative imports
+    resolve against the stubbed parent package."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, path
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
