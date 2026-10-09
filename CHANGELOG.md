@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+## [1.2.1] - 2026-10-08
+
 ### Changed
 
 - **A `float32` threshold grid is no longer a deviation.** 1.2.0 evaluated the
