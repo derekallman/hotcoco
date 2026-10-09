@@ -18,6 +18,10 @@ are planned; a version number is assigned when one is ready to ship.
   needs. Charts move from Plotly to vendored Observable Plot, browse's
   dashboard tab migrates to the same templates, and the matplotlib PDF report
   retires once the HTML report ships.
+- **Warning categories** — hotcoco's warnings get a `UserWarning` subclass,
+  so a caller filters a reference deviation by category instead of matching
+  its text, which is the only option today. Existing `UserWarning` filters
+  keep working.
 
 ## Multi-object tracking
 
@@ -36,8 +40,16 @@ enough to verify against exists, the same bar every other family clears.
 ## Rust API cleanups
 
 Rust-visible breaks ship in minor releases while the crate has no dependents
-outside this repository; each one is named in the CHANGELOG. Nothing is queued
-at the moment.
+outside this repository; each one is named in the CHANGELOG.
+
+- **One exception type per kind of bad input** — the same malformed value
+  raises the same Python exception whether it arrives as a dict, a JSON file,
+  or an array. Today a fractional or negative id raises `TypeError` in a
+  record and `ValueError` in a detection array. The fix is a typed
+  `Error::InvalidInput` variant that the bindings map to `ValueError` from the
+  error type rather than call site by call site; adding it is the Rust break.
+  It starts with an audit of what each input path raises today, and the
+  convention it settles is written down in `AGENTS.md`.
 
 ## Not tied to a release
 

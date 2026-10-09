@@ -158,6 +158,11 @@ message reading `lines may show -1.000` becomes `lines might show -1.000`.
 A message string is often quoted verbatim in `docs/`. Change both in the same commit, and
 check `cargo test` — some tests assert on message text.
 
+Downstream code matches on warning text too. Every hotcoco warning is a plain
+`UserWarning`, so text is the only thing a filter can match: RF-DETR silences the
+`max_dets` warning with `^hotcoco: max_dets differ from expected`, and rewording that
+message brings it back on every validation epoch of theirs.
+
 ## Deviations from Google
 
 **Em dashes are spaced: ` — `, not `—`.** Google specifies no surrounding spaces. hotcoco

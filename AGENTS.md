@@ -76,6 +76,16 @@ ran 0 checks, the layering tests passed against four spellings of the import the
 banned. In each case the check looked green and verified nothing. Injecting a violation
 and watching it fail takes a minute and is not optional.
 
+### Telling a downstream project its code is redundant
+
+The same rule, pointed outward. Before telling a downstream project (RF-DETR,
+torchmetrics) that code of theirs is now redundant, delete it in their tree and run their
+tests against your build. Name exactly what the hotcoco change covers — "fractional ids",
+not "label validation". RF-DETR is maintained largely by coding agents that act on a
+comment within hours, so an overstatement lands as a commit: a comment on rf-detr#1614
+called their label checks redundant after 1.2.1, a bot deleted one, and it had to be put
+back, because 1.2.1 still accepts a whole-valued `1.0` that their check refuses.
+
 ## Tool Preferences
 
 - **Always use `uv run python` — never bare `python` or `python3`.** This project uses uv-managed Python; the OS Python is not the project environment.
