@@ -30,7 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The pinned toolchain from rust-toolchain.toml, as CI uses: what was
+      # tested is what gets published, rather than whatever stable is that day.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
 
       - name: Publish hotcoco
         run: .github/scripts/cargo-publish.sh hotcoco

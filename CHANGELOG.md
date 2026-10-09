@@ -101,6 +101,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Toolchain pinned to Rust 1.99.0** (from 1.97.1). The one new lint,
+  `clippy::assert_is_empty`, rewrote 14 test assertions to `assert_eq!` against
+  an empty `Vec`, so a failure prints the value. The release workflow now
+  installs the pinned toolchain from `rust-toolchain.toml`, as CI does, instead
+  of whatever stable is current on release day. After pulling, run `just setup`
+  to reinstall rust-analyzer, which a channel switch drops.
 - Rust: `Category` has a new public field, `isthing`, so a struct literal
   without `..Default::default()` no longer compiles. Named here because
   Rust-visible breaks ship in minors while the crate has no outside

@@ -388,7 +388,7 @@ mod tests {
         let gt = vec![[0.0, 0.0, 2.0, 2.0, 0.0]];
         let iscrowd = vec![false];
         let result = obb_iou(&dt, &gt, &iscrowd);
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::<Vec<f64>>::new());
     }
 
     #[test]

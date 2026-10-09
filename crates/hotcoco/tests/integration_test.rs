@@ -4943,7 +4943,7 @@ fn test_empty_max_dets_degrades_gracefully() {
     coco_eval.run().expect("evaluable inputs"); // must not panic
 
     let stats = coco_eval.stats().expect("summarize ran");
-    assert!(!stats.is_empty());
+    assert_ne!(stats, Vec::<f64>::new());
     assert!(
         stats.iter().all(|&v| v == -1.0),
         "no max-det slots means nothing is computable: {stats:?}"
@@ -6080,7 +6080,7 @@ fn test_gt_less_all_ignored_cell_still_fills_score_ranks() {
         .expect(
             "a GT-less cell with every detection area-ignored is kept, as pycocotools keeps it",
         );
-    assert!(cell.gt_ids.is_empty());
+    assert_eq!(cell.gt_ids, Vec::<u64>::new());
     assert_eq!(cell.dt_ids, vec![2]);
     assert!(
         cell.dt_ignore.row(0).iter().all(|&ignored| ignored),

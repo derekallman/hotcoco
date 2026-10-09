@@ -359,7 +359,7 @@ mod tests {
     fn empty_maps_are_empty_histograms() {
         let o = Overlaps::compute(&[], &[]);
         assert_eq!(o.iter().count(), 0);
-        assert!(o.pred_areas().is_empty());
+        assert_eq!(o.pred_areas(), Vec::<(u32, u64)>::new());
         assert_eq!(match_segments(&[], &[], &o), SegmentMatches::default());
     }
 
@@ -404,7 +404,7 @@ mod tests {
         let pred = [7, 7, 7, 7];
         let o = Overlaps::compute(&gt, &pred);
         let m = match_segments(&[seg(1, 5, 4)], &[seg(7, 6, 4)], &o);
-        assert!(m.matched.is_empty());
+        assert_eq!(m.matched, Vec::<(usize, usize, f64)>::new());
         assert_eq!(m.missed, vec![0]);
         assert_eq!(m.false_positives, vec![0]);
     }
@@ -422,10 +422,10 @@ mod tests {
             iscrowd: true,
         };
         let m = match_segments(&[crowd], &[seg(7, 5, 4)], &o);
-        assert!(m.matched.is_empty());
+        assert_eq!(m.matched, Vec::<(usize, usize, f64)>::new());
         assert!(m.missed.is_empty(), "crowd is not a miss");
         assert_eq!(m.ignored, vec![0]);
-        assert!(m.false_positives.is_empty());
+        assert_eq!(m.false_positives, Vec::<usize>::new());
 
         // Same geometry, other category: nothing absorbs it, 1/4 void -> FP.
         let m = match_segments(&[crowd], &[seg(7, 6, 4)], &o);
@@ -475,7 +475,7 @@ mod tests {
         let o = Overlaps::compute(&gt, &pred);
         let m = match_segments(&[seg(1, 5, 2)], &[seg(7, 5, 4)], &o);
         // iou = 2 / (4 + 2 - 2 - 0) = 0.5: not a match, since 9 is not void.
-        assert!(m.matched.is_empty());
+        assert_eq!(m.matched, Vec::<(usize, usize, f64)>::new());
         // And 0/4 void -> false positive, not ignored.
         assert_eq!(m.false_positives, vec![0]);
     }
@@ -489,7 +489,7 @@ mod tests {
         let o = Overlaps::compute(&gt, &pred);
         let m = match_segments(&[seg(1, 5, 8)], &[seg(7, 5, 4)], &o);
         // iou = 4 / (4 + 8 - 4) = 0.5 -> no match.
-        assert!(m.matched.is_empty());
+        assert_eq!(m.matched, Vec::<(usize, usize, f64)>::new());
         let m = match_segments(&[seg(1, 5, 4)], &[seg(7, 5, 4)], &o);
         assert_eq!(m.matched, vec![(0, 0, 1.0)]);
     }

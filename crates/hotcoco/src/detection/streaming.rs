@@ -979,7 +979,7 @@ mod tests {
             ann(4, 1, 1, [0.0, 0.0, 5.0, 5.0], None),
         ];
         assert_eq!(se.unknown_category_ids(&anns), vec![3, 7]);
-        assert!(se.unknown_category_ids(&[]).is_empty());
+        assert_eq!(se.unknown_category_ids(&[]), Vec::<u64>::new());
     }
 
     /// An off-by-one class map or a background id used to vanish from every
@@ -1049,7 +1049,7 @@ mod tests {
         let mut se = StreamingEval::new(params, EvalMode::Coco, vec![category(1)])
             .expect("mode is supported");
         let dt = [ann(0, 2, 7, [0.0, 0.0, 5.0, 5.0], Some(0.5))];
-        assert!(se.unknown_category_ids(&dt).is_empty());
+        assert_eq!(se.unknown_category_ids(&dt), Vec::<u64>::new());
         se.update(vec![image(2)], Vec::new(), dt.to_vec())
             .expect("pooled, not rejected");
     }

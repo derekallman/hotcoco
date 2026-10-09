@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn linspace_handles_degenerate_lengths() {
-        assert!(linspace(0.0, 1.0, 0).is_empty());
+        assert_eq!(linspace(0.0, 1.0, 0), Vec::<f64>::new());
         assert_eq!(linspace(0.25, 1.0, 1), vec![0.25]);
         assert_eq!(linspace(0.0, 1.0, 2), vec![0.0, 1.0]);
     }

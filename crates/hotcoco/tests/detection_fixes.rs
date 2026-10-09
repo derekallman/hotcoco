@@ -224,7 +224,7 @@ fn empty_max_dets_degrades_to_sentinels_without_panicking() {
     ev.run().expect("evaluable inputs"); // pre-fix: assert! panic inside evaluate()
 
     let stats = ev.stats().expect("summarize ran");
-    assert!(!stats.is_empty());
+    assert_ne!(stats, Vec::<f64>::new());
     assert!(
         stats.iter().all(|&v| v == -1.0),
         "with no max-det slots nothing is computable; got {stats:?}"

@@ -15,5 +15,5 @@
 # listing it would make all five CI jobs download an editor backend they never
 # use. `just setup` installs it locally instead.
 [toolchain]
-channel = "1.97.1"
+channel = "1.99.0"
 components = ["rustfmt", "clippy"]

@@ -414,7 +414,7 @@ fn load_res_unknown_image_id_recorded_in_warnings() {
 
     // A clean load carries no warnings.
     let clean = COCO::from_dataset(gt_dataset());
-    assert!(clean.load_warnings().is_empty());
+    assert_eq!(clean.load_warnings(), Vec::<String>::new());
 }
 
 // ── Missing-area convention ──────────────────────────────────────────────────
