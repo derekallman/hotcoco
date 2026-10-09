@@ -247,9 +247,7 @@ class TestLoadResArrayIds:
     @pytest.mark.parametrize(
         ("col", "value"), [(0, np.nan), (0, -1.0), (0, 1.5), (6, np.nan), (6, -2.0), (6, 1.5), (6, np.inf)]
     )
-    def test_nan_negative_or_fractional_id_raises(self, col, value):
-        """A fractional id would truncate to a real id and score against the wrong
-        image or category; a float label tensor is how it reaches this path."""
+    def test_invalid_id_raises(self, col, value):
         arr = np.array([[1, 10, 10, 30, 30, 0.9, 1]], dtype=np.float64)
         arr[0, col] = value
         with pytest.raises(ValueError, match="ids must be finite, non-negative integers"):

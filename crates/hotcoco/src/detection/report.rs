@@ -82,7 +82,15 @@ impl COCOeval {
 
         // A default grid rounded through `f32` (what torchmetrics passes) matches
         // pycocotools bit for bit, so it is not a deviation; see `is_rounded_default`.
-        let iou_off = !is_rounded_default(&self.params.iou_thrs, &defaults.iou_thrs);
+        // Its allowance is wider than `iou_thr_idx`'s, though, so a grid can be
+        // "the default" while AP50 or AP75 cannot find its threshold and prints
+        // -1.000; that grid is flagged, since the message says exactly that.
+        let unresolved = self
+            .metric_defs()
+            .iter()
+            .filter_map(|m| m.iou_thr)
+            .any(|thr| self.params.iou_thr_idx(thr).is_none());
+        let iou_off = unresolved || !is_rounded_default(&self.params.iou_thrs, &defaults.iou_thrs);
         let rec_off = !is_rounded_default(&self.params.rec_thrs, &defaults.rec_thrs);
 
         if iou_off {

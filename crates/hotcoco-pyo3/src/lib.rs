@@ -68,7 +68,9 @@ fn read_image_dims(py: Python<'_>, dir: &str) -> PyResult<HashMap<String, (u32, 
 /// `ValueError`. Every binding that surfaces a core error must come through
 /// here (for `ConvertError`, via `e.into()`), not map to `PyRuntimeError` ad
 /// hoc — `except OSError` / `except ValueError` in user code should catch what
-/// their names promise.
+/// their names promise. `Error::Other` is the catch-all and stays
+/// `RuntimeError`; a binding whose `Other` failures are all input problems
+/// goes through [`to_input_err`] instead.
 pub(crate) fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
     use hotcoco_core::{ConvertError, Error};
     match err {
@@ -85,10 +87,9 @@ pub(crate) fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
     }
 }
 
-/// [`to_pyerr`] for a call whose every failure is a problem with the caller's
-/// input — `load_res` and `StreamingEval.update`. Their `Error::Other`
-/// messages (a NaN score, a mask image with no `height`) describe malformed
-/// data, so they are `ValueError` like the rest of it, not `RuntimeError`.
+/// [`to_pyerr`] for `load_res` (all forms) and `StreamingEval.update`, whose reachable
+/// `Error::Other` messages (`load_res_anns`'s NaN score, `check_mask_dims`)
+/// all describe the caller's data: `ValueError`, not `RuntimeError`.
 pub(crate) fn to_input_err(err: hotcoco_core::Error) -> PyErr {
     match err {
         hotcoco_core::Error::Other(msg) => pyo3::exceptions::PyValueError::new_err(msg),
@@ -1251,7 +1252,7 @@ impl PyCOCO {
         self.inner
             .load_res_anns(anns)
             .map(PyCOCO::shared)
-            .map_err(to_pyerr)
+            .map_err(to_input_err)
     }
 
     /// pycocotools builds COCO objects by assignment — `coco = COCO();

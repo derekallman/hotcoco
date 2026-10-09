@@ -15,26 +15,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `extension`. pycocotools evaluates that grid identically, bit for bit, so
   there is no reference the run departs from: `reference_deviations()` leaves
   it out, `summarize()` says nothing, and `provenance()` stays
-  `'parity_verified'`. A grid off by more than rounding (1e-6) is flagged as
-  before. RF-DETR had wrapped every hotcoco call in a warning filter to hide
+  `'parity_verified'`. A grid off by more than rounding (1e-6), or one on
+  which `AP50` or `AP75` cannot find its threshold, is flagged as before. RF-DETR had wrapped every hotcoco call in a warning filter to hide
   this message; with it gone, only a genuine `max_dets` deviation remains for
   it to see.
 
 ### Fixed
 
 - **A fractional id in a detection array is rejected.** `load_res(array)` and
-  `StreamingEval.update(array)` checked that `image_id` and `category_id` were
-  finite and non-negative, so a float label such as `1.5` passed, truncated to
-  id 1, and either scored against the wrong category or failed later with a
-  bare `IndexError`. Both now raise `ValueError` naming the row, as a NaN or
-  negative id already did. RF-DETR's `hotcoco_streaming` backend validates
-  labels itself to work around this (roboflow/rf-detr#1614).
+  `StreamingEval.update(array)` let an `image_id` or `category_id` such as
+  `1.5` through, truncated to id 1. Both now raise `ValueError` naming the
+  row, as for a NaN or negative id. RF-DETR's `hotcoco_streaming` backend
+  validates labels itself to work around this (roboflow/rf-detr#1614).
 - **Malformed `load_res()` and `update()` input raises `ValueError`, not
   `RuntimeError`.** A NaN score, or a mask annotation on an image with no
-  `height`, went through the catch-all error and came out as `RuntimeError`,
-  against the binding's own rule that malformed data is `ValueError`. Code
-  that caught `RuntimeError` for these needs `ValueError` now. `RuntimeError`
-  still means a state error, such as `update()` after `finalize()`.
+  `height`, came out as `RuntimeError`. Code that caught `RuntimeError` for
+  these needs `ValueError` now. `RuntimeError` still means a state error,
+  such as `update()` after `finalize()`.
 
 ## [1.2.0] - 2026-10-07
 

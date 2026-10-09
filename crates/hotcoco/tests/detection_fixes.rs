@@ -369,6 +369,36 @@ fn float32_grids_are_kept_and_not_a_deviation() {
     );
 }
 
+/// One grid rounded alone is still the default: the two grids are judged
+/// independently.
+#[test]
+fn a_single_rounded_grid_is_not_a_deviation() {
+    let mut ev = fixture_eval();
+    ev.params.rec_thrs = through_f32(&ev.params.rec_thrs);
+    let deviations = ev.reference_deviations();
+    assert!(deviations.is_empty(), "{deviations:?}");
+}
+
+/// A grid within the rounding allowance but off at a headline threshold is
+/// flagged: `AP50` would print -1.000, and the message says so.
+#[test]
+fn a_rounded_grid_that_loses_ap50_is_still_flagged() {
+    let mut ev = fixture_eval();
+    ev.params.iou_thrs[0] += 5e-7; // inside 1e-6, outside `iou_thr_idx`'s 1e-9
+    let deviations = ev.reference_deviations();
+    assert_eq!(deviations.len(), 1, "{deviations:?}");
+    assert!(
+        deviations[0].starts_with("iou_thrs differ from default"),
+        "{deviations:?}"
+    );
+    ev.run().expect("evaluable inputs");
+    assert_eq!(
+        ev.stats().unwrap()[1],
+        -1.0,
+        "AP50 is not found on this grid"
+    );
+}
+
 /// A grid off by more than rounding keeps the generic message.
 #[test]
 fn a_grid_off_by_more_than_rounding_is_still_flagged() {
