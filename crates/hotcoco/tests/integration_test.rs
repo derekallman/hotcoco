@@ -5849,6 +5849,27 @@ fn nan_detection_score_is_rejected() {
     );
 }
 
+/// A fractional id in a detection row is refused before any cast: `1.5 as u64`
+/// is 1, a real id, so the row would score against the wrong image or category.
+/// A float label tensor is how such a row reaches this path.
+#[test]
+fn fractional_detection_row_id_is_rejected() {
+    let ok = [1.0, 10.0, 10.0, 50.0, 50.0, 0.9, 1.0];
+    assert!(COCO::detections_from_rows(&ok, 7).is_ok());
+    for (col, name) in [(0, "image_id"), (6, "category_id")] {
+        let mut bad = ok;
+        bad[col] = 1.5;
+        let msg = match COCO::detections_from_rows(&bad, 7) {
+            Ok(_) => panic!("a fractional {name} must be rejected"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains(name) && msg.contains("integers"),
+            "error should name the column and the rule, got: {msg}"
+        );
+    }
+}
+
 /// `load_res_anns` warns once per mismatch kind, not once per offending
 /// annotation.
 ///

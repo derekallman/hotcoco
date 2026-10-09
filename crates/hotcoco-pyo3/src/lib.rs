@@ -85,6 +85,17 @@ pub(crate) fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
     }
 }
 
+/// [`to_pyerr`] for a call whose every failure is a problem with the caller's
+/// input — `load_res` and `StreamingEval.update`. Their `Error::Other`
+/// messages (a NaN score, a mask image with no `height`) describe malformed
+/// data, so they are `ValueError` like the rest of it, not `RuntimeError`.
+pub(crate) fn to_input_err(err: hotcoco_core::Error) -> PyErr {
+    match err {
+        hotcoco_core::Error::Other(msg) => pyo3::exceptions::PyValueError::new_err(msg),
+        e => to_pyerr(e),
+    }
+}
+
 /// Emit a `UserWarning` through Python's `warnings` machinery.
 ///
 /// `eprintln!` writes to fd 2, which bypasses `sys.stderr` — invisible in a
@@ -216,7 +227,7 @@ impl PyCOCO {
             if segmentation.is_some() {
                 return Err(segmentation_needs_array("load_res"));
             }
-            return self.inner.load_res(Path::new(&path)).map_err(to_pyerr);
+            return self.inner.load_res(Path::new(&path)).map_err(to_input_err);
         }
 
         // Case 2: list of annotation dicts
@@ -225,12 +236,12 @@ impl PyCOCO {
                 return Err(segmentation_needs_array("load_res"));
             }
             let anns = dict_list(list, "load_res", py_to_annotation)?;
-            return self.inner.load_res_anns(anns).map_err(to_pyerr);
+            return self.inner.load_res_anns(anns).map_err(to_input_err);
         }
 
         // Case 3: numpy array, shape (N, 6) or (N, 7)
         if let Some(anns) = anns_from_array(res, "load_res", segmentation)? {
-            return self.inner.load_res_anns(anns).map_err(to_pyerr);
+            return self.inner.load_res_anns(anns).map_err(to_input_err);
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -3150,7 +3161,8 @@ after ``finalize()``."]
         };
 
         let inner = self.inner.as_mut().ok_or_else(spent)?;
-        py.detach(|| inner.update(images, gt, dt)).map_err(to_pyerr)
+        py.detach(|| inner.update(images, gt, dt))
+            .map_err(to_input_err)
     }
 
     #[classmethod]

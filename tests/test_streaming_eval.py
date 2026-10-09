@@ -500,8 +500,9 @@ def test_spent_streaming_eval_raises():
 
 
 def test_nan_score_raises_like_load_res():
+    """Malformed input is ``ValueError``, as every other ``load_res`` rejection is."""
     se = StreamingEval(categories(), iou_type="bbox")
-    with pytest.raises(RuntimeError, match="NaN"):
+    with pytest.raises(ValueError, match="NaN"):
         se.update(images()[:1], [], [{"image_id": 1, "category_id": 1, "bbox": [0, 0, 10, 10], "score": float("nan")}])
 
 

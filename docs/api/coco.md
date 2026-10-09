@@ -376,7 +376,8 @@ type:
     or `(N, 6)` with `category_id` defaulting to `1`, of any integer or float dtype,
     `float32` straight from a detector included (a `float32` id is exact only up to
     2^24, a property of the array, not of the parser).
-    An `image_id` or `category_id` that is NaN or negative raises `ValueError`.
+    An `image_id` or `category_id` that is NaN, negative, or not a whole number
+    raises `ValueError`; so does a NaN score.
     Matches pycocotools `loadNumpyAnnotations` convention:
     ```python
     arr = np.array([[42, 10, 20, 100, 80, 0.95, 1]], dtype=np.float64)

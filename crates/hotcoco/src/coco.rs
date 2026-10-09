@@ -570,9 +570,10 @@ impl COCO {
     ///
     /// # Errors
     ///
-    /// An `image_id` or `category_id` that is NaN, infinite, or negative,
-    /// naming the first such row: cast to an integer it would saturate to 0,
-    /// which is a real id in some datasets. pycocotools' `int()` raises on NaN.
+    /// An `image_id` or `category_id` that is NaN, infinite, negative, or not
+    /// integral, naming the first such row: cast to an integer, NaN and
+    /// negatives would saturate to 0, which is a real id in some datasets, and
+    /// `1.5` would silently become id 1. pycocotools' `int()` raises on NaN.
     ///
     /// # Panics
     ///
@@ -586,7 +587,7 @@ impl COCO {
             "detections_from_rows: 6 or 7 columns, got {ncols}"
         );
         assert_eq!(rows.len() % ncols, 0, "detections_from_rows: a partial row");
-        let valid = |v: f64| v.is_finite() && v >= 0.0;
+        let valid = |v: f64| v.is_finite() && v >= 0.0 && v.fract() == 0.0;
         // Ids are checked in a read of the rows first, so the records can be
         // written straight into the result: collecting a fallible map in
         // parallel would gather chunks and copy them all again.
@@ -609,7 +610,7 @@ impl COCO {
         };
         if let Some((row, column, value)) = bad {
             return Err(Error::Other(format!(
-                "row {row} has {column} {value}; ids must be finite and non-negative"
+                "row {row} has {column} {value}; ids must be finite, non-negative integers"
             )));
         }
         let detection = |row: &[f64]| Annotation {

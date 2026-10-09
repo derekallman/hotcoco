@@ -943,7 +943,7 @@ assigned and a missing `area` is derived (the mask's pixel count, or the
 box's `w × h` for an annotation without a mask), so targets as a data loader
 yields them — `image_id`, `category_id`, `bbox`, `iscrowd` — are enough. For `segm`, every image holding
 a polygon or box annotation in an evaluated category needs `height` and
-`width`, or the call raises `RuntimeError` naming the images. `dt_anns` are raw predictions in the shape
+`width`, or the call raises `ValueError` naming the images. `dt_anns` are raw predictions in the shape
 `load_res()` accepts — `image_id`, `category_id`, `bbox` (or
 `segmentation`/`keypoints`), and `score` — and are loaded the same way: ids
 assigned, `area` derived, `iscrowd` cleared. Within an image, detections with
@@ -954,8 +954,8 @@ again in a later call replaces its earlier result.
 `dt_anns` can also be the numpy array `load_res()` accepts, shape `(N, 7)`
 with columns `[image_id, x, y, w, h, score, category_id]`, which skips
 building a dict per detection. An `(N, 6)` array has no category column and
-puts every row in category 1, as `load_res()` does. An id that is NaN or
-negative raises `ValueError`. For `segm`, `segmentation` is a list of `N` RLE
+puts every row in category 1, as `load_res()` does. An id that is NaN,
+negative, or not a whole number raises `ValueError`. For `segm`, `segmentation` is a list of `N` RLE
 or polygon entries, one per row; it goes only with an array, since a dict
 carries its own. Every row has a box, so each detection's `area` is the box's
 `w × h`, as `load_res()` gives a result that has a `bbox`, and that area
@@ -976,8 +976,8 @@ count: `params.cat_ids` narrows what is evaluated without making the rest
 unknown, and with `use_cats` false no category is checked, because every
 annotation pools into one.
 
-A NaN score raises the same `RuntimeError` as `load_res()`; so does calling
-this after `finalize()`.
+A NaN score raises the same `ValueError` as `load_res()`. Calling this after
+`finalize()` raises `RuntimeError`.
 
 ### `merge`
 

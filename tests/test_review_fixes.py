@@ -72,7 +72,7 @@ class TestSegmNeedsImageDims:
     def test_streaming_update_raises(self):
         se = StreamingEval([{"id": 1, "name": "thing"}], iou_type="segm")
         ds = gt_dataset({"id": 1})
-        with pytest.raises(RuntimeError, match="height"):
+        with pytest.raises(ValueError, match="height"):
             se.update(
                 ds["images"],
                 ds["annotations"],
