@@ -110,13 +110,93 @@ impl SemanticResults {
     }
 }
 
+/// The label rules apart from the matrix they fill, so a pair can count
+/// into the evaluator's own matrix or into a parallel split's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct LabelRules {
+    ignore_index: Option<u64>,
+    reduce_zero_label: bool,
+}
+
+impl LabelRules {
+    /// The one configuration that has no reference meaning. mmseg's
+    /// `LoadAnnotations` relabel hardcodes 255 — `0 → 255`, shift down,
+    /// `254 → 255` — and `IoUMetric` masks `ignore_index` on the shifted
+    /// label. With any other ignore index the relabeled 255 is neither masked
+    /// nor in range, and what mmseg does with it is an accident of
+    /// `torch.histc`, so there is nothing to be faithful to.
+    fn check(self) -> crate::error::Result<()> {
+        if self.reduce_zero_label && self.ignore_index != Some(255) {
+            return Err(format!(
+                "reduce_zero_label follows mmseg's relabel, which marks unlabeled pixels \
+                 255; it needs ignore_index 255 (the default), not {:?}",
+                self.ignore_index
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Count one pair into `counts` under these rules.
+    fn count_into<G: Label, P: Label>(
+        self,
+        counts: &mut PixelConfusion,
+        gt: &[G],
+        pred: &[P],
+    ) -> crate::error::Result<()> {
+        if self.reduce_zero_label {
+            // mmseg's relabel: 0 and 255 are unlabeled, the rest shift down, and
+            // the ignore index (255, see `check`) masks the shifted label.
+            counts.update_with(gt, pred, |g| {
+                if g == 0 || g == 255 {
+                    return None;
+                }
+                let shifted = g - 1;
+                (shifted != 255).then_some(shifted)
+            })
+        } else {
+            counts.update(gt, pred, self.ignore_index)
+        }
+    }
+
+    /// Count one PNG pair into `counts`, each error naming the file.
+    fn count_png_into(
+        self,
+        counts: &mut PixelConfusion,
+        gt: &Path,
+        pred: &Path,
+    ) -> crate::error::Result<()> {
+        let g = read_class_map(gt)?;
+        let p = read_class_map(pred)?;
+        if (g.h, g.w) != (p.h, p.w) {
+            return Err(format!(
+                "{} is {}×{} but {} is {}×{}; a prediction must be the size of its ground truth",
+                gt.display(),
+                g.w,
+                g.h,
+                pred.display(),
+                p.w,
+                p.h
+            )
+            .into());
+        }
+        match (&g.labels, &p.labels) {
+            (ClassLabels::U8(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
+            (ClassLabels::U8(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
+            (ClassLabels::U16(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
+            (ClassLabels::U16(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
+        }
+        .map_err(|e| format!("{}: {e}", pred.display()).into())
+    }
+}
+
 /// The semantic segmentation evaluator: one confusion matrix and the rules
 /// that fill it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SemanticEval {
     class_names: Vec<String>,
-    ignore_index: Option<u64>,
-    reduce_zero_label: bool,
+    #[serde(flatten)]
+    rules: LabelRules,
     confusion: PixelConfusion,
     n_images: usize,
 }
@@ -133,8 +213,10 @@ impl SemanticEval {
         let confusion = PixelConfusion::new(names.len());
         SemanticEval {
             class_names: names,
-            ignore_index: Some(255),
-            reduce_zero_label: false,
+            rules: LabelRules {
+                ignore_index: Some(255),
+                reduce_zero_label: false,
+            },
             confusion,
             n_images: 0,
         }
@@ -145,7 +227,7 @@ impl SemanticEval {
     /// that class unscorable, as in the references.
     #[must_use]
     pub fn ignore_index(mut self, ignore_index: Option<u64>) -> Self {
-        self.ignore_index = ignore_index;
+        self.rules.ignore_index = ignore_index;
         self
     }
 
@@ -156,7 +238,7 @@ impl SemanticEval {
     /// to the shifted label, as `IoUMetric` applies it.
     #[must_use]
     pub fn reduce_zero_label(mut self, reduce: bool) -> Self {
-        self.reduce_zero_label = reduce;
+        self.rules.reduce_zero_label = reduce;
         self
     }
 
@@ -198,58 +280,19 @@ impl SemanticEval {
             )
             .into());
         }
-        self.check_config()?;
-        let mut counts = PixelConfusion::new(self.num_classes());
-        self.count_into(&mut counts, gt, pred)?;
-        self.commit(counts, 1);
+        self.rules.check()?;
+        // A rejected pair leaves the matrix as it was, so a pair counts
+        // straight into the totals.
+        self.rules.count_into(&mut self.confusion, gt, pred)?;
+        self.n_images += 1;
         Ok(())
     }
 
-    /// Fold one or more pairs' counts, counted apart, into the totals — so a
-    /// rejected pair never touches them and nothing is copied to make it so.
-    fn commit(&mut self, counts: PixelConfusion, images: usize) {
-        self.confusion.add(&counts);
+    /// Fold counts summed apart — a parallel run's, another evaluator's —
+    /// into the totals.
+    fn commit(&mut self, counts: &PixelConfusion, images: usize) {
+        self.confusion.add(counts);
         self.n_images += images;
-    }
-
-    /// The one configuration that has no reference meaning. mmseg's
-    /// `LoadAnnotations` relabel hardcodes 255 — `0 → 255`, shift down,
-    /// `254 → 255` — and `IoUMetric` masks `ignore_index` on the shifted
-    /// label. With any other ignore index the relabeled 255 is neither masked
-    /// nor in range, and what mmseg does with it is an accident of
-    /// `torch.histc`, so there is nothing to be faithful to.
-    fn check_config(&self) -> crate::error::Result<()> {
-        if self.reduce_zero_label && self.ignore_index != Some(255) {
-            return Err(format!(
-                "reduce_zero_label follows mmseg's relabel, which marks unlabeled pixels \
-                 255; it needs ignore_index 255 (the default), not {:?}",
-                self.ignore_index
-            )
-            .into());
-        }
-        Ok(())
-    }
-
-    /// Count one pair into `counts` under this evaluator's label rules.
-    fn count_into<G: Label, P: Label>(
-        &self,
-        counts: &mut PixelConfusion,
-        gt: &[G],
-        pred: &[P],
-    ) -> crate::error::Result<()> {
-        if self.reduce_zero_label {
-            // mmseg's relabel: 0 and 255 are unlabeled, the rest shift down, and
-            // the ignore index (255, see `check_config`) masks the shifted label.
-            counts.update_with(gt, pred, |g| {
-                if g == 0 || g == 255 {
-                    return None;
-                }
-                let shifted = g - 1;
-                (shifted != 255).then_some(shifted)
-            })
-        } else {
-            counts.update(gt, pred, self.ignore_index)
-        }
     }
 
     /// Count one PNG pair: 8- or 16-bit grayscale, or a palette image whose index
@@ -261,40 +304,10 @@ impl SemanticEval {
     /// A file that cannot be read or is not a label map, two maps of
     /// different sizes, or a label out of range, each naming the file.
     pub fn update_png(&mut self, gt: &Path, pred: &Path) -> crate::error::Result<()> {
-        self.check_config()?;
-        let mut counts = PixelConfusion::new(self.num_classes());
-        self.count_png_into(&mut counts, gt, pred)?;
-        self.commit(counts, 1);
+        self.rules.check()?;
+        self.rules.count_png_into(&mut self.confusion, gt, pred)?;
+        self.n_images += 1;
         Ok(())
-    }
-
-    fn count_png_into(
-        &self,
-        counts: &mut PixelConfusion,
-        gt: &Path,
-        pred: &Path,
-    ) -> crate::error::Result<()> {
-        let g = read_class_map(gt)?;
-        let p = read_class_map(pred)?;
-        if (g.h, g.w) != (p.h, p.w) {
-            return Err(format!(
-                "{} is {}×{} but {} is {}×{}; a prediction must be the size of its ground truth",
-                gt.display(),
-                g.w,
-                g.h,
-                pred.display(),
-                p.w,
-                p.h
-            )
-            .into());
-        }
-        match (&g.labels, &p.labels) {
-            (ClassLabels::U8(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
-            (ClassLabels::U8(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
-            (ClassLabels::U16(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
-            (ClassLabels::U16(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
-        }
-        .map_err(|e| format!("{}: {e}", pred.display()).into())
     }
 
     /// Count every PNG in `gt_folder` against the file of the same name in
@@ -311,9 +324,10 @@ impl SemanticEval {
         gt_folder: &Path,
         pred_folder: &Path,
     ) -> crate::error::Result<usize> {
-        self.check_config()?;
+        self.rules.check()?;
         let pairs = png_pairs(gt_folder, pred_folder)?;
         let n = self.num_classes();
+        let rules = self.rules;
         // One matrix per rayon split rather than per image, so the reduction
         // is a handful of adds. Integer addition commutes, so the order the
         // splits meet in cannot change the counts.
@@ -322,7 +336,7 @@ impl SemanticEval {
             .try_fold(
                 || PixelConfusion::new(n),
                 |mut acc, (gt, pred)| {
-                    self.count_png_into(&mut acc, gt, pred)?;
+                    rules.count_png_into(&mut acc, gt, pred)?;
                     Ok::<_, crate::error::Error>(acc)
                 },
             )
@@ -333,7 +347,7 @@ impl SemanticEval {
                     Ok(a)
                 },
             )?;
-        self.commit(total, pairs.len());
+        self.commit(&total, pairs.len());
         Ok(pairs.len())
     }
 
@@ -364,15 +378,12 @@ impl SemanticEval {
             )
             .into());
         }
-        if (self.ignore_index, self.reduce_zero_label)
-            != (other.ignore_index, other.reduce_zero_label)
-        {
+        if self.rules != other.rules {
             return Err("cannot merge evaluators with different ignore_index or \
                         reduce_zero_label settings"
                 .into());
         }
-        self.confusion.add(&other.confusion);
-        self.n_images += other.n_images;
+        self.commit(&other.confusion, other.n_images);
         Ok(())
     }
 
@@ -487,8 +498,8 @@ impl SemanticEval {
                 "n_images": self.n_images,
                 "n_pixels": self.confusion.total(),
                 "num_classes": self.num_classes(),
-                "ignore_index": self.ignore_index,
-                "reduce_zero_label": self.reduce_zero_label,
+                "ignore_index": self.rules.ignore_index,
+                "reduce_zero_label": self.rules.reduce_zero_label,
             }));
         self.scores()
             .add_to_report(report, self.class_names.iter().cloned())

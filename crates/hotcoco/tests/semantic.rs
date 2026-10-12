@@ -296,6 +296,20 @@ fn a_rejected_pair_counts_nothing() {
 }
 
 #[test]
+fn an_ignored_pixel_is_neither_right_nor_wrong_whatever_it_predicts() {
+    // Padding carries the ignore index on both sides; the prediction there
+    // is out of range as a class and must not be checked.
+    let mut ev = SemanticEval::new(2);
+    ev.update(&[255u8, 0, 1], &[255u8, 0, 1]).unwrap();
+    assert_eq!(ev.confusion().total(), 2);
+    assert_eq!(ev.stats()[0], 1.0);
+    let mut ev = SemanticEval::new(2).reduce_zero_label(true);
+    ev.update(&[0u8, 1, 2], &[255u8, 0, 1]).unwrap();
+    assert_eq!(ev.confusion().total(), 2);
+    assert_eq!(ev.stats()[0], 1.0);
+}
+
+#[test]
 fn reduce_zero_label_shifts_the_ground_truth_only() {
     // File labels 0 (other), 1, 2 over two classes; predictions already 0/1.
     let mut ev = SemanticEval::new(2).reduce_zero_label(true);
