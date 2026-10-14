@@ -390,7 +390,7 @@ def test_reference_errors_raise_here_too(tmp_path, break_it, message):
     with pytest.raises(Exception):
         with suppress_output(stderr=False):
             pq_compute(str(paths["gt"][0]), str(paths["pred"][0]), str(paths["gt"][1]), str(paths["pred"][1]))
-    with pytest.raises(RuntimeError, match=message):
+    with pytest.raises(ValueError, match=message):
         run_hotcoco_png(paths)
 
 

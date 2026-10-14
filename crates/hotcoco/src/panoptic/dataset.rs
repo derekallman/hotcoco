@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
 use crate::types::{
     Category, Dataset, Image, Info, License, Segmentation, deserialize_flag, deserialize_opt_uint,
     deserialize_uint,
@@ -92,10 +93,18 @@ impl PanopticDataset {
     /// extension, panopticapi's convention (`panoptic_val2017.json` beside
     /// `panoptic_val2017/`); [`with_folder`](Self::with_folder) overrides it.
     pub fn from_file(path: &Path) -> crate::error::Result<Self> {
-        let bytes = std::fs::read(path)
-            .map_err(|e| format!("cannot read panoptic JSON {}: {e}", path.display()))?;
-        let mut dataset: PanopticDataset = serde_json::from_slice(&bytes)
-            .map_err(|e| format!("cannot parse panoptic JSON {}: {e}", path.display()))?;
+        let bytes = std::fs::read(path).map_err(|e| {
+            Error::io(
+                e,
+                format_args!("cannot read panoptic JSON {}", path.display()),
+            )
+        })?;
+        let mut dataset: PanopticDataset = serde_json::from_slice(&bytes).map_err(|e| {
+            Error::InvalidInput(format!(
+                "cannot parse panoptic JSON {}: {e}",
+                path.display()
+            ))
+        })?;
         dataset.folder = Some(path.with_extension(""));
         Ok(dataset)
     }

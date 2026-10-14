@@ -6,6 +6,8 @@ use pyo3::types::{
     PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString, PyTuple,
 };
 
+use crate::to_pyerr;
+
 /// A required field of a Python dict, raising `ValueError("dict missing
 /// '<key>'")` when it is absent.
 ///
@@ -29,23 +31,25 @@ macro_rules! req {
 ///
 /// Ids come back as `1.0` from a JSON written by pandas or a numpy-backed
 /// encoder, and pycocotools accepts them because `1.0 == 1` and they hash
-/// alike. A fractional or negative value is still an error, naming the value;
-/// a value that does not fit the field's width is an `OverflowError`. The
-/// JSON loader applies the same rule through `types::deserialize_uint`.
+/// alike. A fractional, negative, or NaN number is a `ValueError` naming the
+/// value, and anything that is not a number a `TypeError`; a value that does
+/// not fit the field's width is an `OverflowError`. Inside a record all three
+/// are `ValueError` ([`field_error`]). The JSON loader applies the same rule
+/// through `types::deserialize_uint`.
 pub(crate) fn extract_int<T: TryFrom<u64>>(v: &Bound<'_, PyAny>) -> PyResult<T> {
-    let n = if let Ok(i) = v.extract::<u64>() {
-        i
-    } else if let Ok(f) = v.extract::<f64>()
-        && f.fract() == 0.0
-        && f >= 0.0
-        && f <= u64::MAX as f64
-    {
-        f as u64
+    // A float is read as one first: a failed `u64` extraction of it builds a
+    // Python exception only to drop it.
+    let id = if v.is_instance_of::<PyFloat>() {
+        hotcoco_core::types::id_from_f64(v.extract()?)
+    } else if let Ok(i) = v.extract::<u64>() {
+        Some(i)
     } else {
-        return Err(pyo3::exceptions::PyTypeError::new_err(format!(
-            "expected a non-negative integer, got {}",
-            v.repr()?
-        )));
+        v.extract::<f64>()
+            .ok()
+            .and_then(hotcoco_core::types::id_from_f64)
+    };
+    let Some(n) = id else {
+        return Err(not_a(v, "a non-negative integer")?);
     };
     T::try_from(n).map_err(|_| {
         pyo3::exceptions::PyOverflowError::new_err(format!(
@@ -88,10 +92,47 @@ pub(crate) fn extract_flag(v: &Bound<'_, PyAny>) -> PyResult<bool> {
     {
         return Ok(f != 0.0);
     }
-    Err(pyo3::exceptions::PyTypeError::new_err(format!(
-        "expected a bool or 0/1 flag, got {}",
-        v.repr()?
-    )))
+    Err(not_a(v, "a bool or 0/1 flag")?)
+}
+
+/// The error for `v`, which is not `expected`: a `ValueError` when `v` is a
+/// number (an `int` too large for a float is one), a `TypeError` otherwise.
+fn not_a(v: &Bound<'_, PyAny>, expected: &str) -> PyResult<PyErr> {
+    let message = format!("expected {expected}, got {}", v.repr()?);
+    Ok(
+        if v.is_instance_of::<PyInt>() || v.extract::<f64>().is_ok() {
+            pyo3::exceptions::PyValueError::new_err(message)
+        } else {
+            pyo3::exceptions::PyTypeError::new_err(message)
+        },
+    )
+}
+
+/// An error raised while reading the field `key` of a record, as the
+/// `ValueError` with the field's name in front of its message.
+///
+/// A record is data wherever it comes from: a dict, the JSON file it was
+/// saved to, and an array row must fail alike for the same value, and a JSON
+/// file cannot tell a wrong type from a bad value. So inside a record a
+/// `TypeError` or `OverflowError` is a `ValueError` too. Any other exception,
+/// a subclass of `ValueError` such as `UnicodeEncodeError` included, passes
+/// through unchanged.
+pub(crate) fn field_error(py: Python<'_>, key: impl std::fmt::Display, err: PyErr) -> PyErr {
+    if is_plain_value_error(py, &err)
+        || err.is_instance_of::<pyo3::exceptions::PyTypeError>(py)
+        || err.is_instance_of::<pyo3::exceptions::PyOverflowError>(py)
+    {
+        pyo3::exceptions::PyValueError::new_err(format!("{key}: {}", err.value(py)))
+    } else {
+        err
+    }
+}
+
+/// Whether `err` is exactly a `ValueError`, which can be raised again with
+/// more context; a subclass keeps its own type and arguments.
+fn is_plain_value_error(py: Python<'_>, err: &PyErr) -> bool {
+    err.get_type(py)
+        .is(py.get_type::<pyo3::exceptions::PyValueError>())
 }
 
 /// The Python type name of `obj`, for error messages.
@@ -177,7 +218,7 @@ fn extract_extra(
             continue; // non-string keys cannot appear in COCO JSON
         };
         let name = key.to_str()?;
-        if known(name, &v)? {
+        if known(name, &v).map_err(|e| field_error(v.py(), format_args!("field '{name}'"), e))? {
             continue;
         }
         if let Some(fallback) = &fallback {
@@ -555,6 +596,17 @@ pub fn py_to_annotation(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
     Ok(ann)
 }
 
+/// [`py_to_annotation`] for a record of a dataset or a results list, which
+/// needs a `category_id` too, as the JSON file it could be saved to does. A
+/// lone annotation handed to `ann_to_rle` needs only what pycocotools reads.
+pub fn py_to_record(dict: &Bound<'_, PyDict>) -> PyResult<Annotation> {
+    req!(dict, "image_id");
+    req!(dict, "category_id");
+    let mut ann = Annotation::default();
+    merge_ann_dict(&mut ann, dict)?;
+    Ok(ann)
+}
+
 pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     // Try as dict (CompressedRle or UncompressedRle)
     if let Ok(dict) = obj.cast::<PyDict>() {
@@ -686,12 +738,6 @@ pub fn py_to_rle(dict: &Bound<'_, PyDict>) -> PyResult<Rle> {
     RleDict::read(dict)?.into_rle()
 }
 
-/// A core RLE error as the `ValueError` every RLE reader raises for a string
-/// that does not decode or runs that overrun the mask.
-pub(crate) fn rle_result<T>(result: Result<T, hotcoco_core::Error>) -> PyResult<T> {
-    result.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-}
-
 /// An RLE dict, read: the one reader every RLE dict from Python goes through,
 /// a record's `segmentation` and every `hotcoco.mask` function alike, so the
 /// spellings they take and the errors they raise cannot drift apart.
@@ -758,13 +804,12 @@ impl<'py> RleDict<'py> {
     pub(crate) fn into_rle(self) -> PyResult<Rle> {
         let (h, w) = (self.h, self.w);
         match self.counts {
-            Counts::Compressed(obj) => rle_result(hotcoco_core::mask::rle_from_string(
-                compressed_counts(&obj)?,
-                h,
-                w,
-            )),
+            Counts::Compressed(obj) => {
+                hotcoco_core::mask::rle_from_string(compressed_counts(&obj)?, h, w)
+                    .map_err(to_pyerr)
+            }
             Counts::Runs(counts) => {
-                rle_result(hotcoco_core::mask::check_counts(&counts, h, w))?;
+                hotcoco_core::mask::check_counts(&counts, h, w).map_err(to_pyerr)?;
                 Ok(Rle { h, w, counts })
             }
         }
@@ -868,23 +913,51 @@ pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
     Ok(cat)
 }
 
-/// Convert a list of dicts element by element. `what` names the list in the
-/// `TypeError` a non-dict element raises.
+/// Convert a list of dicts element by element. `what` names the list, and a
+/// `ValueError` from an element (a non-dict, or a bad field) says which:
+/// `annotations[3]: field 'bbox': ...`.
 pub fn dict_list<'py, T>(
     list: &Bound<'py, PyList>,
     what: &str,
     convert_fn: impl Fn(&Bound<'py, PyDict>) -> PyResult<T>,
 ) -> PyResult<Vec<T>> {
+    let py = list.py();
     list.iter()
-        .map(|item| {
+        .enumerate()
+        .map(|(i, item)| {
             let d = item.cast::<PyDict>().map_err(|_| {
-                pyo3::exceptions::PyTypeError::new_err(format!(
-                    "each item in '{what}' must be a dict"
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "{what}[{i}] must be a dict, got {}",
+                    type_name(&item)
                 ))
             })?;
-            convert_fn(d)
+            convert_fn(d).map_err(|e| with_context(py, format_args!("{what}[{i}]"), e))
         })
         .collect()
+}
+
+/// A `ValueError` or `TypeError` with `context` in front of its message,
+/// such as the item of a list it came from: `annotations[3]: field 'bbox':
+/// ...`. Any other exception, a subclass of either included, passes through
+/// unchanged.
+pub(crate) fn with_context(py: Python<'_>, context: impl std::fmt::Display, err: PyErr) -> PyErr {
+    let message = || format!("{context}: {}", err.value(py));
+    if is_plain_value_error(py, &err) {
+        pyo3::exceptions::PyValueError::new_err(message())
+    } else if err
+        .get_type(py)
+        .is(py.get_type::<pyo3::exceptions::PyTypeError>())
+    {
+        pyo3::exceptions::PyTypeError::new_err(message())
+    } else {
+        err
+    }
+}
+
+/// Entry `i` of a `segmentation=` list given beside an array or columns, a
+/// bad entry named by its position.
+pub(crate) fn segmentation_at(seg: &Bound<'_, PyAny>, i: usize) -> PyResult<Segmentation> {
+    py_to_segmentation(seg).map_err(|e| field_error(seg.py(), format_args!("segmentation[{i}]"), e))
 }
 
 /// Extract a list of dicts from a parent dict, converting each element with `convert_fn`.
@@ -898,7 +971,7 @@ fn extract_dict_list<'py, T>(
         None => Ok(Vec::new()),
         Some(v) => {
             let list = v.cast::<PyList>().map_err(|_| {
-                pyo3::exceptions::PyTypeError::new_err(format!("'{key}' must be a list of dicts"))
+                pyo3::exceptions::PyValueError::new_err(format!("'{key}' must be a list of dicts"))
             })?;
             dict_list(list, key, convert_fn)
         }
@@ -907,7 +980,7 @@ fn extract_dict_list<'py, T>(
 
 pub fn py_to_dataset(dict: &Bound<'_, PyDict>) -> PyResult<Dataset> {
     let images = extract_dict_list(dict, "images", py_to_image)?;
-    let annotations = extract_dict_list(dict, "annotations", py_to_annotation)?;
+    let annotations = extract_dict_list(dict, "annotations", py_to_record)?;
     let categories = extract_dict_list(dict, "categories", py_to_category)?;
 
     Ok(Dataset {
@@ -1167,23 +1240,51 @@ fn non_negative(name: &str, v: i64) -> PyResult<u64> {
 }
 
 /// A 1-D non-negative integer argument — see [`f64_vec`]. A numpy array of
-/// any unsigned dtype is read as `uint64` and of any signed dtype as `int64`,
-/// each in one copy; a sequence of ints otherwise. A negative value raises
-/// `ValueError`: ids are unsigned.
+/// any unsigned dtype is read as `uint64`, of any signed dtype as `int64`, and
+/// of any float dtype as `float64`, each in one copy; a list or tuple value by
+/// value ([`extract_int`]). Ids follow the rule a record's do: a whole float
+/// such as `1.0` is the id 1, and a negative or fractional number is a
+/// `ValueError` naming its position. A string, anything that is not a
+/// sequence (a set has no order to pair with the other columns), or an item
+/// that is not a number is a `TypeError`.
 pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
+    let bad = |i: usize, v: &dyn std::fmt::Display| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "{name}[{i}]: expected a non-negative integer, got {v}"
+        ))
+    };
     if let Some(arr) = array_of_kind::<u64, numpy::Ix1>(obj, b"u")? {
         return Ok(arr.as_array().to_vec());
     }
-    let non_negative = |v: i64| non_negative(name, v);
     if let Some(arr) = array_of_kind::<i64, numpy::Ix1>(obj, b"i")? {
-        return arr.as_array().iter().map(|&v| non_negative(v)).collect();
+        return (arr.as_array().iter().enumerate())
+            .map(|(i, &v)| u64::try_from(v).map_err(|_| bad(i, &v)))
+            .collect();
     }
-    let signed: Vec<i64> = obj.extract().map_err(|_| {
+    if let Some(arr) = array_of_kind::<f64, numpy::Ix1>(obj, b"f")? {
+        return (arr.as_array().iter().enumerate())
+            .map(|(i, &v)| hotcoco_core::types::id_from_f64(v).ok_or_else(|| bad(i, &v)))
+            .collect();
+    }
+    let not_ids = || {
         pyo3::exceptions::PyTypeError::new_err(format!(
             "{name} must be a sequence of ints or a 1-D numpy int array"
         ))
-    })?;
-    signed.into_iter().map(non_negative).collect()
+    };
+    // A bool array reads as a sequence whose items convert to floats, so it
+    // would pass as ids 0 and 1.
+    let bool_array = obj
+        .cast::<numpy::PyUntypedArray>()
+        .is_ok_and(|arr| arr.dtype().kind() == b'b');
+    if bool_array || obj.is_instance_of::<PyString>() || obj.is_instance_of::<PyBytes>() {
+        return Err(not_ids());
+    }
+    let items: Vec<Bound<'_, PyAny>> = obj.extract().map_err(|_| not_ids())?;
+    (items.iter().enumerate())
+        .map(|(i, item)| {
+            extract_int(item).map_err(|e| with_context(obj.py(), format_args!("{name}[{i}]"), e))
+        })
+        .collect()
 }
 
 /// A 1-D flag argument — `iscrowd` for `from_arrays` and the IoU functions.

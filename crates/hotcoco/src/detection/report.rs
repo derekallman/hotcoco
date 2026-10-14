@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::error::Error;
 use crate::metrics::mean_or_missing;
 use crate::params::{IouType, Params, is_rounded_default};
 use crate::report::{EvalReport, Provenance};
@@ -554,9 +555,11 @@ impl COCOeval {
     /// (on COCO it is ~1M floats).
     pub fn report(&self) -> crate::error::Result<EvalReport> {
         let stats = self.stats.as_ref().ok_or_else(|| {
-            "summarize() must be called before report(). \
-             Run evaluate(), accumulate(), and summarize() first."
-                .to_string()
+            Error::InvalidState(
+                "summarize() must be called before report(). \
+                 Run evaluate(), accumulate(), and summarize() first."
+                    .into(),
+            )
         })?;
 
         let provenance = self.provenance();

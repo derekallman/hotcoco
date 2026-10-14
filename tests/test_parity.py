@@ -564,7 +564,7 @@ def test_every_counts_form_agrees():
 
 def test_unsupported_counts_type_raises():
     """Anything that is not str, bytes, or a list of ints is an error, not an empty mask."""
-    with pytest.raises(TypeError, match="counts"):
+    with pytest.raises(ValueError, match="field 'segmentation': RLE 'counts' must be"):
         COCO(_dataset_with_segmentation({"size": [10, 10], "counts": 3.5}))
 
 
@@ -1194,9 +1194,9 @@ def test_update_anns_sets_scalar_shaped_and_custom_keys_alike():
 def test_update_anns_rejects_a_value_that_does_not_fit():
     coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(1)]))
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="field 'area'"):
         coco.update_anns([{"id": 1, "area": "big"}])
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="non-negative integer, got -1"):
         coco.update_anns([{"id": -1, "area": 5.0}])
     assert coco.dataset["annotations"][0]["area"] == 10000.0
 
@@ -1204,7 +1204,7 @@ def test_update_anns_rejects_a_value_that_does_not_fit():
 def test_update_anns_input_shape():
     coco = COCO(_make_minimal_gt("bbox", annotations=[_make_bbox_ann(0)]))
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match=r"anns\[0\] must be a dict, got str"):
         coco.update_anns(["not a dict"])
     coco.update_anns([])
 

@@ -198,15 +198,30 @@ impl EvalReport {
     }
 }
 
-/// Write any results value as pretty-printed JSON to `path` — the one
-/// spelling of "save results" every family's `save()` uses.
-pub(crate) fn save_json<T: serde::Serialize>(
+/// Write any value as pretty-printed JSON to `path` — the one spelling of
+/// "save" every family's `save()` and Python's `COCO.save()` use.
+///
+/// A failed write, the final flush included, is an [`Error::Io`] naming the
+/// path, not a JSON error: a full disk is not malformed data.
+///
+/// [`Error::Io`]: crate::error::Error::Io
+pub fn save_json<T: serde::Serialize>(
     value: &T,
     path: &std::path::Path,
 ) -> crate::error::Result<()> {
-    let file = std::fs::File::create(path)?;
-    serde_json::to_writer_pretty(std::io::BufWriter::new(file), value)?;
-    Ok(())
+    use std::io::Write;
+    let io = |e: std::io::Error| {
+        crate::error::Error::io(e, format_args!("cannot write {}", path.display()))
+    };
+    let mut writer = std::io::BufWriter::new(std::fs::File::create(path).map_err(io)?);
+    serde_json::to_writer_pretty(&mut writer, value).map_err(|e| {
+        if e.is_io() {
+            io(e.into())
+        } else {
+            crate::error::Error::Json(e)
+        }
+    })?;
+    writer.flush().map_err(io)
 }
 
 #[cfg(test)]

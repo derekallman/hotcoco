@@ -136,6 +136,11 @@ impl Drop for COCO {
     }
 }
 
+/// Why `load_res` rejects a NaN score, from a file and a list alike.
+const NAN_SCORE_WHY: &str = "Scores order the detection ranking, and NaN makes that order \
+     undefined — every metric downstream would be meaningless. Filter or repair these \
+     detections before evaluating.";
+
 impl COCO {
     /// Load a COCO annotation JSON file and build indices.
     ///
@@ -143,8 +148,9 @@ impl COCO {
     /// annotation ids) are printed to stderr and retained on the returned
     /// object — see [`load_warnings`](Self::load_warnings).
     pub fn new(annotation_file: &Path) -> crate::error::Result<Self> {
-        let (dataset, n_fixed) = crate::json::read_dataset(annotation_file)?;
+        let (dataset, non_finite) = crate::json::read_dataset(annotation_file)?;
         let mut coco = Self::from_dataset(dataset);
+        let n_fixed = non_finite.rewritten;
         if n_fixed > 0 {
             coco.warn(format!(
                 "normalized {n_fixed} non-finite float value(s) (NaN/Infinity) to null while loading {}",
@@ -289,7 +295,7 @@ impl COCO {
     /// length.
     pub fn update_ann_areas(&mut self, ids: &[u64], areas: &[f64]) -> crate::error::Result<()> {
         if ids.len() != areas.len() {
-            return Err(Error::from(format!(
+            return Err(Error::InvalidInput(format!(
                 "update_ann_areas: {} areas for {} ids",
                 areas.len(),
                 ids.len()
@@ -550,8 +556,15 @@ impl COCO {
     /// with an `annotations` field. The result COCO object shares the images
     /// and categories from self.
     pub fn load_res(&self, res_file: &Path) -> crate::error::Result<COCO> {
-        let (anns, n_fixed) = crate::json::read_results(res_file)?;
+        let (anns, non_finite) = crate::json::read_results(res_file)?;
+        if let Some(line) = non_finite.nan_score_line {
+            return Err(Error::InvalidInput(format!(
+                "load_res(): {} has a NaN score at line {line}. {NAN_SCORE_WHY}",
+                res_file.display()
+            )));
+        }
         let mut res = self.load_res_anns(anns)?;
+        let n_fixed = non_finite.rewritten;
         if n_fixed > 0 {
             res.warn(format!(
                 "normalized {n_fixed} non-finite float value(s) (NaN/Infinity) to null while loading {}",
@@ -587,7 +600,7 @@ impl COCO {
             "detections_from_rows: 6 or 7 columns, got {ncols}"
         );
         assert_eq!(rows.len() % ncols, 0, "detections_from_rows: a partial row");
-        let valid = |v: f64| v.is_finite() && v >= 0.0 && v.fract() == 0.0;
+        let valid = |v: f64| crate::types::id_from_f64(v).is_some();
         // Ids are checked in a read of the rows first, so the records can be
         // written straight into the result: collecting a fallible map in
         // parallel would gather chunks and copy them all again.
@@ -609,7 +622,7 @@ impl COCO {
             rows.chunks_exact(ncols).enumerate().find_map(first_bad)
         };
         if let Some((row, column, value)) = bad {
-            return Err(Error::Other(format!(
+            return Err(Error::InvalidInput(format!(
                 "row {row} has {column} {value}; ids must be finite, non-negative integers"
             )));
         }
@@ -685,14 +698,10 @@ impl COCO {
         };
         if let Some(i) = first_nan {
             let ann = &anns[i];
-            return Err(format!(
-                "load_res(): annotation {} (id {}, image_id {}) has a NaN score. \
-                 Scores order the detection ranking, and NaN makes that order \
-                 undefined — every metric downstream would be meaningless. Filter \
-                 or repair these detections before evaluating.",
+            return Err(Error::InvalidInput(format!(
+                "load_res(): annotation {} (id {}, image_id {}) has a NaN score. {NAN_SCORE_WHY}",
                 i, ann.id, ann.image_id
-            )
-            .into());
+            )));
         }
         let mut warnings = Vec::new();
         if let Some(i) = first_img {
@@ -979,7 +988,7 @@ impl COCO {
         } else {
             String::new()
         };
-        Err(crate::error::Error::Other(format!(
+        Err(Error::InvalidInput(format!(
             "segmentation evaluation needs `height` and `width` on every image whose \
              annotations are polygons or boxes; {} image(s) lack them (ids {}{more}). \
              Add the fields to the image records, or pass masks as RLE, which carries \
@@ -1278,12 +1287,11 @@ impl COCO {
 
         for ds in datasets.iter().skip(1) {
             if ds.categories.len() != canonical_cats.len() {
-                return Err(format!(
+                return Err(Error::InvalidInput(format!(
                     "Cannot merge: datasets have different numbers of categories ({} vs {})",
                     canonical_cats.len(),
                     ds.categories.len()
-                )
-                .into());
+                )));
             }
             let mut remap = HashMap::new();
             for cat in &ds.categories {
@@ -1293,11 +1301,10 @@ impl COCO {
                         remap.insert(cat.id, canonical_id);
                     }
                     None => {
-                        return Err(format!(
+                        return Err(Error::InvalidInput(format!(
                             "Cannot merge: category '{}' not found in first dataset",
                             cat.name
-                        )
-                        .into());
+                        )));
                     }
                 }
             }
@@ -1313,7 +1320,7 @@ impl COCO {
         // wrapped offset in release would produce silent id collisions in the
         // merged dataset.
         let id_overflow = |what: &str, id: u64, offset: u64| {
-            crate::error::Error::from(format!(
+            Error::InvalidInput(format!(
                 "Cannot merge: {what} id {id} + offset {offset} overflows u64. \
                  Renumber the input ids to something smaller first."
             ))

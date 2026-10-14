@@ -14,7 +14,7 @@ use pyo3::types::PyBytes;
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
 use crate::convert::{Labels, confusion_counts_to_py, label_pair, with_label_pair};
-use crate::{print_lines, provenance_str, serde_to_py, to_input_err, warn_user};
+use crate::{print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
 mmsegmentation's protocol.
@@ -104,7 +104,7 @@ mismatch or a label out of range; nothing from the pair is counted then."]
         let (g, p) = label_pair(gt, pred)?;
         let inner = &mut self.inner;
         py.detach(|| with_label_pair!(&g, &p, |g, p| inner.update(g, p)))
-            .map_err(to_input_err)
+            .map_err(to_pyerr)
     }
 
     #[doc = "Count one pair of PNG label maps: 8- or 16-bit grayscale, or a palette
@@ -113,8 +113,7 @@ Raises ``ValueError`` for a file that is not a label map, two maps of
 different sizes, or a label out of range."]
     fn update_png(&mut self, py: Python<'_>, gt: PathBuf, pred: PathBuf) -> PyResult<()> {
         let inner = &mut self.inner;
-        py.detach(|| inner.update_png(&gt, &pred))
-            .map_err(to_input_err)
+        py.detach(|| inner.update_png(&gt, &pred)).map_err(to_pyerr)
     }
 
     #[doc = "Count every PNG in ``gt_folder`` against the file of the same name in
@@ -130,14 +129,14 @@ counted then."]
     ) -> PyResult<usize> {
         let inner = &mut self.inner;
         py.detach(|| inner.update_folders(&gt_folder, &pred_folder))
-            .map_err(to_input_err)
+            .map_err(to_pyerr)
     }
 
     #[doc = "Add another evaluator's counts into this one — the shards of a
 distributed run. Raises ``ValueError`` if it was built with different classes
 or options."]
     fn merge(&mut self, other: &PySemanticEval) -> PyResult<()> {
-        self.inner.merge(&other.inner).map_err(to_input_err)
+        self.inner.merge(&other.inner).map_err(to_pyerr)
     }
 
     #[doc = "The confusion matrix behind every number, as a ``uint64`` array of

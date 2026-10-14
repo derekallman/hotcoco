@@ -293,8 +293,8 @@ def _circular_dict():
 
 # Python 3.14's json adds notes ("when serializing ...") to the error, and
 # pytest matches against the message and its notes, so the anchor ends at the
-# first line.
-_CIRCULAR = r"^Circular reference detected(\n|$)"
+# first line. A plain ValueError names the record it came from.
+_CIRCULAR = r"^annotations\[0\]: Circular reference detected(\n|$)"
 
 
 # Containers the direct conversion takes: a tuple is an array, as json.dumps
@@ -820,34 +820,36 @@ class TestRecordErrors:
     @pytest.mark.parametrize("record", ["images", "categories"])
     @pytest.mark.parametrize("first", [True, False], ids=["bad_value_first", "bad_value_last"])
     def test_missing_id(self, record, first):
-        # The record also holds a value `test_wrong_type` shows raising
-        # `TypeError`; the missing id is still what is reported.
+        # The record also holds a value `test_wrong_type` shows raising; the
+        # missing id is still what is reported.
         ds = tiny_dataset()
         bad_key, bad_value = ("height", -1) if record == "images" else ("name", 3)
         rest = {k: v for k, v in ds[record][0].items() if k not in ("id", bad_key)}
         ds[record][0] = {bad_key: bad_value, **rest} if first else {**rest, bad_key: bad_value}
-        with pytest.raises(ValueError, match="^dict missing 'id'$"):
+        with pytest.raises(ValueError, match=rf"^{record}\[0\]: dict missing 'id'$"):
             COCO(ds)
 
+    # A record is data, so a wrong type is a ValueError, as in the JSON file it
+    # was saved to (tests/test_input_errors.py).
     @pytest.mark.parametrize(
-        ("record", "key", "value", "error"),
+        ("record", "key", "value"),
         [
-            ("images", "id", "1", TypeError),
-            ("images", "file_name", 3, TypeError),
-            ("images", "height", -1, TypeError),
-            ("images", "license", "a", TypeError),
-            ("images", "coco_url", 3, TypeError),
-            ("images", "neg_category_ids", [1, "b"], TypeError),
-            ("categories", "id", -1, TypeError),
-            ("categories", "name", 3, TypeError),
-            ("categories", "skeleton", [[1, 2, 3]], ValueError),
-            ("categories", "keypoints", "nose", TypeError),
+            ("images", "id", "1"),
+            ("images", "file_name", 3),
+            ("images", "height", -1),
+            ("images", "license", "a"),
+            ("images", "coco_url", 3),
+            ("images", "neg_category_ids", [1, "b"]),
+            ("categories", "id", -1),
+            ("categories", "name", 3),
+            ("categories", "skeleton", [[1, 2, 3]]),
+            ("categories", "keypoints", "nose"),
         ],
     )
-    def test_wrong_type(self, record, key, value, error):
+    def test_wrong_type(self, record, key, value):
         ds = tiny_dataset()
         ds[record][0][key] = value
-        with pytest.raises(error):
+        with pytest.raises(ValueError, match=rf"^{record}\[0\]: field '{key}': "):
             COCO(ds)
 
 
@@ -1275,13 +1277,13 @@ class TestFuzzDropinFindings:
     def test_fractional_id_is_rejected(self):
         ds = tiny_dataset()
         ds["images"][0]["id"] = 1.5
-        with pytest.raises(TypeError, match="non-negative integer, got 1.5"):
+        with pytest.raises(ValueError, match="images\\[0\\]: field 'id': expected a non-negative integer, got 1.5"):
             COCO(ds)
 
     def test_out_of_range_int_names_the_overflow(self):
         ds = tiny_dataset()
         ds["images"][0]["height"] = 2**40
-        with pytest.raises(OverflowError, match="out of range"):
+        with pytest.raises(ValueError, match="field 'height': integer 1099511627776 is out of range"):
             COCO(ds)
 
     # convert.rs reads an exact bool or an int in the i64 range first, and
@@ -1311,7 +1313,9 @@ class TestFuzzDropinFindings:
     def test_non_flags_are_rejected(self, value):
         ds = tiny_dataset()
         ds["annotations"][0]["iscrowd"] = value
-        with pytest.raises(TypeError, match=f"^expected a bool or 0/1 flag, got {re.escape(repr(value))}"):
+        with pytest.raises(
+            ValueError, match=f"field 'iscrowd': expected a bool or 0/1 flag, got {re.escape(repr(value))}$"
+        ):
             COCO(ds)
 
 

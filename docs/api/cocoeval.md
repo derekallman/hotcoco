@@ -686,7 +686,7 @@ Requires `evaluate()` to have been called first. Bins all non-ignored detections
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `n_bins` | `int` | `10` | Number of equal-width confidence bins in [0, 1]. |
-| `iou_threshold` | `float` | `0.5` | IoU threshold for TP/FP classification. Must match one of `params.iouThrs`, and have been in it when `evaluate()` ran; otherwise raises `RuntimeError`. |
+| `iou_threshold` | `float` | `0.5` | IoU threshold for TP/FP classification. Must match one of `params.iouThrs`, or it raises `ValueError`, and have been in it when `evaluate()` ran, or it raises `RuntimeError`. |
 
 **Returns** a dict with:
 
@@ -918,7 +918,7 @@ built for, see
 
     `StreamingEval::merge(&mut self, other)`, `to_bytes(&self)`, and
     `from_bytes(&[u8])` match the Python methods in the following sections,
-    with errors as `Error::Other`. The Rust `merge` takes `other` by value and
+    with errors as `Error::InvalidInput`. The Rust `merge` takes `other` by value and
     moves its cells over; `StreamingEval` is `Clone` for a caller that needs
     to keep it.
 

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 
+use crate::error::Error;
 use crate::metrics::bootstrap::bootstrap_ci;
 
 use super::COCOeval;
@@ -93,24 +94,26 @@ pub fn compare(
 ) -> crate::error::Result<ComparisonResult> {
     // --- Validation ---
     if !eval_a.evaluated() {
-        return Err("evaluate() must be called on eval_a before compare()".into());
+        return Err(Error::InvalidState(
+            "evaluate() must be called on eval_a before compare()".into(),
+        ));
     }
     if !eval_b.evaluated() {
-        return Err("evaluate() must be called on eval_b before compare()".into());
+        return Err(Error::InvalidState(
+            "evaluate() must be called on eval_b before compare()".into(),
+        ));
     }
     if eval_a.eval_mode != eval_b.eval_mode {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "eval_mode mismatch: {:?} vs {:?}",
             eval_a.eval_mode, eval_b.eval_mode
-        )
-        .into());
+        )));
     }
     if eval_a.params.iou_type != eval_b.params.iou_type {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "iou_type mismatch: {:?} vs {:?}",
             eval_a.params.iou_type, eval_b.params.iou_type
-        )
-        .into());
+        )));
     }
     // The two runs are summarized under one metric catalog (built from A's
     // params) and their stats are differenced position by position, so every
@@ -118,26 +121,25 @@ pub fn compare(
     // checks, B's numbers were silently resolved under A's metric names — the
     // same class of defect as the index-0 fallback in `summarize`.
     if eval_a.params.iou_thrs != eval_b.params.iou_thrs {
-        return Err(
+        return Err(Error::InvalidInput(
             "iou_thrs mismatch: compare() differences the two runs metric by metric, \
                     so both evaluators must use the same IoU threshold grid"
                 .into(),
-        );
+        ));
     }
     if eval_a.params.rec_thrs != eval_b.params.rec_thrs {
-        return Err(
+        return Err(Error::InvalidInput(
             "rec_thrs mismatch: the recall grid defines what AP means, so comparing \
                     runs averaged over different grids compares two different metrics"
                 .into(),
-        );
+        ));
     }
     if eval_a.params.max_dets != eval_b.params.max_dets {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "max_dets mismatch: {:?} vs {:?}. The metric catalog reads specific max-det \
              slots, so both evaluators must use the same list",
             eval_a.params.max_dets, eval_b.params.max_dets
-        )
-        .into());
+        )));
     }
     let area_ranges_match = eval_a.params.area_ranges.len() == eval_b.params.area_ranges.len()
         && eval_a
@@ -147,12 +149,12 @@ pub fn compare(
             .zip(&eval_b.params.area_ranges)
             .all(|(a, b)| a.label == b.label && a.range == b.range);
     if !area_ranges_match {
-        return Err(
+        return Err(Error::InvalidInput(
             "area_ranges mismatch: per-size metrics would measure different \
                     object-size buckets on each side, so both evaluators must use the same \
                     area-range labels and bounds"
                 .into(),
-        );
+        ));
     }
     // Every summary metric is a mean over the K axis, so the two runs must
     // average over the same categories. The order may differ: K is only ever
@@ -160,12 +162,11 @@ pub fn compare(
     // `use_cats = false` every category is pooled into one K slot and
     // `cat_ids` does not select anything, so only `use_cats` itself must agree.
     if eval_a.params.use_cats != eval_b.params.use_cats {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "use_cats mismatch: {} vs {}. Per-category and category-agnostic AP \
              are different metrics, so both evaluators must use the same setting",
             eval_a.params.use_cats, eval_b.params.use_cats
-        )
-        .into());
+        )));
     }
     if eval_a.params.use_cats {
         let sorted = |ids: &[u64]| {
@@ -178,19 +179,21 @@ pub fn compare(
             sorted(&eval_b.params.cat_ids),
         );
         if cats_a != cats_b {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "cat_ids mismatch: {} vs {} categories. Every summary metric \
                  averages over the categories, so a delta between runs over \
                  different category sets compares two different means — both \
                  evaluators must use the same cat_ids",
                 cats_a.len(),
                 cats_b.len()
-            )
-            .into());
+            )));
         }
     }
     if opts.confidence <= 0.0 || opts.confidence >= 1.0 {
-        return Err(format!("confidence must be in (0, 1), got {}", opts.confidence).into());
+        return Err(Error::InvalidInput(format!(
+            "confidence must be in (0, 1), got {}",
+            opts.confidence
+        )));
     }
 
     // --- Shared image set ---
@@ -198,7 +201,9 @@ pub fn compare(
     let imgs_b: HashSet<u64> = eval_b.params.img_ids.iter().copied().collect();
     let shared_set: HashSet<u64> = imgs_a.intersection(&imgs_b).copied().collect();
     if shared_set.is_empty() {
-        return Err("no shared images between eval_a and eval_b".into());
+        return Err(Error::InvalidInput(
+            "no shared images between eval_a and eval_b".into(),
+        ));
     }
     let num_images = shared_set.len();
     let shared_sorted: Vec<u64> = {

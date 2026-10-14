@@ -310,7 +310,9 @@ impl COCOeval {
     /// has been classified, since a dog detection can cover a cat ground truth.
     pub fn tide_errors(&self, pos_thr: f64, bg_thr: f64) -> crate::error::Result<TideErrors> {
         if !self.evaluated() {
-            return Err("tide_errors() requires evaluate() to be called first".into());
+            return Err(crate::error::Error::InvalidState(
+                "tide_errors() requires evaluate() to be called first".into(),
+            ));
         }
 
         // `pos_thr` is an analysis threshold, not a metric name, so it snaps to

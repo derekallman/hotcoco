@@ -1,11 +1,19 @@
+use std::fmt::Display;
 use std::io;
 
 use crate::convert::ConvertError;
 
 /// Unified error type for hotcoco operations.
+///
+/// Each variant is a kind of failure, and the kind decides the Python
+/// exception, so the same bad input raises the same exception whichever path
+/// it took. There is no catch-all variant and no conversion from a bare
+/// string: a new error has to say which kind it is.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// I/O error (file open, read, write).
+    /// I/O error (file open, read, write). Errors from opening a named file
+    /// carry the path in their message and keep their [`io::ErrorKind`], so a
+    /// missing file is still `NotFound`.
     #[error(transparent)]
     Io(#[from] io::Error),
 
@@ -34,20 +42,24 @@ pub enum Error {
     )]
     UnknownCategoryIds(Vec<u64>),
 
-    /// Any other error with a human-readable message.
+    /// The caller's data or arguments are malformed: a value out of range,
+    /// sizes that do not match, a file that does not decode, two inputs that
+    /// cannot be combined. Python's `ValueError`.
     #[error("{0}")]
-    Other(String),
+    InvalidInput(String),
+
+    /// A method was called before the step it depends on, such as
+    /// `results()` before `run()`. Python's `RuntimeError`.
+    #[error("{0}")]
+    InvalidState(String),
 }
 
-impl From<String> for Error {
-    fn from(s: String) -> Self {
-        Error::Other(s)
-    }
-}
-
-impl From<&str> for Error {
-    fn from(s: &str) -> Self {
-        Error::Other(s.to_string())
+impl Error {
+    /// An I/O error with what was being done, and to which path, in front of
+    /// its message. The [`io::ErrorKind`] is kept, so a binding can still tell
+    /// a missing file from a permission problem.
+    pub fn io(e: io::Error, context: impl Display) -> Self {
+        Error::Io(io::Error::new(e.kind(), format!("{context}: {e}")))
     }
 }
 

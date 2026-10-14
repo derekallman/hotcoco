@@ -49,6 +49,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
 use crate::metrics::is_computed;
 pub use crate::metrics::semantic::METRIC_NAMES;
 use crate::metrics::semantic::{ClassCounts, Label, PixelConfusion, SemanticScores};
@@ -127,12 +128,11 @@ impl LabelRules {
     /// `torch.histc`, so there is nothing to be faithful to.
     fn check(self) -> crate::error::Result<()> {
         if self.reduce_zero_label && self.ignore_index != Some(255) {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "reduce_zero_label follows mmseg's relabel, which marks unlabeled pixels \
                  255; it needs ignore_index 255 (the default), not {:?}",
                 self.ignore_index
-            )
-            .into());
+            )));
         }
         Ok(())
     }
@@ -169,7 +169,7 @@ impl LabelRules {
         let g = read_class_map(gt)?;
         let p = read_class_map(pred)?;
         if (g.h, g.w) != (p.h, p.w) {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "{} is {}×{} but {} is {}×{}; a prediction must be the size of its ground truth",
                 gt.display(),
                 g.w,
@@ -177,8 +177,7 @@ impl LabelRules {
                 pred.display(),
                 p.w,
                 p.h
-            )
-            .into());
+            )));
         }
         match (&g.labels, &p.labels) {
             (ClassLabels::U8(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
@@ -186,7 +185,7 @@ impl LabelRules {
             (ClassLabels::U16(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
             (ClassLabels::U16(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
         }
-        .map_err(|e| format!("{}: {e}", pred.display()).into())
+        .map_err(|e| Error::InvalidInput(format!("{}: {e}", pred.display())))
     }
 }
 
@@ -273,12 +272,11 @@ impl SemanticEval {
     /// the ground truth). On an error nothing from this pair is counted.
     pub fn update<G: Label, P: Label>(&mut self, gt: &[G], pred: &[P]) -> crate::error::Result<()> {
         if gt.len() != pred.len() {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "gt and pred must have the same number of pixels, got {} and {}",
                 gt.len(),
                 pred.len()
-            )
-            .into());
+            )));
         }
         self.rules.check()?;
         // A rejected pair leaves the matrix as it was, so a pair counts
@@ -359,12 +357,11 @@ impl SemanticEval {
     /// If the two were built for different classes or label rules.
     pub fn merge(&mut self, other: &SemanticEval) -> crate::error::Result<()> {
         if self.num_classes() != other.num_classes() {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "cannot merge evaluators with different classes ({} and {} classes)",
                 self.num_classes(),
                 other.num_classes()
-            )
-            .into());
+            )));
         }
         if let Some((i, (a, b))) = self
             .class_names
@@ -373,15 +370,16 @@ impl SemanticEval {
             .enumerate()
             .find(|(_, (a, b))| a != b)
         {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "cannot merge evaluators with different class names: class {i} is {a:?} in one and {b:?} in the other"
-            )
-            .into());
+            )));
         }
         if self.rules != other.rules {
-            return Err("cannot merge evaluators with different ignore_index or \
-                        reduce_zero_label settings"
-                .into());
+            return Err(Error::InvalidInput(
+                "cannot merge evaluators with different ignore_index or \
+                 reduce_zero_label settings"
+                    .into(),
+            ));
         }
         self.commit(&other.confusion, other.n_images);
         Ok(())
@@ -515,9 +513,9 @@ fn png_pairs(
     let is_png = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
     let mut gts: Vec<PathBuf> = std::fs::read_dir(gt_folder)
         .map_err(|e| {
-            format!(
-                "cannot read ground-truth folder {}: {e}",
-                gt_folder.display()
+            Error::io(
+                e,
+                format_args!("cannot read ground-truth folder {}", gt_folder.display()),
             )
         })?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -525,20 +523,19 @@ fn png_pairs(
         .collect();
     gts.sort();
     if gts.is_empty() {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "no PNG files in ground-truth folder {}",
             gt_folder.display()
-        )
-        .into());
+        )));
     }
     // Names compare case-insensitively on both sides, since the extension
     // filter above accepts `.PNG` as well as `.png`.
     let key = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
     let pred_names: BTreeMap<String, PathBuf> = std::fs::read_dir(pred_folder)
         .map_err(|e| {
-            format!(
-                "cannot read prediction folder {}: {e}",
-                pred_folder.display()
+            Error::io(
+                e,
+                format_args!("cannot read prediction folder {}", pred_folder.display()),
             )
         })?
         .filter_map(|entry| entry.ok().map(|e| e.path()))
@@ -570,12 +567,11 @@ fn png_pairs(
         } else {
             String::new()
         };
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "{} ground-truth file(s) have no prediction of the same name in {}: {shown}{more}",
             missing.len(),
             pred_folder.display()
-        )
-        .into());
+        )));
     }
     Ok(pairs)
 }

@@ -130,7 +130,7 @@ impl PyPanopticEval {
 
     #[doc = "Evaluate every ground-truth image against its prediction.
 
-Images run in parallel without the GIL. Raises ``RuntimeError`` on the
+Images run in parallel without the GIL. Raises ``ValueError`` on the
 inputs panopticapi rejects: an image with no prediction, a predicted
 segment in the JSON but not the PNG or the other way around, an unknown
 prediction category, or label maps of different sizes."]

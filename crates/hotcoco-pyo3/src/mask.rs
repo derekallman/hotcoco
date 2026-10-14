@@ -17,7 +17,7 @@ use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
     Flag, RleDict, boxes_arg, compressed_rle_to_py, extract_coco_rle, extract_rle_list, f64_array,
-    py_to_rle, rle_result, rle_to_coco_py, type_name,
+    py_to_rle, rle_to_coco_py, type_name,
 };
 use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
@@ -432,7 +432,7 @@ pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 #[pyo3(text_signature = "(rle)")]
 pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
-        let a = rle_result(RleDict::read(dict)?.view()?.area())?;
+        let a = RleDict::read(dict)?.view()?.area().map_err(to_pyerr)?;
         return Ok(a.into_pyobject(py)?.into_any().unbind());
     }
     // `uint32`, matching pycocotools' array dtype exactly — the parity suite
@@ -462,7 +462,10 @@ fn each_rle<T>(
         .iter()
         .map(RleDict::view)
         .collect::<PyResult<Vec<_>>>()?;
-    batch(&views).into_iter().map(rle_result).collect()
+    batch(&views)
+        .into_iter()
+        .map(|r| r.map_err(to_pyerr))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +483,7 @@ fn each_rle<T>(
 #[pyo3(text_signature = "(rle)")]
 pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if let Ok(dict) = rle.cast::<PyDict>() {
-        let bbox = rle_result(RleDict::read(dict)?.view()?.to_bbox())?;
+        let bbox = RleDict::read(dict)?.view()?.to_bbox().map_err(to_pyerr)?;
         return Ok(PyArray1::from_vec(py, bbox.to_vec()).into_any().unbind());
     }
     let boxes = each_rle(rle, rmask::bboxes)?;
@@ -645,7 +648,7 @@ pub fn rle_to_string(rle: &Bound<'_, PyDict>) -> PyResult<String> {
 #[pyfunction]
 #[pyo3(text_signature = "(s, h, w)")]
 pub fn rle_from_string(py: Python<'_>, s: &str, h: u32, w: u32) -> PyResult<Py<PyAny>> {
-    let rle = rle_result(rmask::rle_from_string(s, h, w))?;
+    let rle = rmask::rle_from_string(s, h, w).map_err(to_pyerr)?;
     rle_to_coco_py(py, &rle)
 }
 

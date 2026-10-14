@@ -79,7 +79,10 @@ by_weather = ev.slice_by(lambda img: img["weather"])
 - **Non-finite values.** Bare `NaN`/`Infinity` tokens (which Python's `json`
   module happily writes) are normalized to `null` on load, matching pycocotools.
   They surface as `None` on fields such as `area` and `score`, and the load
-  notice reports how many were normalized.
+  notice reports how many were normalized. The exception is a `NaN` detection
+  score in a file passed to `load_res()`: it raises `ValueError` naming the
+  line, as a `NaN` score in a list of dicts does, rather than loading a
+  detection with no score.
 - **`load_warnings`.** Anything the loader tolerated but flagged — duplicate
   annotation ids, sanitized non-finite values, orphaned result ids — is collected
   on [`coco.load_warnings`](../api/coco.md#load_warnings) as well as printed.

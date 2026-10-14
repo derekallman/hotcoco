@@ -20,6 +20,42 @@ see `plans/PLAN.md` for the ladder, `plans/POSITIONING.md` for how the docs say 
 - `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expected — cdylib needs Python). Use `cargo check` instead, or build via maturin.
 - **Type stubs:** six hand-written files must track the Python API — `python/hotcoco/{__init__,detection,metrics,primitives,panoptic,semantic}.pyi`. Run `uv run pytest tests/test_stubs.py` for drift, and `uv run pyright` to type-check the shipped package against them. The tests check **names only, never signatures** — review those by hand when changing a signature. For `metrics` they check both directions (stub ⊇ `__all__`, and `__all__` ⊇ the extension module), because a new `#[pyfunction]` that the facade forgets to re-export is otherwise unreachable from Python with the suite green.
 
+### Input errors
+
+The same bad input raises the same Python exception whichever path it took — a dict,
+a JSON file, an array row, a `StreamingEval` batch. `tests/test_input_errors.py` feeds
+one malformed value through every path and fails on any disagreement.
+
+| Kind | Python | Rust |
+|---|---|---|
+| Anything wrong inside a record — a dict, a JSON file, an array row — wrong type included | `ValueError` | `Error::InvalidInput`, or `Error::Json` from a file |
+| A bad value in an argument or a column (`ids=[-1]`, `iscrowd=[1.5]`) | `ValueError` | `Error::InvalidInput`, or raised in the binding |
+| An argument of the wrong kind (`COCO(42)`, a column of strings) | `TypeError` | raised in the binding |
+| A call made before the step it needs (`results()` before `run()`) | `RuntimeError` | `Error::InvalidState` |
+| A missing or unreadable file | `FileNotFoundError` or another `OSError`, naming the path | `Error::Io`, built with `Error::io` |
+| An id the dataset or evaluator does not know | `KeyError` | `Error::UnknownAnnIds`, `Error::UnknownCategoryIds` |
+
+- **The kind is chosen where the error is made.** `Error` has no catch-all variant and no
+  `From<String>`, so a new error does not compile until it names its kind; `to_pyerr`
+  matches every variant with no wildcard arm, so a new variant does not compile until it
+  is mapped. Every core error reaches Python through `to_pyerr` — never
+  `PyValueError::new_err(e.to_string())` on a core result, which is how
+  compare-before-evaluate raised `ValueError` while `tide_errors()` raised
+  `RuntimeError`. Never add the catch-all back: it is how input errors became
+  `RuntimeError` by default before 1.3.
+- **Inside a record, a wrong type is a `ValueError`.** A JSON file cannot tell a wrong
+  type from a bad value, so a dict must not either. `convert::field_error` turns a
+  field's `TypeError` or `OverflowError` into a `ValueError` naming the field, and
+  `convert::with_context` names the record: `annotations[3]: field 'bbox': ...`. A
+  column or other argument is not a record and follows Python's own rule. The one
+  exception inside a record: a custom key's value JSON cannot hold raises what
+  `json.dumps` raises (`test_dropin_gaps.py` pins it).
+- **One id rule.** `types::id_from_f64` decides what float is an id, for the JSON
+  loader, array rows, dicts, and `from_arrays` columns alike. Do not restate it: the
+  copies it replaced had drifted, and an array row turned `1e30` into 2⁶⁴ − 1.
+- **I/O keeps its kind.** Wrap an `io::Error` with `Error::io(e, context)`, never in a
+  string: a string loses the `ErrorKind` that makes it `FileNotFoundError`.
+
 ### Core-crate architecture
 
 Core-crate architecture rules (layers, single-owner conventions, conformance tests) live

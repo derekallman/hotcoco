@@ -74,17 +74,18 @@ impl COCOeval {
         iou_threshold: f64,
     ) -> crate::error::Result<CalibrationResult> {
         if !self.evaluated() {
-            return Err("calibration() requires evaluate() to be called first".into());
+            return Err(crate::error::Error::InvalidState(
+                "calibration() requires evaluate() to be called first".into(),
+            ));
         }
 
         // An exact threshold, not a snap: it names the definition of "correct".
         // Listed in the current grid and resolved to its evaluate-time row.
         if self.params.iou_thr_idx(iou_threshold).is_none() {
-            return Err(format!(
+            return Err(crate::error::Error::InvalidInput(format!(
                 "iou_threshold={iou_threshold} not found in params.iou_thrs={:?}",
                 self.params.iou_thrs
-            )
-            .into());
+            )));
         }
         let t_idx = self
             .evaluated_iou_row(iou_threshold)
@@ -136,7 +137,8 @@ impl COCOeval {
         // covers the per-category vectors too, since every detection is pushed to
         // both. The predicate itself belongs to `metrics::calibration` — it is a
         // property of the functions being called, not of detection.
-        scores_in_unit_interval(&all.0).map_err(|e| format!("calibration(): {e}"))?;
+        scores_in_unit_interval(&all.0)
+            .map_err(|e| crate::error::Error::InvalidInput(format!("calibration(): {e}")))?;
 
         let bins = calibration_curve(&all.0, &all.1, n_bins);
         let (ece, mce) = calibration_error(&bins);

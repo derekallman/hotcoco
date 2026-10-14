@@ -231,7 +231,9 @@ impl COCOeval {
         score_thr: f64,
     ) -> crate::error::Result<ImageDiagnostics> {
         if !self.evaluated() {
-            return Err("image_diagnostics() requires evaluate() to be called first".into());
+            return Err(crate::error::Error::InvalidState(
+                "image_diagnostics() requires evaluate() to be called first".into(),
+            ));
         }
 
         // Snap to nearest IoU threshold — the reported `iou_thr` says which one;

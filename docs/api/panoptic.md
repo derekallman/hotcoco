@@ -54,7 +54,7 @@ signatures and return shapes.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `evaluate()` | `None` | Score every ground-truth image against its prediction, in parallel. Raises `RuntimeError` on the inputs panopticapi rejects |
+| `evaluate()` | `None` | Score every ground-truth image against its prediction, in parallel. Raises `ValueError` on the inputs panopticapi rejects |
 | `summarize()` | `None` | Print the table — PQ, SQ, RQ, N for All, Things, Stuff — in percent |
 | `summary_lines()` | `list[str]` | The same table as strings, without printing |
 | `run()` | `None` | `evaluate()` then `summarize()` |

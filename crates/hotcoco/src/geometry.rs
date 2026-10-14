@@ -186,11 +186,10 @@ pub(crate) fn polygon_bbox(points: &[(f64, f64)]) -> [f64; 4] {
 /// corner lists reach this function from untrusted converter input.
 pub fn corners_to_obb(coords: &[f64]) -> crate::error::Result<[f64; 5]> {
     if coords.len() != 8 {
-        return Err(format!(
+        return Err(crate::error::Error::InvalidInput(format!(
             "corners_to_obb: expected exactly 8 coordinates (4 corner points), got {}",
             coords.len()
-        )
-        .into());
+        )));
     }
     let cx = (coords[0] + coords[2] + coords[4] + coords[6]) / 4.0;
     let cy = (coords[1] + coords[3] + coords[5] + coords[7]) / 4.0;

@@ -16,7 +16,7 @@ use crate::convert::{
     Labels, bool_vec, calibration_bin_to_py, check_parallel, confusion_counts_to_py, f64_vec,
     label_pair, with_label_pair,
 };
-use crate::to_input_err;
+use crate::to_pyerr;
 
 #[pyfunction]
 #[pyo3(
@@ -322,7 +322,7 @@ fn pixel_confusion(
     let (gt, pred) = (as_array(gt)?, as_array(pred)?);
     let (g, p) = label_pair(gt.bind(py), pred.bind(py))?;
     let mut m = PixelConfusion::new(num_classes);
-    with_label_pair!(&g, &p, |g, p| m.update(g, p, ignore_index)).map_err(to_input_err)?;
+    with_label_pair!(&g, &p, |g, p| m.update(g, p, ignore_index)).map_err(to_pyerr)?;
     confusion_counts_to_py(py, m.into_counts(), num_classes)
 }
 
@@ -353,7 +353,7 @@ fn mean_iou(py: Python<'_>, confusion: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>>
             "confusion must be square, got {rows}×{cols}"
         )));
     }
-    let m = PixelConfusion::from_counts(rows, counts).map_err(to_input_err)?;
+    let m = PixelConfusion::from_counts(rows, counts).map_err(to_pyerr)?;
     let s = m.scores();
     let d = pyo3::types::PyDict::new(py);
     d.set_item("mIoU", s.miou)?;

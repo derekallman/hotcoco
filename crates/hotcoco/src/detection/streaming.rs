@@ -129,7 +129,7 @@ impl StreamingEval {
         categories: Vec<Category>,
     ) -> crate::error::Result<Self> {
         if eval_mode == EvalMode::OpenImages {
-            return Err(crate::error::Error::Other(
+            return Err(crate::error::Error::InvalidInput(
                 "StreamingEval does not support Open Images: hierarchy expansion needs the \
                  whole ground truth before the first image is evaluated. Use COCOeval::new_oid."
                     .to_string(),
@@ -393,8 +393,9 @@ impl StreamingEval {
     /// Bytes that are truncated, were not written by `to_bytes`, or carry a
     /// format version this build does not know are an error, never a panic.
     pub fn from_bytes(bytes: &[u8]) -> crate::error::Result<Self> {
-        let bad =
-            |why: String| crate::error::Error::Other(format!("invalid StreamingEval state: {why}"));
+        let bad = |why: String| {
+            crate::error::Error::InvalidInput(format!("invalid StreamingEval state: {why}"))
+        };
         if bytes.len() < 16 || &bytes[..4] != STATE_MAGIC {
             return Err(bad("not a StreamingEval state".into()));
         }
@@ -643,7 +644,7 @@ impl From<ParamsState> for Params {
 }
 
 fn mismatch(what: &str) -> crate::error::Error {
-    crate::error::Error::Other(format!(
+    crate::error::Error::InvalidInput(format!(
         "cannot merge StreamingEvals built with different {what}: every rank must construct \
          its evaluator from the same categories and params"
     ))

@@ -54,6 +54,7 @@ use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
 use crate::metrics::panoptic::{PqCounts, PqScores, pq_average};
 use crate::metrics::semantic::{PixelConfusion, SemanticScores};
 use crate::primitives::panoptic::{Overlaps, Segment, VOID, match_segments};
@@ -290,7 +291,10 @@ impl PanopticEval {
         let mut pairs = Vec::with_capacity(self.gt.annotations.len());
         for gt_ann in &self.gt.annotations {
             let pred_ann = pred_by_image.get(&gt_ann.image_id).ok_or_else(|| {
-                format!("no prediction for the image with id {}", gt_ann.image_id)
+                Error::InvalidInput(format!(
+                    "no prediction for the image with id {}",
+                    gt_ann.image_id
+                ))
             })?;
             pairs.push((gt_ann, *pred_ann));
         }
@@ -443,7 +447,7 @@ impl PanopticEval {
         let result = self
             .result
             .as_ref()
-            .ok_or("run() must be called before results()")?;
+            .ok_or_else(|| Error::InvalidState("run() must be called before results()".into()))?;
         Ok(PanopticResults {
             hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
             provenance: self.provenance(),
@@ -479,7 +483,7 @@ impl PanopticEval {
         let result = self
             .result
             .as_ref()
-            .ok_or("run() must be called before report()")?;
+            .ok_or_else(|| Error::InvalidState("run() must be called before report()".into()))?;
         let names: BTreeMap<u64, String> = unique_categories(&self.gt.categories)
             .map(|cat| {
                 let name = if cat.name.is_empty() {
@@ -582,11 +586,10 @@ fn load_side<'a>(
     let (h, w) = match canvas {
         Some((h, w)) if h > 0 && w > 0 => (h, w),
         _ => {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "image {} has no height and width, so its masks cannot be rasterized",
                 ann.image_id
-            )
-            .into());
+            )));
         }
     };
     // Masks carry their own labels, so a repeated id — common in detection
@@ -596,17 +599,18 @@ fn load_side<'a>(
     let mut labeled = Vec::with_capacity(segments.len());
     for (i, seg) in segments.iter().enumerate() {
         let mask = seg.segmentation.as_ref().ok_or_else(|| {
-            format!(
+            Error::InvalidInput(format!(
                 "{side} segment {} in image {} has no segmentation, and no PNG folder is set \
                  to read it from",
                 seg.id, ann.image_id
-            )
+            ))
         })?;
         let label = i as u32 + 1;
         masks.push((label, mask));
         labeled.push((label, seg));
     }
-    let map = raster::paint(&masks, h, w).map_err(|e| format!("image {}: {e}", ann.image_id))?;
+    let map = raster::paint(&masks, h, w)
+        .map_err(|e| Error::InvalidInput(format!("image {}: {e}", ann.image_id)))?;
     Ok(Side {
         pixels: Pixels::Map(map),
         segments: labeled,
@@ -630,11 +634,10 @@ fn eval_image(
     let pred = load_side(pred_ann, ctx.pred_folder, Some(gt_dims), "predicted")?;
     let pred_dims = pred.pixels.dims();
     if gt_dims != pred_dims {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "image {image_id}: ground truth is {}×{} but the prediction is {}×{}",
             gt_dims.0, gt_dims.1, pred_dims.0, pred_dims.1
-        )
-        .into());
+        )));
     }
 
     let overlaps = overlaps(gt.pixels, pred.pixels);
@@ -650,26 +653,24 @@ fn eval_image(
     let known: FxHashSet<u32> = pred.segments.iter().map(|&(label, _)| label).collect();
     for &(label, _) in &pred_areas {
         if label != VOID && !known.contains(&label) {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "image {image_id}: predicted segment {label} is in the PNG but not in segments_info"
-            )
-            .into());
+            )));
         }
     }
     let mut pred_segments = Vec::with_capacity(pred.segments.len());
     for &(label, seg) in &pred.segments {
         let area = area_of(&pred_areas, label).ok_or_else(|| {
-            format!(
+            Error::InvalidInput(format!(
                 "image {image_id}: predicted segment {} is in segments_info but not in the mask",
                 seg.id
-            )
+            ))
         })?;
         if !ctx.cat_index.contains_key(&seg.category_id) {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "image {image_id}: predicted segment {} has unknown category_id {}",
                 seg.id, seg.category_id
-            )
-            .into());
+            )));
         }
         pred_segments.push(Segment {
             label,
@@ -719,12 +720,11 @@ fn eval_image(
     let mut counts: FxHashMap<u64, PqCounts> = FxHashMap::default();
     for (gi, _, iou) in matches.matched {
         if !iou.is_finite() {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "image {image_id}: ground-truth segment {} states an area smaller than its \
                  pixels overlap, so its IoU is not a number",
                 gt.segments[gi].1.id
-            )
-            .into());
+            )));
         }
         let c = counts.entry(gt_segments[gi].category_id).or_default();
         c.tp += 1;

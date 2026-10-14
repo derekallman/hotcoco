@@ -402,18 +402,30 @@ impl<'de, T: TryFrom<u64>> Deserialize<'de> for Uint<T> {
             }
 
             fn visit_f64<E: de::Error>(self, v: f64) -> Result<Uint<T>, E> {
-                if v.fract() == 0.0 && v >= 0.0 && v <= u64::MAX as f64 {
-                    self.visit_u64(v as u64)
-                } else {
-                    Err(E::custom(format!(
+                match id_from_f64(v) {
+                    Some(id) => self.visit_u64(id),
+                    None => Err(E::custom(format!(
                         "expected a non-negative integer, got {v}"
-                    )))
+                    ))),
                 }
             }
         }
 
         deserializer.deserialize_any(UintVisitor(PhantomData))
     }
+}
+
+/// The id a float spells, or `None`: an id is a whole, non-negative number
+/// below 2⁶⁴.
+///
+/// The one rule for an id written as a float, applied by every input path —
+/// a JSON file, a Python dict, an array row — so they agree on every value:
+/// `1.0`, from a file written through pandas, is the id 1, and `1.5`, `-1`,
+/// NaN, and `1e30` are not ids.
+pub fn id_from_f64(v: f64) -> Option<u64> {
+    // `u64::MAX as f64` rounds up to 2⁶⁴, which no u64 holds, so the bound is
+    // strict; a cast at 2⁶⁴ would saturate to a different id.
+    (v.fract() == 0.0 && v >= 0.0 && v < u64::MAX as f64).then_some(v as u64)
 }
 
 pub(crate) fn deserialize_uint<'de, D, T>(deserializer: D) -> Result<T, D::Error>
@@ -758,9 +770,9 @@ impl Rle {
         let sum: u64 = counts.iter().map(|&c| c as u64).sum();
         let expected = h as u64 * w as u64;
         if sum != expected {
-            return Err(
-                format!("RLE counts must sum to h*w ({h} * {w} = {expected}), got {sum}").into(),
-            );
+            return Err(crate::error::Error::InvalidInput(format!(
+                "RLE counts must sum to h*w ({h} * {w} = {expected}), got {sum}"
+            )));
         }
         Ok(Self { h, w, counts })
     }

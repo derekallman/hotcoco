@@ -32,7 +32,10 @@ fn read_image_dims(py: Python<'_>, dir: &str) -> PyResult<HashMap<String, (u32, 
     })?;
 
     let read_dir = std::fs::read_dir(dir).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("cannot read images_dir: {e}"))
+        to_pyerr(hotcoco_core::Error::io(
+            e,
+            format_args!("cannot read images_dir {dir}"),
+        ))
     })?;
 
     let img_exts = hotcoco_core::convert::IMAGE_EXTENSIONS;
@@ -64,38 +67,29 @@ fn read_image_dims(py: Python<'_>, dir: &str) -> PyResult<HashMap<String, (u32, 
     Ok(image_dims)
 }
 
-/// Convert a hotcoco error to a Python exception with appropriate type mapping.
+/// Convert a hotcoco error to the Python exception its kind names.
 ///
-/// The file-wide convention: I/O problems are `IOError`, malformed data is
-/// `ValueError`. Every binding that surfaces a core error must come through
-/// here (for `ConvertError`, via `e.into()`), not map to `PyRuntimeError` ad
-/// hoc — `except OSError` / `except ValueError` in user code should catch what
-/// their names promise. `Error::Other` is the catch-all and stays
-/// `RuntimeError`; a binding whose `Other` failures are all input problems
-/// goes through [`to_input_err`] instead.
+/// Every binding that surfaces a core error comes through here (for
+/// `ConvertError`, via `e.into()`), so `except` in user code catches what the
+/// exception's name promises whichever path the input took: bad input is
+/// `ValueError`, a call made before the step it needs is `RuntimeError`, an
+/// id the dataset or evaluator does not know is `KeyError`, and I/O is the
+/// `OSError` subclass its kind names (`FileNotFoundError`, `PermissionError`,
+/// ...), its message naming the path; unlike `open()`'s, it carries no
+/// `errno` or `filename` attribute. The match has no
+/// wildcard arm, so a new core variant does not compile until it is mapped.
 pub(crate) fn to_pyerr(err: hotcoco_core::Error) -> PyErr {
     use hotcoco_core::{ConvertError, Error};
     match err {
-        Error::Io(e) | Error::Convert(ConvertError::Io(e)) => {
-            pyo3::exceptions::PyIOError::new_err(e.to_string())
+        Error::Io(e) | Error::Convert(ConvertError::Io(e)) => e.into(),
+        e @ (Error::Json(_) | Error::Convert(_) | Error::InvalidInput(_)) => {
+            pyo3::exceptions::PyValueError::new_err(e.to_string())
         }
-        Error::Json(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
-        Error::Convert(e) => pyo3::exceptions::PyValueError::new_err(e.to_string()),
+        Error::InvalidState(msg) => pyo3::exceptions::PyRuntimeError::new_err(msg),
         // A lookup failure, so the exception a mapping lookup raises.
         e @ (Error::UnknownAnnIds(_) | Error::UnknownCategoryIds(_)) => {
             pyo3::exceptions::PyKeyError::new_err(e.to_string())
         }
-        Error::Other(msg) => pyo3::exceptions::PyRuntimeError::new_err(msg),
-    }
-}
-
-/// [`to_pyerr`] for `load_res` (all forms) and `StreamingEval.update`, whose reachable
-/// `Error::Other` messages (`load_res_anns`'s NaN score, `check_mask_dims`)
-/// all describe the caller's data: `ValueError`, not `RuntimeError`.
-pub(crate) fn to_input_err(err: hotcoco_core::Error) -> PyErr {
-    match err {
-        hotcoco_core::Error::Other(msg) => pyo3::exceptions::PyValueError::new_err(msg),
-        e => to_pyerr(e),
     }
 }
 
@@ -173,7 +167,7 @@ fn freq_group_name(group: hotcoco_core::FreqGroup) -> &'static str {
 use convert::{
     AreaRng, Flag, IdList, NameList, annotation_to_py, category_to_py, confusion_counts_to_py,
     dataset_stats_to_py, dict_list, f64_array, image_to_py, map_to_dict, merge_ann_dict_checked,
-    py_to_annotation, py_to_category, py_to_dataset, py_to_image, rle_to_coco_py,
+    py_to_annotation, py_to_category, py_to_dataset, py_to_image, py_to_record, rle_to_coco_py,
 };
 
 // ---------------------------------------------------------------------------
@@ -245,7 +239,7 @@ impl PyCOCO {
             if segmentation.is_some() {
                 return Err(segmentation_needs_array("load_res"));
             }
-            return self.inner.load_res(Path::new(&path)).map_err(to_input_err);
+            return self.inner.load_res(Path::new(&path)).map_err(to_pyerr);
         }
 
         // Case 2: list of annotation dicts
@@ -253,13 +247,13 @@ impl PyCOCO {
             if segmentation.is_some() {
                 return Err(segmentation_needs_array("load_res"));
             }
-            let anns = dict_list(list, "load_res", py_to_annotation)?;
-            return self.inner.load_res_anns(anns).map_err(to_input_err);
+            let anns = dict_list(list, "load_res", py_to_record)?;
+            return self.inner.load_res_anns(anns).map_err(to_pyerr);
         }
 
         // Case 3: numpy array, shape (N, 6) or (N, 7)
         if let Some(anns) = anns_from_array(res, "load_res", segmentation)? {
-            return self.inner.load_res_anns(anns).map_err(to_input_err);
+            return self.inner.load_res_anns(anns).map_err(to_pyerr);
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -430,8 +424,9 @@ impl PyCOCO {
     ///
     /// The result equals ``COCO(dict)`` over the same annotations. Raises
     /// ``ValueError`` for columns of different lengths, a box array that is not
-    /// ``(N, 4)``, or a negative id, and ``TypeError`` for a column that is not
-    /// an array or sequence of the right kind.
+    /// ``(N, 4)``, or an id that is negative or fractional, and ``TypeError``
+    /// for a column that is not an array or sequence. An id written as a
+    /// whole float, such as ``1.0``, is the id ``1``.
     #[classmethod]
     // The keyword-only columns arrive through `**kwargs`: nine parameters would
     // trip clippy's argument limit. `text_signature` keeps their names visible
@@ -549,7 +544,7 @@ impl PyCOCO {
                 area: Some(area.as_ref().map_or(bbox[2] * bbox[3], |a| a[i])),
                 iscrowd: iscrowd.as_ref().is_some_and(|c| c[i]),
                 segmentation: match segmentation {
-                    Some(segs) => Some(convert::py_to_segmentation(&segs.get_item(i)?)?),
+                    Some(segs) => Some(convert::segmentation_at(&segs.get_item(i)?, i)?),
                     None => None,
                 },
                 ..Default::default()
@@ -689,13 +684,7 @@ impl PyCOCO {
 
     /// Serialize the dataset to a COCO-format JSON file.
     fn save(&self, path: &str) -> PyResult<()> {
-        let file = std::fs::File::create(path)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
-        let writer = std::io::BufWriter::new(file);
-        serde_json::to_writer_pretty(writer, &self.inner.dataset).map_err(
-            |e: serde_json::Error| pyo3::exceptions::PyValueError::new_err(e.to_string()),
-        )?;
-        Ok(())
+        hotcoco_core::report::save_json(&self.inner.dataset, Path::new(path)).map_err(to_pyerr)
     }
 
     // camelCase aliases for pycocotools compatibility. The *parameter* names
@@ -1269,7 +1258,7 @@ impl PyCOCO {
         self.inner
             .load_res_anns(anns)
             .map(PyCOCO::shared)
-            .map_err(to_input_err)
+            .map_err(to_pyerr)
     }
 
     /// pycocotools builds COCO objects by assignment — `coco = COCO();
@@ -1324,7 +1313,8 @@ impl PyCOCO {
     ///     in any of those cases.
     ///     ``TypeError`` and ``ValueError`` as the ``dataset`` setter raises.
     ///     ``TypeError`` for a mix of the two forms, and ``ValueError`` for
-    ///     ``ids`` and ``area`` of different lengths or a negative id.
+    ///     ``ids`` and ``area`` of different lengths or an id that is negative
+    ///     or fractional.
     ///
     /// Examples
     /// --------
@@ -1538,24 +1528,29 @@ impl PyCOCO {
         anns: &Bound<'_, PyList>,
         create: bool,
     ) -> PyResult<Vec<Annotation>> {
-        let mut updated = Vec::with_capacity(anns.len());
-        let mut missing = Vec::new();
-        for item in anns {
-            let dict = item.cast::<PyDict>().map_err(|_| {
-                pyo3::exceptions::PyTypeError::new_err("update_anns: list elements must be dicts")
-            })?;
-            let Some(id) = dict.get_item(pyo3::intern!(dict.py(), "id"))? else {
+        // An unknown id is collected, not raised, so all of them are named.
+        let edits = dict_list(anns, "anns", |dict| {
+            let py = dict.py();
+            let Some(id) = dict.get_item(pyo3::intern!(py, "id"))? else {
                 return Err(pyo3::exceptions::PyKeyError::new_err(
                     "every annotation passed to update_anns() needs an 'id'",
                 ));
             };
-            let id: u64 = convert::extract_int(&id)?;
+            let id: u64 =
+                convert::extract_int(&id).map_err(|e| convert::field_error(py, "field 'id'", e))?;
             let Some(mut ann) = self.inner.get_ann(id).cloned() else {
-                missing.push(id);
-                continue;
+                return Ok(Err(id));
             };
             merge_ann_dict_checked(&mut ann, dict, create)?;
-            updated.push(ann);
+            Ok(Ok(ann))
+        })?;
+        let mut updated = Vec::with_capacity(edits.len());
+        let mut missing = Vec::new();
+        for edit in edits {
+            match edit {
+                Ok(ann) => updated.push(ann),
+                Err(id) => missing.push(id),
+            }
         }
         if !missing.is_empty() {
             return Err(to_pyerr(hotcoco_core::Error::UnknownAnnIds(missing)));
@@ -1611,12 +1606,13 @@ fn anns_from_array(
     segmentation: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Option<Vec<Annotation>>> {
     match convert::numeric_array::<numpy::Ix2>(obj)? {
-        Some(arr) => anns_from_rows(arr.as_array(), what, segmentation).map(Some),
+        Some(arr) => anns_from_rows(obj.py(), arr.as_array(), what, segmentation).map(Some),
         None => Ok(None),
     }
 }
 
 fn anns_from_rows(
+    py: Python<'_>,
     arr: numpy::ndarray::ArrayView2<'_, f64>,
     what: &str,
     segmentation: Option<&Bound<'_, PyList>>,
@@ -1645,10 +1641,10 @@ fn anns_from_rows(
     // GIL rule in `mask.rs`. The conversion is parallel on the thread pool
     // either way; only this thread holds the GIL.
     let mut anns = hotcoco_core::COCO::detections_from_rows(rows, ncols)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{what}: {e}")))?;
+        .map_err(|e| convert::with_context(py, what, to_pyerr(e)))?;
     if let Some(segs) = segmentation {
-        for (ann, seg) in anns.iter_mut().zip(segs) {
-            ann.segmentation = Some(convert::py_to_segmentation(&seg)?);
+        for (i, (ann, seg)) in anns.iter_mut().zip(segs).enumerate() {
+            ann.segmentation = Some(convert::segmentation_at(&seg, i)?);
         }
     }
     Ok(anns)
@@ -1932,8 +1928,12 @@ impl PyHierarchy {
     #[staticmethod]
     #[pyo3(signature = (path, label_to_id=None))]
     fn from_file(path: &str, label_to_id: Option<HashMap<String, u64>>) -> PyResult<Self> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        let json = std::fs::read_to_string(path).map_err(|e| {
+            to_pyerr(hotcoco_core::Error::io(
+                e,
+                format_args!("cannot read {path}"),
+            ))
+        })?;
         let map = label_to_id.unwrap_or_default();
         let inner = hotcoco_core::Hierarchy::from_oid_json(&json, &map)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
@@ -2156,11 +2156,11 @@ impl PyCOCOeval {
 
     fn evaluate(&mut self, py: Python<'_>) -> PyResult<()> {
         // Checked here, not in the constructor: `params.iouType` can change
-        // in between, and only this sees the configuration that runs.
-        // A configuration that cannot be evaluated is a bad argument, so
-        // `ValueError` (pycocotools raises `KeyError` at the same point).
+        // in between, and only this sees the configuration that runs. A
+        // configuration that cannot be evaluated is bad input, a `ValueError`
+        // (pycocotools raises `KeyError` at the same point).
         self.with_params(py, |ev| py.detach(|| ev.evaluate()))
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            .map_err(to_pyerr)?;
         self.eval_cache = None;
         Ok(())
     }
@@ -3123,8 +3123,8 @@ impl PyStreamingEval {
             None => eval_mode.default_params(iou),
         };
 
-        let inner = hotcoco_core::StreamingEval::new(params, eval_mode, categories)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let inner =
+            hotcoco_core::StreamingEval::new(params, eval_mode, categories).map_err(to_pyerr)?;
         Ok(PyStreamingEval { inner: Some(inner) })
     }
 
@@ -3157,12 +3157,12 @@ after ``finalize()``."]
         segmentation: Option<&Bound<'_, PyList>>,
     ) -> PyResult<()> {
         let images = dict_list(images, "images", py_to_image)?;
-        let gt = dict_list(gt_anns, "gt_anns", py_to_annotation)?;
+        let gt = dict_list(gt_anns, "gt_anns", py_to_record)?;
         let dt = if let Ok(list) = dt_anns.cast::<PyList>() {
             if segmentation.is_some() {
                 return Err(segmentation_needs_array("update"));
             }
-            dict_list(list, "dt_anns", py_to_annotation)?
+            dict_list(list, "dt_anns", py_to_record)?
         } else if let Some(anns) = anns_from_array(dt_anns, "update", segmentation)? {
             anns
         } else {
@@ -3173,8 +3173,7 @@ after ``finalize()``."]
         };
 
         let inner = self.inner.as_mut().ok_or_else(spent)?;
-        py.detach(|| inner.update(images, gt, dt))
-            .map_err(to_input_err)
+        py.detach(|| inner.update(images, gt, dt)).map_err(to_pyerr)
     }
 
     #[classmethod]
@@ -3216,7 +3215,7 @@ and ``RuntimeError`` if any has been finalized."]
             match merged.as_mut() {
                 None => merged = Some(state),
                 Some(merged) => py.detach(|| merged.merge(state)).map_err(|e| {
-                    pyo3::exceptions::PyValueError::new_err(format!("evaluators[{i}]: {e}"))
+                    convert::with_context(py, format_args!("evaluators[{i}]"), to_pyerr(e))
                 })?,
             }
         }
@@ -3244,7 +3243,7 @@ for bytes that are truncated, damaged, or from an incompatible format version."]
     fn from_bytes(data: &[u8]) -> PyResult<Self> {
         hotcoco_core::StreamingEval::from_bytes(data)
             .map(|inner| PyStreamingEval { inner: Some(inner) })
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+            .map_err(to_pyerr)
     }
 
     /// Pickle and `copy.deepcopy`: rebuild an empty evaluator, then restore the
@@ -3471,12 +3470,12 @@ fn compare(
         seed,
         confidence,
     };
-    // `ValueError` for every failure here: not-yet-evaluated inputs and
-    // mismatched parameter catalogs (iou_thrs, rec_thrs, max_dets, area
-    // ranges) are both bad arguments to *this* call, not runtime faults.
+    // Mismatched parameter catalogs (iou_thrs, rec_thrs, max_dets, area
+    // ranges) are bad input, a `ValueError`; an input not yet evaluated is a
+    // call made too early, a `RuntimeError`, as for `tide_errors()`.
     let result = py
         .detach(|| hotcoco_core::compare(&eval_a.inner, &eval_b.inner, &opts))
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        .map_err(to_pyerr)?;
 
     let metrics_a = map_to_dict(py, &result.metrics_a)?;
     let metrics_b = map_to_dict(py, &result.metrics_b)?;

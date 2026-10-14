@@ -13,6 +13,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use crate::error::Error;
+
 /// One image's class ids, row-major, with its size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ClassMap {
@@ -41,16 +43,21 @@ impl ClassLabels {
 
 /// Decode a label map, as described in the [module docs](self).
 pub(super) fn read_class_map(path: &Path) -> crate::error::Result<ClassMap> {
-    let file =
-        File::open(path).map_err(|e| format!("cannot open label map {}: {e}", path.display()))?;
+    let file = File::open(path)
+        .map_err(|e| Error::io(e, format_args!("cannot open label map {}", path.display())))?;
     // No transformations: a palette index must stay an index, and a 16-bit
     // sample must keep its high byte.
     let decoder = png::Decoder::new(BufReader::new(file));
-    let fail = |e: png::DecodingError| format!("cannot decode label map {}: {e}", path.display());
+    let fail = |e: png::DecodingError| {
+        Error::InvalidInput(format!("cannot decode label map {}: {e}", path.display()))
+    };
     let mut reader = decoder.read_info().map_err(fail)?;
-    let size = reader
-        .output_buffer_size()
-        .ok_or_else(|| format!("label map {} is too large to decode", path.display()))?;
+    let size = reader.output_buffer_size().ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "label map {} is too large to decode",
+            path.display()
+        ))
+    })?;
     let mut buf = vec![0u8; size];
     let info = reader.next_frame(&mut buf).map_err(fail)?;
     let (h, w) = (info.height, info.width);
@@ -98,13 +105,12 @@ pub(super) fn read_class_map(path: &Path) -> crate::error::Result<ClassMap> {
             )
         }
         (other, _) => {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "label map {} is {other:?}; a class-id map is single-channel (grayscale or \
                  palette). A COCO panoptic PNG, whose colors encode segment ids, goes through \
                  hotcoco.panoptic",
                 path.display()
-            )
-            .into());
+            )));
         }
     };
     Ok(ClassMap { h, w, labels })

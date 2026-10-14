@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::error::Error;
+
 use super::COCOeval;
 use super::accumulate::EvalGrouping;
 use super::catalog::build_metric_defs;
@@ -41,11 +43,15 @@ impl COCOeval {
         slices: HashMap<String, Vec<u64>>,
     ) -> crate::error::Result<SlicedResults> {
         if !self.evaluated() {
-            return Err("evaluate() must be called before slice_by()".into());
+            return Err(Error::InvalidState(
+                "evaluate() must be called before slice_by()".into(),
+            ));
         }
 
         if slices.contains_key("_overall") {
-            return Err("'_overall' is a reserved slice name".into());
+            return Err(Error::InvalidInput(
+                "'_overall' is a reserved slice name".into(),
+            ));
         }
 
         let metrics = build_metric_defs(&self.params, self.eval_mode);

@@ -40,17 +40,28 @@ use std::path::Path;
 use rayon::prelude::*;
 use serde::de::{DeserializeOwned, IgnoredAny};
 
+use crate::error::Error;
 use crate::types::{Annotation, Dataset};
 
-/// Read and parse a dataset file. The second value is the number of
-/// non-finite float tokens rewritten to `null` on the way in.
-pub(crate) fn read_dataset(path: &Path) -> crate::error::Result<(Dataset, usize)> {
+/// What the loader did about non-finite float tokens in a file.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NonFinite {
+    /// Tokens rewritten to `null`.
+    pub(crate) rewritten: usize,
+    /// The line of the first `NaN` written as a record's own `score`, which
+    /// `load_res` rejects as it rejects a NaN score from a list: as `null` it
+    /// would load as a detection with no score.
+    pub(crate) nan_score_line: Option<usize>,
+}
+
+/// Read and parse a dataset file, and what was done about non-finite tokens.
+pub(crate) fn read_dataset(path: &Path) -> crate::error::Result<(Dataset, NonFinite)> {
     read(path, stream_dataset, dataset_whole)
 }
 
 /// Read and parse a results file: a bare array of annotations, or a dataset
 /// object whose `annotations` are the results.
-pub(crate) fn read_results(path: &Path) -> crate::error::Result<(Vec<Annotation>, usize)> {
+pub(crate) fn read_results(path: &Path) -> crate::error::Result<(Vec<Annotation>, NonFinite)> {
     read(path, stream_results, results_whole)
 }
 
@@ -61,18 +72,19 @@ fn read<T>(
     path: &Path,
     stream: fn(&mut Source) -> io::Result<Option<T>>,
     whole: fn(&[u8]) -> serde_json::Result<T>,
-) -> crate::error::Result<(T, usize)> {
-    if let Some(value) = stream(&mut Source::open(path, BLOCK_BYTES)?)? {
-        return Ok((value, 0));
+) -> crate::error::Result<(T, NonFinite)> {
+    let io = |e: io::Error| Error::io(e, format_args!("cannot read {}", path.display()));
+    if let Some(value) = stream(&mut Source::open(path, BLOCK_BYTES).map_err(io)?).map_err(io)? {
+        return Ok((value, NonFinite::default()));
     }
     // A shape the walk does not expect, a non-finite token, or a malformed
     // file: the whole file decides which, and the serial pass reports the
     // error. A sanitized file streams again from memory, so its peak is its
     // bytes plus its records.
-    let raw = std::fs::read(path)?;
-    let (fixed, n_fixed) = sanitize_non_finite(&raw);
-    if n_fixed == 0 {
-        return Ok((whole(&raw)?, 0));
+    let raw = std::fs::read(path).map_err(io)?;
+    let (fixed, non_finite) = sanitize_non_finite(&raw);
+    if non_finite.rewritten == 0 {
+        return Ok((whole(&raw)?, non_finite));
     }
     let fixed = fixed.into_owned();
     drop(raw);
@@ -80,9 +92,11 @@ fn read<T>(
         Cursor::new(&fixed[..]),
         fixed.len() as u64,
         BLOCK_BYTES,
-    ))? {
-        Some(value) => Ok((value, n_fixed)),
-        None => Ok((whole(&fixed)?, n_fixed)),
+    ))
+    .map_err(io)?
+    {
+        Some(value) => Ok((value, non_finite)),
+        None => Ok((whole(&fixed)?, non_finite)),
     }
 }
 
@@ -671,10 +685,14 @@ fn is_ws(b: u8) -> bool {
 /// `"NaN"`/`"Infinity"` — a file name, say — are left untouched. On `Option<f64>`
 /// fields (`area`, `score`) the `null` deserializes to `None`.
 ///
+/// A `NaN` that is a record's own `score` is rewritten too, and its line is
+/// reported ([`NonFinite::nan_score_line`]): a record is an object directly in
+/// the top-level array, or in an array one level into a top-level object, so
+/// a `score` key in a custom metadata object deeper down is not one.
+///
 /// Returns the input unchanged and borrowed (no allocation) when it contains no
-/// such tokens, so the common case pays only a single linear scan. The second
-/// element is the number of tokens rewritten.
-fn sanitize_non_finite(input: &[u8]) -> (Cow<'_, [u8]>, usize) {
+/// such tokens, so the common case pays only a single linear scan.
+fn sanitize_non_finite(input: &[u8]) -> (Cow<'_, [u8]>, NonFinite) {
     // Prefilter: if the tokens never occur as substrings *anywhere* — even
     // inside strings, where they would not count — the scan below cannot
     // rewrite anything. Two SIMD substring searches cost ~1ms on a 19 MB
@@ -684,14 +702,20 @@ fn sanitize_non_finite(input: &[u8]) -> (Cow<'_, [u8]>, usize) {
     if memchr::memmem::find(input, b"NaN").is_none()
         && memchr::memmem::find(input, b"Infinity").is_none()
     {
-        return (Cow::Borrowed(input), 0);
+        return (Cow::Borrowed(input), NonFinite::default());
     }
 
     let n = input.len();
     let mut out: Option<Vec<u8>> = None;
-    let mut count = 0usize;
+    let mut found = NonFinite::default();
     let mut in_string = false;
     let mut i = 0;
+    // Where a record's own keys sit: its object's nesting depth, and the line
+    // (a raw newline cannot occur inside a JSON string, so counting them
+    // outside strings counts them all).
+    let mut depth = 0usize;
+    let mut record_depth = 0usize;
+    let mut line = 1usize;
 
     while i < n {
         let b = input[i];
@@ -746,9 +770,28 @@ fn sanitize_non_finite(input: &[u8]) -> (Cow<'_, [u8]>, usize) {
                 v
             });
             o.extend_from_slice(b"null");
-            count += 1;
+            found.rewritten += 1;
+            if found.nan_score_line.is_none()
+                && b == b'N'
+                && depth == record_depth
+                && is_score_value(input, i)
+            {
+                found.nan_score_line = Some(line);
+            }
             i += len;
             continue;
+        }
+
+        match b {
+            b'[' | b'{' => {
+                depth += 1;
+                if record_depth == 0 {
+                    record_depth = if b == b'[' { 2 } else { 3 };
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            b'\n' => line += 1,
+            _ => {}
         }
 
         if let Some(o) = out.as_mut() {
@@ -758,9 +801,21 @@ fn sanitize_non_finite(input: &[u8]) -> (Cow<'_, [u8]>, usize) {
     }
 
     match out {
-        Some(v) => (Cow::Owned(v), count),
-        None => (Cow::Borrowed(input), count),
+        Some(v) => (Cow::Owned(v), found),
+        None => (Cow::Borrowed(input), found),
     }
+}
+
+/// Whether the token at `pos`, outside any string, is the value of a `score`
+/// key: `"score"`, optional whitespace, `:`, optional whitespace, then the
+/// token. A key spelled with an escape (`"sc\u006fre"`) is not recognized,
+/// and a key that only ends in `\"score` (`"x\"score"`) is not `score`.
+fn is_score_value(input: &[u8], pos: usize) -> bool {
+    let Some(colon) = last_non_ws(input, pos).filter(|&c| input[c] == b':') else {
+        return false;
+    };
+    last_non_ws(input, colon)
+        .is_some_and(|q| input[..=q].ends_with(br#""score""#) && (q < 7 || input[q - 7] != b'\\'))
 }
 
 #[cfg(test)]
@@ -769,15 +824,22 @@ mod sanitize_tests {
     use super::sanitize_non_finite;
 
     fn run(s: &str) -> (String, usize) {
-        let (bytes, n) = sanitize_non_finite(s.as_bytes());
-        (String::from_utf8(bytes.into_owned()).unwrap(), n)
+        let (bytes, found) = sanitize_non_finite(s.as_bytes());
+        (
+            String::from_utf8(bytes.into_owned()).unwrap(),
+            found.rewritten,
+        )
+    }
+
+    fn nan_score_line(s: &str) -> Option<usize> {
+        sanitize_non_finite(s.as_bytes()).1.nan_score_line
     }
 
     #[test]
     fn clean_input_is_borrowed_unchanged() {
         let input = br#"{"a": [1.0, -2.5], "b": null}"#;
-        let (bytes, n) = sanitize_non_finite(input);
-        assert_eq!(n, 0);
+        let (bytes, found) = sanitize_non_finite(input);
+        assert_eq!(found, super::NonFinite::default());
         assert!(matches!(bytes, std::borrow::Cow::Borrowed(_)));
     }
 
@@ -795,6 +857,32 @@ mod sanitize_tests {
         let (out, n) = run(r#"{"name": "NaN and \"Infinity\"", "v": NaN}"#);
         assert_eq!(n, 1);
         assert_eq!(out, r#"{"name": "NaN and \"Infinity\"", "v": null}"#);
+    }
+
+    #[test]
+    fn a_records_nan_score_is_reported_with_its_line() {
+        // Rewritten to null all the same.
+        let (out, n) = run(r#"[{"score": NaN, "area": NaN}]"#);
+        assert_eq!((out.as_str(), n), (r#"[{"score": null, "area": null}]"#, 2));
+        assert_eq!(
+            nan_score_line("[\n {\"score\": 1},\n {\"score\" : NaN}\n]"),
+            Some(3)
+        );
+        assert_eq!(
+            nan_score_line(r#"{"annotations": [{"score": NaN}]}"#),
+            Some(1)
+        );
+        // Not a record's own score: nested metadata, another key, an escaped
+        // key, an infinite score.
+        for clean in [
+            r#"[{"attributes": {"score": NaN}}]"#,
+            r#"{"annotations": [{"meta": {"score": NaN}}]}"#,
+            r#"[{"myscore": NaN}]"#,
+            r#"[{"x\"score": NaN}]"#,
+            r#"[{"score": Infinity}]"#,
+        ] {
+            assert_eq!(nan_score_line(clean), None, "{clean}");
+        }
     }
 }
 
@@ -1022,11 +1110,12 @@ mod tests {
             br#"[{"image_id": 1, "category_id": 1, "score": NaN}]"#,
         )
         .expect("write");
-        let (anns, n_fixed) = read_results(&path).expect("NaN reads as null");
-        assert_eq!((anns.len(), n_fixed, anns[0].score), (1, 1, None));
+        let (anns, found) = read_results(&path).expect("NaN reads as null");
+        assert_eq!((anns.len(), anns[0].score), (1, None));
+        assert_eq!((found.rewritten, found.nan_score_line), (1, Some(1)));
         std::fs::write(&path, br#"[{"image_id": 1,"#).expect("write");
         let err = read_results(&path).expect_err("truncated file fails");
-        assert!(matches!(err, crate::error::Error::Json(_)), "{err}");
+        assert!(matches!(err, Error::Json(_)), "{err}");
     }
 
     #[test]

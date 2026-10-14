@@ -41,6 +41,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{is_computed, mean_or_missing};
+use crate::error::Error;
 use crate::primitives::sim::iou_from_counts;
 use crate::report::EvalReport;
 
@@ -152,17 +153,16 @@ impl<F: Fn(u64) -> Option<u64>> Cells<'_, F> {
 
     /// The error for the first pixel in the bad row, or in the bad column of
     /// a counted row; `None` when every pixel is in range.
-    fn first_bad<G: Label, P: Label>(&self, gt: &[G], pred: &[P]) -> Option<crate::error::Error> {
+    fn first_bad<G: Label, P: Label>(&self, gt: &[G], pred: &[P]) -> Option<Error> {
         let n = self.n;
-        let message = |side: &str, i: usize, value: Option<u64>| -> crate::error::Error {
-            match value {
+        let message = |side: &str, i: usize, value: Option<u64>| -> Error {
+            Error::InvalidInput(match value {
                 Some(v) => format!(
                     "{side} pixel {i} has label {v}; labels must be below num_classes ({n}) \
                      or, for the ground truth, the ignore index"
                 ),
                 None => format!("{side} pixel {i} has a negative label"),
-            }
-            .into()
+            })
         };
         for (i, (&g, &p)) in gt.iter().zip(pred).enumerate() {
             let (row, col) = self.of(g, p);
@@ -325,12 +325,11 @@ impl PixelConfusion {
     /// If `counts` is not `num_classes²` long.
     pub fn from_counts(num_classes: usize, counts: Vec<u64>) -> crate::error::Result<Self> {
         if counts.len() != num_classes * num_classes {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "a confusion matrix for {num_classes} classes has {} cells, got {}",
                 num_classes * num_classes,
                 counts.len()
-            )
-            .into());
+            )));
         }
         Ok(PixelConfusion {
             num_classes,
@@ -487,7 +486,7 @@ impl PixelConfusion {
             // the offender; the fallback only keeps a count from vanishing.
             return Err(cells
                 .first_bad(gt, pred)
-                .unwrap_or_else(|| "a label is out of range".into()));
+                .unwrap_or_else(|| Error::InvalidInput("a label is out of range".into())));
         }
         for row in 0..n {
             let totals = &mut self.counts[row * stride..(row + 1) * stride];

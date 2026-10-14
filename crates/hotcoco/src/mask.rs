@@ -14,6 +14,7 @@
 
 use rayon::prelude::*;
 
+use crate::error::Error;
 use crate::primitives::sim::worth_parallel;
 use crate::types::Rle;
 
@@ -28,7 +29,7 @@ pub use crate::primitives::sim::{bbox_iou, mask_iou as iou};
 fn checked_hw(h: u32, w: u32) -> crate::error::Result<u32> {
     let hw = h as u64 * w as u64;
     u32::try_from(hw).map_err(|_| {
-        crate::error::Error::from(format!(
+        Error::InvalidInput(format!(
             "image dimensions {h}x{w} = {hw} pixels exceed u32::MAX (RLE run counts are 32-bit)"
         ))
     })
@@ -44,7 +45,10 @@ fn checked_hw(h: u32, w: u32) -> crate::error::Result<u32> {
 pub fn encode(mask: &[u8], h: u32, w: u32) -> crate::error::Result<Rle> {
     let n = checked_hw(h, w)? as usize;
     if mask.len() != n {
-        return Err(format!("encode: mask length {} must equal h*w = {n}", mask.len()).into());
+        return Err(Error::InvalidInput(format!(
+            "encode: mask length {} must equal h*w = {n}",
+            mask.len()
+        )));
     }
 
     // Runs alternate background, foreground, background, ... and start with
@@ -280,11 +284,10 @@ pub fn merge(rles: &[Rle], intersect: bool) -> crate::error::Result<Rle> {
     let w = rles[0].w;
     checked_hw(h, w)?;
     if let Some(bad) = rles[1..].iter().find(|r| r.h != h || r.w != w) {
-        return Err(format!(
+        return Err(Error::InvalidInput(format!(
             "merge: mismatched RLE dimensions — first mask is {h}x{w}, another is {}x{}",
             bad.h, bad.w
-        )
-        .into());
+        )));
     }
 
     if rles.len() == 1 {
@@ -1015,7 +1018,7 @@ enum FrStringError {
 impl From<FrStringError> for crate::error::Error {
     #[cold]
     fn from(err: FrStringError) -> Self {
-        crate::error::Error::Other(match err {
+        Error::InvalidInput(match err {
             FrStringError::BelowZero { byte, pos } => {
                 format!("invalid RLE: byte value {byte} at position {pos} is below ASCII '0' (48)")
             }

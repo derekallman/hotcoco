@@ -4,7 +4,7 @@ What's planned, in order. This page is forward-looking only — for what has alr
 shipped, see the [CHANGELOG](CHANGELOG.md).
 
 hotcoco is one engine — `primitives` for similarity and matching, `metrics` for the
-numbers — with a family driver per task on top. Detection and panoptic ship today. Each
+numbers — with a family driver per task on top. Detection, panoptic, and semantic ship today. Each
 family below lands as an additive minor release on the same layering, so nothing
 about the shipped families changes when a sibling arrives. The families are listed in the order they
 are planned; a version number is assigned when one is ready to ship.
@@ -36,20 +36,6 @@ along with MOTChallenge and video-COCO interchange, video-aware `merge`,
 Promptable concept evaluation in the SAM 3 style: cgF1 for images, pHOTA for
 video. Gated on a feasibility spike — it ships only if a reference oracle solid
 enough to verify against exists, the same bar every other family clears.
-
-## Rust API cleanups
-
-Rust-visible breaks ship in minor releases while the crate has no dependents
-outside this repository; each one is named in the CHANGELOG.
-
-- **One exception type per kind of bad input** — the same malformed value
-  raises the same Python exception whether it arrives as a dict, a JSON file,
-  or an array. Today a fractional or negative id raises `TypeError` in a
-  record and `ValueError` in a detection array. The fix is a typed
-  `Error::InvalidInput` variant that the bindings map to `ValueError` from the
-  error type rather than call site by call site; adding it is the Rust break.
-  It starts with an audit of what each input path raises today, and the
-  convention it settles is written down in `AGENTS.md`.
 
 ## Not tied to a release
 

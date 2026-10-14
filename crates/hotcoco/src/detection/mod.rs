@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 use crate::coco::{AreaRule, COCO};
 use crate::detection::hierarchy::Hierarchy;
+use crate::error::Error;
 use crate::params::{IouType, Params};
 
 /// How many of `n` items each parallel run takes, at least one.
@@ -64,11 +65,11 @@ fn run_len(n: usize) -> usize {
 
 /// The error for an analysis asked about a threshold the cells have no row for
 /// — see [`COCOeval::evaluated_iou_row`].
-fn not_evaluated_at(thr: f64) -> String {
-    format!(
+fn not_evaluated_at(thr: f64) -> Error {
+    Error::InvalidState(format!(
         "IoU threshold {thr} was not in params.iou_thrs when evaluate() ran; \
          call evaluate() again after changing iou_thrs"
-    )
+    ))
 }
 
 /// COCO evaluation engine.
@@ -325,7 +326,7 @@ impl COCOeval {
             .params
             .iou_thrs
             .get(self.params.nearest_iou_thr_idx(thr))
-            .ok_or("params.iou_thrs is empty")?;
+            .ok_or_else(|| Error::InvalidInput("params.iou_thrs is empty".into()))?;
         let row = self
             .evaluated_iou_row(snapped)
             .ok_or_else(|| not_evaluated_at(snapped))?;

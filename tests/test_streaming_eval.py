@@ -512,9 +512,9 @@ def test_fractional_array_id_raises_like_load_res():
         se.update(images()[:1], [], np.array([[1.0, 0, 0, 10, 10, 0.9, 1.5]]))
 
 
-def test_non_dict_annotation_is_a_type_error():
+def test_non_dict_annotation_is_a_value_error():
     se = StreamingEval(categories(), iou_type="bbox")
-    with pytest.raises(TypeError, match="dt_anns"):
+    with pytest.raises(ValueError, match=r"dt_anns\[0\] must be a dict, got str"):
         se.update(images()[:1], [], ["not a dict"])
 
 

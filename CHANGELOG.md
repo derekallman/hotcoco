@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     confusion matrix) and `PanopticResult::semantic()`.
   - Where panopticapi raises — a predicted segment in the JSON but not the PNG
     or the reverse, an unknown prediction category, an image with no
-    prediction — `evaluate()` raises too, naming the image. Where it would
+    prediction — `evaluate()` raises `ValueError` too, naming the image. Where it would
     divide by zero (a things or stuff split with no evaluable category) hotcoco
     reports the `-1.0` "not computed" sentinel with `n = 0`. A category without
     `isthing` is scored in `All` and in neither split, and makes the run an
@@ -101,6 +101,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **One exception per kind of bad input, whichever path it took.** The same
+  malformed value raised `TypeError` from a dict, `ValueError` from a JSON
+  file or an array, and sometimes `RuntimeError` or `OverflowError`; the kind
+  of problem now decides, and `tests/test_input_errors.py` checks every path
+  against every other:
+  - **Anything wrong inside a record is `ValueError`**, wrong type included,
+    from `COCO(dict)`, `load_res()`, `StreamingEval.update()`, `update_anns()`,
+    and the `dataset` setter, as the same value in a JSON file already was. A
+    file cannot tell a wrong type from a bad value, so a dict no longer does
+    either. The message names the record and the field:
+    `annotations[3]: field 'bbox': must be real number, not str`. Code that
+    catches `TypeError` or `OverflowError` around loading a dict needs
+    `ValueError`. `TypeError` still means an argument of the wrong kind
+    entirely, such as `COCO(42)`.
+  - **Bad input from the core is `ValueError`, not `RuntimeError`**: a
+    threshold `calibration()` cannot find, datasets `COCO.merge()` cannot
+    combine, masks of different sizes in `mask.merge()`, and a reserved
+    `slice_by()` name. `RuntimeError` now means only a call made before the
+    step it needs, such as `tide_errors()` before `evaluate()` — and
+    `compare()` before `evaluate()`, which was a `ValueError`.
+  - **A missing file is `FileNotFoundError` naming the path,** on reading and
+    on writing. It was a bare `OSError` with no path, which
+    `except FileNotFoundError` did not catch; `except OSError` still does. A
+    failed write in `save()` or `save_results()` is an `OSError` too; one that
+    failed while the JSON was being written was a `ValueError`.
+  - `COCO.from_arrays()` reads an id column of whole floats, such as `1.0`, as
+    the ids every other path reads, a float numpy array in one pass; a
+    fractional or negative one is a `ValueError` naming its position. A
+    fractional id was a `TypeError`.
+- Rust: `Error::Other` and the `From<String>` and `From<&str>` conversions are
+  gone; `Error::InvalidInput` (bad input) and `Error::InvalidState` (a call
+  made too early) replace them, so every error names its kind. `Error::Io`
+  from opening a file carries the path in its message and keeps its
+  `io::ErrorKind`; `Error::io(e, context)` builds one. `types::id_from_f64` is
+  the one rule for an id written as a float, used by every input path, and
+  `report::save_json` is now public.
 - **Toolchain pinned to Rust 1.99.0** (from 1.97.1). The one new lint,
   `clippy::assert_is_empty`, rewrote 14 test assertions to `assert_eq!` against
   an empty `Vec`, so a failure prints the value. The release workflow now
@@ -119,6 +155,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   feature flag: a family flag is an untested configuration waiting to rot.
 
 ### Fixed
+
+- **A NaN score in a results file is rejected,** as it is from a list or an
+  array: `load_res(path)` raises `ValueError` naming the line. The loader read
+  the bare `NaN` token as `null`, so the detection loaded with no score.
+- **`save()` and `save_results()` report a failed final write.** The last
+  buffered bytes were flushed when the writer was dropped, which discards the
+  error, so a full disk could leave a truncated file and no exception.
+- **An annotation dict without `category_id` raises `ValueError`,** as the
+  same record in a JSON file does. `COCO(dict)`, `load_res()`, and
+  `StreamingEval.update()` gave it category 0.
+- **An id of 2⁶⁴ or more is rejected on every path.** An array row turned any
+  such id, `1e30` included, into 2⁶⁴ − 1, and a dict or JSON file did so for
+  exactly 2⁶⁴.
 
 ## [1.2.1] - 2026-10-08
 

@@ -12,6 +12,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use crate::error::Error;
 use crate::primitives::panoptic::{Overlaps, OverlapsBuilder};
 use crate::types::{Rle, Segmentation};
 
@@ -90,29 +91,39 @@ impl Png {
 
 /// Decode a COCO panoptic PNG.
 pub(super) fn read_png(path: &Path) -> crate::error::Result<Png> {
-    let file = File::open(path)
-        .map_err(|e| format!("cannot open panoptic PNG {}: {e}", path.display()))?;
+    let file = File::open(path).map_err(|e| {
+        Error::io(
+            e,
+            format_args!("cannot open panoptic PNG {}", path.display()),
+        )
+    })?;
     let mut decoder = png::Decoder::new(BufReader::new(file));
     // Palette and low-bit-depth files expand to 8-bit samples; 16-bit files
     // are reduced to 8, which is what PIL hands panopticapi as well.
     decoder.set_transformations(png::Transformations::normalize_to_color8());
-    let fail =
-        |e: png::DecodingError| format!("cannot decode panoptic PNG {}: {e}", path.display());
+    let fail = |e: png::DecodingError| {
+        Error::InvalidInput(format!(
+            "cannot decode panoptic PNG {}: {e}",
+            path.display()
+        ))
+    };
     let mut reader = decoder.read_info().map_err(fail)?;
-    let size = reader
-        .output_buffer_size()
-        .ok_or_else(|| format!("panoptic PNG {} is too large to decode", path.display()))?;
+    let size = reader.output_buffer_size().ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "panoptic PNG {} is too large to decode",
+            path.display()
+        ))
+    })?;
     let mut buf = vec![0u8; size];
     let info = reader.next_frame(&mut buf).map_err(fail)?;
     let channels = match info.color_type {
         png::ColorType::Rgb => 3,
         png::ColorType::Rgba => 4,
         other => {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "panoptic PNG {} is {other:?}; the COCO panoptic format encodes segment ids as RGB",
                 path.display()
-            )
-            .into());
+            )));
         }
     };
     Ok(Png {
@@ -141,11 +152,10 @@ pub(super) fn paint(
     for &(label, seg) in masks {
         let rle: Rle = seg.to_rle(h, w)?;
         if rle.h != h || rle.w != w {
-            return Err(format!(
+            return Err(Error::InvalidInput(format!(
                 "segment {label} has a {}×{} mask on a {h}×{w} image",
                 rle.h, rle.w
-            )
-            .into());
+            )));
         }
         let mut pos = 0usize;
         let mut foreground = false;

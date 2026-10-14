@@ -462,8 +462,9 @@ same annotations.
     | `segmentation` | <code>list[dict &#124; list[list[float]]] &#124; None</code> | `N` RLE or polygon segmentations, for `segm`. `area` is then required, because the box area would not match the mask. |
 
     Raises `ValueError` for columns of different lengths, a `boxes` array that
-    is not `(N, 4)`, a negative id, or `segmentation` without `area`, and `TypeError`
-    for a column that is not an array or sequence of the right kind.
+    is not `(N, 4)`, an id that is negative or fractional, or `segmentation`
+    without `area`, and `TypeError` for a column that is not an array or
+    sequence. An id written as a whole float, such as `1.0`, is the id `1`.
 
     ```python
     gt = COCO.from_arrays(images, categories, image_ids, category_ids, boxes)
@@ -541,9 +542,9 @@ have, all of them named, or for a key that is neither a COCO field nor a
 custom key already on that annotation when `create` is `False` — a
 misspelled schema field (`"Area"`, `"iscrowed"`) raises here instead of
 quietly landing beside the field you meant to change. `TypeError` if the
-argument is not a list, an element is not a dict, or a value does not fit its
-field, as `"big"` does not fit `area`; and `ValueError` for a value of the
-right type and the wrong shape, the same errors assigning `dataset` raises.
+argument is not a list, and `ValueError` if an element is not a dict or a
+value does not fit its field, as `"big"` does not fit `area` — the same errors
+assigning `dataset` raises.
 Nothing is written in any of those cases. In a dataset with duplicate
 annotation IDs, the last occurrence is the one edited — the record the ID
 lookup holds.
