@@ -104,7 +104,7 @@ jobs:
         run: uvx pre-commit run --all-files --show-diff-on-failure
 
   python:
-    name: Python smoke test (${{ matrix.python-version }})
+    name: Python smoke test (${{ matrix.python-version }}, ${{ matrix.numpy }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -120,6 +120,14 @@ jobs:
         # Syntax newer than 3.10 is not this matrix's job: the Python lint job
         # runs Ruff at py310, which reports it as invalid-syntax.
         python-version: ["3.10", "3.14"]
+        numpy: ["numpy"]
+        include:
+          # numpy 1.x, which `numpy>=1.22` promises and nothing else here runs.
+          # The two majors differ at the boundary the bindings read: on 1.x
+          # `operator.index(np.True_)` returns 1 with a DeprecationWarning, on
+          # 2.x it raises, and the bool-is-not-an-id rule has to hold on both.
+          - python-version: "3.10"
+            numpy: "numpy<2"
     steps:
       - uses: actions/checkout@v4
 
@@ -142,8 +150,16 @@ jobs:
           # not on PyPI; the commit matches [tool.uv.sources] in pyproject.toml,
           # and Pillow writes the PNG files the panoptic suite feeds it. The `plot` and
           # `browse` extras the suite imports come from the wheel itself, below.
-          pip install maturin numpy pytest pycocotools lvis Pillow \
+          pip install maturin "${{ matrix.numpy }}" pytest pycocotools lvis Pillow \
             "panopticapi @ git+https://github.com/cocodataset/panopticapi.git@7bb4655548f98f3fedc07bf37e9040a992b054b0"
+          # The row runs the numpy major it names, or it fails here rather than
+          # passing against the other one. Unconstrained resolves to 2.x on every
+          # Python in the matrix.
+          python -c "
+          import numpy
+          want = 1 if '<2' in '${{ matrix.numpy }}' else 2
+          assert numpy.__version__.startswith(f'{want}.'), numpy.__version__
+          "
 
       # Built from the repo root, where pyproject.toml's `python-source` pulls in
       # the pure-Python package. Building inside crates/hotcoco-pyo3 produces a

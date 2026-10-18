@@ -82,14 +82,21 @@ fn fixture() -> Fixture {
         .expect("fixture JSON")
 }
 
-fn evaluator(case: &Case) -> SemanticEval {
-    let mut ev = SemanticEval::new(case.num_classes)
+/// An empty evaluator with the case's options.
+fn fresh(case: &Case) -> SemanticEval {
+    SemanticEval::new(case.num_classes)
         .ignore_index(Some(case.ignore_index))
-        .reduce_zero_label(case.reduce_zero_label);
+        .reduce_zero_label(case.reduce_zero_label)
+}
+
+fn flat(map: &[Vec<i64>]) -> Vec<i64> {
+    map.iter().flatten().copied().collect()
+}
+
+fn evaluator(case: &Case) -> SemanticEval {
+    let mut ev = fresh(case);
     for (gt, pred) in case.gt.iter().zip(&case.pred) {
-        let gt: Vec<i64> = gt.iter().flatten().copied().collect();
-        let pred: Vec<i64> = pred.iter().flatten().copied().collect();
-        ev.update(&gt, &pred).unwrap();
+        ev.update(&flat(gt), &flat(pred)).unwrap();
     }
     ev
 }
@@ -246,12 +253,8 @@ fn shards_merge_to_the_whole() {
             .iter()
             .zip(&case.pred)
             .map(|(gt, pred)| {
-                let mut ev = SemanticEval::new(case.num_classes)
-                    .ignore_index(Some(case.ignore_index))
-                    .reduce_zero_label(case.reduce_zero_label);
-                let gt: Vec<i64> = gt.iter().flatten().copied().collect();
-                let pred: Vec<i64> = pred.iter().flatten().copied().collect();
-                ev.update(&gt, &pred).unwrap();
+                let mut ev = fresh(case);
+                ev.update(&flat(gt), &flat(pred)).unwrap();
                 ev
             })
             .collect();

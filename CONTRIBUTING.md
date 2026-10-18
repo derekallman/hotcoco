@@ -180,6 +180,7 @@ scripts regenerate them. What each reference comparison checks:
 | `test_parity_panoptic.py` | panopticapi, run live on synthetic label maps: per-category counts exactly, PQ/SQ/RQ to 1e-9, and the PNG-free mask path against the PNG path |
 | `test_parity_semantic.py`, `crates/hotcoco/tests/semantic.rs` | frozen output of mmsegmentation `IoUMetric`, torchmetrics, and detectron2 `SemSegEvaluator` on synthetic label maps (`just gen-semantic-fixtures` regenerates it; needs torch): mmseg to 1e-9, torchmetrics to 1e-6, and detectron2 differing exactly where its convention does |
 | `test_obb_eval.py` | IoU worked out by hand, for oriented-box evaluation at the 0.50 threshold |
+| `test_array_spellings.py` | itself: every integer dtype in every memory layout numpy can produce (Fortran, strided, transposed, reversed, misaligned, a table column) against a fresh C-contiguous copy, through every entry point that reads a numpy argument. Add a row for each spelling a review finds, before fixing it |
 | `fuzz_obb.py` | Shapely, for oriented-box IoU (not collected by default) |
 | `scripts/fuzz_torchmetrics.py` | torchmetrics' `MeanAveragePrecision` on its pycocotools backend, with hotcoco swapped in the way RF-DETR runs it (`just fuzz-torchmetrics`) |
 

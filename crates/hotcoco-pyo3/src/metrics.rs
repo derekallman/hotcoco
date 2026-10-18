@@ -13,8 +13,7 @@ use hotcoco_core::metrics::{calibration as rcal, confusion as rconf, counts as r
 use hotcoco_core::params::default_rec_thrs;
 
 use crate::convert::{
-    Labels, bool_vec, calibration_bin_to_py, check_parallel, confusion_counts_to_py, f64_vec,
-    label_pair, with_label_pair,
+    bool_vec, calibration_bin_to_py, check_parallel, confusion_counts_to_py, f64_vec, label_pair,
 };
 use crate::to_pyerr;
 
@@ -317,12 +316,12 @@ fn pixel_confusion(
     // Lists are welcome here as they are everywhere in `metrics`; the label
     // readers want an array, and `asarray` hands an array back unchanged.
     let asarray = py.import("numpy")?.getattr("asarray")?;
-    let as_array =
-        |obj: &Bound<'_, PyAny>| -> PyResult<Py<PyAny>> { Ok(asarray.call1((obj,))?.unbind()) };
-    let (gt, pred) = (as_array(gt)?, as_array(pred)?);
-    let (g, p) = label_pair(gt.bind(py), pred.bind(py))?;
+    let (gt, pred) = (asarray.call1((gt,))?, asarray.call1((pred,))?);
+    let (g, p) = label_pair(&gt, &pred)?;
+    let (gt, pred) = (g.map(), p.map());
     let mut m = PixelConfusion::new(num_classes);
-    with_label_pair!(&g, &p, |g, p| m.update(g, p, ignore_index)).map_err(to_pyerr)?;
+    py.detach(|| m.update_maps(&gt, &pred, ignore_index))
+        .map_err(to_pyerr)?;
     confusion_counts_to_py(py, m.into_counts(), num_classes)
 }
 

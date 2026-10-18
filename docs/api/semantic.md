@@ -38,7 +38,7 @@ signatures and return shapes.
     |-----------|-------------|
     | `classes` | The number of classes, labeled `0..classes - 1`, or their names in class-id order |
     | `ignore_index` | Ground-truth label of an unlabeled pixel, left out on both sides. `None` counts every pixel |
-    | `reduce_zero_label` | mmseg's rule for files with "other" at `0`: ground-truth `0` becomes `255` and every other ground-truth label shifts down by one. Needs `ignore_index=255`; `update` raises `ValueError` otherwise |
+    | `reduce_zero_label` | mmseg's rule for files with "other" at `0`: ground-truth `0` becomes `255` and every other ground-truth label shifts down by one. Needs `ignore_index=255`; the constructor raises `ValueError` otherwise |
 
 === "Rust"
 
@@ -47,6 +47,7 @@ signatures and return shapes.
     SemanticEval::with_class_names(names: Vec<String>) -> SemanticEval
     SemanticEval::ignore_index(self, Option<u64>) -> SemanticEval
     SemanticEval::reduce_zero_label(self, bool) -> SemanticEval
+    SemanticEval::check_options(&self) -> Result<()>                   // the builder cannot fail; this is the error the first update would raise
     ```
 
 ### Methods
@@ -61,7 +62,7 @@ signatures and return shapes.
 | `summarize()` | `None` | Print one row per class with IoU and Acc in percent, then the four means |
 | `summary_lines()` | `list[str]` | The same table as strings, without printing |
 | `stats` | `list[float]` | The four means as fractions, in `METRIC_NAMES` order; `-1.0` where nothing was counted |
-| `class_names`, `num_classes`, `n_images` | | The configuration and how many pairs were counted |
+| `class_names`, `num_classes`, `n_images` | | The configuration and how many updates were counted: one per `update` call, so an `(N, H, W)` batch is one, and one per PNG pair |
 | `results()` | `dict` | The results shape, below |
 | `report()` | `dict` | The [`EvalReport`](cocoeval.md#report) every family produces |
 | `reference_deviations()` | `list[str]` | Why this run is not comparable to mmseg; empty today, since every option is a reference option |
@@ -71,7 +72,8 @@ An evaluator pickles; `pickle.loads(pickle.dumps(ev))` carries the
 configuration and the matrix, which is what `torch.distributed`'s
 `all_gather_object` needs. In Rust the same names return `Result` where
 Python raises, `update` is generic over any integer slice type on either
-side, `results()` returns a `SemanticResults` with `to_json()` and `save()`,
+side with `update_maps` for two `LabelMap`s of run-time width,
+`results()` returns a `SemanticResults` with `to_json()` and `save()`,
 `confusion()` returns the `metrics::semantic::PixelConfusion`, and
 `summary_lines()` is spelled `summarize_lines()`.
 
@@ -128,14 +130,17 @@ is no matcher: pixels pair by position.
 
 | | Python | Rust |
 |---|---|---|
-| The confusion matrix | [`metrics.pixel_confusion`](metrics.md#pixel_confusion) | `metrics::semantic::PixelConfusion` — `new`, `with_unlabeled_pred`, `update`, `update_with`, `add_count`, `add`, `from_counts`, `class_counts` |
+| The confusion matrix | [`metrics.pixel_confusion`](metrics.md#pixel_confusion) | `metrics::semantic::PixelConfusion` — `new`, `with_unlabeled_pred`, `update`, `update_with`, `update_maps`, `add_count`, `add`, `from_counts`, `class_counts` |
+| A map of run-time width | — | `metrics::semantic::{LabelMap, LabelPairOp}` — a map as `U8`, `U16`, or `I64`, and `LabelMap::with_pair` to run an op generic over both widths |
 | The numbers | [`metrics.mean_iou`](metrics.md#mean_iou) | `metrics::semantic::{semantic_scores, SemanticScores, ClassCounts, ClassScores}` |
 | The IoU kernel | — | `primitives::sim::iou_from_counts(intersection, a, b)` |
 
 `PixelConfusion::update` takes any integer slice type on either side (every
 dtype numpy stores a label map in) and the ignore index; `update_with` takes
 a closure over the ground-truth label instead, which is how the driver
-applies `reduce_zero_label`. `with_unlabeled_pred` adds a column for a
+applies `reduce_zero_label`; `update_maps`, on `PixelConfusion` and on
+`SemanticEval`, takes two `LabelMap`s, the form a decoded file or a numpy
+array arrives in. `with_unlabeled_pred` adds a column for a
 prediction that names no class — a panoptic void — which counts as a miss and
 never as a class; `PanopticEval` fills it through `add_count`. `ClassCounts::iou()` and `acc()` return `None`
 where the reference has NaN; `semantic_scores` turns a class list into the

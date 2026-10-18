@@ -138,10 +138,15 @@ impl Hierarchy {
     /// The JSON has a nested structure with `LabelName` and `Subcategory` fields.
     /// `label_to_id` maps OID label strings such as "/m/0jbk" to category IDs.
     /// Labels not found in `label_to_id` get virtual nodes.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Json`](crate::error::Error::Json) if `json` is not the OID
+    /// hierarchy shape.
     pub fn from_oid_json(
         json: &str,
         label_to_id: &HashMap<String, u64>,
-    ) -> Result<Self, serde_json::Error> {
+    ) -> crate::error::Result<Self> {
         let root: OidNode = serde_json::from_str(json)?;
 
         let mut parent_map: HashMap<u64, u64> = HashMap::new();

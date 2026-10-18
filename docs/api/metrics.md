@@ -301,6 +301,7 @@ The pixel confusion matrix of one label-map pair.
     ```rust
     metrics::semantic::PixelConfusion::new(num_classes) -> PixelConfusion
     PixelConfusion::update(&mut self, gt: &[G], pred: &[P], ignore_index: Option<u64>) -> Result<()>
+    PixelConfusion::update_maps(&mut self, gt: &LabelMap, pred: &LabelMap, ignore_index: Option<u64>) -> Result<()>
     PixelConfusion::add(&mut self, other: &PixelConfusion)
     ```
 

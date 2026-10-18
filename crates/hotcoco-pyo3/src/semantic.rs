@@ -13,7 +13,7 @@ use pyo3::types::PyBytes;
 
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
-use crate::convert::{Labels, confusion_counts_to_py, label_pair, with_label_pair};
+use crate::convert::{confusion_counts_to_py, label_pair};
 use crate::{print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
@@ -30,7 +30,7 @@ ignore_index : int or None, default 255
 reduce_zero_label : bool, default False
     mmseg's rule for datasets whose files put \"other\" at ``0`` (ADE20K):
     ground-truth ``0`` becomes ``255`` and every other ground-truth label
-    shifts down by one. Needs ``ignore_index=255``; ``update`` raises
+    shifts down by one. Needs ``ignore_index=255``; the constructor raises
     ``ValueError`` otherwise.
 
 Example
@@ -83,18 +83,22 @@ impl PySemanticEval {
         ignore_index: Option<u64>,
         reduce_zero_label: bool,
     ) -> PyResult<Self> {
-        Ok(PySemanticEval {
-            inner: evaluator_for(classes)?
-                .ignore_index(ignore_index)
-                .reduce_zero_label(reduce_zero_label),
-        })
+        let inner = evaluator_for(classes)?
+            .ignore_index(ignore_index)
+            .reduce_zero_label(reduce_zero_label);
+        inner.check_options().map_err(to_pyerr)?;
+        Ok(PySemanticEval { inner })
     }
 
     #[doc = "Count one ground-truth label map against one prediction.
 
 Both are integer numpy arrays of the same shape — ``(H, W)``, or ``(N, H, W)``
-for a batch — in any integer dtype. Raises ``ValueError`` on a shape
-mismatch or a label out of range; nothing from the pair is counted then."]
+for a batch — in any integer dtype. A C-contiguous, aligned ``uint8``,
+``uint16``, or ``int64`` array is read in place; numpy first makes any
+other view contiguous and aligned, and casts any other dtype to ``int64``.
+The counting itself releases the GIL. Raises
+``ValueError`` on a shape mismatch or a label out of range; nothing from the
+pair is counted then."]
     fn update(
         &mut self,
         py: Python<'_>,
@@ -102,8 +106,9 @@ mismatch or a label out of range; nothing from the pair is counted then."]
         pred: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let (g, p) = label_pair(gt, pred)?;
+        let (gt, pred) = (g.map(), p.map());
         let inner = &mut self.inner;
-        py.detach(|| with_label_pair!(&g, &p, |g, p| inner.update(g, p)))
+        py.detach(|| inner.update_maps(&gt, &pred))
             .map_err(to_pyerr)
     }
 
@@ -159,7 +164,8 @@ predicted class, after ignoring."]
     }
 
     #[getter]
-    #[doc = "Label-map pairs counted so far."]
+    #[doc = "Updates counted so far: one per ``update`` call, so an ``(N, H, W)``
+batch is one, and one per PNG pair."]
     fn n_images(&self) -> usize {
         self.inner.n_images()
     }

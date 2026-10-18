@@ -76,7 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   never in the ground truth counts toward mIoU with IoU 0; detectron2 drops it).
   - `semantic.SemanticEval(classes, *, ignore_index=255, reduce_zero_label=False)`
     is fed incrementally: `update(gt, pred)` takes integer arrays of the same
-    shape, `(H, W)` or `(N, H, W)`, in any integer dtype; `update_png` and
+    shape, `(H, W)` or `(N, H, W)`, in any integer dtype, counting a
+    C-contiguous, aligned `uint8`, `uint16`, or `int64` buffer in place with
+    no copy (numpy first makes any other view contiguous and aligned, and
+    casts any other dtype to `int64`), and releases the GIL while it counts;
+    `update_png` and
     `update_folders` read 8- or 16-bit grayscale and palette PNG label maps,
     the folder form pairing files by name in parallel. `merge()` adds another
     evaluator's counts and the evaluator pickles, for DDP. `confusion()`
@@ -90,7 +94,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `coco-eval semantic` in the Rust one.
   - Rust: `hotcoco::semantic::{SemanticEval, SemanticResults, ClassResult,
     METRIC_NAMES}`; `metrics::semantic::{PixelConfusion, ClassCounts,
-    ClassScores, SemanticScores, semantic_scores, Label}`; and
+    ClassScores, SemanticScores, semantic_scores, Label, LabelMap,
+    LabelPairOp}` — `LabelMap` is a map in one of the widths a file or array
+    holds, and `update_maps` on both `SemanticEval` and `PixelConfusion`
+    counts a pair of them; `SemanticEval::check_options` is the error the
+    first update would raise for an option pair with no reference meaning,
+    which the Python constructor raises; and
     `primitives::sim::iou_from_counts`, the count-based scalar IoU, so no
     second IoU formula appears. The architecture test gains `semantic/` as a
     family directory and lets `metrics` reach `primitives::sim`.
@@ -98,6 +107,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     pinned sources and freezes `tests/fixtures/semantic_expected.json`;
     `tests/test_parity_semantic.py` and `crates/hotcoco/tests/semantic.rs`
     check against it with no torch installed (`just gen-semantic-fixtures`).
+- **A spelling matrix for array arguments**, `tests/test_array_spellings.py`:
+  every integer dtype in every memory layout numpy can produce (Fortran order,
+  a strided or reversed view, a transpose, a misaligned `frombuffer`, one
+  column of a table) must count, score, or load exactly as a fresh C-contiguous
+  copy does, through every entry point that reads a numpy argument. CI also
+  runs the Python suite on numpy 1.x, which `numpy>=1.22` promises and nothing
+  ran before.
 
 ### Changed
 
@@ -130,13 +146,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     the ids every other path reads, a float numpy array in one pass; a
     fractional or negative one is a `ValueError` naming its position. A
     fractional id was a `TypeError`.
+  - **A bool is not an id in any record or column.** `True` and `numpy.True_`
+    loaded as the id 1 from a dict, a list, and a column of Python values,
+    while a JSON `true` and a bool numpy array were refused; every record and
+    column path now refuses it with a `ValueError` naming the field or the
+    position. A lookup argument such as `getAnnIds(imgIds=[True])` still reads
+    `True` as 1, as pycocotools does.
 - Rust: `Error::Other` and the `From<String>` and `From<&str>` conversions are
   gone; `Error::InvalidInput` (bad input) and `Error::InvalidState` (a call
   made too early) replace them, so every error names its kind. `Error::Io`
   from opening a file carries the path in its message and keeps its
   `io::ErrorKind`; `Error::io(e, context)` builds one. `types::id_from_f64` is
   the one rule for an id written as a float, used by every input path, and
-  `report::save_json` is now public.
+  `report::save_json` is now public. `Hierarchy::from_oid_json` returns
+  `hotcoco::Error` (`Error::Json` for a malformed file) instead of
+  `serde_json::Error`.
 - **Toolchain pinned to Rust 1.99.0** (from 1.97.1). The one new lint,
   `clippy::assert_is_empty`, rewrote 14 test assertions to `assert_eq!` against
   an empty `Vec`, so a failure prints the value. The release workflow now

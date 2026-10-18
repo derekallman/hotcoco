@@ -38,6 +38,8 @@
 //! assert_eq!(s.miou, 0.5);
 //! ```
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use super::{is_computed, mean_or_missing};
@@ -61,7 +63,9 @@ pub trait Label: Copy {
 }
 
 /// Up to 64 bits, reinterpreting the bits as `u64` puts a negative value at
-/// `2^63` or above, past any class count, so one `min` clamps both ways.
+/// `2^63` or above, past any class count, so one `min` clamps both ways. For
+/// an unsigned type the `try_from` is the infallible `From` and the cast is
+/// the identity, so the one macro serves both.
 macro_rules! label_as_u64 {
     ($($t:ty),*) => {$(
         impl Label for $t {
@@ -76,23 +80,7 @@ macro_rules! label_as_u64 {
         }
     )*};
 }
-label_as_u64!(i8, i16, i32, i64, isize);
-
-macro_rules! label_unsigned {
-    ($($t:ty),*) => {$(
-        impl Label for $t {
-            #[inline]
-            fn index(self) -> Option<u64> {
-                Some(self as u64)
-            }
-            #[inline]
-            fn clamped(self, bad: u64) -> u64 {
-                (self as u64).min(bad)
-            }
-        }
-    )*};
-}
-label_unsigned!(bool, u8, u16, u32, u64, usize);
+label_as_u64!(bool, u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
 
 macro_rules! label_wide {
     ($($t:ty),*) => {$(
@@ -109,6 +97,46 @@ macro_rules! label_wide {
     )*};
 }
 label_wide!(i128, u128);
+
+/// A label map's pixels in one of the widths a map is stored in: a PNG's
+/// 8- or 16-bit sample, or the `int64` a tensor's `argmax` yields. Borrowed
+/// from a buffer that already holds them, or owned when they were decoded.
+///
+/// The one dispatch from a width to [`PixelConfusion::update`]'s generics
+/// ([`with_pair`](Self::with_pair)), so a new width is one variant here and
+/// one row of arms there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LabelMap<'a> {
+    U8(Cow<'a, [u8]>),
+    U16(Cow<'a, [u16]>),
+    I64(Cow<'a, [i64]>),
+}
+
+/// A computation over one label-map pair, written once for every pair of
+/// widths: what [`LabelMap::with_pair`] runs. A closure cannot be generic
+/// over the two slice types, so the body is a method instead.
+pub trait LabelPairOp {
+    type Output;
+    fn run<G: Label, P: Label>(self, gt: &[G], pred: &[P]) -> Self::Output;
+}
+
+impl LabelMap<'_> {
+    /// Run `op` on the two maps' slices, whatever pair of widths they hold.
+    pub fn with_pair<Op: LabelPairOp>(gt: &Self, pred: &Self, op: Op) -> Op::Output {
+        use self::LabelMap::{I64, U8, U16};
+        match (gt, pred) {
+            (U8(g), U8(p)) => op.run(g, p),
+            (U8(g), U16(p)) => op.run(g, p),
+            (U8(g), I64(p)) => op.run(g, p),
+            (U16(g), U8(p)) => op.run(g, p),
+            (U16(g), U16(p)) => op.run(g, p),
+            (U16(g), I64(p)) => op.run(g, p),
+            (I64(g), U8(p)) => op.run(g, p),
+            (I64(g), U16(p)) => op.run(g, p),
+            (I64(g), I64(p)) => op.run(g, p),
+        }
+    }
+}
 
 /// The scratch geometry of one [`PixelConfusion::update_with`] call and the
 /// one rule for which cell a pixel lands in, shared by the counting loop and
@@ -296,6 +324,39 @@ pub struct PixelConfusion {
     num_classes: usize,
     unlabeled_pred: bool,
     counts: Vec<u64>,
+    #[serde(skip)]
+    scratch: LaneScratch,
+}
+
+/// The lane histogram a matrix keeps between the images it counts: at
+/// ADE20K's 150 classes it is 734 KB, past the allocator's mmap threshold,
+/// so a fresh one per image is a map, a page fault per touched page, and an
+/// unmap, for a buffer the next image needs again. Only a matrix of up to
+/// `MAX_LANED_CELLS` keeps one, so it holds at most
+/// `HISTOGRAM_LANES × MAX_LANED_CELLS` cells, 2 MB. It is not state: two
+/// matrices compare equal whatever it holds, a clone starts empty, and it
+/// is not serialized.
+#[derive(Default)]
+struct LaneScratch(Vec<u64>);
+
+impl Clone for LaneScratch {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for LaneScratch {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for LaneScratch {}
+
+impl std::fmt::Debug for LaneScratch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LaneScratch({} cells)", self.0.len())
+    }
 }
 
 impl PixelConfusion {
@@ -305,6 +366,7 @@ impl PixelConfusion {
             num_classes,
             unlabeled_pred: false,
             counts: vec![0; num_classes * num_classes],
+            scratch: LaneScratch::default(),
         }
     }
 
@@ -315,6 +377,7 @@ impl PixelConfusion {
             num_classes,
             unlabeled_pred: true,
             counts: vec![0; num_classes * (num_classes + 1)],
+            scratch: LaneScratch::default(),
         }
     }
 
@@ -335,6 +398,7 @@ impl PixelConfusion {
             num_classes,
             unlabeled_pred: false,
             counts,
+            scratch: LaneScratch::default(),
         })
     }
 
@@ -397,6 +461,28 @@ impl PixelConfusion {
         self.update_with(gt, pred, |g| (Some(g) != ignore_index).then_some(g))
     }
 
+    /// [`update`](Self::update) for two maps whose widths are known only at
+    /// run time — a decoded file's, a numpy array's.
+    ///
+    /// # Errors and panics
+    ///
+    /// As [`update`](Self::update).
+    pub fn update_maps(
+        &mut self,
+        gt: &LabelMap<'_>,
+        pred: &LabelMap<'_>,
+        ignore_index: Option<u64>,
+    ) -> crate::error::Result<()> {
+        struct Update<'m>(&'m mut PixelConfusion, Option<u64>);
+        impl LabelPairOp for Update<'_> {
+            type Output = crate::error::Result<()>;
+            fn run<G: Label, P: Label>(self, gt: &[G], pred: &[P]) -> Self::Output {
+                self.0.update(gt, pred, self.1)
+            }
+        }
+        LabelMap::with_pair(gt, pred, Update(self, ignore_index))
+    }
+
     /// [`update`](Self::update) with the ground truth read through `gt_label`:
     /// `None` skips the pixel, `Some(class)` counts it. The hook for a dataset
     /// convention such as mmseg's `reduce_zero_label`; the ignore rule is one
@@ -426,7 +512,6 @@ impl PixelConfusion {
         // once at the end; a count there sends the pair down the per-pixel walk
         // that names the first offender.
         let cells = Cells::new(n, &gt_label);
-        let cols = cells.cols;
         let per_lane = cells.len();
         let stride = self.cols();
         if gt.len() < per_lane {
@@ -443,11 +528,39 @@ impl PixelConfusion {
             }
             return Ok(());
         }
+        if per_lane > MAX_LANED_CELLS {
+            // One histogram, not kept: too large to lane, too large to keep.
+            return self.count_into_scratch(&cells, gt, pred, 0, &mut vec![0u64; per_lane]);
+        }
+        let lanes = if gt.len() >= LANE_PIXELS_PER_CELL * HISTOGRAM_LANES * per_lane {
+            HISTOGRAM_LANES
+        } else {
+            1
+        };
         // Lanes as a stride: `0` folds every lane onto the first.
-        let laned = per_lane <= MAX_LANED_CELLS
-            && gt.len() >= LANE_PIXELS_PER_CELL * HISTOGRAM_LANES * per_lane;
-        let lane_stride = if laned { per_lane } else { 0 };
-        let mut scratch = vec![0u64; if laned { HISTOGRAM_LANES } else { 1 } * per_lane];
+        let lane_stride = if lanes > 1 { per_lane } else { 0 };
+        let mut scratch = std::mem::take(&mut self.scratch.0);
+        scratch.clear();
+        scratch.resize(lanes * per_lane, 0);
+        let counted = self.count_into_scratch(&cells, gt, pred, lane_stride, &mut scratch);
+        self.scratch.0 = scratch;
+        counted
+    }
+
+    /// The counting loop of [`update_with`](Self::update_with) over a zeroed
+    /// `scratch` of one histogram per lane, `lane_stride` cells apart.
+    fn count_into_scratch<G: Label, P: Label, F: Fn(u64) -> Option<u64>>(
+        &mut self,
+        cells: &Cells<'_, F>,
+        gt: &[G],
+        pred: &[P],
+        lane_stride: usize,
+        scratch: &mut [u64],
+    ) -> crate::error::Result<()> {
+        let n = self.num_classes;
+        let cols = cells.cols;
+        let per_lane = cells.len();
+        let stride = self.cols();
         let mut count = |lane: usize, g: G, p: P| {
             let (row, col) = cells.of(g, p);
             scratch[lane * lane_stride + row * cols + col] += 1;

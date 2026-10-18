@@ -1,4 +1,7 @@
+use std::borrow::Cow;
+
 use hotcoco_core::mask::RleRef;
+use hotcoco_core::metrics::semantic::LabelMap;
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -16,7 +19,7 @@ use crate::to_pyerr;
 /// allocating a fresh `PyString` on every call. Record fields are read in one
 /// pass over the dict by [`set_ann_field`], [`set_image_field`], and
 /// [`set_category_field`]; their converters call this first only to check
-/// the one required key.
+/// the required keys.
 macro_rules! req {
     ($dict:expr, $key:literal) => {
         $dict
@@ -36,11 +39,20 @@ macro_rules! req {
 /// not fit the field's width is an `OverflowError`. Inside a record all three
 /// are `ValueError` ([`field_error`]). The JSON loader applies the same rule
 /// through `types::deserialize_uint`.
+///
+/// A `bool` is a `ValueError` too: `True` is the int 1 to Python, but a JSON
+/// `true` is not a number, and a record must load alike from a dict and from
+/// the file it is saved to.
 pub(crate) fn extract_int<T: TryFrom<u64>>(v: &Bound<'_, PyAny>) -> PyResult<T> {
-    // A float is read as one first: a failed `u64` extraction of it builds a
-    // Python exception only to drop it.
-    let id = if v.is_instance_of::<PyFloat>() {
+    // An exact `int` is what nearly every id is, and it is never a `bool`;
+    // everything else is read by kind, bools first, since `True` is an index
+    // to Python and a `numpy.bool_` still is to numpy 1.x.
+    let id = if v.is_exact_instance_of::<PyInt>() {
+        v.extract::<u64>().ok()
+    } else if v.is_instance_of::<PyFloat>() {
         hotcoco_core::types::id_from_f64(v.extract()?)
+    } else if is_bool(v) {
+        None
     } else if let Ok(i) = v.extract::<u64>() {
         Some(i)
     } else {
@@ -56,6 +68,23 @@ pub(crate) fn extract_int<T: TryFrom<u64>>(v: &Bound<'_, PyAny>) -> PyResult<T> 
             "integer {n} is out of range for this field"
         ))
     })
+}
+
+/// Whether `v` is a bool of any spelling: `bool`, `numpy.bool_`, or a 0-d
+/// bool array. The numpy type is compared by pointer, once cached.
+fn is_bool(v: &Bound<'_, PyAny>) -> bool {
+    static NUMPY_BOOL: pyo3::sync::PyOnceLock<Py<pyo3::types::PyType>> =
+        pyo3::sync::PyOnceLock::new();
+    let py = v.py();
+    v.is_instance_of::<PyBool>()
+        || NUMPY_BOOL
+            .get_or_try_init(py, || {
+                let ty = py.import("numpy")?.getattr(pyo3::intern!(py, "bool_"))?;
+                Ok::<_, PyErr>(ty.cast_into::<pyo3::types::PyType>()?.unbind())
+            })
+            .is_ok_and(|ty| v.get_type().is(ty))
+        || v.cast::<numpy::PyUntypedArray>()
+            .is_ok_and(|a| a.dtype().kind() == b'b')
 }
 
 /// A 0/1 flag: `bool`, any integer, or an integral float.
@@ -864,11 +893,26 @@ fn set_image_field(img: &mut Image, key: &str, value: &Bound<'_, PyAny>) -> PyRe
         "coco_url" => img.coco_url = value.extract()?,
         "flickr_url" => img.flickr_url = value.extract()?,
         "date_captured" => img.date_captured = value.extract()?,
-        "neg_category_ids" => img.neg_category_ids = value.extract()?,
-        "not_exhaustive_category_ids" => img.not_exhaustive_category_ids = value.extract()?,
+        "neg_category_ids" => img.neg_category_ids = extract_id_list(value)?,
+        "not_exhaustive_category_ids" => img.not_exhaustive_category_ids = extract_id_list(value)?,
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// A list of category ids read as the JSON loader reads these fields:
+/// integers, of which a bool is not one.
+fn extract_id_list(value: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+    let items: Vec<Bound<'_, PyAny>> = value.extract()?;
+    items
+        .iter()
+        .map(|v| {
+            if is_bool(v) {
+                return Err(not_a(v, "an integer")?);
+            }
+            v.extract::<u64>()
+        })
+        .collect()
 }
 
 /// Set the category field a schema key names; `false` for any other key.
@@ -1016,58 +1060,86 @@ pub fn calibration_bin_to_py<'py>(
     Ok(d)
 }
 
-/// A label map's pixels, in the two types every integer dtype narrows to.
+/// A label map — a numpy integer or bool array of any shape — held as a
+/// read-only borrow of its buffer, so the counting reads the pixels where
+/// they are rather than from a copy; at memory bandwidth a copy of an
+/// `int64` map costs about what counting it does.
 ///
-/// `uint8` is what a PNG-backed ground truth is and stays as is; everything
-/// else — `int64` from `argmax`, `int32`, `uint16` for wide label sets, bool —
-/// is read as `int64` in one `astype` pass, so negative labels survive to be
+/// `uint8` (a PNG-backed ground truth), `uint16` (a wide label set), and
+/// `int64` (`argmax`) are read in place; any other dtype — `int32`, bool —
+/// is numpy's `astype(int64)` copy of it, so negative labels survive to be
 /// reported rather than wrapping.
-pub(crate) enum Labels {
-    U8(Vec<u8>),
-    I64(Vec<i64>),
+pub(crate) enum LabelArray<'py> {
+    U8(numpy::PyReadonlyArrayDyn<'py, u8>),
+    U16(numpy::PyReadonlyArrayDyn<'py, u16>),
+    I64(numpy::PyReadonlyArrayDyn<'py, i64>),
 }
 
-/// Call `$f(gt, pred)` with both sides as slices, whatever pair of
-/// [`Labels`] variants they are.
-macro_rules! with_label_pair {
-    ($gt:expr, $pred:expr, |$g:ident, $p:ident| $body:expr) => {
-        match ($gt, $pred) {
-            (Labels::U8($g), Labels::U8($p)) => $body,
-            (Labels::U8($g), Labels::I64($p)) => $body,
-            (Labels::I64($g), Labels::U8($p)) => $body,
-            (Labels::I64($g), Labels::I64($p)) => $body,
+impl LabelArray<'_> {
+    fn shape(&self) -> &[usize] {
+        match self {
+            LabelArray::U8(a) => a.shape(),
+            LabelArray::U16(a) => a.shape(),
+            LabelArray::I64(a) => a.shape(),
         }
-    };
-}
-pub(crate) use with_label_pair;
+    }
 
-/// A label map — a numpy integer or bool array of any shape — as its pixels
-/// and its shape. Shape and pixel order are the caller's to compare: a pair
-/// of maps need only agree with each other.
-///
-/// One copy is made: the counting runs with the GIL released, so it cannot
-/// borrow the Python buffer. A `uint8` map is copied as is; any other dtype
-/// is read as `int64`, in place when it already is one.
-pub(crate) fn label_array(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Labels, Vec<usize>)> {
+    /// The pixels as core's map, in row-major order: the buffer itself.
+    /// `to_slice` is ndarray's, which wants standard layout — numpy's
+    /// `as_slice` also hands back a Fortran-order buffer, in its column-major
+    /// order, which paired with a C-order map counts pixel against the wrong
+    /// pixel. [`label_array`] makes every array C-contiguous, so the copy is
+    /// only for a layout ndarray calls non-standard and numpy contiguous.
+    pub(crate) fn map(&self) -> LabelMap<'_> {
+        fn pixels<'a, T: Copy + numpy::Element>(
+            a: &'a numpy::PyReadonlyArrayDyn<'_, T>,
+        ) -> Cow<'a, [T]> {
+            let view = a.as_array();
+            match view.to_slice() {
+                Some(s) => Cow::Borrowed(s),
+                None => Cow::Owned(view.iter().copied().collect()),
+            }
+        }
+        match self {
+            LabelArray::U8(a) => LabelMap::U8(pixels(a)),
+            LabelArray::U16(a) => LabelMap::U16(pixels(a)),
+            LabelArray::I64(a) => LabelMap::I64(pixels(a)),
+        }
+    }
+}
+
+/// `obj` as a [`LabelArray`]. Shape and pixel order are the caller's to
+/// compare: a pair of maps need only agree with each other.
+fn label_array<'py>(obj: &Bound<'py, PyAny>, name: &str) -> PyResult<LabelArray<'py>> {
     let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
         return Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "{name} must be a numpy integer array (a label map), got {}",
             type_name(obj)
         )));
     };
-    let shape = arr.shape().to_vec();
-    fn pixels<T: Copy + numpy::Element>(a: &numpy::PyReadonlyArrayDyn<'_, T>) -> Vec<T> {
-        let view = a.as_array();
-        match view.as_slice() {
-            Some(s) => s.to_vec(),
-            None => view.iter().copied().collect(),
-        }
+    // The buffer is borrowed as a Rust slice, so it must be row-major and
+    // aligned — a `frombuffer` at an odd offset is neither a slice of `u16`
+    // nor of `i64`. numpy makes it both, in a copy that vectorizes and runs
+    // without the GIL; an array that already is comes back as it is.
+    let behaved;
+    let obj = if arr.is_c_contiguous() && arr.is_aligned() {
+        obj
+    } else {
+        let py = obj.py();
+        behaved = py
+            .import("numpy")?
+            .getattr(pyo3::intern!(py, "require"))?
+            .call1((obj, py.None(), pyo3::intern!(py, "CA")))?;
+        &behaved
+    };
+    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u8>>() {
+        return Ok(LabelArray::U8(a));
     }
-    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'_, u8>>() {
-        return Ok((Labels::U8(pixels(&a)), shape));
+    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u16>>() {
+        return Ok(LabelArray::U16(a));
     }
     match array_of_kind::<i64, numpy::IxDyn>(obj, b"iub")? {
-        Some(a) => Ok((Labels::I64(pixels(&a)), shape)),
+        Some(a) => Ok(LabelArray::I64(a)),
         None => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "{name} has dtype {}; a label map holds integer class ids",
             arr.dtype()
@@ -1079,33 +1151,52 @@ pub(crate) fn label_array(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Label
 /// `(flat, nr, nc)` triple: a numpy integer array of any dtype in one pass,
 /// a nested sequence of ints otherwise. The integer twin of
 /// [`f64_matrix_arg`]; a negative count is a `ValueError`, counts are
-/// unsigned.
+/// unsigned. A `uint64` array — what `pixel_confusion` and
+/// `SemanticEval.confusion()` hand back — needs no sign check, but a cell of
+/// 2⁶³ or more is refused like a negative one: no image has that many pixels,
+/// and it is what an underflowed `uint64` subtraction of two matrices yields.
 pub fn u64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<u64>, usize, usize)> {
-    let (signed, nr, nc) = match array_of_kind::<i64, numpy::Ix2>(obj, b"iu")? {
-        Some(arr) => {
-            let view = arr.as_array();
-            let (nr, nc) = view.dim();
-            (view.iter().copied().collect::<Vec<_>>(), nr, nc)
+    fn unsigned(name: &str, values: impl Iterator<Item = i64>) -> PyResult<Vec<u64>> {
+        values
+            .map(|v| {
+                u64::try_from(v).map_err(|_| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "{name} must not contain negative values, got {v}"
+                    ))
+                })
+            })
+            .collect()
+    }
+    if let Some(arr) = array_of_kind::<u64, numpy::Ix2>(obj, b"u")? {
+        let view = arr.as_array();
+        let (nr, nc) = view.dim();
+        if let Some(&v) = view.iter().find(|&&v| v > i64::MAX as u64) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{name} holds {v}, which is not a pixel count (an underflowed uint64 difference?)"
+            )));
         }
-        None => nested_matrix::<i64>(obj, name, "ints or a 2-D numpy integer array")?,
-    };
-    let flat = signed
-        .into_iter()
-        .map(|v| non_negative(name, v))
-        .collect::<PyResult<Vec<_>>>()?;
-    Ok((flat, nr, nc))
+        return Ok((view.iter().copied().collect(), nr, nc));
+    }
+    if let Some(arr) = array_of_kind::<i64, numpy::Ix2>(obj, b"i")? {
+        let view = arr.as_array();
+        let (nr, nc) = view.dim();
+        return Ok((unsigned(name, view.iter().copied())?, nr, nc));
+    }
+    let (signed, nr, nc) = nested_matrix::<i64>(obj, name, "ints or a 2-D numpy integer array")?;
+    Ok((unsigned(name, signed.into_iter())?, nr, nc))
 }
 
 /// Both sides of one label-map pair, checked to be the same shape.
-pub(crate) fn label_pair(
-    gt: &Bound<'_, PyAny>,
-    pred: &Bound<'_, PyAny>,
-) -> PyResult<(Labels, Labels)> {
-    let (g, g_shape) = label_array(gt, "gt")?;
-    let (p, p_shape) = label_array(pred, "pred")?;
-    if g_shape != p_shape {
+pub(crate) fn label_pair<'py>(
+    gt: &Bound<'py, PyAny>,
+    pred: &Bound<'py, PyAny>,
+) -> PyResult<(LabelArray<'py>, LabelArray<'py>)> {
+    let (g, p) = (label_array(gt, "gt")?, label_array(pred, "pred")?);
+    if g.shape() != p.shape() {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "gt and pred must have the same shape, got {g_shape:?} and {p_shape:?}"
+            "gt and pred must have the same shape, got {:?} and {:?}",
+            g.shape(),
+            p.shape()
         )));
     }
     Ok((g, p))
@@ -1174,7 +1265,10 @@ where
 pub(crate) fn numeric_array<'py, D: numpy::ndarray::Dimension>(
     obj: &Bound<'py, PyAny>,
 ) -> PyResult<Option<numpy::PyReadonlyArray<'py, f64, D>>> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, f64, D>>() {
+    // Aligned, as `array_of_kind` requires, for the same reason.
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, f64, D>>()
+        && arr.is_aligned()
+    {
         return Ok(Some(arr));
     }
     let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
@@ -1216,7 +1310,12 @@ fn array_of_kind<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
     obj: &Bound<'py, PyAny>,
     kinds: &[u8],
 ) -> PyResult<Option<numpy::PyReadonlyArray<'py, T, D>>> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, T, D>>() {
+    // The array is read through an ndarray view, which needs an aligned
+    // buffer; a `frombuffer` at an odd offset is of the right dtype but not
+    // one, and takes the `astype` copy below, which is aligned.
+    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, T, D>>()
+        && arr.is_aligned()
+    {
         return Ok(Some(arr));
     }
     let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
@@ -1230,21 +1329,12 @@ fn array_of_kind<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
     Ok(Some(cast.extract()?))
 }
 
-/// `v` as an unsigned value, or the `ValueError` every unsigned reader raises.
-fn non_negative(name: &str, v: i64) -> PyResult<u64> {
-    u64::try_from(v).map_err(|_| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "{name} must not contain negative values, got {v}"
-        ))
-    })
-}
-
 /// A 1-D non-negative integer argument — see [`f64_vec`]. A numpy array of
 /// any unsigned dtype is read as `uint64`, of any signed dtype as `int64`, and
 /// of any float dtype as `float64`, each in one copy; a list or tuple value by
 /// value ([`extract_int`]). Ids follow the rule a record's do: a whole float
-/// such as `1.0` is the id 1, and a negative or fractional number is a
-/// `ValueError` naming its position. A string, anything that is not a
+/// such as `1.0` is the id 1, and a negative or fractional number, or a bool,
+/// is a `ValueError` naming its position. A string, anything that is not a
 /// sequence (a set has no order to pair with the other columns), or an item
 /// that is not a number is a `TypeError`.
 pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
@@ -1271,14 +1361,11 @@ pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
             "{name} must be a sequence of ints or a 1-D numpy int array"
         ))
     };
-    // A bool array reads as a sequence whose items convert to floats, so it
-    // would pass as ids 0 and 1.
-    let bool_array = obj
-        .cast::<numpy::PyUntypedArray>()
-        .is_ok_and(|arr| arr.dtype().kind() == b'b');
-    if bool_array || obj.is_instance_of::<PyString>() || obj.is_instance_of::<PyBytes>() {
+    if obj.is_instance_of::<PyString>() || obj.is_instance_of::<PyBytes>() {
         return Err(not_ids());
     }
+    // Any other array, a bool array included, is read value by value, so a
+    // bool is refused the way a record's is: by position, as a `ValueError`.
     let items: Vec<Bound<'_, PyAny>> = obj.extract().map_err(|_| not_ids())?;
     (items.iter().enumerate())
         .map(|(i, item)| {

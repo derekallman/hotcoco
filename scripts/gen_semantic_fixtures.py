@@ -255,8 +255,8 @@ def evaluate_case(case, IoUMetric, SemSegEvaluator, tm):
     mm_iou = np.asarray(mm["IoU"], dtype=np.float64)
     mm_acc = np.asarray(mm["Acc"], dtype=np.float64)
     mmseg = {
-        "IoU": [None if np.isnan(v) else float(v) for v in mm_iou],
-        "Acc": [None if np.isnan(v) else float(v) for v in mm_acc],
+        "IoU": [_num(v) for v in mm_iou],
+        "Acc": [_num(v) for v in mm_acc],
         "aAcc": _num(mm["aAcc"]),
         "mIoU": _num(np.nanmean(mm_iou)) if np.isfinite(mm_iou).any() else None,
         "mAcc": _num(np.nanmean(mm_acc)) if np.isfinite(mm_acc).any() else None,
@@ -290,8 +290,8 @@ def evaluate_case(case, IoUMetric, SemSegEvaluator, tm):
         "fwIoU": _num(res["fwIoU"] / 100),
         "mACC": _num(res["mACC"] / 100),
         "pACC": _num(res["pACC"] / 100),
-        "IoU": [None if np.isnan(res[f"IoU-c{i}"]) else float(res[f"IoU-c{i}"]) / 100 for i in range(num_classes)],
-        "ACC": [None if np.isnan(res[f"ACC-c{i}"]) else float(res[f"ACC-c{i}"]) / 100 for i in range(num_classes)],
+        "IoU": [_num(res[f"IoU-c{i}"] / 100) for i in range(num_classes)],
+        "ACC": [_num(res[f"ACC-c{i}"] / 100) for i in range(num_classes)],
     }
     return {"mmseg": mmseg, "torchmetrics": torchmetrics, "detectron2": detectron2}
 

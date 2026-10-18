@@ -40,12 +40,10 @@ import json
 import random
 import sys
 import tempfile
-import types
-import urllib.request
 from pathlib import Path
 
 import numpy as np
-from helpers import FIXTURES_DIR
+from helpers import FIXTURES_DIR, fetch_source, stub_module
 
 OUT = FIXTURES_DIR / "oid_tf_expected.json"
 
@@ -92,23 +90,19 @@ def _install_reference(root: Path):
         (d / "__init__.py").write_text("")
 
     for rel in MODULES:
-        dest = pkg / rel
-        with urllib.request.urlopen(f"{RAW}/{rel}", timeout=60) as r:  # noqa: S310
-            dest.write_bytes(r.read())
+        fetch_source(f"{RAW}/{rel}", pkg / rel)
 
-    tf = types.ModuleType("tensorflow")
-    compat = types.ModuleType("tensorflow.compat")
-    v1 = types.ModuleType("tensorflow.compat.v1")
-    compat.v1 = v1
-    tf.compat = compat
-    sys.modules.update({"tensorflow": tf, "tensorflow.compat": compat, "tensorflow.compat.v1": v1})
+    v1 = stub_module("tensorflow.compat.v1")
+    compat = stub_module("tensorflow.compat", v1=v1)
+    stub_module("tensorflow", compat=compat)
 
     # `label_map_util` pulls in compiled protobufs, but the evaluator only calls
     # `create_category_index`, which is a one-line dict build. Reimplementing it
     # is cheaper and more auditable than vendoring the proto toolchain.
-    lmu = types.ModuleType("object_detection.utils.label_map_util")
-    lmu.create_category_index = lambda categories: {c["id"]: c for c in categories}
-    sys.modules["object_detection.utils.label_map_util"] = lmu
+    stub_module(
+        "object_detection.utils.label_map_util",
+        create_category_index=lambda categories: {c["id"]: c for c in categories},
+    )
 
     sys.path.insert(0, str(root))
     from object_detection.utils import object_detection_evaluation as ode  # noqa: PLC0415

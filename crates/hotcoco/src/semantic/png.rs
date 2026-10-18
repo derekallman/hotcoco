@@ -9,36 +9,21 @@
 //! carries no ids, or a COCO panoptic file, whose colors encode *segment* ids
 //! and which [`crate::panoptic`] reads.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
 use crate::error::Error;
+use crate::metrics::semantic::LabelMap;
 
-/// One image's class ids, row-major, with its size.
+/// One image's class ids, row-major, with its size. An 8-bit file stays one
+/// byte per pixel, the common case, rather than being widened on the way in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ClassMap {
     pub h: u32,
     pub w: u32,
-    pub labels: ClassLabels,
-}
-
-/// The ids in the width the file stores them: an 8-bit file stays one byte
-/// per pixel, the common case, rather than being widened on the way in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ClassLabels {
-    U8(Vec<u8>),
-    U16(Vec<u16>),
-}
-
-impl ClassLabels {
-    #[cfg(test)]
-    fn to_u16(&self) -> Vec<u16> {
-        match self {
-            ClassLabels::U8(v) => v.iter().copied().map(u16::from).collect(),
-            ClassLabels::U16(v) => v.clone(),
-        }
-    }
+    pub labels: LabelMap<'static>,
 }
 
 /// Decode a label map, as described in the [module docs](self).
@@ -66,43 +51,42 @@ pub(super) fn read_class_map(path: &Path) -> crate::error::Result<ClassMap> {
 
     let labels = match (info.color_type, info.bit_depth) {
         (png::ColorType::Grayscale | png::ColorType::Indexed, png::BitDepth::Eight) => {
-            // One byte per pixel and no row padding: the buffer is the map.
-            if info.line_size == w as usize {
-                buf.truncate(n);
-                ClassLabels::U8(buf)
-            } else {
-                ClassLabels::U8(
-                    rows()
-                        .flat_map(|row| row[..w as usize].iter().copied())
-                        .collect(),
-                )
-            }
+            // One byte per pixel and rows laid end to end: the buffer is the
+            // map. `png` sizes it as `line_size × height`, and `line_size` is
+            // `width` at this depth; the counting code trusts `h × w`.
+            assert_eq!(
+                buf.len(),
+                n,
+                "png sized an 8-bit {w}×{h} map to {} bytes",
+                buf.len()
+            );
+            LabelMap::U8(Cow::Owned(buf))
         }
-        (png::ColorType::Grayscale, png::BitDepth::Sixteen) => ClassLabels::U16(
-            rows()
-                .flat_map(|row| {
+        (png::ColorType::Grayscale, png::BitDepth::Sixteen) => {
+            let mut v = Vec::with_capacity(n);
+            for row in rows() {
+                v.extend(
                     row[..w as usize * 2]
                         .chunks_exact(2)
-                        .map(|px| u16::from_be_bytes([px[0], px[1]]))
-                })
-                .collect(),
-        ),
+                        .map(|px| u16::from_be_bytes([px[0], px[1]])),
+                );
+            }
+            LabelMap::U16(Cow::Owned(v))
+        }
         (png::ColorType::Grayscale | png::ColorType::Indexed, depth) => {
             // 1, 2, or 4 bits per sample, packed high bit first.
             let bits = depth as u32;
             let per_byte = 8 / bits;
             let mask = (1u8 << bits) - 1;
-            ClassLabels::U8(
-                rows()
-                    .flat_map(|row| {
-                        (0..w).map(move |x| {
-                            let byte = row[(x / per_byte) as usize];
-                            let shift = 8 - bits * (x % per_byte + 1);
-                            (byte >> shift) & mask
-                        })
-                    })
-                    .collect(),
-            )
+            let mut v = Vec::with_capacity(n);
+            for row in rows() {
+                v.extend((0..w).map(|x| {
+                    let byte = row[(x / per_byte) as usize];
+                    let shift = 8 - bits * (x % per_byte + 1);
+                    (byte >> shift) & mask
+                }));
+            }
+            LabelMap::U8(Cow::Owned(v))
         }
         (other, _) => {
             return Err(Error::InvalidInput(format!(
@@ -141,6 +125,14 @@ mod tests {
             .expect("valid test input");
     }
 
+    fn labels(path: &Path) -> Vec<u16> {
+        match read_class_map(path).expect("a label map").labels {
+            LabelMap::U8(v) => v.iter().copied().map(u16::from).collect(),
+            LabelMap::U16(v) => v.into_owned(),
+            LabelMap::I64(_) => unreachable!("a PNG sample is at most 16 bits"),
+        }
+    }
+
     #[test]
     fn grayscale_8_bit_is_read_as_is() {
         let dir = tempfile::tempdir().expect("valid test input");
@@ -155,7 +147,7 @@ mod tests {
         );
         let m = read_class_map(&p).expect("valid test input");
         assert_eq!((m.h, m.w), (2, 3));
-        assert_eq!(m.labels.to_u16(), vec![0, 1, 255, 7, 7, 2]);
+        assert_eq!(labels(&p), vec![0, 1, 255, 7, 7, 2]);
     }
 
     #[test]
@@ -170,10 +162,7 @@ mod tests {
             png::BitDepth::Eight,
             &[3, 255],
         );
-        assert_eq!(
-            read_class_map(&p).expect("a label map").labels.to_u16(),
-            vec![3, 255]
-        );
+        assert_eq!(labels(&p), vec![3, 255]);
     }
 
     #[test]
@@ -189,10 +178,7 @@ mod tests {
             png::BitDepth::Four,
             &[0x1A, 0xF0],
         );
-        assert_eq!(
-            read_class_map(&p).expect("a label map").labels.to_u16(),
-            vec![1, 10, 15]
-        );
+        assert_eq!(labels(&p), vec![1, 10, 15]);
         let p = dir.path().join("bits.png");
         // 1-bit grayscale, five pixels 1,0,1,1,0 → 0b10110000.
         write(
@@ -203,10 +189,7 @@ mod tests {
             png::BitDepth::One,
             &[0b1011_0000],
         );
-        assert_eq!(
-            read_class_map(&p).expect("a label map").labels.to_u16(),
-            vec![1, 0, 1, 1, 0]
-        );
+        assert_eq!(labels(&p), vec![1, 0, 1, 1, 0]);
     }
 
     #[test]
@@ -221,10 +204,7 @@ mod tests {
             png::BitDepth::Sixteen,
             &[0x01, 0x02, 0xFF, 0xFF],
         );
-        assert_eq!(
-            read_class_map(&p).expect("a label map").labels.to_u16(),
-            vec![258, 65535]
-        );
+        assert_eq!(labels(&p), vec![258, 65535]);
     }
 
     #[test]

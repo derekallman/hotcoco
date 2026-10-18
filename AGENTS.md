@@ -52,7 +52,10 @@ one malformed value through every path and fails on any disagreement.
   `json.dumps` raises (`test_dropin_gaps.py` pins it).
 - **One id rule.** `types::id_from_f64` decides what float is an id, for the JSON
   loader, array rows, dicts, and `from_arrays` columns alike. Do not restate it: the
-  copies it replaced had drifted, and an array row turned `1e30` into 2⁶⁴ − 1.
+  copies it replaced had drifted, and an array row turned `1e30` into 2⁶⁴ − 1. A bool
+  is not an id in any record or column: a JSON `true` is not a number, so
+  `convert::extract_int` refuses a bool of any spelling (`convert::is_bool`) too. A
+  lookup argument (`getAnnIds(imgIds=[True])`) reads `True` as 1, as pycocotools does.
 - **I/O keeps its kind.** Wrap an `io::Error` with `Error::io(e, context)`, never in a
   string: a string loses the `ErrorKind` that makes it `FileNotFoundError`.
 
@@ -111,6 +114,12 @@ repeatedly: `parity_tide.py` exited 0 in both failure modes, a pinned semver bas
 ran 0 checks, the layering tests passed against four spellings of the import they
 banned. In each case the check looked green and verified nothing. Injecting a violation
 and watching it fail takes a minute and is not optional.
+
+The same rule, pointed at review: a finding from `/code-review` becomes a row in the
+test that owns its class before it is fixed — a spelling in `tests/test_array_spellings.py`,
+a path in `tests/test_input_errors.py` — so the next review pass has nothing left to find
+there. Three Opus reviewers each found one untested corner of the array readers in one
+1.3 pass; the matrix found the same corners in one run, and keeps finding them.
 
 ### Telling a downstream project its code is redundant
 

@@ -1935,8 +1935,7 @@ impl PyHierarchy {
             ))
         })?;
         let map = label_to_id.unwrap_or_default();
-        let inner = hotcoco_core::Hierarchy::from_oid_json(&json, &map)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let inner = hotcoco_core::Hierarchy::from_oid_json(&json, &map).map_err(to_pyerr)?;
         Ok(Self { inner })
     }
 
@@ -1960,8 +1959,8 @@ impl PyHierarchy {
             .call_method1("dumps", (tree_dict,))?
             .cast_into::<PyString>()?;
         let map = label_to_id.unwrap_or_default();
-        let inner = hotcoco_core::Hierarchy::from_oid_json(json_str.to_str()?, &map)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let inner =
+            hotcoco_core::Hierarchy::from_oid_json(json_str.to_str()?, &map).map_err(to_pyerr)?;
         Ok(Self { inner })
     }
 

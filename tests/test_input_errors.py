@@ -31,7 +31,6 @@ MISSING = object()
 
 # Why a path is left out of a row: the row's value is accepted there for a
 # reason that is not the bug this file guards against.
-BOOL = "Python's True is the int 1; a JSON true is not a number"
 NAN_TOKEN = "a file's NaN token reads as null, which a list of numbers cannot hold"
 STREAMING_CATS = "StreamingEval is built with its categories, so an unknown one is a KeyError"
 
@@ -149,7 +148,8 @@ GT_CASES = [
         for field in ("image_id", "category_id", "id")
         for name, value, expect in ID_CASES
     ],
-    *[(f"{field}=True", field, True, None, {"json": BOOL}) for field in ("image_id", "category_id", "id")],
+    # Python's True is the int 1, but a JSON true is not a number, so no path takes it.
+    *[(f"{field}=True", field, True, "reject", {}) for field in ("image_id", "category_id", "id")],
     ("image_id missing", "image_id", MISSING, "reject", {}),
     ("category_id missing", "category_id", MISSING, "reject", {}),
     ("id missing", "id", MISSING, "accept", {}),
@@ -207,7 +207,7 @@ DT_CASES = [
         for field in ("image_id", "category_id")
         for name, value, expect in ID_CASES
     ],
-    *[(f"{field}=True", field, True, None, {"json": BOOL}) for field in ("image_id", "category_id")],
+    *[(f"{field}=True", field, True, "reject", {}) for field in ("image_id", "category_id")],
     ("image_id missing", "image_id", MISSING, "reject", {}),
     ("category_id missing", "category_id", MISSING, "reject", {}),
     ("image_id unknown", "image_id", 99, "accept", {}),
@@ -288,6 +288,11 @@ DATASET_CASES = [
     ("image id missing", {"images": [with_field(IMAGES[0], "id", MISSING)]}),
     ("image width='100'", {"images": [with_field(IMAGES[0], "width", "100")]}),
     ("image width=1.5", {"images": [with_field(IMAGES[0], "width", 1.5)]}),
+    ("image neg_category_ids=[True]", {"images": [with_field(IMAGES[0], "neg_category_ids", [True])]}),
+    (
+        "image not_exhaustive_category_ids=[1.0]",
+        {"images": [with_field(IMAGES[0], "not_exhaustive_category_ids", [1.0])]},
+    ),
     ("image as a list", {"images": [[1, 2]]}),
     ("category id=1.5", {"cats": [with_field(CATS[0], "id", 1.5)]}),
     ("category id='1'", {"cats": [with_field(CATS[0], "id", "1")]}),
@@ -430,9 +435,29 @@ def test_only_a_records_own_nan_score_is_rejected(tmp_path):
     assert det["attributes"] == {"score": None}
 
 
+def test_a_numpy_bool_is_not_an_id():
+    """``numpy.True_`` is no ``bool`` to Python, but it is no id either, like ``True``.
+
+    numpy 1.x still lets one be an index, under a deprecation warning, so the
+    refusal cannot rely on ``__index__`` failing; the repr is ``True`` there.
+    """
+    gt = COCO({"images": IMAGES, "annotations": [GT], "categories": CATS})
+    with pytest.raises(ValueError, match=r"field 'image_id': expected a non-negative integer, got (np\.)?True"):
+        COCO({"images": IMAGES, "annotations": [with_field(GT, "image_id", np.True_)], "categories": CATS})
+    with pytest.raises(ValueError, match=r"field 'category_id': expected a non-negative integer, got (np\.)?True"):
+        gt.load_res([with_field(DT, "category_id", np.True_)])
+    # A column spelled as a list or as a bool array fails the same way, by position.
+    for column in ([True], [np.True_], np.array([True])):
+        with pytest.raises(ValueError, match=r"image_ids\[0\]: expected a non-negative integer, got (np\.)?True"):
+            COCO.from_arrays(IMAGES, CATS, column, [1], [[10, 10, 20, 20]])
+    # A 0-d bool array is neither a `bool` nor a numpy bool scalar, and converts to a float too.
+    with pytest.raises(ValueError, match=r"field 'id': expected a non-negative integer, got array\(True\)"):
+        COCO({"images": IMAGES, "annotations": [with_field(GT, "id", np.array(True))], "categories": CATS})
+
+
 def test_an_id_column_must_be_a_sequence():
-    """A set has no order to pair with the other columns; a bool is not an id."""
-    for column in ({1}, {1: 0}, (i for i in [1]), np.array([True])):
+    """A set has no order to pair with the other columns."""
+    for column in ({1}, {1: 0}, (i for i in [1])):
         with pytest.raises(TypeError, match="image_ids must be a sequence"):
             COCO.from_arrays(IMAGES, CATS, column, [1], [[10, 10, 20, 20]])
     with pytest.raises(ValueError, match=r"image_ids\[0\]: expected a non-negative integer, got -1"):

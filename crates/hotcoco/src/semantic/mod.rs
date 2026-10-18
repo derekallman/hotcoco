@@ -51,11 +51,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::metrics::is_computed;
-pub use crate::metrics::semantic::METRIC_NAMES;
-use crate::metrics::semantic::{ClassCounts, Label, PixelConfusion, SemanticScores};
+use crate::metrics::semantic::{ClassCounts, Label, LabelPairOp, PixelConfusion, SemanticScores};
+pub use crate::metrics::semantic::{LabelMap, METRIC_NAMES};
 use crate::report::{EvalReport, Provenance};
 
-use self::png::{ClassLabels, read_class_map};
+use self::png::read_class_map;
 
 /// One class in [`SemanticResults`]: its two scores — the sentinel where not
 /// computed — beside the counts they came from.
@@ -137,13 +137,21 @@ impl LabelRules {
         Ok(())
     }
 
-    /// Count one pair into `counts` under these rules.
+    /// Count one pair into `counts` under these rules: the one funnel every
+    /// input form reaches, so the length check lives here.
     fn count_into<G: Label, P: Label>(
         self,
         counts: &mut PixelConfusion,
         gt: &[G],
         pred: &[P],
     ) -> crate::error::Result<()> {
+        if gt.len() != pred.len() {
+            return Err(Error::InvalidInput(format!(
+                "gt and pred must have the same number of pixels, got {} and {}",
+                gt.len(),
+                pred.len()
+            )));
+        }
         if self.reduce_zero_label {
             // mmseg's relabel: 0 and 255 are unlabeled, the rest shift down, and
             // the ignore index (255, see `check`) masks the shifted label.
@@ -179,13 +187,25 @@ impl LabelRules {
                 p.h
             )));
         }
-        match (&g.labels, &p.labels) {
-            (ClassLabels::U8(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
-            (ClassLabels::U8(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
-            (ClassLabels::U16(g), ClassLabels::U8(p)) => self.count_into(counts, g, p),
-            (ClassLabels::U16(g), ClassLabels::U16(p)) => self.count_into(counts, g, p),
+        self.count_maps_into(counts, &g.labels, &p.labels)
+            .map_err(|e| Error::InvalidInput(format!("{}: {e}", pred.display())))
+    }
+
+    /// [`count_into`](Self::count_into) for maps of run-time width.
+    fn count_maps_into(
+        self,
+        counts: &mut PixelConfusion,
+        gt: &LabelMap<'_>,
+        pred: &LabelMap<'_>,
+    ) -> crate::error::Result<()> {
+        struct Count<'c>(LabelRules, &'c mut PixelConfusion);
+        impl LabelPairOp for Count<'_> {
+            type Output = crate::error::Result<()>;
+            fn run<G: Label, P: Label>(self, gt: &[G], pred: &[P]) -> Self::Output {
+                self.0.count_into(self.1, gt, pred)
+            }
         }
-        .map_err(|e| Error::InvalidInput(format!("{}: {e}", pred.display())))
+        LabelMap::with_pair(gt, pred, Count(self, counts))
     }
 }
 
@@ -262,6 +282,18 @@ impl SemanticEval {
         &self.confusion
     }
 
+    /// The error the first `update` would raise for these options, if any:
+    /// [`reduce_zero_label`](Self::reduce_zero_label) needs the ignore index
+    /// `255`. The builder cannot fail, so a caller that wants the error
+    /// before the first pair asks here.
+    ///
+    /// # Errors
+    ///
+    /// If `reduce_zero_label` is set with an ignore index other than `255`.
+    pub fn check_options(&self) -> crate::error::Result<()> {
+        self.rules.check()
+    }
+
     /// Count one ground-truth map against one prediction of the same size,
     /// each flat in any pixel order so long as it is the same for both.
     ///
@@ -271,17 +303,27 @@ impl SemanticEval {
     /// `num_classes` (after the ignore and `reduce_zero_label` rules, for
     /// the ground truth). On an error nothing from this pair is counted.
     pub fn update<G: Label, P: Label>(&mut self, gt: &[G], pred: &[P]) -> crate::error::Result<()> {
-        if gt.len() != pred.len() {
-            return Err(Error::InvalidInput(format!(
-                "gt and pred must have the same number of pixels, got {} and {}",
-                gt.len(),
-                pred.len()
-            )));
-        }
         self.rules.check()?;
         // A rejected pair leaves the matrix as it was, so a pair counts
         // straight into the totals.
         self.rules.count_into(&mut self.confusion, gt, pred)?;
+        self.n_images += 1;
+        Ok(())
+    }
+
+    /// [`update`](Self::update) for two maps whose widths are known only at
+    /// run time, such as numpy arrays.
+    ///
+    /// # Errors
+    ///
+    /// As [`update`](Self::update).
+    pub fn update_maps(
+        &mut self,
+        gt: &LabelMap<'_>,
+        pred: &LabelMap<'_>,
+    ) -> crate::error::Result<()> {
+        self.rules.check()?;
+        self.rules.count_maps_into(&mut self.confusion, gt, pred)?;
         self.n_images += 1;
         Ok(())
     }

@@ -196,3 +196,36 @@ def test_bad_input_is_a_value_error():
         ev.merge(semantic.SemanticEval(3))
     with pytest.raises(ValueError, match="square"):
         metrics.mean_iou([[1, 2, 3], [4, 5, 6]])
+    # The uint64 matrices two evaluators hand back, subtracted the wrong way round.
+    with pytest.raises(ValueError, match="not a pixel count"):
+        metrics.mean_iou(np.array([[5, 3], [0, 4]], np.uint64) - np.array([[6, 3], [0, 4]], np.uint64))
+    # An option pair with no reference meaning fails at construction, not one batch in.
+    with pytest.raises(ValueError, match="needs ignore_index 255"):
+        semantic.SemanticEval(2, ignore_index=None, reduce_zero_label=True)
+
+
+@pytest.mark.parametrize("view", ["strided", "fortran", "transposed", "misaligned"], ids=str)
+def test_a_view_counts_like_its_contiguous_copy(view):
+    """A C-contiguous, aligned buffer is read in place; any other layout is copied in row-major order.
+
+    Fortran order is the trap: its buffer is contiguous too, in column-major order, and
+    borrowing it against a C-order partner pairs each pixel with the wrong one. A
+    ``frombuffer`` at an odd offset is contiguous but not a slice of ``uint16``.
+    """
+    rng = np.random.default_rng(0)
+    gt = rng.integers(0, 3, (4, 8), dtype=np.uint16)
+    pred = rng.integers(0, 3, (4, 8), dtype=np.int64)
+    if view == "strided":
+        gt, pred = gt[:, ::2], pred[:, ::2]
+    elif view == "fortran":
+        gt = np.asfortranarray(gt)
+    elif view == "transposed":
+        gt, pred = gt.T, np.ascontiguousarray(pred.T)
+    else:
+        gt = np.frombuffer(b"\0" + gt.tobytes(), dtype=np.uint16, offset=1).reshape(gt.shape)
+        assert gt.flags.c_contiguous and not gt.flags.aligned
+    in_place, other = semantic.SemanticEval(3), semantic.SemanticEval(3)
+    in_place.update(gt.copy(), pred.copy())  # a fresh array is C-contiguous and aligned
+    other.update(gt, pred)
+    assert np.array_equal(in_place.confusion(), other.confusion())
+    assert in_place.confusion().sum() == gt.size
