@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.3.0] - 2026-10-20
+
+### Added
+
 - **Panoptic segmentation — the second metric family.** `hotcoco.panoptic`
   computes PQ, SQ, and RQ for all, things, and stuff categories, matching
   [panopticapi](https://github.com/cocodataset/panopticapi) on COCO panoptic
