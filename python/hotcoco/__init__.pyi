@@ -18,7 +18,9 @@ import numpy.typing as npt
 from . import detection as detection
 from . import mask as mask
 from . import metrics as metrics
+from . import panoptic as panoptic
 from . import primitives as primitives
+from . import semantic as semantic
 
 __version__: str
 

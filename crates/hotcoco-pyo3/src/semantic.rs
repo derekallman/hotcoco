@@ -13,7 +13,7 @@ use pyo3::types::PyBytes;
 
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
-use crate::convert::{confusion_counts_to_py, label_pair};
+use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
 use crate::{print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
@@ -61,7 +61,11 @@ pub(crate) struct PySemanticEval {
 /// The evaluator for `classes`: a count names them the way core does, a
 /// sequence names them itself.
 fn evaluator_for(classes: &Bound<'_, PyAny>) -> PyResult<SemanticEval> {
-    if let Ok(n) = classes.extract::<usize>() {
+    // `True` counts as 1 to `extract`, and a flag passed by mistake would
+    // then be a one-class evaluator that rejects every label from 1 up.
+    if !is_bool(classes)
+        && let Ok(n) = classes.extract::<usize>()
+    {
         return Ok(SemanticEval::new(n));
     }
     if let Ok(names) = classes.extract::<Vec<String>>()
@@ -94,8 +98,9 @@ impl PySemanticEval {
 
 Both are integer numpy arrays of the same shape — ``(H, W)``, or ``(N, H, W)``
 for a batch — in any integer dtype. A C-contiguous, aligned ``uint8``,
-``uint16``, or ``int64`` array is read in place; numpy first makes any
-other view contiguous and aligned, and casts any other dtype to ``int64``.
+``uint16``, ``uint64``, or ``int64`` array is read in place; numpy first
+makes any other view contiguous and aligned, and casts any other dtype to
+``int64``.
 The counting itself releases the GIL. Raises
 ``ValueError`` on a shape mismatch or a label out of range; nothing from the
 pair is counted then."]
@@ -114,7 +119,8 @@ pair is counted then."]
 
     #[doc = "Count one pair of PNG label maps: 8- or 16-bit grayscale, or a palette
 image whose index is the class, as Cityscapes, ADE20K, and VOC store them.
-Raises ``ValueError`` for a file that is not a label map, two maps of
+Raises ``OSError`` (``FileNotFoundError`` included) for a file that cannot be
+read, and ``ValueError`` for one that is not a label map, two maps of
 different sizes, or a label out of range."]
     fn update_png(&mut self, py: Python<'_>, gt: PathBuf, pred: PathBuf) -> PyResult<()> {
         let inner = &mut self.inner;
@@ -123,8 +129,9 @@ different sizes, or a label out of range."]
 
     #[doc = "Count every PNG in ``gt_folder`` against the file of the same name in
 ``pred_folder``, in parallel without the GIL. Returns how many pairs were
-counted. Raises ``ValueError`` if a ground-truth file has no prediction of
-the same name, or on the first pair ``update_png`` would reject; nothing is
+counted. Raises ``OSError`` for a folder that cannot be listed,
+``ValueError`` if a ground-truth file has no prediction of the same name, or
+whatever ``update_png`` would raise on the first pair it rejects; nothing is
 counted then."]
     fn update_folders(
         &mut self,

@@ -92,7 +92,10 @@ integers, and the order they are added in cannot change the sum.
 ## Evaluate saved predictions
 
 A folder of predicted PNG files, named like the ground truth's, evaluates in
-one call, reading pairs in parallel:
+one call, reading pairs in parallel. The PNG files at the top of each folder
+are paired by file name; a dataset laid out otherwise (Cityscapes keeps a
+folder per city and several PNG files per frame) goes through `update_png`
+on the pairs you choose.
 
 ```python
 ev = semantic.SemanticEval(150, reduce_zero_label=True)       # ADE20K
@@ -151,8 +154,8 @@ definitions as this page — see
 ## From the CLI
 
 ```bash
-coco semantic eval --gt gtFine/val --pred predictions/ --classes 19
-coco semantic eval --gt annotations/validation --pred predictions/ --classes 150 --reduce-zero-label --json
+coco semantic eval --gt annotations/validation --pred predictions/ --classes 150 --reduce-zero-label
+coco semantic eval --gt gt/ --pred predictions/ --classes names.txt --json
 ```
 
 The Rust binary has the same subcommand: `coco-eval semantic --gt ... --pred ... --classes ...`.

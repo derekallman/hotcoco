@@ -72,7 +72,7 @@ pub(crate) fn extract_int<T: TryFrom<u64>>(v: &Bound<'_, PyAny>) -> PyResult<T> 
 
 /// Whether `v` is a bool of any spelling: `bool`, `numpy.bool_`, or a 0-d
 /// bool array. The numpy type is compared by pointer, once cached.
-fn is_bool(v: &Bound<'_, PyAny>) -> bool {
+pub(crate) fn is_bool(v: &Bound<'_, PyAny>) -> bool {
     static NUMPY_BOOL: pyo3::sync::PyOnceLock<Py<pyo3::types::PyType>> =
         pyo3::sync::PyOnceLock::new();
     let py = v.py();
@@ -900,19 +900,11 @@ fn set_image_field(img: &mut Image, key: &str, value: &Bound<'_, PyAny>) -> PyRe
     Ok(true)
 }
 
-/// A list of category ids read as the JSON loader reads these fields:
-/// integers, of which a bool is not one.
+/// A list of category ids, each read by the one id rule ([`extract_int`]),
+/// as the JSON loader reads these fields.
 fn extract_id_list(value: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
     let items: Vec<Bound<'_, PyAny>> = value.extract()?;
-    items
-        .iter()
-        .map(|v| {
-            if is_bool(v) {
-                return Err(not_a(v, "an integer")?);
-            }
-            v.extract::<u64>()
-        })
-        .collect()
+    items.iter().map(extract_int).collect()
 }
 
 /// Set the category field a schema key names; `false` for any other key.
@@ -1065,13 +1057,16 @@ pub fn calibration_bin_to_py<'py>(
 /// they are rather than from a copy; at memory bandwidth a copy of an
 /// `int64` map costs about what counting it does.
 ///
-/// `uint8` (a PNG-backed ground truth), `uint16` (a wide label set), and
-/// `int64` (`argmax`) are read in place; any other dtype — `int32`, bool —
-/// is numpy's `astype(int64)` copy of it, so negative labels survive to be
-/// reported rather than wrapping.
+/// `uint8` (a PNG-backed ground truth), `uint16` (a wide label set),
+/// `uint64`, and `int64` (`argmax`) are read in place; any other dtype —
+/// `int32`, bool — is numpy's `astype(int64)` copy of it, so negative labels
+/// survive to be reported rather than wrapping. `uint64` has its own width
+/// for the same reason: cast to `int64`, a value of 2^63 or more would be
+/// reported as negative.
 pub(crate) enum LabelArray<'py> {
     U8(numpy::PyReadonlyArrayDyn<'py, u8>),
     U16(numpy::PyReadonlyArrayDyn<'py, u16>),
+    U64(numpy::PyReadonlyArrayDyn<'py, u64>),
     I64(numpy::PyReadonlyArrayDyn<'py, i64>),
 }
 
@@ -1080,6 +1075,7 @@ impl LabelArray<'_> {
         match self {
             LabelArray::U8(a) => a.shape(),
             LabelArray::U16(a) => a.shape(),
+            LabelArray::U64(a) => a.shape(),
             LabelArray::I64(a) => a.shape(),
         }
     }
@@ -1103,6 +1099,7 @@ impl LabelArray<'_> {
         match self {
             LabelArray::U8(a) => LabelMap::U8(pixels(a)),
             LabelArray::U16(a) => LabelMap::U16(pixels(a)),
+            LabelArray::U64(a) => LabelMap::U64(pixels(a)),
             LabelArray::I64(a) => LabelMap::I64(pixels(a)),
         }
     }
@@ -1137,6 +1134,9 @@ fn label_array<'py>(obj: &Bound<'py, PyAny>, name: &str) -> PyResult<LabelArray<
     }
     if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u16>>() {
         return Ok(LabelArray::U16(a));
+    }
+    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u64>>() {
+        return Ok(LabelArray::U64(a));
     }
     match array_of_kind::<i64, numpy::IxDyn>(obj, b"iub")? {
         Some(a) => Ok(LabelArray::I64(a)),

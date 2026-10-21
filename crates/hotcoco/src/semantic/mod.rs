@@ -11,8 +11,8 @@
 //! use std::path::Path;
 //! use hotcoco::semantic::SemanticEval;
 //! # fn main() -> hotcoco::error::Result<()> {
-//! let mut ev = SemanticEval::new(19).ignore_index(Some(255));
-//! ev.update_folders(Path::new("gtFine/val"), Path::new("pred/val"))?;
+//! let mut ev = SemanticEval::new(150).reduce_zero_label(true);   // ADE20K
+//! ev.update_folders(Path::new("annotations/validation"), Path::new("predictions"))?;
 //! ev.summarize();                            // per-class IoU and Acc, then the four means
 //! let miou = ev.scores().miou;
 //! # Ok(())
@@ -24,9 +24,12 @@
 //! A training loop has the maps in memory: [`SemanticEval::update`] takes a
 //! ground-truth map and a prediction of the same size, any integer type, as
 //! often as there are batches. Saved predictions are PNG files beside the
-//! ground truth's: [`SemanticEval::update_folders`] pairs the two folders by
-//! file name and reads both: 8- or 16-bit grayscale, or a palette image whose
-//! index is the class.
+//! ground truth's: [`SemanticEval::update_folders`] pairs the PNG files at
+//! the top of the two folders by file name and reads both: 8- or 16-bit
+//! grayscale, or a palette image whose index is the class. A dataset laid
+//! out otherwise (Cityscapes keeps a folder per city and several PNG files
+//! per frame) goes through [`SemanticEval::update_png`] on the pairs the
+//! caller chooses.
 //! Either way the state is one `num_classes × num_classes` matrix, so two
 //! evaluators over disjoint shards [`merge`](SemanticEval::merge) into the
 //! whole-split result.
@@ -187,8 +190,12 @@ impl LabelRules {
                 p.h
             )));
         }
+        // A label error names its side, `gt pixel 3` or `pred pixel 3`, so
+        // both files are named and the side says which one to fix.
         self.count_maps_into(counts, &g.labels, &p.labels)
-            .map_err(|e| Error::InvalidInput(format!("{}: {e}", pred.display())))
+            .map_err(|e| {
+                Error::InvalidInput(format!("{} against {}: {e}", gt.display(), pred.display()))
+            })
     }
 
     /// [`count_into`](Self::count_into) for maps of run-time width.

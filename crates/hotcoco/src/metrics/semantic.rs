@@ -109,6 +109,7 @@ label_wide!(i128, u128);
 pub enum LabelMap<'a> {
     U8(Cow<'a, [u8]>),
     U16(Cow<'a, [u16]>),
+    U64(Cow<'a, [u64]>),
     I64(Cow<'a, [i64]>),
 }
 
@@ -123,16 +124,23 @@ pub trait LabelPairOp {
 impl LabelMap<'_> {
     /// Run `op` on the two maps' slices, whatever pair of widths they hold.
     pub fn with_pair<Op: LabelPairOp>(gt: &Self, pred: &Self, op: Op) -> Op::Output {
-        use self::LabelMap::{I64, U8, U16};
+        use self::LabelMap::{I64, U8, U16, U64};
         match (gt, pred) {
             (U8(g), U8(p)) => op.run(g, p),
             (U8(g), U16(p)) => op.run(g, p),
+            (U8(g), U64(p)) => op.run(g, p),
             (U8(g), I64(p)) => op.run(g, p),
             (U16(g), U8(p)) => op.run(g, p),
             (U16(g), U16(p)) => op.run(g, p),
+            (U16(g), U64(p)) => op.run(g, p),
             (U16(g), I64(p)) => op.run(g, p),
+            (U64(g), U8(p)) => op.run(g, p),
+            (U64(g), U16(p)) => op.run(g, p),
+            (U64(g), U64(p)) => op.run(g, p),
+            (U64(g), I64(p)) => op.run(g, p),
             (I64(g), U8(p)) => op.run(g, p),
             (I64(g), U16(p)) => op.run(g, p),
+            (I64(g), U64(p)) => op.run(g, p),
             (I64(g), I64(p)) => op.run(g, p),
         }
     }

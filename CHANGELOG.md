@@ -77,7 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `semantic.SemanticEval(classes, *, ignore_index=255, reduce_zero_label=False)`
     is fed incrementally: `update(gt, pred)` takes integer arrays of the same
     shape, `(H, W)` or `(N, H, W)`, in any integer dtype, counting a
-    C-contiguous, aligned `uint8`, `uint16`, or `int64` buffer in place with
+    C-contiguous, aligned `uint8`, `uint16`, `uint64`, or `int64` buffer in place with
     no copy (numpy first makes any other view contiguous and aligned, and
     casts any other dtype to `int64`), and releases the GIL while it counts;
     `update_png` and
@@ -192,6 +192,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **An id of 2⁶⁴ or more is rejected on every path.** An array row turned any
   such id, `1e30` included, into 2⁶⁴ − 1, and a dict or JSON file did so for
   exactly 2⁶⁴.
+- **LVIS `neg_category_ids` and `not_exhaustive_category_ids` follow the one
+  id rule.** A whole float such as `1.0` is the id 1 there, in a file and a
+  dict alike, as it is in every other id field; a JSON file refused it.
 
 ## [1.2.1] - 2026-10-08
 

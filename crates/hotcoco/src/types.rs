@@ -59,10 +59,10 @@ pub struct Image {
     #[serde(default)]
     pub date_captured: Option<String>,
     /// LVIS: categories confirmed absent in this image (unmatched DTs are FP).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_uint_vec")]
     pub neg_category_ids: Vec<u64>,
     /// LVIS: categories not exhaustively checked in this image (unmatched DTs are ignored).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_uint_vec")]
     pub not_exhaustive_category_ids: Vec<u64>,
     /// Keys not in the COCO schema, preserved verbatim so
     /// load → filter/split/merge → save round-trips user metadata
@@ -434,6 +434,16 @@ where
     T: TryFrom<u64>,
 {
     Uint::deserialize(deserializer).map(|u| u.0)
+}
+
+/// A list of ids, each read by [`deserialize_uint`]'s rule: the LVIS
+/// per-image category lists, which are ids like any other.
+pub(crate) fn deserialize_uint_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: TryFrom<u64>,
+{
+    Vec::<Uint<T>>::deserialize(deserializer).map(|v| v.into_iter().map(|u| u.0).collect())
 }
 
 pub(crate) fn deserialize_opt_uint<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

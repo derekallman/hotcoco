@@ -186,6 +186,22 @@ def test_detection_namespace_importable_both_ways():
     assert detection is hotcoco.detection
 
 
+@pytest.mark.parametrize("family", sorted(p.stem for p in STUB_PATH.parent.glob("*.pyi") if p.stem != "__init__"))
+def test_a_stubbed_namespace_is_an_attribute_of_the_package_stub(family):
+    """``hotcoco.semantic.SemanticEval`` type-checks only if ``__init__.pyi`` re-exports
+    ``semantic``: a stub package shadows the runtime ``__init__.py``, so a checker sees
+    only what the stub declares. Every sibling stub must be re-exported there."""
+    reexported = {
+        alias.name
+        for node in ast.walk(ast.parse(STUB_PATH.read_text()))
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module is None
+        for alias in node.names
+        if alias.asname == alias.name
+    }
+    assert family in reexported, f"{family} is not re-exported by __init__.pyi"
+    assert isinstance(getattr(hotcoco, family), ModuleType), family
+
+
 def test_mask_importable_both_ways():
     """The regression that motivated the check above."""
     import hotcoco.mask

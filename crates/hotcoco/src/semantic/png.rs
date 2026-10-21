@@ -33,8 +33,14 @@ pub(super) fn read_class_map(path: &Path) -> crate::error::Result<ClassMap> {
     // No transformations: a palette index must stay an index, and a 16-bit
     // sample must keep its high byte.
     let decoder = png::Decoder::new(BufReader::new(file));
-    let fail = |e: png::DecodingError| {
-        Error::InvalidInput(format!("cannot decode label map {}: {e}", path.display()))
+    // A read that fails keeps its I/O kind; a file that is not a label map
+    // is bad input. A file that ends before its PNG stream does comes back
+    // as an end-of-file error, which is about the content, so bad input too.
+    let fail = |e: png::DecodingError| match e {
+        png::DecodingError::IoError(e) if e.kind() != std::io::ErrorKind::UnexpectedEof => {
+            Error::io(e, format_args!("cannot read label map {}", path.display()))
+        }
+        e => Error::InvalidInput(format!("cannot decode label map {}: {e}", path.display())),
     };
     let mut reader = decoder.read_info().map_err(fail)?;
     let size = reader.output_buffer_size().ok_or_else(|| {
@@ -48,18 +54,22 @@ pub(super) fn read_class_map(path: &Path) -> crate::error::Result<ClassMap> {
     let (h, w) = (info.height, info.width);
     let n = h as usize * w as usize;
     let rows = || buf.chunks_exact(info.line_size).take(h as usize);
+    // `png` sizes the buffer as `line_size × height`, and every branch below
+    // reads it as that many whole rows; a file that decodes to any other
+    // size is refused, not assumed.
+    if buf.len() != info.line_size * h as usize {
+        return Err(Error::InvalidInput(format!(
+            "label map {} decodes to {} bytes for {w}×{h} pixels",
+            path.display(),
+            buf.len()
+        )));
+    }
 
     let labels = match (info.color_type, info.bit_depth) {
         (png::ColorType::Grayscale | png::ColorType::Indexed, png::BitDepth::Eight) => {
             // One byte per pixel and rows laid end to end: the buffer is the
-            // map. `png` sizes it as `line_size × height`, and `line_size` is
-            // `width` at this depth; the counting code trusts `h × w`.
-            assert_eq!(
-                buf.len(),
-                n,
-                "png sized an 8-bit {w}×{h} map to {} bytes",
-                buf.len()
-            );
+            // map: `line_size` is `width` at this depth, so the guard above
+            // has checked it holds `h × w` bytes, what the counting trusts.
             LabelMap::U8(Cow::Owned(buf))
         }
         (png::ColorType::Grayscale, png::BitDepth::Sixteen) => {
@@ -129,7 +139,7 @@ mod tests {
         match read_class_map(path).expect("a label map").labels {
             LabelMap::U8(v) => v.iter().copied().map(u16::from).collect(),
             LabelMap::U16(v) => v.into_owned(),
-            LabelMap::I64(_) => unreachable!("a PNG sample is at most 16 bits"),
+            LabelMap::U64(_) | LabelMap::I64(_) => unreachable!("a PNG sample is at most 16 bits"),
         }
     }
 

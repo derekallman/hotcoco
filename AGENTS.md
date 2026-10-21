@@ -227,7 +227,20 @@ If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fai
 - When committing and pushing, always verify the current git status first to avoid trying to commit already-committed changes. Check `git status` and `git log --oneline -3` before any commit/push operation.
 - Keep commits clean: never include build artifacts, compiled files, or `__pycache__` directories. Review staged files carefully before committing. If unsure, ask before committing.
 - Commit message body: use bullet points, not prose paragraphs.
-- **Standard pre-commit sequence:** `/simplify` → `/code-review` → `/ship` → `/commit`. Run all four in order when a feature is done.
+- **Standard pre-commit sequence:** `/code-review` → `/simplify` → `/code-review` →
+  `/ship` → `/commit`, per feature, not per release. Review first so `/simplify` is
+  not polishing a bug; review again because `/simplify` moves code. Each round of
+  fixes is then reviewed on its own diff, and the sequence ends when a pass comes
+  back clean — that clean pass is the stopping condition, not a count of passes.
+  Every finding gets a test that fails before its fix (see Verifying a check can
+  fail). Four passes on the 1.3 branch each found things; the fifth, scoped to the
+  previous round's fixes, is what established the tree was clean.
+- **Branch-wide bug hunts are discretionary, and worth it before a release.** A diff
+  review reads the diff; a hunt has reviewers read whole families, and finds what
+  no diff review can (the 1.3 hunt found six of ten in a week-old commit). Run one
+  when the user asks, not by default: its findings tend to land in code with no
+  gate, and the lasting fix for that is a gate — a conformance test, a spelling
+  row, an error-path case — not another reader.
 - `/ship` is the gate for communication surfaces — CHANGELOG, ROADMAP, docs sync, and parity. Do not commit and then update docs/CHANGELOG after; update everything first, then commit once.
 
 ### Worktrees

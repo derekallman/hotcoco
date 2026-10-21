@@ -399,6 +399,17 @@ fn summary_prints_one_row_per_class_and_the_means() {
     );
 }
 
+/// A 2×2 8-bit label map, grayscale or palette.
+fn write_png(path: &std::path::Path, data: &[u8], color: png::ColorType) {
+    let mut enc = png::Encoder::new(std::fs::File::create(path).unwrap(), 2, 2);
+    enc.set_color(color);
+    enc.set_depth(png::BitDepth::Eight);
+    if color == png::ColorType::Indexed {
+        enc.set_palette(vec![0u8; 768]);
+    }
+    enc.write_header().unwrap().write_image_data(data).unwrap();
+}
+
 /// The folder path reads PNG files of every label-map kind and pairs them by
 /// name; the mask of a mismatch names the files.
 #[test]
@@ -407,31 +418,22 @@ fn folders_pair_by_file_name() {
     let (gt_dir, pred_dir) = (dir.path().join("gt"), dir.path().join("pred"));
     std::fs::create_dir_all(&gt_dir).unwrap();
     std::fs::create_dir_all(&pred_dir).unwrap();
-    let write = |path: &std::path::Path, data: &[u8], color: png::ColorType| {
-        let mut enc = png::Encoder::new(std::fs::File::create(path).unwrap(), 2, 2);
-        enc.set_color(color);
-        enc.set_depth(png::BitDepth::Eight);
-        if color == png::ColorType::Indexed {
-            enc.set_palette(vec![0u8; 768]);
-        }
-        enc.write_header().unwrap().write_image_data(data).unwrap();
-    };
-    write(
+    write_png(
         &gt_dir.join("a.png"),
         &[0, 0, 1, 255],
         png::ColorType::Grayscale,
     );
-    write(
+    write_png(
         &pred_dir.join("a.png"),
         &[0, 1, 1, 1],
         png::ColorType::Indexed,
     );
-    write(
+    write_png(
         &gt_dir.join("b.png"),
         &[1, 1, 1, 1],
         png::ColorType::Indexed,
     );
-    write(
+    write_png(
         &pred_dir.join("b.png"),
         &[1, 1, 0, 1],
         png::ColorType::Grayscale,
@@ -445,7 +447,7 @@ fn folders_pair_by_file_name() {
     by_array.update(&[1u8, 1, 1, 1], &[1u8, 1, 0, 1]).unwrap();
     assert_eq!(ev, by_array);
 
-    write(
+    write_png(
         &gt_dir.join("c.png"),
         &[0, 0, 0, 0],
         png::ColorType::Grayscale,
@@ -461,7 +463,7 @@ fn folders_pair_by_file_name() {
     std::fs::remove_file(gt_dir.join("c.png")).unwrap();
 
     // A bad pair poisons the whole call, and nothing is counted.
-    write(
+    write_png(
         &pred_dir.join("b.png"),
         &[1, 1, 9, 1],
         png::ColorType::Grayscale,
@@ -473,4 +475,53 @@ fn folders_pair_by_file_name() {
         .to_string();
     assert!(err.contains("b.png") && err.contains("label 9"), "{err}");
     assert_eq!(fresh, SemanticEval::new(2));
+}
+
+fn write_gray_png(path: &std::path::Path, data: &[u8]) {
+    write_png(path, data, png::ColorType::Grayscale);
+}
+
+/// A label error names both files and its side, so a ground-truth file with
+/// the wrong id scheme is blamed on the ground truth, not the prediction.
+#[test]
+fn a_png_label_error_names_both_files_and_the_side() {
+    let dir = tempfile::tempdir().unwrap();
+    let (gt, pred) = (dir.path().join("gt.png"), dir.path().join("pred.png"));
+    write_gray_png(&gt, &[0, 26, 0, 0]);
+    write_gray_png(&pred, &[0, 0, 0, 0]);
+    let mut ev = SemanticEval::new(19);
+    let err = ev.update_png(&gt, &pred).unwrap_err().to_string();
+    assert!(err.contains("gt.png against"), "{err}");
+    assert!(err.contains("pred.png: gt pixel 1 has label 26"), "{err}");
+}
+
+/// A file that cannot be read keeps its I/O kind; only a file that is not a
+/// label map is bad input.
+#[test]
+fn an_unreadable_label_map_is_an_io_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (gt, pred) = (dir.path().join("gt.png"), dir.path().join("pred.png"));
+    write_gray_png(&gt, &[0, 0, 0, 0]);
+    std::fs::create_dir(&pred).unwrap();
+    let err = SemanticEval::new(2).update_png(&gt, &pred).unwrap_err();
+    assert!(matches!(err, hotcoco::Error::Io(_)), "{err}");
+    assert!(err.to_string().contains("pred.png"), "{err}");
+}
+
+/// A truncated or empty file is bad input, not an unreadable one: the decoder
+/// reports the missing bytes as an end-of-file error, which is about the
+/// file's content, and `ValueError` is what a file that is not a label map
+/// raises on every other path.
+#[test]
+fn a_truncated_label_map_is_bad_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let (gt, pred) = (dir.path().join("gt.png"), dir.path().join("pred.png"));
+    write_gray_png(&gt, &[0, 0, 0, 0]);
+    let bytes = std::fs::read(&gt).unwrap();
+    std::fs::write(&pred, &bytes[..bytes.len() / 2]).unwrap();
+    let err = SemanticEval::new(2).update_png(&gt, &pred).unwrap_err();
+    assert!(matches!(err, hotcoco::Error::InvalidInput(_)), "{err}");
+    std::fs::write(&pred, b"").unwrap();
+    let err = SemanticEval::new(2).update_png(&gt, &pred).unwrap_err();
+    assert!(matches!(err, hotcoco::Error::InvalidInput(_)), "{err}");
 }

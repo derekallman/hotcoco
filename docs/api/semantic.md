@@ -55,8 +55,8 @@ signatures and return shapes.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `update(gt, pred)` | `None` | Count one ground-truth map against one prediction: integer arrays of the same shape, `(H, W)` or `(N, H, W)`, any integer dtype. `ValueError` on a shape mismatch or a label out of range; nothing from the pair is counted then |
-| `update_png(gt, pred)` | `None` | Count one pair of PNG label maps — 8- or 16-bit grayscale, or a palette image whose index is the class |
-| `update_folders(gt_folder, pred_folder)` | `int` | Count every PNG in `gt_folder` against the file of the same name in `pred_folder`, in parallel; returns the pairs counted. `ValueError` on a missing prediction or a bad pair, with nothing counted |
+| `update_png(gt, pred)` | `None` | Count one pair of PNG label maps — 8- or 16-bit grayscale, or a palette image whose index is the class. `OSError` for a file that cannot be read; `ValueError` for one that is not a label map, two maps of different sizes, or a label out of range |
+| `update_folders(gt_folder, pred_folder)` | `int` | Count every PNG at the top of `gt_folder` against the file of the same name in `pred_folder`, in parallel; returns the pairs counted. `OSError` for a folder that cannot be listed, `ValueError` on a missing prediction, or whatever `update_png` raises on the first pair it rejects; nothing is counted then |
 | `merge(other)` | `None` | Add another evaluator's counts — the shards of a distributed run. `ValueError` if it was built with different classes or options |
 | `confusion()` | `ndarray[uint64]` | The `(num_classes, num_classes)` matrix behind every number: row the ground-truth class, column the predicted class |
 | `summarize()` | `None` | Print one row per class with IoU and Acc in percent, then the four means |

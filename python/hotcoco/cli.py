@@ -1157,13 +1157,13 @@ def main():
         parents=[_json_parent],
         help="evaluate predicted label maps against ground truth",
         description=(
-            "Compute mIoU, fwIoU, mAcc, and aAcc from two folders of PNG label maps paired by file "
-            "name — 8- or 16-bit grayscale, or palette images whose index is the class, as Cityscapes, "
-            "ADE20K, and VOC store them."
+            "Compute mIoU, fwIoU, mAcc, and aAcc from two folders of PNG label maps, the files at the "
+            "top of each folder paired by name — 8- or 16-bit grayscale, or palette images whose index "
+            "is the class, as ADE20K and VOC store them."
         ),
         epilog=textwrap.dedent("""\
             examples:
-              coco semantic eval --gt gtFine/val --pred preds/ --classes 19
+              coco semantic eval --gt gt/ --pred preds/ --classes 19
               coco semantic eval --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label
               coco semantic eval --gt gt/ --pred pred/ --classes names.txt --json
         """),

@@ -104,7 +104,9 @@ pub struct PanopticResult {
     /// `per_category`; the matrix has the unlabeled-prediction column, where a
     /// predicted void lands, so a void prediction is a miss for the
     /// ground-truth class and a false positive for none. Ground-truth void is
-    /// ignored, as are PNG ids with no `segments_info` entry.
+    /// ignored, as are PNG ids with no `segments_info` entry and a
+    /// ground-truth segment whose `category_id` is not in `categories`
+    /// (which PQ matches but never reports, as panopticapi does).
     /// [`semantic`](Self::semantic) reads mIoU off it.
     pub pixels: PixelConfusion,
 }

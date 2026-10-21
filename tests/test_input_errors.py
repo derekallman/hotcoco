@@ -290,8 +290,8 @@ DATASET_CASES = [
     ("image width=1.5", {"images": [with_field(IMAGES[0], "width", 1.5)]}),
     ("image neg_category_ids=[True]", {"images": [with_field(IMAGES[0], "neg_category_ids", [True])]}),
     (
-        "image not_exhaustive_category_ids=[1.0]",
-        {"images": [with_field(IMAGES[0], "not_exhaustive_category_ids", [1.0])]},
+        "image not_exhaustive_category_ids=[1.5]",
+        {"images": [with_field(IMAGES[0], "not_exhaustive_category_ids", [1.5])]},
     ),
     ("image as a list", {"images": [[1, 2]]}),
     ("category id=1.5", {"cats": [with_field(CATS[0], "id", 1.5)]}),
@@ -464,3 +464,12 @@ def test_an_id_column_must_be_a_sequence():
         COCO.from_arrays(IMAGES, CATS, np.array([-1]), [1], [[10, 10, 20, 20]])
     with pytest.raises(TypeError, match=r"image_ids\[0\]: expected a non-negative integer, got '1'"):
         COCO.from_arrays(IMAGES, CATS, ["1"], [1], [[10, 10, 20, 20]])
+
+
+def test_a_whole_float_is_an_id_in_an_lvis_list(tmp_path):
+    """``neg_category_ids=[1.0]`` is ``[1]`` from a dict and a file alike, by the one id rule."""
+    dataset = {"images": [with_field(IMAGES[0], "neg_category_ids", [1.0])], "annotations": [GT], "categories": CATS}
+    path = tmp_path / "gt.json"
+    path.write_text(json.dumps(dataset))
+    for coco in (COCO(dataset), COCO(str(path))):
+        assert coco.loadImgs(1)[0]["neg_category_ids"] == [1]

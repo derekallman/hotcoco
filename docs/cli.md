@@ -403,7 +403,7 @@ coco semantic eval --gt <dir> --pred <dir> --classes <N | names.txt> [options]
 | `--json` | `results()` plus the `report` as JSON | off |
 
 ```bash
-coco semantic eval --gt gtFine/val --pred preds/ --classes 19
+coco semantic eval --gt gt/ --pred preds/ --classes 19
 coco semantic eval --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label
 coco semantic eval --gt gt/ --pred pred/ --classes names.txt --json
 ```
@@ -625,7 +625,7 @@ Prints the panopticapi table and a `stats:` line with the nine headline values;
 The semantic family, with the same flags as [`coco semantic eval`](#coco-semantic-eval):
 
 ```bash
-coco-eval semantic --gt gtFine/val --pred preds/ --classes 19
+coco-eval semantic --gt gt/ --pred preds/ --classes 19
 coco-eval semantic --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label -o report.json
 ```
 

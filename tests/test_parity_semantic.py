@@ -202,6 +202,20 @@ def test_bad_input_is_a_value_error():
     # An option pair with no reference meaning fails at construction, not one batch in.
     with pytest.raises(ValueError, match="needs ignore_index 255"):
         semantic.SemanticEval(2, ignore_index=None, reduce_zero_label=True)
+    # A flag is not a class count, though Python would read it as 1.
+    with pytest.raises(TypeError, match="number of classes"):
+        semantic.SemanticEval(True)
+    # A uint64 label of 2**63 or more is out of range, not negative, and is
+    # read as any other label is: unchecked under an ignored pixel, and the
+    # ignore index itself whatever its size.
+    with pytest.raises(
+        ValueError, match=r"gt pixel 1 has label 18446744073709551615; labels must be below num_classes \(2\)"
+    ):
+        ev.update(np.array([[0, 2**64 - 1]], np.uint64), np.array([[0, 0]]))
+    ev.update(np.array([[0, 255]]), np.array([[0, 2**64 - 1]], np.uint64))
+    wide = semantic.SemanticEval(2, ignore_index=2**64 - 1)
+    wide.update(np.array([[0, 2**64 - 1]], np.uint64), np.array([[0, 1]]))
+    assert ev.confusion().sum() == 1 and wide.confusion().sum() == 1
 
 
 @pytest.mark.parametrize("view", ["strided", "fortran", "transposed", "misaligned"], ids=str)
