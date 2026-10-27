@@ -36,8 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   negative; it now takes a `uint64` copy and is reported out of range, as the
   native one is.
 - **A label map of more than 32 dimensions** surfaced rust-numpy's panic as a
-  `PanicException`; it is a `ValueError` naming the argument. A column or table
-  reader checks its rank first and was never affected.
+  `PanicException`; it is a `ValueError` naming the argument. Only numpy 2 can
+  build such an array (numpy 1 stops at 32 itself), and a column or table reader
+  checks its rank first, so neither was ever affected.
 
 ## [1.3.0] - 2026-10-20
 

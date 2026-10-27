@@ -219,8 +219,13 @@ def test_bad_input_is_a_value_error():
     # The same in the other byte order, which is a copy, not a borrow.
     with pytest.raises(ValueError, match="gt pixel 1 has label 9223372036854775808"):
         ev.update(np.array([[0, 2**63]], ">u8"), np.array([[0, 0]]))
-    # rust-numpy views at most 32 dimensions; numpy allows 64.
-    with pytest.raises(ValueError, match="gt has 33 dimensions; at most 32"):
+    # rust-numpy views at most 32 dimensions. numpy 2 allows 64, so the guard is
+    # hotcoco's; numpy 1 refuses the 33rd dimension itself, with its own message.
+    if int(np.__version__.split(".")[0]) >= 2:
+        too_deep = "gt has 33 dimensions; at most 32"
+    else:
+        too_deep = "maximum supported dimension for an ndarray is 32"
+    with pytest.raises(ValueError, match=too_deep):
         ev.update(np.zeros((1,) * 33, np.uint8), np.zeros((1,) * 33, np.uint8))
 
 
