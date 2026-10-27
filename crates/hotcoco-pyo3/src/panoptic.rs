@@ -15,7 +15,10 @@ use crate::convert::{
     py_to_dataset, py_to_panoptic_dataset, record_list, set_segment_matches, type_name,
     with_context,
 };
-use crate::{PyCOCO, WarningCategory, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
+use crate::{
+    CallOrderWarning, PyCOCO, ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py,
+    to_pyerr, warn,
+};
 
 /// Whether a dict is COCO panoptic JSON — its annotations carry
 /// `segments_info` — rather than a detection-style dataset.
@@ -147,15 +150,11 @@ percent, as panopticapi prints it. Each entry of ``reference_deviations()``
 is emitted first as a ``ReferenceDeviationWarning``."]
     fn summarize(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.inner.result().is_none() {
-            warn(
-                py,
-                WarningCategory::CallOrder,
-                "summarize() called before evaluate().",
-            )?;
+            warn::<CallOrderWarning>(py, "summarize() called before evaluate().")?;
             return Ok(());
         }
         for w in self.inner.reference_deviations() {
-            warn(py, WarningCategory::ReferenceDeviation, &w)?;
+            warn::<ReferenceDeviationWarning>(py, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }
@@ -188,14 +187,13 @@ gives the order. ``-1.0`` where a split had no category to average. Empty before
     #[doc = "Per-image match records, the panoptic counterpart of ``COCOeval.eval_imgs``.
 
 One dict per ground-truth image, in the order ``evaluate()`` visits them:
-``image_id``, then the four keys ``primitives.match_segments`` returns —
-``matched`` as ``(gt_id, pred_id, iou)`` tuples, and ``missed``,
-``false_positives`` and ``ignored`` as segment ids. Crowd segments appear in
-none. Ids are the input's: the PNG colors of the COCO panoptic format, or the
-annotation ids of a ``COCO`` dataset, repeated where the annotations repeat
+``image_id``, then the four lists ``primitives.match_segments`` returns for
+the image. Ids are the input's: the PNG colors of the COCO panoptic format, or
+the annotation ids of a ``COCO`` dataset, repeated where the annotations repeat
 them. ``matched`` is in the order the IoUs were summed: by id for the COCO
 panoptic format, by annotation order for a ``COCO`` dataset. Empty before
-``evaluate()``."]
+``evaluate()``. Each read converts every record, so bind the list once rather
+than indexing the attribute in a loop."]
     fn eval_imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let records = PyList::empty(py);
         for rec in self.inner.eval_imgs() {

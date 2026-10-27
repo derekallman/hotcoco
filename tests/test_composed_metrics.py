@@ -9,13 +9,16 @@ driver reports, exactly — ``==``, not a tolerance.
   the mean: every PQ, SQ, and RQ that ``PanopticEval`` reports, every count, and
   every per-image match record.
 - **Detection matching.** ``bbox_iou`` and ``greedy_match`` per (image,
-  category): every match ``COCOeval`` records in ``evalImgs``, at all ten
-  thresholds and all four area ranges.
+  category): every match and ``dtIgnore`` flag ``COCOeval`` records in
+  ``evalImgs``, at all ten thresholds and all four area ranges, and the true
+  positives, false positives, and misses ``accumulate()`` counts from them,
+  which ``helpers.eval_img_counts`` reads.
 
 The panoptic cases are the ones ``test_parity_panoptic.py`` checks
 ``PanopticEval`` against panopticapi on; this file checks the primitives
 against ``PanopticEval``. ``test_build_your_own_metric.py`` checks the guide
-page's metrics, true- and false-positive counts included, the same way.
+page's metrics, true- and false-positive counts included, the same way, and
+reads ``COCOeval``'s counts through the same helper.
 """
 
 from __future__ import annotations
@@ -24,7 +27,14 @@ from collections import defaultdict
 
 import numpy as np
 import pytest
-from helpers import detection_corpus, hand_panoptic_cases, random_panoptic_cases
+from helpers import (
+    coco_counts,
+    detection_corpus,
+    eval_img_counts,
+    hand_panoptic_cases,
+    outside_area_range,
+    random_panoptic_cases,
+)
 from hotcoco import COCO, COCOeval, metrics, panoptic, primitives
 
 CASES = hand_panoptic_cases() + random_panoptic_cases()
@@ -39,6 +49,14 @@ def pq_from_primitives(images, categories):
     the segment lists are COCO panoptic ``segments_info``. Returns the per-image
     match records, the per-category ``[iou_sum, tp, fp, fn]`` counts, and the
     ``All``/``Things``/``Stuff`` averages.
+
+    The counting is the guide page's ``image_counts`` and ``panoptic_counts``
+    again, which ``test_build_your_own_metric.py`` holds to ``PanopticEval`` on
+    the same cases. This copy stays for what that test does not hold: the
+    averages to ``==`` rather than 1e-12, which takes ``PanopticEval``'s running
+    sum; each category's PQ, SQ, and RQ to ``==``; the per-image match records
+    against ``PanopticEval.eval_imgs``; and label maps taken from memory rather
+    than read back from PNG files.
     """
     totals = {c["id"]: [0.0, 0, 0, 0] for c in categories}
     records = []
@@ -148,17 +166,20 @@ def cells(seed):
 
 
 def match_cell(gts, dts, area_range, iou_thrs):
-    """One (image, category, area range) cell matched the way COCO evaluation does."""
-    lo, hi = area_range
+    """One (image, category, area range) cell matched the way COCO evaluation does,
+    and ``COCOeval``'s ``gtIgnore`` for it."""
     iscrowd = [g["iscrowd"] for g in gts]
+    gt_outside = outside_area_range(gts, area_range)
     sim = primitives.bbox_iou([d["bbox"] for d in dts], [g["bbox"] for g in gts], iscrowd)
     m = primitives.greedy_match(
-        sim, [d["score"] for d in dts], iou_thrs, gt_ignore=[not lo <= g["area"] <= hi for g in gts], iscrowd=iscrowd
+        sim,
+        [d["score"] for d in dts],
+        iou_thrs,
+        gt_ignore=gt_outside.tolist(),
+        iscrowd=iscrowd,
+        dt_ignore=outside_area_range(dts, area_range),
     )
-    # COCO also ignores an unmatched detection outside the area range.
-    outside = np.array([not lo <= d["area"] <= hi for d in dts], dtype=bool)
-    ignore = m["dt_ignore"] | ((m["dt_matches"] < 0) & outside)
-    return m, ignore
+    return m, np.array(iscrowd, dtype=bool) | gt_outside
 
 
 @pytest.mark.parametrize("seed", [0, 1])
@@ -166,21 +187,27 @@ def test_greedy_match_makes_every_match_cocoeval_makes(seed):
     crowd_absorbed_twice = ignored_ground_truth = False
     for e, gts, dts in cells(seed):
         # No thresholds given: greedy_match's default is COCOeval's ten.
-        m, ignore = match_cell(gts, dts, e["aRng"], None)
+        m, gt_ignore = match_cell(gts, dts, e["aRng"], None)
         dt_row = {d["id"]: i for i, d in enumerate(dts)}
         gt_col = {g["id"]: i for i, g in enumerate(gts)}
+        # evalImgs lists detections best first; its dtIgnore is greedy_match's, verbatim.
+        ranked = [dt_row[d] for d in e["dtIds"]]
+        want_ignore = np.array(e["dtIgnore"], dtype=bool).reshape(len(e["dtMatches"]), len(ranked))
+        np.testing.assert_array_equal(m["dt_ignore"][:, ranked], want_ignore, err_msg=str(e["image_id"]))
         for t in range(len(e["dtMatches"])):
-            # evalImgs lists detections best first and uses 0 for "no match".
+            # evalImgs uses 0 for "no match".
             for k, d in enumerate(e["dtIds"]):
                 got = m["dt_matches"][t, dt_row[d]]
                 assert e["dtMatches"][t][k] == (gts[got]["id"] if got >= 0 else 0), (e["image_id"], t, d)
-                assert e["dtIgnore"][t][k] == ignore[t, dt_row[d]], (e["image_id"], t, d)
             for k, g in enumerate(e["gtIds"]):
                 got = m["gt_matches"][t, gt_col[g]]
                 assert e["gtMatches"][t][k] == (dts[got]["id"] if got >= 0 else 0), (e["image_id"], t, g)
+            # What accumulate() counts from the cell, the ground truths it ignores included.
+            counts = coco_counts(m["dt_matches"][t] >= 0, m["dt_ignore"][t], gt_ignore)
+            assert counts == eval_img_counts(e, t), (e["image_id"], e["category_id"], e["aRng"], t)
         hits = m["dt_matches"][0][m["dt_matches"][0] >= 0]
         crowd_absorbed_twice |= len(set(hits.tolist())) < len(hits)
-        ignored_ground_truth |= any(not e["aRng"][0] <= g["area"] <= e["aRng"][1] for g in gts)
+        ignored_ground_truth |= bool(outside_area_range(gts, e["aRng"]).any())
 
     # The corpus reaches the rules it was built for.
     assert crowd_absorbed_twice and ignored_ground_truth

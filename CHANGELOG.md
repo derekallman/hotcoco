@@ -9,14 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Warning categories.** Every Python warning hotcoco emits is now a
-  `HotcocoWarning`, a `UserWarning` subclass exported from the top level, so a
-  filter can name its kind instead of matching its text. `summarize()` emits each
-  reference deviation as a `ReferenceDeviationWarning`, and a method called before
-  the step it needs, such as `accumulate()` before `evaluate()`, emits a
-  `CallOrderWarning`. To silence a deliberate configuration and keep the rest:
+- **Warning categories.** Every Python warning hotcoco emits is now one of three
+  subclasses of `HotcocoWarning`, a `UserWarning` subclass, all exported from the
+  top level, so a filter can name its kind instead of matching its text.
+  `summarize()` emits each reference deviation as a `ReferenceDeviationWarning`;
+  a method called before the step it needs, such as `accumulate()` before
+  `evaluate()`, emits a `CallOrderWarning`; and `COCO.from_cvat()` skipping
+  shapes emits a `ConversionWarning`. The base is never emitted itself, so a
+  filter on `HotcocoWarning` reaches every kind and a filter on one subclass
+  reaches only that one. To silence a deliberate configuration and keep the rest:
   `warnings.filterwarnings("ignore", category=hotcoco.ReferenceDeviationWarning)`.
-  Filters on `UserWarning` still catch all three, and message text is unchanged
+  Filters on `UserWarning` still catch all of them, and message text is unchanged
   apart from the panoptic prefix under Changed. See
   [Filtering the warnings](https://derekallman.github.io/hotcoco/guide/results/#filtering-the-warnings).
 
@@ -26,13 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   provisional: their signatures freeze once the tracking family has exercised
   them.
   - `primitives.greedy_match(sim, scores, iou_thrs=None, *, gt_ignore=None,
-    iscrowd=None)` is COCO's greedy matcher, pycocotools-exact: detections in
-    descending score order with ties in row order, the later of two equal
-    ground truths, ignored ground truths only when nothing else clears the
-    threshold, crowd ground truths absorbing any number of detections, and
-    pycocotools' `1 - 1e-10` clamp at a threshold of 1.0. It returns
-    `dt_matches`, `gt_matches`, and `dt_ignore` arrays, `(T, D)` and `(T, G)`,
-    or one axis fewer for a single threshold.
+    iscrowd=None, dt_ignore=None)` is COCO's greedy matcher, pycocotools-exact:
+    detections in descending score order with ties in row order, the later of
+    two equal ground truths, ignored ground truths only when nothing else
+    clears the threshold, crowd ground truths absorbing any number of
+    detections, and pycocotools' `1 - 1e-10` clamp at a threshold of 1.0. It
+    returns `dt_matches`, `gt_matches`, and `dt_ignore` arrays, `(T, D)` and
+    `(T, G)`, or one axis fewer for a single threshold. The `dt_ignore`
+    argument flags the detections `COCOeval` ignores when nothing matches
+    them, such as those outside the area range, so the returned `dt_ignore`
+    is `evalImgs`' `dtIgnore` as it stands.
   - `primitives.segment_overlaps(gt, pred)` counts the pixels of every
     `(gt_id, pred_id)` pair in two panoptic label maps — panopticapi's
     `gt_pred_map` — and `primitives.match_segments(gt_segments, pred_segments,
@@ -42,9 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   - `tests/test_composed_metrics.py` holds the claim to `==`: PQ, SQ, RQ, and
     every count written in Python from `segment_overlaps`, `match_segments`,
     and `metrics.panoptic_quality` equal `PanopticEval`'s on every case
-    `test_parity_panoptic.py` checks against panopticapi, and every match
-    `greedy_match` makes equals `COCOeval`'s `evalImgs` at all ten thresholds
-    and all four area ranges.
+    `test_parity_panoptic.py` checks against panopticapi, and every match and
+    `dt_ignore` flag `greedy_match` returns equals `COCOeval`'s `evalImgs` at
+    all ten thresholds and all four area ranges, as do the true positives,
+    false positives, and misses `accumulate()` counts from them.
 - **Build your own metric**, a guide page that builds three metrics in Python
   from `primitives` and `metrics`: precision, recall, and F1 at one IoU and
   score threshold from `bbox_iou` and `greedy_match`; a cross-class confusion
@@ -57,7 +64,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **`PanopticEval.eval_imgs`** keeps each image's match records — `image_id`
   plus `match_segments`'s four lists — where `evaluate()` used to keep only the
   per-category counts. In Rust, `PanopticEval::eval_imgs()` returns
-  `&[ImageMatches]`.
+  `&[ImageMatches]`. `tests/test_parity_panoptic.py` holds the records from a
+  `COCO` dataset of masks to the PNG run's on the same pixels, each annotation
+  id read back as the segment id it was painted from.
 - In Rust, `panoptic::match_image` is the per-image step `PanopticEval` runs
   and `match_segments` calls: panopticapi's checks and areas around the
   kernel, in one place, with `panoptic::labels_from_ids` labeling segments
@@ -103,8 +112,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and `run()` emit it as ``hotcoco: 1 of 3 categories have no `isthing`; ...``
   where 1.3 wrote ``1 of 3 categories have no `isthing`; ...``, so a filter
   anchored at the old start needs the prefix. No other message changed.
+- **An `int32` label map is read in place** by `SemanticEval.update`,
+  `metrics.pixel_confusion`, and `primitives.segment_overlaps`, as `uint8`,
+  `uint16`, `uint64`, and `int64` maps are, rather than copied to `int64`
+  first; `int32` is what panopticapi's `rgb2id` returns. Rust: `LabelMap` has
+  a new variant, `I32`, so a `match` on it without a wildcard arm no longer
+  compiles. Named here because Rust-visible breaks ship in minors while the
+  crate has no outside dependents.
 
 ### Fixed
+
+- **`getAnnIds()` and `get_ann_ids()` return ids in pycocotools' order** —
+  dataset order, image by image in `imgIds` order when that is given — where
+  they returned them sorted ascending before.
 
 ## [1.3.1] - 2026-10-27
 

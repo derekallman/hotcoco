@@ -139,7 +139,9 @@ mod tests {
         match read_class_map(path).expect("a label map").labels {
             LabelMap::U8(v) => v.iter().copied().map(u16::from).collect(),
             LabelMap::U16(v) => v.into_owned(),
-            LabelMap::U64(_) | LabelMap::I64(_) => unreachable!("a PNG sample is at most 16 bits"),
+            LabelMap::U64(_) | LabelMap::I32(_) | LabelMap::I64(_) => {
+                unreachable!("a PNG sample is at most 16 bits")
+            }
         }
     }
 

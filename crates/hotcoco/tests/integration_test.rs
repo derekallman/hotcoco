@@ -513,6 +513,27 @@ fn test_get_ann_ids_iscrowd_filter() {
     assert_eq!(coco.get_ann_ids(&[1], &[], None, Some(true)), vec![2]);
 }
 
+/// `get_ann_ids` answers in pycocotools' order, not by id: dataset order, and
+/// image by image in `img_ids` order when that is given.
+#[test]
+fn test_get_ann_ids_keeps_dataset_order() {
+    let coco = COCO::from_dataset(dataset(
+        vec![img(1), img(2)],
+        vec![cat(1, "a"), cat(2, "b")],
+        vec![
+            ann(5, [0.0, 0.0, 10.0, 10.0]).in_img(2),
+            ann(3, [0.0, 0.0, 10.0, 10.0]).in_cat(2),
+            ann(4, [0.0, 0.0, 10.0, 10.0]).in_img(2).in_cat(2),
+            ann(1, [0.0, 0.0, 10.0, 10.0]),
+        ],
+    ));
+
+    assert_eq!(coco.get_ann_ids(&[], &[], None, None), vec![5, 3, 4, 1]);
+    assert_eq!(coco.get_ann_ids(&[2, 1], &[], None, None), vec![5, 4, 3, 1]);
+    assert_eq!(coco.get_ann_ids(&[1, 2], &[2], None, None), vec![3, 4]);
+    assert_eq!(coco.get_ann_ids(&[], &[2], None, Some(false)), vec![3, 4]);
+}
+
 #[test]
 fn test_summarize_prints() {
     let gt_path = fixtures_dir().join("gt.json");

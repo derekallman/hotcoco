@@ -38,9 +38,7 @@ metric counts true positives, false positives, and misses per category at IoU
 0.50 and a minimum score. [`f_scores`](../api/cocoeval.md#f_scores) reports the
 best F1 over all thresholds instead.
 
-Group the annotations by image and category first, keeping the order the dataset
-lists them in — the order `COCOeval` breaks ties in, which
-[`get_ann_ids`](../api/coco.md#get_ann_ids) does not keep:
+Group the annotations by image and category first:
 
 ```python
 from collections import defaultdict
@@ -53,7 +51,7 @@ from hotcoco import COCO, metrics, primitives
 def group(coco, key):
     """A dataset's annotations grouped by ``key(ann)``, each group in dataset order."""
     groups = defaultdict(list)
-    for ann in coco.dataset["annotations"]:
+    for ann in coco.load_anns(coco.get_ann_ids()):
         groups[key(ann)].append(ann)
     return groups
 ```
@@ -83,12 +81,17 @@ def detection_counts(
         dt_boxes, gt_boxes = [d["bbox"] for d in dts], [g["bbox"] for g in gts]
         sim = primitives.bbox_iou(dt_boxes, gt_boxes, iscrowd)
         m = primitives.greedy_match(
-            sim, [d["score"] for d in dts], iou_thr, gt_ignore=~gt_in_range, iscrowd=iscrowd
+            sim,
+            [d["score"] for d in dts],
+            iou_thr,
+            gt_ignore=~gt_in_range,
+            iscrowd=iscrowd,
+            dt_ignore=~dt_in_range,
         )
 
-        matched = m["dt_matches"] >= 0
-        tp = np.sum(matched & ~m["dt_ignore"])
-        fp = np.sum(~matched & dt_in_range)
+        matched, ignored = m["dt_matches"] >= 0, m["dt_ignore"]
+        tp = np.sum(matched & ~ignored)
+        fp = np.sum(~matched & ~ignored)
         fn = np.sum(gt_in_range & ~iscrowd) - tp
         counts[category_id] += (tp, fp, fn)
     return counts
@@ -140,8 +143,9 @@ are the ones `COCOeval` records in
 COCO's small, medium, and large scores keep every ground truth in the matching and
 flag those outside the range with `gt_ignore`. A flagged ground truth can still
 absorb a detection, so a box on a medium object is not a false positive for
-small. An unmatched detection outside the range is dropped as well. Both rules
-are in `detection_counts` already:
+small. Detections outside the range are flagged with `dt_ignore`, and count only
+when they match a ground truth in the range. Both rules are in
+`detection_counts` already:
 
 ```python
 small = detection_counts(gt, dt, area_range=(0, 32**2))

@@ -74,11 +74,14 @@ one malformed value through every path and fails on any disagreement.
 ### Warnings
 
 - **A warning names its kind where it is made, as an error does.** Emit it through
-  `warn` in `crates/hotcoco-pyo3/src/lib.rs`, which takes a `WarningCategory` (one
-  per `create_exception!` type beside it; the variants document when each applies)
-  and adds the `hotcoco: ` prefix, so a message never spells it.
-  `tests/test_warning_categories.py` counts the `warn(` calls per file and fails on
-  a warning raised any other way, so a new one needs a row there.
+  `warn` in `crates/hotcoco-pyo3/src/lib.rs`, which takes the class as a type
+  parameter — `warn::<CallOrderWarning>(py, "...")`, one of the `HotcocoWarning`
+  subclasses beside it, whose docstrings say when each applies — and adds the
+  `hotcoco: ` prefix, so a message never spells it. The base `HotcocoWarning` is
+  never emitted: a warning that fits no category gets a new subclass, so filtering
+  one kind never silences another. `tests/test_warning_categories.py` counts the
+  `warn` calls per file, fails on one that names the base, and fails on a warning
+  raised any other way, so a new one needs a row there.
 - **A call made before the step it needs raises `Error::InvalidState`** (see
   [Input errors](#input-errors)). `CallOrderWarning` is only for the pipeline methods
   that already return an empty result instead, which callers rely on; a new method

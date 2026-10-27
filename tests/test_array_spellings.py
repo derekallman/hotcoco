@@ -17,7 +17,7 @@ counts and ``primitives.segment_overlaps``), ``u64_matrix_arg`` (a confusion
 matrix), ``u64_vec`` (an id column), ``f64_vec`` and ``f64_matrix_arg`` (a
 float column, a box table, the similarity matrix, scores, and thresholds of
 ``primitives.greedy_match``), ``anns_from_array`` (a detection table),
-``flag_vec`` (``iscrowd``, ``gt_ignore``), ``bool_vec`` (``matched``), and the
+``flag_vec`` (``iscrowd``, ``gt_ignore``, ``dt_ignore``), ``bool_vec`` (``matched``), and the
 numpy scalars that ``extract_int`` reads inside a record.
 
 ``fuzz_dropin.py`` does this for a dataset's spellings; this is the array
@@ -157,15 +157,17 @@ def test_a_batch_counts_the_same_in_every_spelling(dtype, layout, side):
 
 
 @pytest.mark.parametrize("layout", LAYOUTS)
-def test_a_bad_label_is_named_by_its_row_major_position(layout):
-    """The pixel an error names is ``gt.flat``'s index, whatever order the buffer is in."""
+@pytest.mark.parametrize("dtype", [np.int32, np.int64], ids=lambda d: np.dtype(d).name)
+def test_a_bad_label_is_named_by_its_row_major_position(dtype, layout):
+    """The pixel an error names is ``gt.flat``'s index, whatever order the buffer is in,
+    for each signed width read in place."""
     bad = GT.copy()
     bad[2, 3] = -1
     want = f"gt pixel {np.ravel_multi_index((2, 3), GT.shape)} has a negative label"
     with pytest.raises(ValueError, match=want):
-        primitives.segment_overlaps(spelled(bad, np.int64, layout), PRED)
+        primitives.segment_overlaps(spelled(bad, dtype, layout), PRED)
     with pytest.raises(ValueError, match=want):
-        metrics.pixel_confusion(spelled(bad, np.int64, layout), PRED, 3, ignore_index=IGNORE)
+        metrics.pixel_confusion(spelled(bad, dtype, layout), PRED, 3, ignore_index=IGNORE)
 
 
 # --- a confusion matrix: metrics.mean_iou -------------------------------------
@@ -271,6 +273,7 @@ def test_metric_columns_read_the_same_in_every_spelling(dtype, layout):
 # buffer read row-major would be.
 SIM = np.array([[1.0, 0.75, 0.25, 0.0], [0.0, 0.75, 0.125, 0.5], [1.0, 1.0, 0.25, 0.0], [0.5, 0.875, 0.625, 0.0]])
 THRESHOLDS = np.array([0.5, 0.625, 0.75])
+DT_FLAGS = np.roll(FLAGS, 2)  # a pattern neither ground-truth flag column has
 
 
 def greedy_reference(**flags):
@@ -304,16 +307,19 @@ def test_greedy_match_columns_read_the_same_in_every_spelling(dtype, layout):
 @pytest.mark.parametrize("dtype", [np.bool_] + INT_DTYPES, ids=lambda d: np.dtype(d).name)
 def test_greedy_match_flags_read_the_same_in_every_spelling(dtype, layout):
     crowd = np.roll(FLAGS, 1)
-    want = greedy_reference(gt_ignore=FLAGS.tolist(), iscrowd=crowd.tolist())
+    want = greedy_reference(gt_ignore=FLAGS.tolist(), iscrowd=crowd.tolist(), dt_ignore=DT_FLAGS.tolist())
     got = primitives.greedy_match(
         SIM,
         SCORES,
         THRESHOLDS,
         gt_ignore=spelled_column(FLAGS, dtype, layout),
         iscrowd=spelled_column(crowd, dtype, layout),
+        dt_ignore=spelled_column(DT_FLAGS, dtype, layout),
     )
     assert same_matches(got, want)
     assert not same_matches(want, greedy_reference()), "the flags must change the matches"
+    without_seed = greedy_reference(gt_ignore=FLAGS.tolist(), iscrowd=crowd.tolist())
+    assert not same_matches(want, without_seed), "the detection flags must change dt_ignore"
 
 
 def degenerate(shape, dtype, width=5):
@@ -327,7 +333,7 @@ def degenerate(shape, dtype, width=5):
 
 
 @pytest.mark.parametrize("shape", [(0, 5), (1, 5), (5, 1), (1, 1), "odd stride"], ids=str)
-@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.uint64, np.int64], ids=lambda d: np.dtype(d).name)
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.uint64, np.int32, np.int64], ids=lambda d: np.dtype(d).name)
 def test_a_degenerate_shape_is_one_slice(shape, dtype):
     """Each width read in place trusts that what numpy calls C-contiguous is one slice
     to ndarray, length-one axes and all. The zero-size rows take the copy path instead

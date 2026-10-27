@@ -174,6 +174,7 @@ COCO's greedy matching of detections to ground truths, pycocotools-exact.
         *,
         gt_ignore: Sequence[bool] | numpy.ndarray | None = None,
         iscrowd: Sequence[bool] | numpy.ndarray | None = None,
+        dt_ignore: Sequence[bool] | numpy.ndarray | None = None,
     ) -> dict
     ```
 
@@ -184,6 +185,7 @@ COCO's greedy matching of detections to ground truths, pycocotools-exact.
     | `iou_thrs` | `float \| Sequence[float] \| None` | One threshold or several. Default: COCO's ten, 0.50 to 0.95 |
     | `gt_ignore` | `Sequence[bool] \| numpy.ndarray \| None` | `(G,)` ground truths that can absorb a detection but never count, such as those outside the area range being scored |
     | `iscrowd` | `Sequence[bool] \| numpy.ndarray \| None` | `(G,)` crowd flags, the ones `sim` was computed with |
+    | `dt_ignore` | `Sequence[bool] \| numpy.ndarray \| None` | `(D,)` detections ignored when nothing matches them, such as those outside the area range being scored. A detection that matches takes its ground truth's flag instead |
 
 === "Rust"
 
@@ -217,7 +219,7 @@ whatever order those are in:
 |-----|------|-------------|
 | `dt_matches` | `int64`, `(T, D)` | The column each detection matched, or `-1` |
 | `gt_matches` | `int64`, `(T, G)` | The row that matched each ground truth, or `-1`; for a crowd ground truth, the last one to |
-| `dt_ignore` | `bool`, `(T, D)` | Detections matched to an ignored or crowd ground truth — neither true nor false positives |
+| `dt_ignore` | `bool`, `(T, D)` | `evalImgs`' `dtIgnore`: detections matched to an ignored or crowd ground truth, and unmatched ones the `dt_ignore` argument flags — neither true nor false positives |
 
 With a single number for `iou_thrs`, the threshold axis is dropped: `(D,)`,
 `(G,)`, `(D,)`, as `numpy.quantile` does for a scalar `q`. The pycocotools
@@ -229,14 +231,15 @@ from hotcoco import primitives
 
 sim = primitives.bbox_iou(dt_boxes, gt_boxes, iscrowd)
 m = primitives.greedy_match(sim, dt_scores, 0.5, iscrowd=iscrowd)
-matched = m["dt_matches"] >= 0
-tp = (matched & ~m["dt_ignore"]).sum()
-fp = (~matched).sum()
+matched, ignored = m["dt_matches"] >= 0, m["dt_ignore"]
+tp = (matched & ~ignored).sum()
+fp = (~matched & ~ignored).sum()
 ```
 
-COCO also ignores an unmatched detection outside the area range being scored,
-which is a property of the detection, not the matching: apply it yourself as
-`~matched & outside_range`.
+To score one area range as COCO does, flag the ground truths outside it with
+`gt_ignore` and the detections outside it with `dt_ignore`. A flagged ground
+truth can still absorb a detection, and a flagged detection that matches a
+ground truth in the range is still a true positive.
 
 The matching is greedy, not optimal. That is the protocol, and the numbers
 depend on it; for an optimal assignment use [`lsap`](#lsap).

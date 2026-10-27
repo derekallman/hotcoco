@@ -9,7 +9,9 @@ Compared below the averages, where a mistake cannot cancel:
 - PQ, SQ, RQ and N for All, Things, Stuff to 1e-9.
 
 The same label maps also go through the path with no PNG files — detection-
-style datasets carrying RLEs — which must reproduce the PNG path exactly.
+style datasets carrying RLEs — which must reproduce the PNG path exactly: the
+same numbers, and the same per-image match records once each annotation id is
+read back as the segment id it was painted from.
 
 What the random cases exercise, by construction: crowd segments absorbing
 predictions of their category, predictions mostly on void being ignored,
@@ -51,18 +53,46 @@ def run_reference(paths: dict) -> tuple[dict, dict]:
     return panopticapi_reference(paths["gt"][0], paths["pred"][0], paths["gt"][1], paths["pred"][1], multi_core=False)
 
 
-def run_hotcoco_png(paths: dict) -> dict:
+def evaluate_png(paths: dict) -> panoptic.PanopticEval:
     gt_json, gt_folder = paths["gt"]
     pred_json, pred_folder = paths["pred"]
     ev = panoptic.PanopticEval(gt_json, pred_json, gt_folder=gt_folder, pred_folder=pred_folder)
     ev.evaluate()
-    return ev.results()
+    return ev
 
 
-def run_hotcoco_rle(case: Case) -> dict:
+def run_hotcoco_png(paths: dict) -> dict:
+    return evaluate_png(paths).results()
+
+
+def evaluate_rle(case: Case) -> panoptic.PanopticEval:
     ev = panoptic.PanopticEval(case.as_coco("gt"), case.as_coco("pred"))
     ev.evaluate()
-    return ev.results()
+    return ev
+
+
+def as_segment_ids(case: Case, records: list[dict]) -> list[dict]:
+    """The RLE run's ``eval_imgs`` with every annotation id read back as the segment
+    id ``as_coco`` painted it from, which is the id the PNG run reports."""
+    ids = {side: case.segment_ids(side) for side in ("gt", "pred")}
+
+    def segment(side, image, ann_id):
+        # An annotation of another image reads as no segment, never as one of this image's.
+        return ids[side].get((image, ann_id), f"{side} annotation {ann_id}, not in image {image}")
+
+    out = []
+    for r in records:
+        i = r["image_id"]
+        out.append(
+            {
+                "image_id": i,
+                "matched": [(segment("gt", i, g), segment("pred", i, p), iou) for g, p, iou in r["matched"]],
+                "missed": [segment("gt", i, g) for g in r["missed"]],
+                "false_positives": [segment("pred", i, p) for p in r["false_positives"]],
+                "ignored": [segment("pred", i, p) for p in r["ignored"]],
+            }
+        )
+    return out
 
 
 def disagreements(ref_avg: dict, ref_counts: dict, got: dict) -> list[str]:
@@ -98,14 +128,19 @@ def test_png_path_matches_panopticapi(written_case):
 
 
 def test_rle_path_reproduces_png_path(written_case):
-    """No PNG files, same pixels, same numbers — exactly."""
+    """No PNG files, same pixels, same numbers — exactly — and the same matches.
+
+    The numbers alone cannot see a record that names the wrong segment: PQ never
+    reads an id.
+    """
     case, paths = written_case
     if case.png_only:
         pytest.skip("case depends on PNG-only semantics")
-    from_png = run_hotcoco_png(paths)
-    from_rle = run_hotcoco_rle(case)
+    png_ev, rle_ev = evaluate_png(paths), evaluate_rle(case)
+    from_png, from_rle = png_ev.results(), rle_ev.results()
     for key in ("All", "Things", "Stuff", "per_class"):
         assert from_rle[key] == from_png[key], f"{case.name}: {key} differs between the RLE and PNG paths"
+    assert as_segment_ids(case, rle_ev.eval_imgs) == png_ev.eval_imgs, f"{case.name}: eval_imgs differ"
 
 
 def test_pq_compute_is_a_drop_in(tmp_path):

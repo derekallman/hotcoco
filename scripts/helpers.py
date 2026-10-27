@@ -14,6 +14,7 @@ import sys
 import tempfile
 import types
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
 from typing import NamedTuple
 
@@ -585,28 +586,39 @@ class PanopticCase:
             paths[side] = (json_path, folder)
         return paths
 
+    def _numbered(self, side: str):
+        """`(annotation id, image id, label map, segment)` for every segment of
+        `side`, numbered 1, 2, ... across the images in order, as `as_coco` numbers
+        its annotations."""
+        data = self.gt if side == "gt" else self.pred
+        segments = ((image_id, label_map, seg) for image_id, (label_map, segs) in data.items() for seg in segs)
+        for ann_id, (image_id, label_map, seg) in enumerate(segments, 1):
+            yield ann_id, image_id, label_map, seg
+
     def as_coco(self, side: str):
         """The same maps as a detection-style dataset with RLE masks."""
         from hotcoco import COCO, mask
 
-        data = self.gt if side == "gt" else self.pred
         annotations = []
-        next_id = 1
-        for image_id, (label_map, segs) in data.items():
-            for seg in segs:
-                binary = np.asfortranarray((label_map == seg["id"]).astype(np.uint8))
-                annotations.append(
-                    {
-                        "id": next_id,
-                        "image_id": image_id,
-                        "category_id": seg["category_id"],
-                        "iscrowd": seg.get("iscrowd", 0),
-                        "segmentation": mask.encode(binary),
-                        "area": int(binary.sum()),
-                    }
-                )
-                next_id += 1
+        for ann_id, image_id, label_map, seg in self._numbered(side):
+            binary = np.asfortranarray((label_map == seg["id"]).astype(np.uint8))
+            annotations.append(
+                {
+                    "id": ann_id,
+                    "image_id": image_id,
+                    "category_id": seg["category_id"],
+                    "iscrowd": seg.get("iscrowd", 0),
+                    "segmentation": mask.encode(binary),
+                    "area": int(binary.sum()),
+                }
+            )
         return COCO({"images": self.images, "annotations": annotations, "categories": self.categories})
+
+    def segment_ids(self, side: str) -> dict[tuple[int, int], int]:
+        """The segment id each annotation of `as_coco(side)` stands for, keyed by
+        `(image id, annotation id)`: segment ids restart in every image, so an id
+        read without its image could name another image's segment."""
+        return {(image_id, ann_id): seg["id"] for ann_id, image_id, _, seg in self._numbered(side)}
 
 
 def segments_from_map(label_map: np.ndarray, category_of, rng: random.Random, *, crowd_rate=0.0, area_noise=0.0):
@@ -880,6 +892,56 @@ def detection_corpus(seed: int) -> tuple[dict, list[dict]]:
     for gt, gt_id in zip(gts, ids):
         gt["id"] = gt_id
     return {"images": images, "annotations": gts, "categories": categories}, dts
+
+
+# ── COCOeval's counts, read from evalImgs ─────────────────────────────────────
+#
+# One reading of what `accumulate()` counts. `tests/test_composed_metrics.py`
+# holds the primitives' matches to it, and `tests/test_build_your_own_metric.py`
+# holds the guide page's counts to it, so the two cannot disagree about COCOeval.
+
+
+def outside_area_range(anns, area_range) -> np.ndarray:
+    """True for each annotation whose `area` lies outside `area_range`, both ends
+    inclusive: COCOeval ignores a ground truth there, and an unmatched detection."""
+    lo, hi = area_range
+    return np.array([not lo <= a["area"] <= hi for a in anns], dtype=bool)
+
+
+def coco_counts(matched, dt_ignore, gt_ignore) -> tuple[int, int, int]:
+    """`(tp, fp, fn)` the way `accumulate()` counts one cell at one IoU threshold.
+
+    A detection is a true positive when matched and not ignored, and a false
+    positive when neither; a ground truth not ignored that no true positive took
+    is a miss. `dt_ignore` and `gt_ignore` are `evalImgs`' `dtIgnore` and
+    `gtIgnore`: for `greedy_match`, the `dt_ignore` it returns, and
+    `gt_ignore | iscrowd`.
+    """
+    matched, dt_ignore, gt_ignore = (np.asarray(a, dtype=bool) for a in (matched, dt_ignore, gt_ignore))
+    tp = int(np.sum(matched & ~dt_ignore))
+    return tp, int(np.sum(~matched & ~dt_ignore)), int(np.sum(~gt_ignore)) - tp
+
+
+def eval_img_counts(e: dict, t: int = 0, score_thr: float = float("-inf")) -> tuple[int, int, int]:
+    """`coco_counts` of one `evalImgs` entry at `iou_thrs[t]`, over its detections
+    scoring `score_thr` or more. `dtMatches` holds 0 for "no match", and `dtIgnore`
+    already ignores an unmatched detection outside the entry's area range."""
+    confident = np.array(e["dtScores"], dtype=float) >= score_thr
+    matched = np.array(e["dtMatches"][t], dtype=float) > 0
+    dt_ignore = np.array(e["dtIgnore"][t], dtype=bool)
+    return coco_counts(matched[confident], dt_ignore[confident], e["gtIgnore"])
+
+
+def counts_from_eval_imgs(
+    eval_imgs: list, area_range, score_thr: float = float("-inf"), t: int = 0
+) -> dict[int, tuple[int, int, int]]:
+    """`(tp, fp, fn)` per category id at `iou_thrs[t]`, summed over the `evalImgs`
+    entries for `area_range`."""
+    counts = defaultdict(lambda: np.zeros(3, dtype=np.int64))
+    for e in eval_imgs:
+        if e is not None and e["aRng"] == list(area_range):
+            counts[e["category_id"]] += eval_img_counts(e, t, score_thr)
+    return {category_id: tuple(n.tolist()) for category_id, n in counts.items()}
 
 
 # ── running a reference from its pinned source ────────────────────────────────

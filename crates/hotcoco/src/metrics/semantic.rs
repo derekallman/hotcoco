@@ -99,8 +99,9 @@ macro_rules! label_wide {
 label_wide!(i128, u128);
 
 /// A label map's pixels in one of the widths a map is stored in: a PNG's
-/// 8- or 16-bit sample, or the `int64` a tensor's `argmax` yields. Borrowed
-/// from a buffer that already holds them, or owned when they were decoded.
+/// 8- or 16-bit sample, the `int32` panopticapi's `rgb2id` returns, or the
+/// `int64` a tensor's `argmax` yields. Borrowed from a buffer that already
+/// holds them, or owned when they were decoded.
 ///
 /// The one dispatch from a width to [`PixelConfusion::update`]'s generics
 /// ([`with_pair`](Self::with_pair)), so a new width is one variant here and
@@ -110,6 +111,7 @@ pub enum LabelMap<'a> {
     U8(Cow<'a, [u8]>),
     U16(Cow<'a, [u16]>),
     U64(Cow<'a, [u64]>),
+    I32(Cow<'a, [i32]>),
     I64(Cow<'a, [i64]>),
 }
 
@@ -124,23 +126,32 @@ pub trait LabelPairOp {
 impl LabelMap<'_> {
     /// Run `op` on the two maps' slices, whatever pair of widths they hold.
     pub fn with_pair<Op: LabelPairOp>(gt: &Self, pred: &Self, op: Op) -> Op::Output {
-        use self::LabelMap::{I64, U8, U16, U64};
+        use self::LabelMap::{I32, I64, U8, U16, U64};
         match (gt, pred) {
             (U8(g), U8(p)) => op.run(g, p),
             (U8(g), U16(p)) => op.run(g, p),
             (U8(g), U64(p)) => op.run(g, p),
+            (U8(g), I32(p)) => op.run(g, p),
             (U8(g), I64(p)) => op.run(g, p),
             (U16(g), U8(p)) => op.run(g, p),
             (U16(g), U16(p)) => op.run(g, p),
             (U16(g), U64(p)) => op.run(g, p),
+            (U16(g), I32(p)) => op.run(g, p),
             (U16(g), I64(p)) => op.run(g, p),
             (U64(g), U8(p)) => op.run(g, p),
             (U64(g), U16(p)) => op.run(g, p),
             (U64(g), U64(p)) => op.run(g, p),
+            (U64(g), I32(p)) => op.run(g, p),
             (U64(g), I64(p)) => op.run(g, p),
+            (I32(g), U8(p)) => op.run(g, p),
+            (I32(g), U16(p)) => op.run(g, p),
+            (I32(g), U64(p)) => op.run(g, p),
+            (I32(g), I32(p)) => op.run(g, p),
+            (I32(g), I64(p)) => op.run(g, p),
             (I64(g), U8(p)) => op.run(g, p),
             (I64(g), U16(p)) => op.run(g, p),
             (I64(g), U64(p)) => op.run(g, p),
+            (I64(g), I32(p)) => op.run(g, p),
             (I64(g), I64(p)) => op.run(g, p),
         }
     }

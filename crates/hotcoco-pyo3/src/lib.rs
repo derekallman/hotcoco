@@ -100,7 +100,8 @@ pyo3::create_exception!(
     "Base class for every Python warning hotcoco emits.\n\n\
      A ``UserWarning`` subclass, so a filter written for ``UserWarning`` still \
      catches it. Filter on this class for all of hotcoco's warnings, or on a \
-     subclass for one kind."
+     subclass for one kind. hotcoco never emits this class itself: every \
+     warning is one of its subclasses."
 );
 pyo3::create_exception!(
     hotcoco,
@@ -116,38 +117,32 @@ pyo3::create_exception!(
     "A method was called before the step it needs.\n\n\
      For example, ``accumulate()`` before ``evaluate()``."
 );
+pyo3::create_exception!(
+    hotcoco,
+    ConversionWarning,
+    HotcocoWarning,
+    "A format converter imported part of its input.\n\n\
+     For example, ``COCO.from_cvat()`` skipping shapes COCO cannot express."
+);
 
-/// The class a hotcoco warning is raised under, one variant per warning type
-/// defined with `create_exception!`. Every class is a `UserWarning` subclass,
-/// so a filter written before the categories existed still catches them.
-#[derive(Clone, Copy)]
-pub(crate) enum WarningCategory {
-    /// `HotcocoWarning`, the base: a warning that fits neither subclass.
-    General,
-    /// `ReferenceDeviationWarning`: one entry of `reference_deviations()`,
-    /// raised by `summarize()`.
-    ReferenceDeviation,
-    /// `CallOrderWarning`: a method called before the step it needs.
-    CallOrder,
-}
-
-/// Emit `hotcoco: {msg}` as a warning of `category` through Python's
+/// Emit `hotcoco: {msg}` as a warning of class `W` through Python's
 /// `warnings` machinery.
+///
+/// `W` is one of the leaf classes defined with `create_exception!`, never the
+/// base `HotcocoWarning`: a filter on one category then never has to catch a
+/// warning of another kind (`tests/test_warning_categories.py` holds every
+/// call to that). Every class is a `UserWarning` subclass, so a filter written
+/// before the categories existed still catches them.
 ///
 /// `eprintln!` writes to fd 2, which bypasses `sys.stderr` — invisible in a
 /// Jupyter cell, uncatchable by `warnings.catch_warnings`. Routing through
 /// `PyErr::warn` makes filters, `-W` flags, and `pytest.warns` all work. The
 /// prefix is added here so every message carries it, and a downstream filter
 /// on `^hotcoco:` matches each one.
-pub(crate) fn warn(py: Python<'_>, category: WarningCategory, msg: &str) -> PyResult<()> {
-    let class = match category {
-        WarningCategory::General => py.get_type::<HotcocoWarning>(),
-        WarningCategory::ReferenceDeviation => py.get_type::<ReferenceDeviationWarning>(),
-        WarningCategory::CallOrder => py.get_type::<CallOrderWarning>(),
-    };
+pub(crate) fn warn<W: pyo3::PyTypeInfo>(py: Python<'_>, msg: &str) -> PyResult<()> {
     let msg = std::ffi::CString::new(format!("hotcoco: {msg}"))
         .unwrap_or_else(|_| c"hotcoco: warning text contained a NUL byte".to_owned());
-    PyErr::warn(py, class.as_any(), &msg, 1)
+    PyErr::warn(py, py.get_type::<W>().as_any(), &msg, 1)
 }
 
 /// Print each line through Python's `print`, so it lands on `sys.stdout`.
@@ -207,8 +202,9 @@ fn freq_group_name(group: hotcoco_core::FreqGroup) -> &'static str {
 
 use convert::{
     AreaRng, Flag, IdList, NameList, annotation_to_py, category_to_py, confusion_counts_to_py,
-    dataset_stats_to_py, dict_list, f64_array, image_to_py, map_to_dict, merge_ann_dict_checked,
+    dataset_stats_to_py, dict_list, image_to_py, map_to_dict, merge_ann_dict_checked,
     py_to_annotation, py_to_category, py_to_dataset, py_to_image, py_to_record, rle_to_coco_py,
+    shaped_array,
 };
 
 // ---------------------------------------------------------------------------
@@ -1043,7 +1039,7 @@ impl PyCOCO {
     ///
     /// Warns
     /// -----
-    /// HotcocoWarning
+    /// ConversionWarning
     ///     When shapes were skipped — kinds COCO cannot express (``<polyline>``,
     ///     ``<points>``, ``<cuboid>``) or polygons with fewer than 3 points —
     ///     so a partial import is visible rather than silent.
@@ -1059,9 +1055,8 @@ impl PyCOCO {
         let (dataset, stats) = hotcoco_core::convert::cvat_to_coco(Path::new(cvat_path))
             .map_err(|e| to_pyerr(e.into()))?;
         if stats.skipped_unsupported > 0 || stats.skipped_degenerate > 0 {
-            warn(
+            warn::<ConversionWarning>(
                 cls.py(),
-                WarningCategory::General,
                 &format!(
                     "CVAT import of {cvat_path} skipped {} unsupported shape(s) \
                      and {} degenerate polygon(s)",
@@ -2209,9 +2204,8 @@ impl PyCOCOeval {
 
     fn accumulate(&mut self, py: Python<'_>) -> PyResult<()> {
         if !self.inner.evaluated() {
-            warn(
+            warn::<CallOrderWarning>(
                 py,
-                WarningCategory::CallOrder,
                 "accumulate() called before evaluate(). \
                  Call evaluate() first or the results will be empty.",
             )?;
@@ -2224,9 +2218,8 @@ impl PyCOCOeval {
 
     fn summarize(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.inner.accumulated().is_none() {
-            warn(
+            warn::<CallOrderWarning>(
                 py,
-                WarningCategory::CallOrder,
                 "summarize() called before accumulate(). \
                  Call evaluate() then accumulate() first.",
             )?;
@@ -2240,7 +2233,7 @@ impl PyCOCOeval {
         // params mutation still reaches the comparability check.
         let deviations = self.with_params(py, |ev| ev.reference_deviations());
         for w in &deviations {
-            warn(py, WarningCategory::ReferenceDeviation, w)?;
+            warn::<ReferenceDeviationWarning>(py, w)?;
         }
 
         // Through Python's `print` — see `print_lines`.
@@ -2259,9 +2252,8 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
 "]
     fn summary_lines(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
         if self.inner.accumulated().is_none() {
-            warn(
+            warn::<CallOrderWarning>(
                 py,
-                WarningCategory::CallOrder,
                 "summary_lines() called before accumulate(). \
                  Call evaluate() then accumulate() first.",
             )?;
@@ -2381,9 +2373,8 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
         // Through Python's `print`, not the core `print_results` — see `print_lines`.
         let lines = self.inner.print_results_lines();
         if lines.is_empty() {
-            return warn(
+            return warn::<CallOrderWarning>(
                 py,
-                WarningCategory::CallOrder,
                 "No results to print. Run evaluate(), accumulate(), and summarize() first.",
             );
         }
@@ -2591,9 +2582,8 @@ Examples
     #[pyo3(signature = (beta = 1.0))]
     fn f_scores(&mut self, py: Python<'_>, beta: f64) -> PyResult<Py<PyAny>> {
         if self.inner.accumulated().is_none() {
-            warn(
+            warn::<CallOrderWarning>(
                 py,
-                WarningCategory::CallOrder,
                 "f_scores() called before accumulate(). \
                  Call evaluate() then accumulate() first. Returning empty dict.",
             )?;
@@ -2771,7 +2761,7 @@ Example
         let k = cm.num_cats + 1;
 
         // normalized: Vec<f64> → numpy float64, reshaped to (k, k)
-        let norm_arr = f64_array(py, cm.normalized(), [k, k])?;
+        let norm_arr = shaped_array(py, cm.normalized(), [k, k])?;
 
         let matrix_arr = confusion_counts_to_py(py, cm.matrix, k)?;
 
@@ -3407,9 +3397,9 @@ fn accumulated_eval_to_py(
             // recall: flat Vec<f64> → numpy (T, K, A, M).
             let trkam = [e.shape.t, e.shape.r, e.shape.k, e.shape.a, e.shape.m];
             let tkam = [e.shape.t, e.shape.k, e.shape.a, e.shape.m];
-            dict.set_item("precision", f64_array(py, e.precision.clone(), trkam)?)?;
-            dict.set_item("recall", f64_array(py, e.recall.clone(), tkam)?)?;
-            dict.set_item("scores", f64_array(py, e.scores.clone(), trkam)?)?;
+            dict.set_item("precision", shaped_array(py, e.precision.clone(), trkam)?)?;
+            dict.set_item("recall", shaped_array(py, e.recall.clone(), tkam)?)?;
+            dict.set_item("scores", shaped_array(py, e.scores.clone(), trkam)?)?;
 
             Ok(dict.into_any().unbind())
         }
@@ -3587,6 +3577,7 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
         py.get_type::<ReferenceDeviationWarning>(),
     )?;
     m.add("CallOrderWarning", py.get_type::<CallOrderWarning>())?;
+    m.add("ConversionWarning", py.get_type::<ConversionWarning>())?;
 
     // The functional layer — metric functions and matching kernels, callable
     // without a COCOeval. `__init__.py` also registers these in sys.modules so

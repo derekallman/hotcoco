@@ -626,9 +626,6 @@ pub fn labels_from_ids(
     in_map: impl Fn(u32) -> bool,
 ) -> Vec<(u32, &SegmentInfo)> {
     let fits = |s: &SegmentInfo| u32::try_from(s.id).ok();
-    if segments.iter().all(|s| fits(s).is_some()) {
-        return segments.iter().map(|s| (s.id as u32, s)).collect();
-    }
     let used: FxHashSet<u32> = segments.iter().filter_map(fits).collect();
     let mut spare = (0..=u32::MAX)
         .rev()
@@ -732,7 +729,9 @@ pub fn match_image(
 
 /// Categories as the reference's `{id: category}` dict holds them.
 fn unique_categories(categories: &[Category]) -> impl Iterator<Item = &Category> {
-    dict_order(categories, |c| c.id).into_iter()
+    dict_order(categories, |c| c.id)
+        .into_iter()
+        .map(|i| &categories[i])
 }
 
 /// One side of one image as a label map plus the label of each segment.
@@ -823,7 +822,9 @@ fn eval_image(
     let pred_kept: FxHashMap<u32, &SegmentInfo> = pred.segments.iter().copied().collect();
     // panopticapi checks a prediction's category in its loop over the PNG's
     // ids, in id order, where an id the JSON does not list stops it; the
-    // checks `match_image` makes come after.
+    // checks `match_image` makes come after. The scan order and the `break`
+    // exist only to raise the same error panopticapi raises when an image has
+    // both faults; `test_parity_panoptic` pins that precedence.
     for (label, _) in overlaps.pred_areas() {
         match pred_kept.get(&label) {
             None if label == VOID => {}

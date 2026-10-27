@@ -43,6 +43,13 @@ use rustc_hash::FxHashMap;
 /// The label panopticapi reserves for unlabeled pixels.
 pub const VOID: u32 = 0;
 
+/// Which of a pair of label maps a pixel is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Gt,
+    Pred,
+}
+
 /// The pixel-count histogram of `(gt id, pred id)` co-occurrences for one image.
 ///
 /// Sorted by `(gt, pred)`, so lookups are binary searches and iteration order
@@ -67,6 +74,40 @@ impl Overlaps {
             pred.len()
         );
         Self::from_pixels(gt.iter().copied().zip(pred.iter().copied()))
+    }
+
+    /// [`compute`](Self::compute) for maps of labels in any type: `gt_id` and
+    /// `pred_id` turn a label into its segment id, or `None` when no `u32`
+    /// holds it — a negative label, or one past 32 bits.
+    ///
+    /// # Errors
+    ///
+    /// The side and index of the first pixel whose label is no segment id,
+    /// ground truth checked before prediction at each pixel.
+    ///
+    /// # Panics
+    ///
+    /// If `gt` and `pred` have different lengths.
+    pub fn compute_labels<G: Copy, P: Copy>(
+        gt: &[G],
+        pred: &[P],
+        gt_id: impl Fn(G) -> Option<u32>,
+        pred_id: impl Fn(P) -> Option<u32>,
+    ) -> Result<Self, (Side, usize)> {
+        assert_eq!(
+            gt.len(),
+            pred.len(),
+            "label maps differ in length: gt has {} pixels, pred has {}",
+            gt.len(),
+            pred.len()
+        );
+        let mut builder = OverlapsBuilder::default();
+        for (i, (&g, &p)) in gt.iter().zip(pred).enumerate() {
+            let g = gt_id(g).ok_or((Side::Gt, i))?;
+            let p = pred_id(p).ok_or((Side::Pred, i))?;
+            builder.push(g, p);
+        }
+        Ok(builder.finish())
     }
 
     /// [`compute`](Self::compute) over a stream of `(gt id, pred id)` pixel
@@ -347,29 +388,25 @@ pub fn match_segments(gt: &[Segment], pred: &[Segment], overlaps: &Overlaps) -> 
 /// entry, in the order the labels first appear ([`dict_order`]), and label
 /// -> that index.
 fn dict_entries(segments: &[Segment]) -> (FxHashMap<u32, usize>, Vec<usize>) {
-    let indices: Vec<usize> = (0..segments.len()).collect();
-    let kept: Vec<usize> = dict_order(&indices, |&i| u64::from(segments[i].label))
-        .into_iter()
-        .copied()
-        .collect();
+    let kept = dict_order(segments, |s| u64::from(s.label));
     let index = kept.iter().map(|&i| (segments[i].label, i)).collect();
     (index, kept)
 }
 
-/// `items` in input order, each key once, with the record of the key's
-/// *last* occurrence at the position of its *first* — what a Python dict
-/// built from the list holds, which is how panopticapi reads both the
+/// The positions in `items` a Python dict built from the list keeps: each
+/// key once, in input order, with the record of the key's *last* occurrence
+/// at the position of its *first*. That is how panopticapi reads both the
 /// category list and each image's `segments_info`. The one spelling of that
 /// rule, for this kernel and the panoptic driver alike.
-pub(crate) fn dict_order<T>(items: &[T], key: impl Fn(&T) -> u64) -> Vec<&T> {
+pub(crate) fn dict_order<T>(items: &[T], key: impl Fn(&T) -> u64) -> Vec<usize> {
     let mut position: FxHashMap<u64, usize> = FxHashMap::default();
-    let mut out: Vec<&T> = Vec::with_capacity(items.len());
-    for item in items {
+    let mut out: Vec<usize> = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
         match position.get(&key(item)) {
-            Some(&i) => out[i] = item,
+            Some(&slot) => out[slot] = i,
             None => {
                 position.insert(key(item), out.len());
-                out.push(item);
+                out.push(i);
             }
         }
     }
@@ -439,6 +476,20 @@ mod tests {
         assert_eq!(m.matched, vec![(2, 0, 1.0)]);
         assert_eq!(m.missed, vec![1], "entry 0 is overwritten, not missed");
         assert_eq!(m.false_positives, vec![2], "one segment for label 8");
+    }
+
+    #[test]
+    fn labels_of_any_type_count_as_their_ids() {
+        let id = |v: i64| u32::try_from(v).ok();
+        let gt: [i64; 6] = [1, 1, 2, 2, 0, 1];
+        let pred: [u8; 6] = [5, 5, 5, 6, 6, 5];
+        let wide = Overlaps::compute_labels(&gt, &pred, id, |v| Some(u32::from(v)));
+        let narrow = Overlaps::compute(&[1, 1, 2, 2, 0, 1], &[5, 5, 5, 6, 6, 5]);
+        assert_eq!(wide, Ok(narrow));
+        // The first bad pixel, ground truth before prediction at each one.
+        let bad = |gt: &[i64], pred: &[i64]| Overlaps::compute_labels(gt, pred, id, id);
+        assert_eq!(bad(&[1, -1], &[1, 1 << 32]), Err((Side::Gt, 1)));
+        assert_eq!(bad(&[1, 1, 1], &[1, 1 << 32, -1]), Err((Side::Pred, 1)));
     }
 
     #[test]

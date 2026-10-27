@@ -23,6 +23,7 @@ from pycocotools.coco import COCO as PCOCO  # noqa: E402
 
 
 def dataset():
+    # Listed out of id order, so an id-sorted getAnnIds fails the comparisons.
     return {
         "images": [
             {"id": 1, "width": 100, "height": 100, "file_name": "a.jpg"},
@@ -30,9 +31,9 @@ def dataset():
             {"id": 3, "width": 100, "height": 100, "file_name": "c.jpg"},
         ],
         "annotations": [
+            {"id": 3, "image_id": 3, "category_id": 1, "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0},
             {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 30, 30], "area": 900, "iscrowd": 0},
             {"id": 2, "image_id": 2, "category_id": 2, "bbox": [50, 50, 20, 20], "area": 400, "iscrowd": 1},
-            {"id": 3, "image_id": 3, "category_id": 1, "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0},
         ],
         "categories": [{"id": 1, "name": "person"}, {"id": 2, "name": "dog"}],
     }
@@ -63,7 +64,7 @@ def test_coco_accepts_pathlike(tmp_path):
     with contextlib.redirect_stdout(io.StringIO()):
         ref = PCOCO(path)
     ours = COCO(path)
-    assert ours.getAnnIds() == sorted(ref.getAnnIds())
+    assert ours.getAnnIds() == ref.getAnnIds()
     assert ours.getImgIds() == sorted(ref.getImgIds())
 
 
@@ -75,7 +76,7 @@ def test_coco_accepts_pathlike(tmp_path):
 @pytest.mark.parametrize("flag", [0, 1, False, True, np.int64(0), np.int64(1), np.bool_(True)])
 def test_get_ann_ids_iscrowd_int(both, flag):
     ours, ref = both
-    assert ours.getAnnIds(iscrowd=flag) == sorted(ref.getAnnIds(iscrowd=flag))
+    assert ours.getAnnIds(iscrowd=flag) == ref.getAnnIds(iscrowd=flag)
 
 
 @pytest.mark.parametrize("intersect", [0, 1, np.int64(1)])
@@ -92,8 +93,69 @@ def test_mask_merge_int_intersect(intersect):
 
 def test_get_ann_ids_empty_area_rng(both):
     ours, ref = both
-    assert ours.getAnnIds(areaRng=[]) == sorted(ref.getAnnIds(areaRng=[]))
+    assert ours.getAnnIds(areaRng=[]) == ref.getAnnIds(areaRng=[])
     assert ours.getAnnIds(areaRng=()) == ours.getAnnIds()
+
+
+# ---------------------------------------------------------------------------
+# 3a. getAnnIds returns pycocotools' order
+# ---------------------------------------------------------------------------
+
+
+def unordered_dataset():
+    """Several annotations per image, listed in neither id nor image order. No area
+    sits on a range bound, where pycocotools' ``<`` and hotcoco's ``<=`` differ."""
+    rows = [  # id, image, category, area, iscrowd
+        (7, 3, 2, 500, 0),
+        (2, 1, 1, 50, 0),
+        (9, 3, 1, 2000, 1),
+        (4, 2, 2, 300, 0),
+        (1, 3, 1, 80, 0),
+        (8, 1, 2, 1200, 0),
+        (3, 2, 1, 700, 1),
+        (6, 1, 1, 10, 0),
+        (5, 4, 2, 150, 0),
+    ]
+    return {
+        "images": [{"id": i, "width": 100, "height": 100} for i in (1, 2, 3, 4)],
+        "annotations": [
+            {"id": a, "image_id": i, "category_id": c, "bbox": [0, 0, 10, 10], "area": area, "iscrowd": crowd}
+            for a, i, c, area, crowd in rows
+        ],
+        "categories": [{"id": 1, "name": "person"}, {"id": 2, "name": "dog"}],
+    }
+
+
+ORDER_QUERIES = [
+    {},
+    {"imgIds": [3, 1]},
+    {"imgIds": [2]},
+    {"imgIds": [99]},
+    {"catIds": [2]},
+    {"catIds": [2, 1]},
+    {"areaRng": [100, 1000]},
+    {"iscrowd": 0},
+    {"iscrowd": 1},
+    {"imgIds": [3, 1], "catIds": [1]},
+    {"imgIds": [1, 3], "areaRng": [20, 1500], "iscrowd": 0},
+    {"catIds": [1], "areaRng": [20, 1500]},
+    {"catIds": [2], "iscrowd": 0},
+    {"imgIds": [3, 1, 2], "catIds": [1, 2], "areaRng": [20, 2500], "iscrowd": 0},
+]
+SNAKE_CASE = {"imgIds": "img_ids", "catIds": "cat_ids", "areaRng": "area_rng", "iscrowd": "iscrowd"}
+
+
+@pytest.mark.parametrize("source", ["dict", "file"])
+@pytest.mark.parametrize("query", ORDER_QUERIES, ids=lambda q: " ".join(f"{k}={v}" for k, v in q.items()) or "all")
+def test_get_ann_ids_keeps_pycocotools_order(tmp_path, source, query):
+    """Dataset order, image by image in ``imgIds`` order when that is given — through
+    both loaders and both spellings."""
+    ref = pycoco(unordered_dataset(), tmp_path)
+    ours = COCO(unordered_dataset() if source == "dict" else str(tmp_path / "ref.json"))
+    want = ref.getAnnIds(**query)
+    assert ours.getAnnIds(**query) == want
+    snake = {SNAKE_CASE[k]: bool(v) if k == "iscrowd" else v for k, v in query.items()}
+    assert ours.get_ann_ids(**snake) == want
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +171,8 @@ def test_get_ann_ids_empty_area_rng(both):
 def test_id_lists_accept_any_iterable(both, make):
     ours, ref = both
     ids = make([1, 2])
-    assert sorted(ours.getAnnIds(imgIds=ids)) == sorted(ref.getAnnIds(imgIds=ids))
-    assert sorted(ours.getAnnIds(catIds=ids)) == sorted(ref.getAnnIds(catIds=ids))
+    assert ours.getAnnIds(imgIds=ids) == ref.getAnnIds(imgIds=ids)
+    assert ours.getAnnIds(catIds=ids) == ref.getAnnIds(catIds=ids)
     assert sorted(ours.getImgIds(imgIds=ids)) == sorted(ref.getImgIds(imgIds=ids))
     assert sorted(ours.getImgIds(catIds=make([1]))) == sorted(ref.getImgIds(catIds=make([1])))
     assert sorted(ours.getCatIds(catIds=ids)) == sorted(ref.getCatIds(catIds=ids))
@@ -119,7 +181,7 @@ def test_id_lists_accept_any_iterable(both, make):
     assert by_id(ours.loadImgs(ids)) == by_id(ref.loadImgs(ids))
     assert by_id(ours.loadCats(ids)) == by_id(ref.loadCats(ids))
     # The snake_case methods share the extractor.
-    assert sorted(ours.get_ann_ids(img_ids=ids)) == sorted(ref.getAnnIds(imgIds=ids))
+    assert ours.get_ann_ids(img_ids=ids) == ref.getAnnIds(imgIds=ids)
 
 
 def test_id_list_rejects_non_int_items(both):

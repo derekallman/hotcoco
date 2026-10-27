@@ -150,9 +150,6 @@ Get annotation IDs matching the given filters. All filters are ANDed together.
     area filter. `get_ann_ids` keeps the typed forms — `iscrowd` a `bool` or
     `None`, `area_rng` two values or `None`.
 
-    Ids come back in ascending order, not the order the dataset lists the
-    annotations in, which is the order `COCOeval` breaks ties in.
-
 === "Rust"
 
     ```rust
@@ -1195,7 +1192,7 @@ Load a CVAT for Images 1.1 XML file as a COCO dataset.
     the self-closing form and the open/close-pair form CVAT writes when a shape
     carries `<attribute>` children. Unsupported shapes (`<polyline>`, `<points>`,
     `<cuboid>`) and degenerate polygons are skipped and reported with a
-    [`HotcocoWarning`](../guide/results.md#filtering-the-warnings) naming the
+    [`ConversionWarning`](../guide/results.md#filtering-the-warnings) naming the
     count — they don't stop the conversion.
 
     ```python

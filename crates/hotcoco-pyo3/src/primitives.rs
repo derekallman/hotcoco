@@ -10,7 +10,7 @@
 //! ignored ground truths last — is made here, the way the family drivers make
 //! it, so a Python caller cannot hand a kernel the wrong order.
 
-use numpy::{PyArray1, PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{PyArray1, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -20,13 +20,13 @@ use hotcoco_core::metrics::semantic::{Label, LabelMap, LabelPairOp};
 use hotcoco_core::panoptic::{ImageMatches, SegmentInfo, labels_from_ids, match_image};
 use hotcoco_core::params::default_iou_thrs;
 use hotcoco_core::primitives::greedy::{self, GtMasks, coco_match_floor};
-use hotcoco_core::primitives::panoptic::{Overlaps, OverlapsBuilder};
+use hotcoco_core::primitives::panoptic::{Overlaps, Side};
 use hotcoco_core::primitives::{assign, sim};
 
 use crate::convert::{
-    boxes_arg, check_parallel, dict_list, extract_int, extract_rle_list, f64_array, f64_matrix_arg,
-    f64_vec, field_error, flag_vec, label_pair_or_lists, map_to_dict, py_to_segment, record_list,
-    set_segment_matches, type_name,
+    boxes_arg, check_parallel, dict_list, extract_int, extract_rle_list, f64_matrix_arg, f64_vec,
+    field_error, flag_vec, label_pair_or_lists, map_to_dict, py_to_segment, record_list,
+    set_segment_matches, shaped_array, type_name,
 };
 use crate::to_pyerr;
 
@@ -50,7 +50,7 @@ pub(crate) fn rle_iou_matrix(
     // All inputs are owned by now; the O(D*G) kernel runs GIL-free like the
     // COCOeval paths.
     let flat = py.detach(|| sim::mask_iou_flat(dt, gt, &iscrowd));
-    f64_array(py, flat, [dt.len(), gt.len()])
+    shaped_array(py, flat, [dt.len(), gt.len()])
 }
 
 /// The box IoU kernel as a `(D, G)` `float64` array. Shared by
@@ -63,7 +63,7 @@ pub(crate) fn box_iou_matrix(
 ) -> PyResult<Py<PyAny>> {
     let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
     let flat = sim::bbox_iou_flat(dt, gt, &iscrowd);
-    f64_array(py, flat, [dt.len(), gt.len()])
+    shaped_array(py, flat, [dt.len(), gt.len()])
 }
 
 #[pyfunction]
@@ -237,18 +237,16 @@ fn per_threshold<T: numpy::Element>(
     n: usize,
     scalar: bool,
 ) -> PyResult<Py<PyAny>> {
-    let arr = PyArray1::from_vec(py, values);
-    Ok(if scalar {
-        arr.into_any().unbind()
-    } else {
-        arr.reshape([t, n])?.into_any().unbind()
-    })
+    if scalar {
+        return Ok(PyArray1::from_vec(py, values).into_any().unbind());
+    }
+    shaped_array(py, values, [t, n])
 }
 
 #[pyfunction]
 #[pyo3(
-    signature = (sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None),
-    text_signature = "(sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None)"
+    signature = (sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None, dt_ignore=None),
+    text_signature = "(sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None, dt_ignore=None)"
 )]
 #[doc = "COCO's greedy matching of detections to ground truths, pycocotools-exact.
 
@@ -274,6 +272,9 @@ Args:
     iscrowd: ``(G,)`` crowd flags. A crowd ground truth absorbs any number of
         detections, and is ignored whatever ``gt_ignore`` says, as in
         pycocotools. Pass the flags ``sim`` was computed with.
+    dt_ignore: ``(D,)`` flags for detections ignored when nothing matches
+        them — outside the area range being scored, say. A detection that
+        matches takes its ground truth's flag instead, as in ``COCOeval``.
 
 An image with no detections has a ``sim`` of ``(0, G)``. As ``[]`` it has no
 columns to count, so the flags, when given, say how many ground truths there
@@ -288,13 +289,14 @@ Returns:
       or ``-1``.
     - ``gt_matches``: ``int64`` ``(T, G)``, the row that matched each ground
       truth, or ``-1``; for a crowd ground truth, the last one to.
-    - ``dt_ignore``: ``bool`` ``(T, D)``, detections matched to an ignored or
-      crowd ground truth, which are neither true nor false positives.
+    - ``dt_ignore``: ``bool`` ``(T, D)``, ``evalImgs``' ``dtIgnore``:
+      detections matched to an ignored or crowd ground truth, and unmatched
+      ones flagged in the ``dt_ignore`` argument. These are neither true nor
+      false positives.
 
     A detection is a true positive where ``dt_matches >= 0`` and not
-    ``dt_ignore``, and a false positive where ``dt_matches == -1`` — unless
-    your protocol ignores it, as COCO does an unmatched detection outside the
-    area range.
+    ``dt_ignore``, and a false positive where ``dt_matches == -1`` and not
+    ``dt_ignore``.
 
 Raises:
     ValueError: If ``sim``, ``scores``, or ``iou_thrs`` holds a NaN, or a
@@ -314,6 +316,7 @@ fn greedy_match(
     iou_thrs: Option<&Bound<'_, PyAny>>,
     gt_ignore: Option<&Bound<'_, PyAny>>,
     iscrowd: Option<&Bound<'_, PyAny>>,
+    dt_ignore: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let (flat, d, nc) = f64_matrix_arg(sim, "sim")?;
     check_no_nan(&flat, "sim", "the matching")?;
@@ -323,6 +326,14 @@ fn greedy_match(
     let (thrs, scalar) = thresholds_arg(iou_thrs)?;
     check_no_nan(&thrs, "iou_thrs", "the matching")?;
     let (iscrowd, gt_ignore, g) = gt_flags_args(iscrowd, gt_ignore, (d, nc))?;
+    let dt_seed = match dt_ignore {
+        Some(obj) => {
+            let flags = flag_vec(obj, "dt_ignore")?;
+            check_parallel(flags.len(), d, "dt_ignore", "sim's rows")?;
+            flags
+        }
+        None => vec![false; d],
+    };
     let ignored: Vec<bool> = (gt_ignore.iter().zip(&iscrowd))
         .map(|(&ignore, &crowd)| ignore || crowd)
         .collect();
@@ -353,7 +364,9 @@ fn greedy_match(
 
         let mut dt_matches = vec![-1i64; t * d];
         let mut gt_matches = vec![-1i64; t * g];
-        let mut dt_ignore = vec![false; t * d];
+        // Seeded per threshold, as COCOeval seeds `dtIgnore`; a match
+        // overwrites it with the ground truth's flag.
+        let mut dt_ignore = dt_seed.repeat(t);
         for (ti, row) in m.dt_gt.iter_rows().enumerate() {
             for (&di, &matched) in dt_order.iter().zip(row) {
                 let Some(pos) = matched else {
@@ -389,13 +402,12 @@ impl LabelPairOp for CountOverlaps {
     type Output = Result<Overlaps, (&'static str, usize, Option<u64>)>;
 
     fn run<G: Label, P: Label>(self, gt: &[G], pred: &[P]) -> Self::Output {
-        let mut builder = OverlapsBuilder::default();
-        for (i, (&g, &p)) in gt.iter().zip(pred).enumerate() {
-            let g = segment_label(g).ok_or_else(|| ("gt", i, g.index()))?;
-            let p = segment_label(p).ok_or_else(|| ("pred", i, p.index()))?;
-            builder.push(g, p);
-        }
-        Ok(builder.finish())
+        Overlaps::compute_labels(gt, pred, segment_label, segment_label).map_err(|(side, i)| {
+            match side {
+                Side::Gt => ("gt", i, gt[i].index()),
+                Side::Pred => ("pred", i, pred[i].index()),
+            }
+        })
     }
 }
 

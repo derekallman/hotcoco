@@ -338,6 +338,8 @@ impl COCO {
     /// Get annotation IDs matching the given filters.
     ///
     /// All filter parameters are optional (pass empty slices / None to skip).
+    /// Ids come back in pycocotools' order: dataset order, image by image in
+    /// `img_ids` order when that is given.
     pub fn get_ann_ids(
         &self,
         img_ids: &[u64],
@@ -362,7 +364,7 @@ impl COCO {
             true
         };
 
-        let mut result: Vec<u64> = if !img_ids.is_empty() {
+        if !img_ids.is_empty() {
             img_ids
                 .iter()
                 .flat_map(|&id| self.index.for_img(id))
@@ -377,9 +379,7 @@ impl COCO {
                 .filter(filter)
                 .map(|ann| ann.id)
                 .collect()
-        };
-        result.sort_unstable();
-        result
+        }
     }
 
     /// Get category IDs matching the given filters.

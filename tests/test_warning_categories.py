@@ -1,11 +1,14 @@
 """Every warning hotcoco emits carries a category a filter can name.
 
-One row per call site that emits a warning. Each row is held to three things: a
+One row per call site that emits a warning. Each row is held to two things: a
 filter on its own category catches it, as that exact class and not a sibling;
-its message starts with ``hotcoco: ``; and a plain ``UserWarning`` filter written
-before the categories existed still catches it. ``test_every_call_site_has_a_row``
-counts the call sites in the bindings and the Python package, so a new warning
-without a row fails here.
+and its message starts with ``hotcoco: ``. A plain ``UserWarning`` filter written
+before the categories existed still catches every one, because each category is
+a ``UserWarning`` subclass and a filter matches by ``issubclass``.
+``test_every_call_site_has_a_row`` counts the call sites in the bindings and the
+Python package, so a new warning without a row fails here. Neither a row nor a
+call site names the base, ``HotcocoWarning``: nothing emits it, so a filter on
+one category never has to catch another kind too.
 """
 
 from __future__ import annotations
@@ -13,15 +16,23 @@ from __future__ import annotations
 import re
 import warnings
 from collections import Counter
-from pathlib import Path
 
 import hotcoco
 import numpy as np
 import pytest
-from hotcoco import COCO, CallOrderWarning, COCOeval, HotcocoWarning, ReferenceDeviationWarning, panoptic, semantic
+from helpers import WORKSPACE
+from hotcoco import (
+    COCO,
+    CallOrderWarning,
+    COCOeval,
+    ConversionWarning,
+    HotcocoWarning,
+    ReferenceDeviationWarning,
+    panoptic,
+    semantic,
+)
 
-ROOT = Path(__file__).resolve().parent.parent
-PYO3_SRC = ROOT / "crates" / "hotcoco-pyo3" / "src"
+PYO3_SRC = WORKSPACE / "crates" / "hotcoco-pyo3" / "src"
 LIB_RS = "crates/hotcoco-pyo3/src/lib.rs"
 PANOPTIC_RS = "crates/hotcoco-pyo3/src/panoptic.rs"
 SEMANTIC_RS = "crates/hotcoco-pyo3/src/semantic.rs"
@@ -79,7 +90,7 @@ def _cvat_import(tmp_path):
 # (trigger, category, message pattern, the file that emits it). A trigger takes
 # `tmp_path` so the CVAT row can write its file.
 SITES = [
-    pytest.param(_cvat_import, HotcocoWarning, "skipped 1 unsupported", LIB_RS, id="cvat-skipped-shapes"),
+    pytest.param(_cvat_import, ConversionWarning, "skipped 1 unsupported", LIB_RS, id="cvat-skipped-shapes"),
     pytest.param(
         lambda _: _ev().accumulate(), CallOrderWarning, r"accumulate\(\) called before", LIB_RS, id="accumulate"
     ),
@@ -133,12 +144,13 @@ def test_a_filter_on_the_category_catches_exactly_it(tmp_path, trigger, category
     assert str(caught.value).startswith("hotcoco: ")
 
 
-@pytest.mark.parametrize(("trigger", "category", "match", "_file"), SITES)
-def test_a_user_warning_filter_still_catches_it(tmp_path, trigger, category, match, _file):
+def test_a_user_warning_filter_still_catches_it():
+    """One emitted warning through a plain ``UserWarning`` filter. The rest follow from
+    ``test_the_categories_nest_under_user_warning``: a filter matches by ``issubclass``."""
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        with pytest.raises(UserWarning, match=match):
-            trigger(tmp_path)
+        with pytest.raises(UserWarning, match=r"accumulate\(\) called before"):
+            _ev().accumulate()
 
 
 # Anything that raises a Python warning without going through the bindings' `warn`
@@ -164,10 +176,28 @@ def _rust_code(text):
     return re.sub(r'(?m)//[^"\n]*$', "", text)
 
 
+def _warn_classes(text):
+    """The class each call of the bindings' `warn` names, however qualified
+    (`crate::warn::<…>(` too), `""` for a call that names none; not its definition or
+    the `PyErr::warn(` inside it."""
+    calls = re.findall(r"(?<!fn )(?<!PyErr::)\bwarn(?:\s*::\s*<\s*([\w:]+)\s*>)?\s*\(", _rust_code(text))
+    return [name.rpartition("::")[2] for name in calls]
+
+
 def _warn_calls(text):
-    """Calls of the bindings' `warn`, however qualified (`crate::warn(` too), but not
-    its definition or the `PyErr::warn(` inside it."""
-    return len(re.findall(r"(?<!fn )(?<!PyErr::)\bwarn\(", _rust_code(text)))
+    return len(_warn_classes(text))
+
+
+def _non_leaf_warnings(text):
+    """`warn` calls naming a class that is not a leaf category: the base, or none."""
+    leaves = {category.__name__ for category in LEAVES}
+    return [name or "no class" for name in _warn_classes(text) if name not in leaves]
+
+
+def _rust_sources():
+    """Each binding source file's workspace-relative name and text."""
+    for path in sorted(PYO3_SRC.rglob("*.rs")):
+        yield path.relative_to(WORKSPACE).as_posix(), path.read_text()
 
 
 def _raw_warnings(text):
@@ -187,7 +217,11 @@ def _py_raw_warnings(text):
 
 
 def test_the_guard_sees_each_spelling_a_review_found():
-    assert _warn_calls('let s = "https://x"; crate::warn(py, WarningCategory::General, &s)?;') == 1
+    assert _warn_classes('let s = "https://x"; crate::warn::<ConversionWarning>(py, &s)?;') == ["ConversionWarning"]
+    assert _non_leaf_warnings('warn::<HotcocoWarning>(py, "x")?;') == ["HotcocoWarning"]
+    assert _non_leaf_warnings('crate::warn::<crate::HotcocoWarning>(py, "x")?;') == ["HotcocoWarning"]
+    assert _non_leaf_warnings('warn::<CallOrderWarning>(py, "x")?;') == []
+    assert _warn_calls("pub(crate) fn warn<W: pyo3::PyTypeInfo>(py: Python<'_>, msg: &str) -> PyResult<()> {") == 0
     assert _raw_warnings("use crate::warn as emit;") == ["warn as"]
     assert _raw_warnings('PyErr::warn(py, &py.get_type::<PyUserWarning>(), c"x", 1)?;') == [
         "PyErr::warn",
@@ -198,7 +232,7 @@ def test_the_guard_sees_each_spelling_a_review_found():
     assert _raw_warnings('let w = intern!(py, "warnings");') == ['"warnings"']
     doc = '#[doc = "Emitted through ``warnings.warn(`` as a ``PyUserWarning``,\nnot \\"warn(\\"."]\nfn f() {}'
     assert _warn_calls(doc) == 0 and _raw_warnings(doc) == []
-    assert _py_warn_calls('warnings.warn_explicit("hotcoco: x", HotcocoWarning, "f.py", 1)') == 1
+    assert _py_warn_calls('warnings.warn_explicit("hotcoco: x", ConversionWarning, "f.py", 1)') == 1
     assert _py_raw_warnings("from warnings import warn as _w") == ["from warnings import warn as"]
     assert _py_raw_warnings("import warnings as w") == ["import warnings as"]
     assert _py_raw_warnings("getattr(warnings, 'warn')(msg)") == ["'warn'"]
@@ -222,14 +256,12 @@ def test_every_call_site_has_a_row():
     around the bindings' `warn`, which would carry no category."""
     in_source = Counter()
     raw = []
-    for path in sorted(PYO3_SRC.rglob("*.rs")):
-        text = path.read_text()
-        name = path.relative_to(ROOT).as_posix()
+    for name, text in _rust_sources():
         in_source[name] = _warn_calls(text)
         raw += [f"{name}: {found}" for found in _raw_warnings(text)]
-    for path in sorted((ROOT / "python" / "hotcoco").rglob("*.py")):
+    for path in sorted((WORKSPACE / "python" / "hotcoco").rglob("*.py")):
         text = path.read_text()
-        name = path.relative_to(ROOT).as_posix()
+        name = path.relative_to(WORKSPACE).as_posix()
         in_source[name] = _py_warn_calls(text)
         raw += [f"{name}: {found}" for found in _py_raw_warnings(text)]
     assert raw == [f"{LIB_RS}: PyErr::warn"], f"warnings raised outside `warn`: {raw}"
@@ -247,16 +279,37 @@ def test_semantic_has_no_deviation_yet():
         ev.summarize()
 
 
+LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning)
+
+
 def test_the_categories_nest_under_user_warning():
     assert issubclass(HotcocoWarning, UserWarning)
-    for category in (ReferenceDeviationWarning, CallOrderWarning):
+    for category in LEAVES:
         assert issubclass(category, HotcocoWarning)
-    assert not issubclass(ReferenceDeviationWarning, CallOrderWarning)
-    assert not issubclass(CallOrderWarning, ReferenceDeviationWarning)
-    for category in (HotcocoWarning, ReferenceDeviationWarning, CallOrderWarning):
+        for other in LEAVES:
+            assert category is other or not issubclass(category, other), (category, other)
+    for category in (HotcocoWarning, *LEAVES):
         assert category.__name__ in hotcoco.__all__
         # The path a traceback prints is the one users import from.
         assert f"{category.__module__}.{category.__qualname__}" == f"hotcoco.{category.__name__}"
+
+
+def test_the_base_is_never_emitted():
+    """Every row and every ``warn`` call names a leaf, and every leaf hotcoco exports
+    has a row.
+
+    A site emitting ``HotcocoWarning`` itself could be silenced only by silencing
+    every hotcoco warning; ``COCO.from_cvat`` did until ``ConversionWarning``.
+    """
+    exported = {
+        getattr(hotcoco, name)
+        for name in hotcoco.__all__
+        if isinstance(getattr(hotcoco, name), type) and issubclass(getattr(hotcoco, name), HotcocoWarning)
+    }
+    assert exported == {HotcocoWarning, *LEAVES}
+    assert {param.values[1] for param in SITES} == set(LEAVES)
+    named = [f"{name}: {found}" for name, text in _rust_sources() for found in _non_leaf_warnings(text)]
+    assert named == [], f"`warn` calls that name no leaf category: {named}"
 
 
 def test_every_deviation_is_one_reference_deviation_warning():

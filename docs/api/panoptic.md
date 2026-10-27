@@ -104,20 +104,17 @@ One record per ground-truth image, in the order `evaluate()` visits them:
 ```
 
 The four lists are what [`primitives.match_segments`](primitives.md#match_segments)
-returns for the image. Every non-crowd ground-truth segment is in `matched` or
-`missed`, every predicted segment in `matched`, `false_positives`, or
-`ignored`. A segment can be in `matched` twice when a stated area below a
-segment's pixels, or the void id 0 listed as a ground truth, lets it match
-two, as panopticapi counts it. Crowd segments are in none, and neither is a
-`segments_info` entry a later one with the same id overwrites, as
-panopticapi's dict overwrites it.
+returns for the image; that page owns which segments land in which list, double
+matches included. What the evaluator adds: ids are the input's, the PNG colors
+of the COCO panoptic format or the annotation ids of a `COCO` dataset, repeated
+in the records where the annotations repeat them, as converters that write
+`id: 0` everywhere do. `matched` is in the order its IoUs were summed: by id for
+the COCO panoptic format, and by annotation order for a `COCO` dataset. The
+other three lists follow `segments_info`, or annotation, order.
 
-Ids are the input's: the PNG colors of the COCO panoptic format, or the
-annotation ids of a `COCO` dataset — repeated in the records where the
-annotations repeat them, as converters that write `id: 0` everywhere do.
-`matched` is in the order its IoUs were summed: by id for the COCO panoptic
-format, as `match_segments` orders it, and by annotation order for a `COCO`
-dataset. The other three lists follow `segments_info`, or annotation, order.
+Each read of `eval_imgs` converts every record to Python, so bind it once
+(`records = ev.eval_imgs`) rather than indexing the attribute in a loop, as with
+`COCOeval.eval_imgs`.
 
 ### `results()`
 

@@ -125,7 +125,6 @@ re-indexes.
 | `COCO()` with no args | Creates empty instance with print statements | Creates empty instance silently |
 | Annotation IDs | Requires unique positive integers | Also accepts 0-based IDs |
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |
-| Order of `getAnnIds()` results | Dataset order, image by image in `imgIds` order when that is given | Ascending id — see [`get_ann_ids`](../api/coco.md#get_ann_ids) |
 | Evaluating annotations missing `area` | Raises `KeyError` | Derives it in the evaluator's copy: the mask's pixel count, then the box's `w × h`, for ground truth; the box first for detections, as `load_res` does. The dataset keeps its missing areas |
 | Mutating `coco.dataset` / `ev.params` internals in place | Mutates shared state | No-op on a copy — [assign back to apply](#getters-return-copies-assign-back-to-apply) |
 | `summarize()` or `run()` with non-default params | Prints the table only | Also emits a [`ReferenceDeviationWarning`](../guide/results.md#filtering-the-warnings) per deviation |

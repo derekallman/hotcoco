@@ -951,9 +951,10 @@ pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
     Ok(cat)
 }
 
-/// Set the segment field a `segments_info` key names; any other key is
-/// dropped, as the JSON loader drops it.
-fn set_segment_field(seg: &mut SegmentInfo, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+/// Set the segment field a `segments_info` key names. `true` for every key:
+/// a segment keeps no extra, so any other key is dropped, as the JSON loader
+/// drops it. See [`set_image_field`].
+fn set_segment_field(seg: &mut SegmentInfo, key: &str, value: &Bound<'_, PyAny>) -> PyResult<bool> {
     match key {
         "id" => seg.id = extract_int(value)?,
         "category_id" => seg.category_id = extract_int(value)?,
@@ -963,7 +964,7 @@ fn set_segment_field(seg: &mut SegmentInfo, key: &str, value: &Bound<'_, PyAny>)
         "segmentation" => seg.segmentation = optional(value, py_to_segmentation)?,
         _ => {}
     }
-    Ok(())
+    Ok(true)
 }
 
 /// One `segments_info` entry: `id` and `category_id` required, the rest
@@ -982,26 +983,8 @@ pub(crate) fn py_to_segment(dict: &Bound<'_, PyDict>) -> PyResult<SegmentInfo> {
         segmentation: None,
     };
     // Every key is consumed, so no extra is built.
-    extract_extra(dict, |key, value| {
-        set_segment_field(&mut seg, key, value).map(|()| true)
-    })?;
+    extract_extra(dict, |key, value| set_segment_field(&mut seg, key, value))?;
     Ok(seg)
-}
-
-/// Set the scalar field of one panoptic annotation — one image — a key
-/// names; `segments_info` is read beside it, and any other key is dropped,
-/// as the JSON loader drops it.
-fn set_panoptic_annotation_field(
-    ann: &mut PanopticAnnotation,
-    key: &str,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<()> {
-    match key {
-        "image_id" => ann.image_id = extract_int(value)?,
-        "file_name" => ann.file_name = optional(value, |v| v.extract())?,
-        _ => {}
-    }
-    Ok(())
 }
 
 /// A COCO panoptic dataset from a dict, read field by field as a detection
@@ -1016,8 +999,16 @@ pub(crate) fn py_to_panoptic_dataset(dict: &Bound<'_, PyDict>) -> PyResult<Panop
             file_name: None,
             segments_info: extract_dict_list(d, "segments_info", py_to_segment)?,
         };
+        // The scalar fields of one panoptic annotation — one image;
+        // `segments_info` is read beside them, and any other key is dropped,
+        // as the JSON loader drops it.
         extract_extra(d, |key, value| {
-            set_panoptic_annotation_field(&mut ann, key, value).map(|()| true)
+            match key {
+                "image_id" => ann.image_id = extract_int(value)?,
+                "file_name" => ann.file_name = optional(value, |v| v.extract())?,
+                _ => {}
+            }
+            Ok(true)
         })?;
         Ok(ann)
     };
@@ -1159,15 +1150,16 @@ pub(crate) fn set_segment_matches(dict: &Bound<'_, PyDict>, m: &ImageMatches) ->
 /// `int64` map costs about what counting it does.
 ///
 /// `uint8` (a PNG-backed ground truth), `uint16` (a wide label set),
-/// `uint64`, and `int64` (`argmax`) are read in place; any other unsigned
-/// dtype is a `uint64` copy and any other dtype — `int32`, bool — an `int64`
-/// one ([`contiguous_array`]), so a negative label survives to be reported
-/// rather than wrapping, and an unsigned one of 2^63 or more is never
-/// reported as negative.
+/// `uint64`, `int32` (panopticapi's `rgb2id`), and `int64` (`argmax`) are
+/// read in place; any other unsigned dtype is a `uint64` copy and any other
+/// dtype — `int16`, bool — an `int64` one ([`contiguous_array`]), so a
+/// negative label survives to be reported rather than wrapping, and an
+/// unsigned one of 2^63 or more is never reported as negative.
 pub(crate) enum LabelArray<'py> {
     U8(Contiguous<'py, u8, numpy::IxDyn>),
     U16(Contiguous<'py, u16, numpy::IxDyn>),
     U64(Contiguous<'py, u64, numpy::IxDyn>),
+    I32(Contiguous<'py, i32, numpy::IxDyn>),
     I64(Contiguous<'py, i64, numpy::IxDyn>),
 }
 
@@ -1177,6 +1169,7 @@ impl LabelArray<'_> {
             LabelArray::U8(a) => a.shape(),
             LabelArray::U16(a) => a.shape(),
             LabelArray::U64(a) => a.shape(),
+            LabelArray::I32(a) => a.shape(),
             LabelArray::I64(a) => a.shape(),
         }
     }
@@ -1187,6 +1180,7 @@ impl LabelArray<'_> {
             LabelArray::U8(a) => LabelMap::U8(Cow::Borrowed(a.as_slice())),
             LabelArray::U16(a) => LabelMap::U16(Cow::Borrowed(a.as_slice())),
             LabelArray::U64(a) => LabelMap::U64(Cow::Borrowed(a.as_slice())),
+            LabelArray::I32(a) => LabelMap::I32(Cow::Borrowed(a.as_slice())),
             LabelArray::I64(a) => LabelMap::I64(Cow::Borrowed(a.as_slice())),
         }
     }
@@ -1201,9 +1195,9 @@ fn label_array<'py>(obj: &Bound<'py, PyAny>, name: &str) -> PyResult<LabelArray<
             type_name(obj)
         )));
     };
-    // The narrow unsigned widths are read at their own width only; any other
-    // unsigned dtype (`uint32`, a swapped byte order) takes the lossless
-    // `uint64` copy, and everything else the `int64` one.
+    // The narrow widths are read at their own width only; any other unsigned
+    // dtype (`uint32`, a swapped byte order) takes the lossless `uint64`
+    // copy, and everything else the `int64` one.
     if let Some(a) = contiguous_array::<u8, numpy::IxDyn>(obj, name, b"")? {
         return Ok(LabelArray::U8(a));
     }
@@ -1212,6 +1206,9 @@ fn label_array<'py>(obj: &Bound<'py, PyAny>, name: &str) -> PyResult<LabelArray<
     }
     if let Some(a) = contiguous_array::<u64, numpy::IxDyn>(obj, name, b"u")? {
         return Ok(LabelArray::U64(a));
+    }
+    if let Some(a) = contiguous_array::<i32, numpy::IxDyn>(obj, name, b"")? {
+        return Ok(LabelArray::I32(a));
     }
     match contiguous_array::<i64, numpy::IxDyn>(obj, name, b"iub")? {
         Some(a) => Ok(LabelArray::I64(a)),
@@ -1303,14 +1300,15 @@ pub fn confusion_counts_to_py(
     Ok(arr.reshape([side, side])?.into_any().unbind())
 }
 
-/// A flat `Vec<f64>` as a numpy `float64` array of the given shape.
+/// A flat `Vec<T>` as a numpy array of `T`'s dtype in the given shape —
+/// `float64` for a float buffer, `int64` or `bool` for match records.
 ///
-/// The typed counterpart to [`confusion_counts_to_py`] for the sites that
-/// reshape a flat float buffer. Generic over the shape rather than the rank, so
+/// The general counterpart to [`confusion_counts_to_py`] for the sites that
+/// reshape a flat buffer. Generic over the shape rather than the rank, so
 /// `[k, k]`, `[t, k, a, m]` and `[t, r, k, a, m]` all use the same helper.
-pub fn f64_array<D: numpy::ndarray::IntoDimension>(
+pub fn shaped_array<T: numpy::Element, D: numpy::ndarray::IntoDimension>(
     py: Python<'_>,
-    values: Vec<f64>,
+    values: Vec<T>,
     dims: D,
 ) -> PyResult<Py<PyAny>> {
     let arr = PyArray1::from_vec(py, values);

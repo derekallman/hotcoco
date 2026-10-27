@@ -400,13 +400,16 @@ def init_as_lvis() -> None: ...
 # ---------------------------------------------------------------------------
 
 class HotcocoWarning(UserWarning):
-    """Base class for every Python warning hotcoco emits."""
+    """Base class for every Python warning hotcoco emits; never emitted itself."""
 
 class ReferenceDeviationWarning(HotcocoWarning):
     """The run is configured differently from the reference implementation."""
 
 class CallOrderWarning(HotcocoWarning):
     """A method was called before the step it needs."""
+
+class ConversionWarning(HotcocoWarning):
+    """A format converter imported part of its input."""
 
 # ---------------------------------------------------------------------------
 # LVIS drop-in surface (lvis-api spellings)

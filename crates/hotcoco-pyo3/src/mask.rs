@@ -16,8 +16,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
 use crate::convert::{
-    Flag, RleDict, boxes_arg, compressed_rle_to_py, extract_coco_rle, extract_rle_list, f64_array,
-    py_to_rle, rle_to_coco_py, type_name,
+    Flag, RleDict, boxes_arg, compressed_rle_to_py, extract_coco_rle, extract_rle_list, py_to_rle,
+    rle_to_coco_py, shaped_array, type_name,
 };
 use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
@@ -488,7 +488,7 @@ pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     }
     let boxes = each_rle(rle, rmask::bboxes)?;
     let n = boxes.len();
-    f64_array(py, boxes.into_iter().flatten().collect(), [n, 4])
+    shaped_array(py, boxes.into_iter().flatten().collect(), [n, 4])
 }
 
 /// Alias for `to_bbox` matching pycocotools naming.

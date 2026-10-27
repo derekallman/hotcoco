@@ -14,7 +14,7 @@ use pyo3::types::PyBytes;
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
-use crate::{WarningCategory, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
+use crate::{ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
 mmsegmentation's protocol.
@@ -98,9 +98,10 @@ impl PySemanticEval {
 
 Both are integer numpy arrays of the same shape — ``(H, W)``, or ``(N, H, W)``
 for a batch, up to 32 dimensions — in any integer or bool dtype. A
-C-contiguous, aligned ``uint8``, ``uint16``, ``uint64``, or ``int64`` array
-is read in place; any other array is one numpy copy, ``uint64`` for an
-unsigned dtype and ``int64`` otherwise, contiguous and aligned.
+C-contiguous, aligned ``uint8``, ``uint16``, ``uint64``, ``int32``, or
+``int64`` array is read in place; any other array is one numpy copy,
+``uint64`` for an unsigned dtype and ``int64`` otherwise, contiguous and
+aligned.
 The counting itself releases the GIL. Raises
 ``ValueError`` on a shape mismatch or a label out of range; nothing from the
 pair is counted then."]
@@ -189,7 +190,7 @@ the four means. Each entry of ``reference_deviations()`` is emitted first as
 a ``ReferenceDeviationWarning``."]
     fn summarize(&self, py: Python<'_>) -> PyResult<()> {
         for w in self.inner.reference_deviations() {
-            warn(py, WarningCategory::ReferenceDeviation, &w)?;
+            warn::<ReferenceDeviationWarning>(py, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }

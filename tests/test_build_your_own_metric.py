@@ -7,7 +7,8 @@ Each metric it defines is then held against the family that owns the number:
 
 - ``detection_counts``: the true positives, false positives, and misses per
   category that ``COCOeval`` records in ``eval_imgs``, at two IoU thresholds, two
-  score thresholds, and two area ranges.
+  score thresholds, and two area ranges. ``helpers.counts_from_eval_imgs`` reads
+  them, the same reading ``test_composed_metrics.py`` holds the primitives to.
 - ``confusion``: ``COCOeval.confusion_matrix()``, at two IoU thresholds and two
   detection caps.
 - ``panoptic_counts`` and ``pq_average``: ``PanopticEval``'s per-category counts
@@ -26,11 +27,17 @@ from __future__ import annotations
 import json
 import random
 import re
-from collections import defaultdict
 
 import numpy as np
 import pytest
-from helpers import WORKSPACE, detection_corpus, hand_panoptic_cases, random_panoptic_case, random_panoptic_cases
+from helpers import (
+    WORKSPACE,
+    counts_from_eval_imgs,
+    detection_corpus,
+    hand_panoptic_cases,
+    random_panoptic_case,
+    random_panoptic_cases,
+)
 from hotcoco import COCO, COCOeval, panoptic
 
 PAGE = WORKSPACE / "docs" / "guide" / "custom-metrics.md"
@@ -139,26 +146,12 @@ def as_tuples(counts):
     return {c: tuple(np.asarray(n).tolist()) for c, n in counts.items()}
 
 
-def counts_from_eval_imgs(ev, area_range, score_thr, t=0):
-    """``[tp, fp, fn]`` per category from ``COCOeval``'s records at ``iou_thrs[t]``."""
-    counts = defaultdict(lambda: np.zeros(3, dtype=np.int64))
-    for e in ev.eval_imgs:
-        if e is None or e["aRng"] != list(area_range):
-            continue
-        confident = np.array(e["dtScores"], dtype=float) >= score_thr
-        matched = np.array(e["dtMatches"][t], dtype=float) > 0  # 0 is "no match"
-        ignored = np.array(e["dtIgnore"][t], dtype=bool)
-        tp = np.sum(matched & ~ignored & confident)
-        fp = np.sum(~matched & ~ignored & confident)
-        counts[e["category_id"]] += (tp, fp, np.sum(~np.array(e["gtIgnore"], dtype=bool)) - tp)
-    return as_tuples(counts)
-
-
 def test_the_pages_own_numbers_are_the_families(page):
     """What the page's example lines compute, on the files they read."""
     ev = COCOeval(page["gt"], page["dt"], "bbox")
     ev.evaluate()
-    want = counts_from_eval_imgs(ev, EVERY_AREA, 0.5)
+    eval_imgs = ev.eval_imgs
+    want = counts_from_eval_imgs(eval_imgs, EVERY_AREA, 0.5)
     assert as_tuples(page["counts"]) == want
     tp, fp, fn = np.sum(list(want.values()), axis=0)
     assert (page["precision"], page["recall"], page["f1"]) == (
@@ -166,7 +159,7 @@ def test_the_pages_own_numbers_are_the_families(page):
         tp / (tp + fn),
         2 * tp / (2 * tp + fp + fn),
     )
-    assert as_tuples(page["small"]) == counts_from_eval_imgs(ev, SMALL, NO_THRESHOLD)
+    assert as_tuples(page["small"]) == counts_from_eval_imgs(eval_imgs, SMALL, NO_THRESHOLD)
     np.testing.assert_array_equal(page["cm"], ev.confusion_matrix()["matrix"])
 
     root = page["root"]
@@ -202,13 +195,14 @@ def test_detection_counts_are_cocoevals(page, tmp_path, seed):
     gt, dt = write_detection_files(tmp_path, seed)
     ev = COCOeval(gt, dt, "bbox")
     ev.evaluate()
+    eval_imgs = ev.eval_imgs
     for t in (0, 5):  # IoU 0.50 and 0.75
         for area_range in (EVERY_AREA, SMALL):
             for score_thr in (NO_THRESHOLD, 0.5):
                 got = page["detection_counts"](
                     gt, dt, ev.params.iou_thrs[t], score_thr=score_thr, area_range=area_range
                 )
-                want = counts_from_eval_imgs(ev, area_range, score_thr, t)
+                want = counts_from_eval_imgs(eval_imgs, area_range, score_thr, t)
                 assert as_tuples(got) == want, (t, area_range, score_thr)
 
 
