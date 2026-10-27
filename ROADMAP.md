@@ -76,13 +76,6 @@ enough to verify against exists, the same bar every other family clears.
   helper that returns those two as frames, pandas optional, the way sklearn's
   `classification_report(output_dict=True)` is used. The headline `metrics`
   stay a dict and `curves` stay arrays; neither is a table.
-- **One array reader in the bindings** — `convert.rs` reads a numpy argument
-  through four readers (`label_array`, `u64_matrix_arg`, `array_of_kind`,
-  `numeric_array`), each deciding layout, alignment, and range for itself, so
-  every in-place fast path has had to rediscover the checks the copy it
-  replaced made for free. One "borrow or copy as this dtype" helper that owns
-  those checks, with the four as thin callers; `tests/test_array_spellings.py`
-  is the gate, so the refactor is safe to do after 1.3.
 - **Dice and boundary IoU** for the semantic family, if asked for. Dice is the
   same confusion matrix read differently (`2·IoU / (1 + IoU)` per class), the
   convention of medical segmentation. Boundary IoU restricts IoU to a band

@@ -11,7 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **One reader for the numeric numpy arguments in the bindings.**
+  `convert::numpy_array` takes the dtype to read, the dtype kinds it accepts a
+  cast from, and the layout the reader needs (aligned, or aligned and
+  C-contiguous); it borrows the array when it already has that dtype and layout,
+  and otherwise makes one `astype` copy that does. The four readers that each
+  decided layout and alignment for themselves — label maps, count matrices,
+  `float64` columns and tables, and the typed column reader behind ids — are
+  callers of it, as are the flag and bool columns, so a fast path there cannot
+  skip a check again. `tests/test_array_spellings.py` gains flag, score, and
+  `matched` columns, bool label maps, a non-native byte order, and the
+  degenerate shapes.
+
 ### Fixed
+
+- **A `uint64` label map in the other byte order** (`>u8`, as a big-endian file
+  reads back) was cast to `int64`, so a label of 2^63 or more was reported as
+  negative; it now takes a `uint64` copy and is reported out of range, as the
+  native one is.
+- **A label map of more than 32 dimensions** surfaced rust-numpy's panic as a
+  `PanicException`; it is a `ValueError` naming the argument. A column or table
+  reader checks its rank first and was never affected.
 
 ## [1.3.0] - 2026-10-20
 

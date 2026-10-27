@@ -10,11 +10,14 @@ per pass; this file is the gate that finds them all at once.
 
 Every integer dtype, in every memory layout numpy can produce, through every
 entry point that reads the array, must give exactly what a fresh C-contiguous
-``int64`` copy of the same values gives. The readers under test live in
-``crates/hotcoco-pyo3/src/convert.rs``: ``label_array`` (label maps),
+``int64`` copy of the same values gives. Every array goes through one reader,
+``numpy_array`` in ``crates/hotcoco-pyo3/src/convert.rs``, and this file
+reaches it through each caller: ``label_array`` (label maps),
 ``u64_matrix_arg`` (a confusion matrix), ``u64_vec`` (an id column),
-``numeric_array`` (a float column, a box table, a detection table), and the
-numpy scalars that ``extract_int`` reads inside a record.
+``f64_vec`` and ``f64_matrix_arg`` (a float column, a box table),
+``anns_from_array`` (a detection table), ``flag_vec`` (``iscrowd``),
+``bool_vec`` (``matched``), and the numpy scalars that ``extract_int`` reads
+inside a record.
 
 ``fuzz_dropin.py`` does this for a dataset's spellings; this is the array
 half, small enough to run in CI. Add a row here for every spelling a review
@@ -29,7 +32,7 @@ from hotcoco import COCO, metrics, semantic
 
 INT_DTYPES = [np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64]
 FLOAT_DTYPES = [np.float16, np.float32, np.float64]
-LAYOUTS = ["contiguous", "fortran", "strided", "transposed", "reversed", "misaligned"]
+LAYOUTS = ["contiguous", "fortran", "strided", "transposed", "reversed", "misaligned", "bigendian"]
 
 RNG = np.random.default_rng(7)
 GT = RNG.integers(0, 3, (6, 10), dtype=np.int64)
@@ -52,7 +55,9 @@ def spelled(values, dtype, layout):
 
     Each layout is a view that numpy reports as something other than a fresh array:
     column-major, a step through a wider buffer, the transpose of a transpose,
-    negative strides, or a byte offset that no element of ``dtype`` can start at.
+    negative strides, a byte offset that no element of ``dtype`` can start at, or
+    the other byte order, which is the right dtype to Python and the wrong one to
+    a Rust slice.
     """
     a = np.ascontiguousarray(values, dtype=dtype)
     if layout == "contiguous":
@@ -68,10 +73,14 @@ def spelled(values, dtype, layout):
     if layout == "reversed":
         flipped = np.ascontiguousarray(a[(slice(None, None, -1),) * a.ndim])
         return flipped[(slice(None, None, -1),) * a.ndim]
-    assert layout == "misaligned"
-    off = np.frombuffer(b"\0" + a.tobytes(), dtype=dtype, offset=1).reshape(a.shape)
-    assert off.flags.c_contiguous and off.flags.aligned == (a.itemsize == 1)
-    return off
+    if layout == "misaligned":
+        off = np.frombuffer(b"\0" + a.tobytes(), dtype=dtype, offset=1).reshape(a.shape)
+        assert off.flags.c_contiguous and off.flags.aligned == (a.itemsize == 1)
+        return off
+    assert layout == "bigendian"
+    swapped = a.astype(a.dtype.newbyteorder(">"))
+    assert swapped.dtype.isnative == (a.itemsize == 1)
+    return swapped
 
 
 def test_a_spelling_is_a_view_in_the_named_layout():
@@ -79,7 +88,7 @@ def test_a_spelling_is_a_view_in_the_named_layout():
     for layout in LAYOUTS[1:]:
         a = spelled(GT, np.int64, layout)
         assert np.array_equal(a, GT), layout
-        assert not (a.flags.c_contiguous and a.flags.aligned), layout
+        assert not (a.flags.c_contiguous and a.flags.aligned and a.dtype.isnative), layout
     a = spelled(GT, np.int64, "fortran")
     assert a.flags.f_contiguous and a.ndim == 2
 
@@ -114,6 +123,18 @@ def test_label_maps_count_the_same_in_every_spelling(dtype, layout, side):
     ev.update(gt, pred)
     assert np.array_equal(ev.confusion(), reference_confusion())
     assert np.array_equal(metrics.pixel_confusion(gt, pred, 3, ignore_index=IGNORE), reference_confusion())
+
+
+@pytest.mark.parametrize("side", ["gt", "pred"])
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_a_bool_label_map_counts_the_same_in_every_spelling(layout, side):
+    """A bool map is a two-class map; it takes the ``int64`` copy, never a borrow."""
+    gt, pred = (GT % 2).astype(bool), (PRED % 2).astype(bool)
+    want = semantic.SemanticEval(2, ignore_index=None)
+    want.update(gt.astype(np.int64), pred.astype(np.int64))
+    ev = semantic.SemanticEval(2, ignore_index=None)
+    ev.update(*label_pair(np.bool_, layout, side, gt, pred))
+    assert np.array_equal(ev.confusion(), want.confusion())
 
 
 @pytest.mark.parametrize("side", ["gt", "pred"])
@@ -198,6 +219,58 @@ def test_update_anns_columns_read_the_same_in_every_spelling(dtype, layout):
     coco = COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES)
     coco.update_anns(ids=spelled_column([1, 2, 3, 4], dtype, layout), area=spelled_column(AREAS, dtype, layout))
     assert [a["area"] for a in anns_of(coco)] == AREAS.tolist()
+
+
+FLAGS = np.array([0, 1, 1, 0], dtype=np.int64)
+MATCHED = FLAGS.astype(bool).tolist()
+
+
+@pytest.mark.parametrize("layout", COLUMN_LAYOUTS)
+@pytest.mark.parametrize("dtype", [np.bool_] + INT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_a_flag_column_reads_the_same_in_every_spelling(dtype, layout):
+    coco = COCO.from_arrays(
+        IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, iscrowd=spelled_column(FLAGS, dtype, layout)
+    )
+    assert [a["iscrowd"] for a in anns_of(coco)] == FLAGS.tolist()
+
+
+@pytest.mark.parametrize("layout", COLUMN_LAYOUTS)
+@pytest.mark.parametrize("dtype", FLOAT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_metric_columns_read_the_same_in_every_spelling(dtype, layout):
+    scores = spelled_column(SCORES, dtype, layout)
+    matched = spelled_column(FLAGS, np.bool_, layout)
+    assert metrics.average_precision(scores, matched, 2) == metrics.average_precision(SCORES.tolist(), MATCHED, 2)
+    assert metrics.calibration_error(scores, matched) == metrics.calibration_error(SCORES.tolist(), MATCHED)
+
+
+def degenerate(shape, dtype, width=5):
+    """A zero-size array, or one with a length-one axis, in ``dtype``. The last is a
+    one-row view with an odd row stride, which numpy still flags C-contiguous."""
+    if shape == "odd stride":
+        a = np.zeros((2, width), dtype)[::2]
+        assert a.flags.c_contiguous and a.strides[0] != width * a.itemsize
+        return a
+    return np.zeros(shape, dtype)
+
+
+@pytest.mark.parametrize("shape", [(0, 5), (1, 5), (5, 1), (1, 1), "odd stride"], ids=str)
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16, np.uint64, np.int64], ids=lambda d: np.dtype(d).name)
+def test_a_degenerate_shape_is_one_slice(shape, dtype):
+    """Each width read in place trusts that what numpy calls C-contiguous is one slice
+    to ndarray, length-one axes and all. The zero-size rows take the copy path instead
+    (numpy flags every empty array aligned, so the reader does not borrow one) and pin
+    that an empty map counts as nothing."""
+    gt = degenerate(shape, dtype)
+    ev = semantic.SemanticEval(3)
+    ev.update(gt, gt)
+    assert ev.confusion()[0, 0] == gt.size
+
+
+@pytest.mark.parametrize("shape", [(0, 6), "odd stride"], ids=str)
+def test_a_degenerate_detection_table_is_one_slice(shape):
+    rows = degenerate(shape, np.float64, width=6)
+    rows[...] = [1, 0, 0, 1, 1, 0.5]
+    assert len(anns_of(REFERENCE.loadRes(rows))) == len(rows)
 
 
 # --- scalars inside a record: extract_int ---------------------------------------

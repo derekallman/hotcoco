@@ -97,10 +97,10 @@ impl PySemanticEval {
     #[doc = "Count one ground-truth label map against one prediction.
 
 Both are integer numpy arrays of the same shape — ``(H, W)``, or ``(N, H, W)``
-for a batch — in any integer dtype. A C-contiguous, aligned ``uint8``,
-``uint16``, ``uint64``, or ``int64`` array is read in place; numpy first
-makes any other view contiguous and aligned, and casts any other dtype to
-``int64``.
+for a batch, up to 32 dimensions — in any integer or bool dtype. A
+C-contiguous, aligned ``uint8``, ``uint16``, ``uint64``, or ``int64`` array
+is read in place; any other array is one numpy copy, ``uint64`` for an
+unsigned dtype and ``int64`` otherwise, contiguous and aligned.
 The counting itself releases the GIL. Raises
 ``ValueError`` on a shape mismatch or a label out of range; nothing from the
 pair is counted then."]

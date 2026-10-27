@@ -1591,7 +1591,7 @@ fn segmentation_needs_array(what: &str) -> PyErr {
 }
 
 /// Detections from the array `load_res` accepts: any integer or float dtype
-/// ([`convert::numeric_array`]), `float32` as detectors emit it included,
+/// ([`convert::NUMERIC_KINDS`]), `float32` as detectors emit it included,
 /// shape `(N, 6)` or `(N, 7)`, columns
 /// `[image_id, x, y, w, h, score[, category_id]]` — the pycocotools
 /// `loadNumpyAnnotations` convention. A six-column array has no category
@@ -1605,38 +1605,39 @@ fn anns_from_array(
     what: &str,
     segmentation: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Option<Vec<Annotation>>> {
-    match convert::numeric_array::<numpy::Ix2>(obj)? {
-        Some(arr) => anns_from_rows(obj.py(), arr.as_array(), what, segmentation).map(Some),
-        None => Ok(None),
-    }
+    // Contiguous, so the rows are one slice for the core to read.
+    let Some(arr) =
+        convert::contiguous_array::<f64, numpy::Ix2>(obj, what, convert::NUMERIC_KINDS)?
+    else {
+        return Ok(None);
+    };
+    let ncols = arr.shape()[1];
+    anns_from_rows(obj.py(), arr.as_slice(), ncols, what, segmentation).map(Some)
 }
 
+/// `rows` is the table flattened row-major, `ncols` wide.
 fn anns_from_rows(
     py: Python<'_>,
-    arr: numpy::ndarray::ArrayView2<'_, f64>,
+    rows: &[f64],
+    ncols: usize,
     what: &str,
     segmentation: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Vec<Annotation>> {
-    let ncols = arr.ncols();
     if ncols != 6 && ncols != 7 {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "{what}: numpy array must have 6 or 7 columns \
              [image_id, x, y, w, h, score[, category_id]], got {ncols}",
         )));
     }
+    let nrows = rows.len() / ncols;
     if let Some(segs) = segmentation {
-        if segs.len() != arr.nrows() {
+        if segs.len() != nrows {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "{what}: segmentation has {} entries for {} rows",
+                "{what}: segmentation has {} entries for {nrows} rows",
                 segs.len(),
-                arr.nrows()
             )));
         }
     }
-    let rows = arr.as_standard_layout();
-    let rows = rows
-        .as_slice()
-        .expect("a standard-layout array is one slice");
     // The rows are numpy's memory, so they are read under the GIL — see the
     // GIL rule in `mask.rs`. The conversion is parallel on the thread pool
     // either way; only this thread holds the GIL.

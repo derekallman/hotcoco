@@ -1058,16 +1058,16 @@ pub fn calibration_bin_to_py<'py>(
 /// `int64` map costs about what counting it does.
 ///
 /// `uint8` (a PNG-backed ground truth), `uint16` (a wide label set),
-/// `uint64`, and `int64` (`argmax`) are read in place; any other dtype —
-/// `int32`, bool — is numpy's `astype(int64)` copy of it, so negative labels
-/// survive to be reported rather than wrapping. `uint64` has its own width
-/// for the same reason: cast to `int64`, a value of 2^63 or more would be
+/// `uint64`, and `int64` (`argmax`) are read in place; any other unsigned
+/// dtype is a `uint64` copy and any other dtype — `int32`, bool — an `int64`
+/// one ([`contiguous_array`]), so a negative label survives to be reported
+/// rather than wrapping, and an unsigned one of 2^63 or more is never
 /// reported as negative.
 pub(crate) enum LabelArray<'py> {
-    U8(numpy::PyReadonlyArrayDyn<'py, u8>),
-    U16(numpy::PyReadonlyArrayDyn<'py, u16>),
-    U64(numpy::PyReadonlyArrayDyn<'py, u64>),
-    I64(numpy::PyReadonlyArrayDyn<'py, i64>),
+    U8(Contiguous<'py, u8, numpy::IxDyn>),
+    U16(Contiguous<'py, u16, numpy::IxDyn>),
+    U64(Contiguous<'py, u64, numpy::IxDyn>),
+    I64(Contiguous<'py, i64, numpy::IxDyn>),
 }
 
 impl LabelArray<'_> {
@@ -1080,27 +1080,13 @@ impl LabelArray<'_> {
         }
     }
 
-    /// The pixels as core's map, in row-major order: the buffer itself.
-    /// `to_slice` is ndarray's, which wants standard layout — numpy's
-    /// `as_slice` also hands back a Fortran-order buffer, in its column-major
-    /// order, which paired with a C-order map counts pixel against the wrong
-    /// pixel. [`label_array`] makes every array C-contiguous, so the copy is
-    /// only for a layout ndarray calls non-standard and numpy contiguous.
+    /// The pixels as core's map: the buffer itself, row-major.
     pub(crate) fn map(&self) -> LabelMap<'_> {
-        fn pixels<'a, T: Copy + numpy::Element>(
-            a: &'a numpy::PyReadonlyArrayDyn<'_, T>,
-        ) -> Cow<'a, [T]> {
-            let view = a.as_array();
-            match view.to_slice() {
-                Some(s) => Cow::Borrowed(s),
-                None => Cow::Owned(view.iter().copied().collect()),
-            }
-        }
         match self {
-            LabelArray::U8(a) => LabelMap::U8(pixels(a)),
-            LabelArray::U16(a) => LabelMap::U16(pixels(a)),
-            LabelArray::U64(a) => LabelMap::U64(pixels(a)),
-            LabelArray::I64(a) => LabelMap::I64(pixels(a)),
+            LabelArray::U8(a) => LabelMap::U8(Cow::Borrowed(a.as_slice())),
+            LabelArray::U16(a) => LabelMap::U16(Cow::Borrowed(a.as_slice())),
+            LabelArray::U64(a) => LabelMap::U64(Cow::Borrowed(a.as_slice())),
+            LabelArray::I64(a) => LabelMap::I64(Cow::Borrowed(a.as_slice())),
         }
     }
 }
@@ -1114,31 +1100,19 @@ fn label_array<'py>(obj: &Bound<'py, PyAny>, name: &str) -> PyResult<LabelArray<
             type_name(obj)
         )));
     };
-    // The buffer is borrowed as a Rust slice, so it must be row-major and
-    // aligned — a `frombuffer` at an odd offset is neither a slice of `u16`
-    // nor of `i64`. numpy makes it both, in a copy that vectorizes and runs
-    // without the GIL; an array that already is comes back as it is.
-    let behaved;
-    let obj = if arr.is_c_contiguous() && arr.is_aligned() {
-        obj
-    } else {
-        let py = obj.py();
-        behaved = py
-            .import("numpy")?
-            .getattr(pyo3::intern!(py, "require"))?
-            .call1((obj, py.None(), pyo3::intern!(py, "CA")))?;
-        &behaved
-    };
-    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u8>>() {
+    // The narrow unsigned widths are read at their own width only; any other
+    // unsigned dtype (`uint32`, a swapped byte order) takes the lossless
+    // `uint64` copy, and everything else the `int64` one.
+    if let Some(a) = contiguous_array::<u8, numpy::IxDyn>(obj, name, b"")? {
         return Ok(LabelArray::U8(a));
     }
-    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u16>>() {
+    if let Some(a) = contiguous_array::<u16, numpy::IxDyn>(obj, name, b"")? {
         return Ok(LabelArray::U16(a));
     }
-    if let Ok(a) = obj.extract::<numpy::PyReadonlyArrayDyn<'py, u64>>() {
+    if let Some(a) = contiguous_array::<u64, numpy::IxDyn>(obj, name, b"u")? {
         return Ok(LabelArray::U64(a));
     }
-    match array_of_kind::<i64, numpy::IxDyn>(obj, b"iub")? {
+    match contiguous_array::<i64, numpy::IxDyn>(obj, name, b"iub")? {
         Some(a) => Ok(LabelArray::I64(a)),
         None => Err(pyo3::exceptions::PyTypeError::new_err(format!(
             "{name} has dtype {}; a label map holds integer class ids",
@@ -1167,7 +1141,7 @@ pub fn u64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<u64>,
             })
             .collect()
     }
-    if let Some(arr) = array_of_kind::<u64, numpy::Ix2>(obj, b"u")? {
+    if let Some(arr) = numpy_array::<u64, numpy::Ix2>(obj, name, b"u", Layout::Any)? {
         let view = arr.as_array();
         let (nr, nc) = view.dim();
         if let Some(&v) = view.iter().find(|&&v| v > i64::MAX as u64) {
@@ -1177,7 +1151,7 @@ pub fn u64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<u64>,
         }
         return Ok((view.iter().copied().collect(), nr, nc));
     }
-    if let Some(arr) = array_of_kind::<i64, numpy::Ix2>(obj, b"i")? {
+    if let Some(arr) = numpy_array::<i64, numpy::Ix2>(obj, name, b"i", Layout::Any)? {
         let view = arr.as_array();
         let (nr, nc) = view.dim();
         return Ok((unsigned(name, view.iter().copied())?, nr, nc));
@@ -1255,33 +1229,22 @@ where
     Ok(d)
 }
 
-/// A numpy array of any integer or float dtype as a `float64` array of `D`
-/// dimensions: the array itself when it is `float64`, otherwise numpy's
-/// `astype` copy of it, one pass in C. The cast is the conversion a Python
-/// `float()` of each element makes, so it is exact for every `float32` and
-/// `float16`, and for every integer up to 2^53. `None` for anything else —
-/// a list, a bool or object array, an array of other dimensions — which the
-/// caller reads element by element.
+/// The dtype kinds a `float64` reader casts from: any integer or float. The
+/// cast is the conversion a Python `float()` of each element makes, so it is
+/// exact for every `float32` and `float16`, and for every integer up to
+/// 2^53. A bool or object array is left to the caller's element-wise path.
+pub(crate) const NUMERIC_KINDS: &[u8] = b"iuf";
+
+/// A numpy array of any integer or float dtype ([`NUMERIC_KINDS`]) as a
+/// `float64` array of `D` dimensions, read through an ndarray view
+/// ([`numpy_array`]). `None` for anything else — a list, a bool or object
+/// array, an array of other dimensions — which the caller reads element by
+/// element.
 pub(crate) fn numeric_array<'py, D: numpy::ndarray::Dimension>(
     obj: &Bound<'py, PyAny>,
+    name: &str,
 ) -> PyResult<Option<numpy::PyReadonlyArray<'py, f64, D>>> {
-    // Aligned, as `array_of_kind` requires, for the same reason.
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, f64, D>>()
-        && arr.is_aligned()
-    {
-        return Ok(Some(arr));
-    }
-    let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
-        return Ok(None);
-    };
-    if D::NDIM.is_some_and(|ndim| ndim != arr.ndim())
-        || !matches!(arr.dtype().kind(), b'i' | b'u' | b'f')
-    {
-        return Ok(None);
-    }
-    let py = obj.py();
-    let wide = obj.call_method1(pyo3::intern!(py, "astype"), (numpy::dtype::<f64>(py),))?;
-    Ok(Some(wide.extract()?))
+    numpy_array::<f64, D>(obj, name, NUMERIC_KINDS, Layout::Any)
 }
 
 /// A 1-D float argument: a numpy array of any integer or float dtype in one
@@ -1293,7 +1256,7 @@ pub(crate) fn numeric_array<'py, D: numpy::ndarray::Dimension>(
 /// argument on a full val2017 run. `to_vec` goes through ndarray, so strided
 /// views (`scores[::2]`) copy correctly instead of being rejected.
 pub fn f64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
-    if let Some(arr) = numeric_array::<numpy::Ix1>(obj)? {
+    if let Some(arr) = numeric_array::<numpy::Ix1>(obj, name)? {
         return Ok(arr.as_array().to_vec());
     }
     obj.extract::<Vec<f64>>().map_err(|_| {
@@ -1303,30 +1266,105 @@ pub fn f64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
     })
 }
 
-/// A numpy array of `D` dimensions whose dtype kind is one of `kinds` as a
-/// `T` array: the array itself when it already is one, otherwise numpy's
-/// `astype` copy of it — see [`numeric_array`]. `None` for anything else.
-fn array_of_kind<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
-    obj: &Bound<'py, PyAny>,
-    kinds: &[u8],
-) -> PyResult<Option<numpy::PyReadonlyArray<'py, T, D>>> {
-    // The array is read through an ndarray view, which needs an aligned
-    // buffer; a `frombuffer` at an odd offset is of the right dtype but not
-    // one, and takes the `astype` copy below, which is aligned.
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray<'py, T, D>>()
-        && arr.is_aligned()
-    {
-        return Ok(Some(arr));
+/// What a numpy buffer must satisfy to be read where it is.
+#[derive(Clone, Copy)]
+enum Layout {
+    /// Aligned, any strides: read through an ndarray view, which walks them.
+    Any,
+    /// Aligned and C-contiguous: one row-major slice, as [`Contiguous`]
+    /// hands it out.
+    Contiguous,
+}
+
+impl Layout {
+    fn holds(self, arr: &Bound<'_, numpy::PyUntypedArray>) -> bool {
+        // numpy flags every empty array aligned, whatever its data pointer;
+        // an empty view of a `frombuffer` at an odd offset is not one to
+        // ndarray, and its copy is free.
+        !arr.is_empty()
+            && arr.is_aligned()
+            && (matches!(self, Layout::Any) || arr.is_c_contiguous())
     }
+}
+
+/// A numpy array read with [`Layout::Contiguous`]: its buffer is one
+/// row-major slice. ndarray's layout test ignores axes of length one, as
+/// numpy's `C_CONTIGUOUS` flag does, so the two agree on every shape.
+pub(crate) struct Contiguous<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
+    numpy::PyReadonlyArray<'py, T, D>,
+);
+
+impl<T: numpy::Element, D: numpy::ndarray::Dimension> Contiguous<'_, T, D> {
+    pub(crate) fn shape(&self) -> &[usize] {
+        self.0.shape()
+    }
+
+    /// The buffer, row-major. ndarray's `to_slice`, not numpy's `as_slice`,
+    /// which also hands back a Fortran-order buffer in its column-major
+    /// order.
+    pub(crate) fn as_slice(&self) -> &[T] {
+        self.0
+            .as_array()
+            .to_slice()
+            .expect("read with Layout::Contiguous, so one row-major slice")
+    }
+}
+
+/// [`numpy_array`] with [`Layout::Contiguous`]: `obj` as a `T` array whose
+/// buffer is one row-major slice, for a reader that borrows it as one.
+pub(crate) fn contiguous_array<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
+    obj: &Bound<'py, PyAny>,
+    name: &str,
+    kinds: &[u8],
+) -> PyResult<Option<Contiguous<'py, T, D>>> {
+    Ok(numpy_array::<T, D>(obj, name, kinds, Layout::Contiguous)?.map(Contiguous))
+}
+
+/// The one reader of a numpy argument: `obj` as a `T` array of `D`
+/// dimensions in `layout`. The array itself when it already is one; one
+/// numpy copy of it (`astype` in C order, which casts and lays out in the
+/// same pass, in C and without the GIL) when its dtype is `T` or one of the
+/// `kinds` the caller casts from; `None` for anything else — a list, an array
+/// of another rank or dtype — which the caller reads some other way or
+/// refuses by name.
+///
+/// Every check a fast path needs is made here, so no reader can borrow a
+/// buffer it must not. Each of these reached review in the 1.3 cycle from a
+/// reader that decided for itself: a Fortran-order map paired with a C-order
+/// one, a `frombuffer` view at an odd offset that is no `&[u16]`, a `uint64`
+/// wrapped negative by an `int64` cast. `tests/test_array_spellings.py` holds
+/// every dtype in every layout to the answer a fresh copy gives.
+fn numpy_array<'py, T: numpy::Element, D: numpy::ndarray::Dimension>(
+    obj: &Bound<'py, PyAny>,
+    name: &str,
+    kinds: &[u8],
+    layout: Layout,
+) -> PyResult<Option<numpy::PyReadonlyArray<'py, T, D>>> {
     let Ok(arr) = obj.cast::<numpy::PyUntypedArray>() else {
         return Ok(None);
     };
-    if D::NDIM.is_some_and(|ndim| ndim != arr.ndim()) || !kinds.contains(&arr.dtype().kind()) {
+    if D::NDIM.is_some_and(|ndim| ndim != arr.ndim()) {
         return Ok(None);
     }
     let py = obj.py();
-    let cast = obj.call_method1(pyo3::intern!(py, "astype"), (numpy::dtype::<T>(py),))?;
-    Ok(Some(cast.extract()?))
+    let want = numpy::dtype::<T>(py);
+    let same = arr.dtype().is_equiv_to(&want);
+    if !same && !kinds.contains(&arr.dtype().kind()) {
+        return Ok(None);
+    }
+    // rust-numpy views at most 32 dimensions and panics past that; numpy 2
+    // allows 64.
+    if arr.ndim() > 32 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{name} has {} dimensions; at most 32 are supported",
+            arr.ndim()
+        )));
+    }
+    if same && layout.holds(arr) {
+        return Ok(Some(obj.extract()?));
+    }
+    let made = obj.call_method1(pyo3::intern!(py, "astype"), (want, pyo3::intern!(py, "C")))?;
+    Ok(Some(made.extract()?))
 }
 
 /// A 1-D non-negative integer argument — see [`f64_vec`]. A numpy array of
@@ -1343,15 +1381,15 @@ pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
             "{name}[{i}]: expected a non-negative integer, got {v}"
         ))
     };
-    if let Some(arr) = array_of_kind::<u64, numpy::Ix1>(obj, b"u")? {
+    if let Some(arr) = numpy_array::<u64, numpy::Ix1>(obj, name, b"u", Layout::Any)? {
         return Ok(arr.as_array().to_vec());
     }
-    if let Some(arr) = array_of_kind::<i64, numpy::Ix1>(obj, b"i")? {
+    if let Some(arr) = numpy_array::<i64, numpy::Ix1>(obj, name, b"i", Layout::Any)? {
         return (arr.as_array().iter().enumerate())
             .map(|(i, &v)| u64::try_from(v).map_err(|_| bad(i, &v)))
             .collect();
     }
-    if let Some(arr) = array_of_kind::<f64, numpy::Ix1>(obj, b"f")? {
+    if let Some(arr) = numpy_array::<f64, numpy::Ix1>(obj, name, b"f", Layout::Any)? {
         return (arr.as_array().iter().enumerate())
             .map(|(i, &v)| hotcoco_core::types::id_from_f64(v).ok_or_else(|| bad(i, &v)))
             .collect();
@@ -1374,22 +1412,26 @@ pub fn u64_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<u64>> {
         .collect()
 }
 
+/// A 1-D bool numpy array, cast from `kinds` by numpy's rule (non-zero is
+/// true), as a `Vec`; `None` for anything else — see [`numpy_array`].
+fn bool_array(obj: &Bound<'_, PyAny>, name: &str, kinds: &[u8]) -> PyResult<Option<Vec<bool>>> {
+    Ok(
+        numpy_array::<bool, numpy::Ix1>(obj, name, kinds, Layout::Any)?
+            .map(|arr| arr.as_array().to_vec()),
+    )
+}
+
 /// A 1-D flag argument — `iscrowd` for `from_arrays` and the IoU functions.
 ///
 /// A numpy bool array is read as is and an array of any integer dtype as
-/// non-zero means true, each in one copy (an unsigned one wraps into `int64`,
-/// which keeps zero and only zero at zero); anything else (a list of `0`/`1`
-/// or bools, a float array read back from pandas) goes through
-/// [`extract_flag`] item by item, so every flag spelling the API accepts
-/// elsewhere works here too. COCO JSON stores `iscrowd` as `0`/`1`, and
-/// pycocotools takes `maskUtils.iou(dt, gt, [a["iscrowd"] for a in anns])`
-/// straight through.
+/// non-zero means true; anything else (a list of `0`/`1` or bools, a float
+/// array read back from pandas) goes through [`extract_flag`] item by item,
+/// so every flag spelling the API accepts elsewhere works here too. COCO
+/// JSON stores `iscrowd` as `0`/`1`, and pycocotools takes
+/// `maskUtils.iou(dt, gt, [a["iscrowd"] for a in anns])` straight through.
 pub fn flag_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<bool>>() {
-        return Ok(arr.as_array().to_vec());
-    }
-    if let Some(arr) = array_of_kind::<i64, numpy::Ix1>(obj, b"iu")? {
-        return Ok(arr.as_array().iter().map(|&v| v != 0).collect());
+    if let Some(flags) = bool_array(obj, name, b"iu")? {
+        return Ok(flags);
     }
     let iter = obj.try_iter().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err(format!(
@@ -1405,8 +1447,8 @@ pub fn flag_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
 /// `__bool__` call, so a `matched` array was the most expensive argument a
 /// caller could pass.
 pub fn bool_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
-    if let Ok(arr) = obj.extract::<numpy::PyReadonlyArray1<bool>>() {
-        return Ok(arr.as_array().to_vec());
+    if let Some(bools) = bool_array(obj, name, b"")? {
+        return Ok(bools);
     }
     obj.extract::<Vec<bool>>().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err(format!(
@@ -1428,7 +1470,7 @@ pub fn bool_vec(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<bool>> {
 /// locally; whether NaN is meaningful is caller-specific, not a property of
 /// extracting a 2-D array.
 pub fn f64_matrix_arg(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<f64>, usize, usize)> {
-    if let Some(arr) = numeric_array::<numpy::Ix2>(obj)? {
+    if let Some(arr) = numeric_array::<numpy::Ix2>(obj, name)? {
         let view = arr.as_array();
         let (nr, nc) = view.dim();
         return Ok((view.iter().copied().collect(), nr, nc));

@@ -295,7 +295,7 @@ The matrix behind ``hotcoco.semantic``, for a loop that keeps its own: sum the
 arrays across images, then hand the total to :func:`mean_iou`.
 
 Args:
-    gt: Ground-truth class ids, an integer array of any shape.
+    gt: Ground-truth class ids, an integer or bool array of any shape up to 32 dimensions.
     pred: Predicted class ids, the same shape.
     num_classes: Every label must be below this, except ``ignore_index`` in ``gt``.
     ignore_index: A ground-truth label whose pixels are left out on both sides.

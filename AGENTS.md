@@ -58,6 +58,18 @@ one malformed value through every path and fails on any disagreement.
   lookup argument (`getAnnIds(imgIds=[True])`) reads `True` as 1, as pycocotools does.
 - **I/O keeps its kind.** Wrap an `io::Error` with `Error::io(e, context)`, never in a
   string: a string loses the `ErrorKind` that makes it `FileNotFoundError`.
+- **One numpy reader for numeric arguments.** `convert::numpy_array` is where a label
+  map, a count matrix, a table, or a column is borrowed or copied: the dtype to read,
+  the kinds it may cast from, and the layout are its parameters, so a new fast path
+  cannot skip the alignment or layout check (its doc comment has the history). A
+  reader that walks strides calls it with `Layout::Any`, directly or through
+  `numeric_array` or `bool_array`; one that borrows a slice calls `contiguous_array`
+  and gets a `Contiguous`, the type that owns the "one row-major slice" guarantee.
+  `mask.rs` reads its `uint8` mask arrays itself on purpose: a 1-byte dtype cannot be misaligned, and
+  column-major versus row-major is the RLE encoding's own concern there, not a
+  layout to normalize away. `tests/test_array_spellings.py` holds every dtype in
+  every layout to the answer a fresh copy gives; add a row there for any new entry
+  point that reads an array.
 
 ### Core-crate architecture
 

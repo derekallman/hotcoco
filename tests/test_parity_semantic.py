@@ -216,6 +216,12 @@ def test_bad_input_is_a_value_error():
     wide = semantic.SemanticEval(2, ignore_index=2**64 - 1)
     wide.update(np.array([[0, 2**64 - 1]], np.uint64), np.array([[0, 1]]))
     assert ev.confusion().sum() == 1 and wide.confusion().sum() == 1
+    # The same in the other byte order, which is a copy, not a borrow.
+    with pytest.raises(ValueError, match="gt pixel 1 has label 9223372036854775808"):
+        ev.update(np.array([[0, 2**63]], ">u8"), np.array([[0, 0]]))
+    # rust-numpy views at most 32 dimensions; numpy allows 64.
+    with pytest.raises(ValueError, match="gt has 33 dimensions; at most 32"):
+        ev.update(np.zeros((1,) * 33, np.uint8), np.zeros((1,) * 33, np.uint8))
 
 
 @pytest.mark.parametrize("view", ["strided", "fortran", "transposed", "misaligned"], ids=str)
