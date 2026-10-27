@@ -1192,7 +1192,8 @@ Load a CVAT for Images 1.1 XML file as a COCO dataset.
     the self-closing form and the open/close-pair form CVAT writes when a shape
     carries `<attribute>` children. Unsupported shapes (`<polyline>`, `<points>`,
     `<cuboid>`) and degenerate polygons are skipped and reported with a
-    `UserWarning` naming the count — they don't stop the conversion.
+    [`HotcocoWarning`](../guide/results.md#filtering-the-warnings) naming the
+    count — they don't stop the conversion.
 
     ```python
     coco = COCO.from_cvat("annotations.xml")

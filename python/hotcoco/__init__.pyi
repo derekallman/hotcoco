@@ -396,6 +396,19 @@ def init_as_pycocotools() -> None: ...
 def init_as_lvis() -> None: ...
 
 # ---------------------------------------------------------------------------
+# Warning categories
+# ---------------------------------------------------------------------------
+
+class HotcocoWarning(UserWarning):
+    """Base class for every Python warning hotcoco emits."""
+
+class ReferenceDeviationWarning(HotcocoWarning):
+    """The run is configured differently from the reference implementation."""
+
+class CallOrderWarning(HotcocoWarning):
+    """A method was called before the step it needs."""
+
+# ---------------------------------------------------------------------------
 # LVIS drop-in surface (lvis-api spellings)
 # ---------------------------------------------------------------------------
 

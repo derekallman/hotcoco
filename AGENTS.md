@@ -71,6 +71,19 @@ one malformed value through every path and fails on any disagreement.
   every layout to the answer a fresh copy gives; add a row there for any new entry
   point that reads an array.
 
+### Warnings
+
+- **A warning names its kind where it is made, as an error does.** Emit it through
+  `warn` in `crates/hotcoco-pyo3/src/lib.rs`, which takes a `WarningCategory` (one
+  per `create_exception!` type beside it; the variants document when each applies)
+  and adds the `hotcoco: ` prefix, so a message never spells it.
+  `tests/test_warning_categories.py` counts the `warn(` calls per file and fails on
+  a warning raised any other way, so a new one needs a row there.
+- **A call made before the step it needs raises `Error::InvalidState`** (see
+  [Input errors](#input-errors)). `CallOrderWarning` is only for the pipeline methods
+  that already return an empty result instead, which callers rely on; a new method
+  raises.
+
 ### Core-crate architecture
 
 Core-crate architecture rules (layers, single-owner conventions, conformance tests) live

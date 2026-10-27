@@ -18,10 +18,6 @@ are planned; a version number is assigned when one is ready to ship.
   needs. Charts move from Plotly to vendored Observable Plot, browse's
   dashboard tab migrates to the same templates, and the matplotlib PDF report
   retires once the HTML report ships.
-- **Warning categories** — hotcoco's warnings get a `UserWarning` subclass,
-  so a caller filters a reference deviation by category instead of matching
-  its text, which is the only option today. Existing `UserWarning` filters
-  keep working.
 
 ## Multi-object tracking
 

@@ -12,7 +12,7 @@ use pyo3::types::{PyDict, PyList};
 use hotcoco_core::panoptic::{METRIC_NAMES, PanopticDataset, PanopticEval};
 
 use crate::convert::{from_py_json, py_to_dataset, type_name};
-use crate::{PyCOCO, print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
+use crate::{PyCOCO, WarningCategory, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
 
 /// Whether a dict is COCO panoptic JSON — its annotations carry
 /// `segments_info` — rather than a detection-style dataset.
@@ -140,15 +140,19 @@ prediction category, or label maps of different sizes."]
     }
 
     #[doc = "Print the summary table — PQ, SQ, RQ, N for All, Things, Stuff — in
-percent, as panopticapi prints it. Comparability warnings are emitted first
-through ``warnings.warn``."]
+percent, as panopticapi prints it. Each entry of ``reference_deviations()``
+is emitted first as a ``ReferenceDeviationWarning``."]
     fn summarize(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.inner.result().is_none() {
-            warn_user(py, "hotcoco: summarize() called before evaluate().")?;
+            warn(
+                py,
+                WarningCategory::CallOrder,
+                "summarize() called before evaluate().",
+            )?;
             return Ok(());
         }
         for w in self.inner.reference_deviations() {
-            warn_user(py, &w)?;
+            warn(py, WarningCategory::ReferenceDeviation, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }

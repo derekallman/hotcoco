@@ -993,22 +993,13 @@ class TestStatsSemantics:
 
 
 class TestGuardsWarn:
-    def test_accumulate_before_evaluate_warns(self):
-        gt = COCO(tiny_dataset())
-        ev = COCOeval(gt, tiny_dt(gt), "bbox")
-        with pytest.warns(UserWarning, match="accumulate"):
-            ev.accumulate()
+    """Which warning each guard emits is `tests/test_warning_categories.py`'s, one row per site."""
 
-    def test_summarize_before_accumulate_warns(self):
+    def test_f_scores_before_accumulate_is_empty(self):
         gt = COCO(tiny_dataset())
         ev = COCOeval(gt, tiny_dt(gt), "bbox")
-        with pytest.warns(UserWarning, match="summarize"):
-            ev.summarize()
-
-    def test_f_scores_before_accumulate_warns(self):
-        gt = COCO(tiny_dataset())
-        ev = COCOeval(gt, tiny_dt(gt), "bbox")
-        with pytest.warns(UserWarning, match="f_scores"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
             assert ev.f_scores() == {}
 
     def test_no_warning_on_correct_order(self):

@@ -279,7 +279,7 @@ Compute and print the standard COCO metrics. Populates `stats`.
 The table goes through Python's `sys.stdout`, so `contextlib.redirect_stdout` captures or silences it, and it shows in a notebook cell. To skip printing altogether, call [`summary_lines`](#summary_lines) instead. A library that embeds hotcoco and wants neither the table nor the non-default-parameter warnings should use it, and read what the warnings would have said from [`reference_deviations`](#reference_deviations).
 
 !!! warning "Non-default parameters"
-    `summarize()` uses a fixed display format that assumes default `iou_thrs`, `max_dets`, and `area_rng_lbl`. If you've changed any of these, a `UserWarning` is emitted (catchable with `warnings.catch_warnings`, visible in Jupyter) and some metrics might show `-1.000` (for example, AP50 when `iou_thrs` doesn't include 0.50). The `stats` array always has 12 entries (10 for keypoints) regardless of your parameters. `-1.000` always means "not computed for this configuration" — an unknown area label or max-dets value degrades to `-1.0` rather than silently substituting the `"all"` slice.
+    `summarize()` uses a fixed display format that assumes default `iou_thrs`, `max_dets`, and `area_rng_lbl`. If you've changed any of these, a [`ReferenceDeviationWarning`](../guide/results.md#filtering-the-warnings) is emitted (catchable with `warnings.catch_warnings`, visible in Jupyter) and some metrics might show `-1.000` (for example, AP50 when `iou_thrs` doesn't include 0.50). The `stats` array always has 12 entries (10 for keypoints) regardless of your parameters. `-1.000` always means "not computed for this configuration" — an unknown area label or max-dets value degrades to `-1.0` rather than silently substituting the `"all"` slice.
 
 Prints 12 lines for bbox/segm (10 for keypoints):
 
@@ -299,7 +299,7 @@ run() -> None
 
 Run the full pipeline in one call: `evaluate()` → `accumulate()` → `summarize()`. Primarily used with LVIS pipelines (Detectron2, MMDetection) that expect a single `run()` call.
 
-It behaves as those three calls do: the table goes through `sys.stdout`, and the same non-default-parameter `UserWarning`s as [`summarize`](#summarize) are emitted.
+It behaves as those three calls do: the table goes through `sys.stdout`, and the same [`ReferenceDeviationWarning`s](../guide/results.md#filtering-the-warnings) as [`summarize`](#summarize) are emitted.
 
 ---
 
@@ -378,7 +378,7 @@ print_results() -> None
 
 Print a formatted results table to stdout. For LVIS, matches the lvis-api `print_results()` style.
 
-Like [`summarize`](#summarize), it prints through `sys.stdout`, so `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells capture it. Called before `summarize()`, it prints nothing and emits a `UserWarning`. In Rust, `print_results_lines()` returns the same lines without printing.
+Like [`summarize`](#summarize), it prints through `sys.stdout`, so `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells capture it. Called before `summarize()`, it prints nothing and emits a [`CallOrderWarning`](../guide/results.md#filtering-the-warnings). In Rust, `print_results_lines()` returns the same lines without printing.
 
 ---
 
@@ -390,7 +390,7 @@ summary_lines() -> list[str]
 
 The same lines `summarize()` prints, returned instead of written to stdout — one string per metric, already formatted. Use it to route the summary into a logger, a report, or a test assertion.
 
-It populates `stats` as `summarize()` does and prints nothing, but it also skips the `UserWarning` about a non-default configuration that `summarize()` emits. That makes it the quiet path for code that embeds hotcoco, and it means nothing tells you the run is not comparable to the reference: call [`reference_deviations`](#reference_deviations), or read `provenance` from [`report`](#report), when that matters.
+It populates `stats` as `summarize()` does and prints nothing, but it also skips the [`ReferenceDeviationWarning`s](../guide/results.md#filtering-the-warnings) that `summarize()` emits. That makes it the quiet path for code that embeds hotcoco, and it means nothing tells you the run is not comparable to the reference: call [`reference_deviations`](#reference_deviations), or read `provenance` from [`report`](#report), when that matters.
 
 ---
 

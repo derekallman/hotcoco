@@ -50,6 +50,7 @@ restating it. Before writing a paragraph, check whether its owner already exists
 |---|---|---|
 | Benchmark tables, timing numbers, parity figures | `docs/benchmarks.md` | README and index keep one headline number and a link |
 | Provenance and `"extension"` semantics | `docs/guide/results.md` | one line and a link |
+| Warning categories (`HotcocoWarning` and its subclasses) | `docs/guide/results.md` (Filtering the warnings) | name the category and link |
 | camelCase alias table | `docs/getting-started/migration.md` | one note at the top of an API page, never per-method admonitions |
 | `init_as_pycocotools()` usage | `docs/guide/frameworks.md` | a code snippet is fine in README and quickstart; explanation links |
 | RLE `counts` bytes-to-str gotcha | `docs/guide/masks.md` | link |
@@ -158,10 +159,11 @@ message reading `lines may show -1.000` becomes `lines might show -1.000`.
 A message string is often quoted verbatim in `docs/`. Change both in the same commit, and
 check `cargo test` — some tests assert on message text.
 
-Downstream code matches on warning text too. Every hotcoco warning is a plain
-`UserWarning`, so text is the only thing a filter can match: RF-DETR silences the
-`max_dets` warning with `^hotcoco: max_dets differ from expected`, and rewording that
-message brings it back on every validation epoch of theirs.
+Downstream code matches on warning text too. Before the warning categories, every
+hotcoco warning was a plain `UserWarning`, so text was the only thing a filter could
+match, and those filters still depend on it: RF-DETR silences the `max_dets` warning with
+`^hotcoco: max_dets differ from expected`, and rewording that message brings it back
+on every validation epoch of theirs.
 
 ## Deviations from Google
 

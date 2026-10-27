@@ -216,7 +216,8 @@ ev.reference_deviations()   # ['iou_thrs differ from default (0.50:0.05:0.95). .
 
 `reference_deviations()` returns one sentence per reason and is empty exactly when
 the run is parity-verified. It is the same predicate behind the warnings `summarize()`
-prints, so a report cannot claim parity while the warnings disagree.
+emits, so a report cannot claim parity while the warnings disagree; to silence them for
+a deliberate configuration, see [Filtering the warnings](#filtering-the-warnings).
 
 Read these rather than inferring comparability from `iou_type` or the eval mode:
 parity is a property of the whole configuration, so the preceding run is an extension
@@ -376,3 +377,37 @@ for k, v in ev.get_results(prefix="val/bbox").items():
 ```
 
 See [`get_results`](../api/cocoeval.md#get_results) in the API reference for full parameter details.
+
+## Filtering the warnings
+
+Every warning hotcoco emits through Python's `warnings` module belongs to one of three
+categories:
+
+| Category | Emitted when |
+|---|---|
+| `HotcocoWarning` | The base class of the other two, and emitted itself by a warning that fits neither, such as `COCO.from_cvat()` skipping shapes COCO cannot express |
+| `ReferenceDeviationWarning` | `summarize()`, or `run()` through it, finds a configuration that `reference_deviations()` lists, once per entry. Semantic evaluation lists none today |
+| `CallOrderWarning` | A method is called before the step it needs, such as `accumulate()` before `evaluate()`. It goes ahead with nothing to work on: what it returns or prints is empty, and a metric computed from it later reads `-1.000` |
+
+When the configuration is deliberate, such as a training loop that evaluates with
+`max_dets=[1, 10, 500]` every epoch, silence that category and keep the rest:
+
+```python
+import warnings
+
+import hotcoco
+
+warnings.filterwarnings("ignore", category=hotcoco.ReferenceDeviationWarning)
+```
+
+To fail a test run on a deviation instead, make the category an error in pytest's
+configuration:
+
+```toml
+[tool.pytest.ini_options]
+filterwarnings = ["error::hotcoco.ReferenceDeviationWarning"]
+```
+
+`HotcocoWarning` subclasses `UserWarning`, so a filter written for `UserWarning` still
+catches all three. Every message starts with `hotcoco: `. Loader messages are not
+Python warnings; see [`load_warnings`](../api/coco.md#load_warnings).

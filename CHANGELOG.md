@@ -9,7 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Warning categories.** Every Python warning hotcoco emits is now a
+  `HotcocoWarning`, a `UserWarning` subclass exported from the top level, so a
+  filter can name its kind instead of matching its text. `summarize()` emits each
+  reference deviation as a `ReferenceDeviationWarning`, and a method called before
+  the step it needs, such as `accumulate()` before `evaluate()`, emits a
+  `CallOrderWarning`. To silence a deliberate configuration and keep the rest:
+  `warnings.filterwarnings("ignore", category=hotcoco.ReferenceDeviationWarning)`.
+  Filters on `UserWarning` still catch all three, and message text is unchanged
+  apart from the panoptic prefix under Changed. See
+  [Filtering the warnings](https://derekallman.github.io/hotcoco/guide/results/#filtering-the-warnings).
+
 ### Changed
+
+- **The panoptic `isthing` warning starts with `hotcoco: `**, as every other
+  hotcoco warning does, so a filter on `^hotcoco:` matches it too. `summarize()`
+  and `run()` emit it as ``hotcoco: 1 of 3 categories have no `isthing`; ...``
+  where 1.3 wrote ``1 of 3 categories have no `isthing`; ...``, so a filter
+  anchored at the old start needs the prefix. No other message changed.
 
 ### Fixed
 

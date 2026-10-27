@@ -14,7 +14,7 @@ use pyo3::types::PyBytes;
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
-use crate::{print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
+use crate::{WarningCategory, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
 mmsegmentation's protocol.
@@ -185,11 +185,11 @@ order: mIoU, fwIoU, mAcc, aAcc. ``-1.0`` where nothing was counted."]
     }
 
     #[doc = "Print the table: one row per class with IoU and Acc in percent, then
-the four means. Comparability warnings are emitted first through
-``warnings.warn``."]
+the four means. Each entry of ``reference_deviations()`` is emitted first as
+a ``ReferenceDeviationWarning``."]
     fn summarize(&self, py: Python<'_>) -> PyResult<()> {
         for w in self.inner.reference_deviations() {
-            warn_user(py, &w)?;
+            warn(py, WarningCategory::ReferenceDeviation, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }
