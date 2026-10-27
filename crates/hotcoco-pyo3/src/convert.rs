@@ -2,6 +2,7 @@ use std::borrow::Cow;
 
 use hotcoco_core::mask::RleRef;
 use hotcoco_core::metrics::semantic::LabelMap;
+use hotcoco_core::panoptic::{ImageMatches, PanopticAnnotation, PanopticDataset, SegmentInfo};
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -917,8 +918,9 @@ fn set_category_field(cat: &mut Category, key: &str, value: &Bound<'_, PyAny>) -
         "skeleton" => cat.skeleton = value.extract()?,
         "keypoints" => cat.keypoints = value.extract()?,
         "frequency" => cat.frequency = value.extract()?,
-        // `1`/`0` in COCO panoptic files, a bool from a Python caller.
-        "isthing" => cat.isthing = Some(extract_flag(value)?),
+        // `1`/`0` in COCO panoptic files, a bool from a Python caller; `None`
+        // is no `isthing`, as `null` is in a file.
+        "isthing" => cat.isthing = optional(value, extract_flag)?,
         _ => return Ok(false),
     }
     Ok(true)
@@ -947,6 +949,84 @@ pub fn py_to_category(dict: &Bound<'_, PyDict>) -> PyResult<Category> {
     let mut cat = Category::default();
     cat.extra = extract_extra(dict, |key, value| set_category_field(&mut cat, key, value))?;
     Ok(cat)
+}
+
+/// Set the segment field a `segments_info` key names; any other key is
+/// dropped, as the JSON loader drops it.
+fn set_segment_field(seg: &mut SegmentInfo, key: &str, value: &Bound<'_, PyAny>) -> PyResult<()> {
+    match key {
+        "id" => seg.id = extract_int(value)?,
+        "category_id" => seg.category_id = extract_int(value)?,
+        "area" => seg.area = optional(value, extract_int)?,
+        "bbox" => seg.bbox = optional(value, |v| v.extract())?,
+        "iscrowd" => seg.iscrowd = extract_flag(value)?,
+        "segmentation" => seg.segmentation = optional(value, py_to_segmentation)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// One `segments_info` entry: `id` and `category_id` required, the rest
+/// optional, every field read by the record rules the dataset readers use.
+/// The one reader of a segment from Python, for a panoptic dict and for
+/// `primitives.match_segments` alike.
+pub(crate) fn py_to_segment(dict: &Bound<'_, PyDict>) -> PyResult<SegmentInfo> {
+    req!(dict, "id");
+    req!(dict, "category_id");
+    let mut seg = SegmentInfo {
+        id: 0,
+        category_id: 0,
+        area: None,
+        bbox: None,
+        iscrowd: false,
+        segmentation: None,
+    };
+    // Every key is consumed, so no extra is built.
+    extract_extra(dict, |key, value| {
+        set_segment_field(&mut seg, key, value).map(|()| true)
+    })?;
+    Ok(seg)
+}
+
+/// Set the scalar field of one panoptic annotation — one image — a key
+/// names; `segments_info` is read beside it, and any other key is dropped,
+/// as the JSON loader drops it.
+fn set_panoptic_annotation_field(
+    ann: &mut PanopticAnnotation,
+    key: &str,
+    value: &Bound<'_, PyAny>,
+) -> PyResult<()> {
+    match key {
+        "image_id" => ann.image_id = extract_int(value)?,
+        "file_name" => ann.file_name = optional(value, |v| v.extract())?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// A COCO panoptic dataset from a dict, read field by field as a detection
+/// dataset is ([`py_to_dataset`]): a record fails here as it fails in the
+/// JSON file it could be saved to.
+pub(crate) fn py_to_panoptic_dataset(dict: &Bound<'_, PyDict>) -> PyResult<PanopticDataset> {
+    let annotation = |d: &Bound<'_, PyDict>| -> PyResult<PanopticAnnotation> {
+        req!(d, "image_id");
+        req!(d, "segments_info");
+        let mut ann = PanopticAnnotation {
+            image_id: 0,
+            file_name: None,
+            segments_info: extract_dict_list(d, "segments_info", py_to_segment)?,
+        };
+        extract_extra(d, |key, value| {
+            set_panoptic_annotation_field(&mut ann, key, value).map(|()| true)
+        })?;
+        Ok(ann)
+    };
+    Ok(PanopticDataset {
+        images: extract_dict_list(dict, "images", py_to_image)?,
+        annotations: extract_dict_list(dict, "annotations", annotation)?,
+        categories: extract_dict_list(dict, "categories", py_to_category)?,
+        ..PanopticDataset::default()
+    })
 }
 
 /// Convert a list of dicts element by element. `what` names the list, and a
@@ -996,6 +1076,16 @@ pub(crate) fn segmentation_at(seg: &Bound<'_, PyAny>, i: usize) -> PyResult<Segm
     py_to_segmentation(seg).map_err(|e| field_error(seg.py(), format_args!("segmentation[{i}]"), e))
 }
 
+/// A list of records as a `list`: the list itself, or a tuple's items — the
+/// array `json.dump` writes for either, so a dict loads as its file does.
+/// `None` for anything else.
+pub(crate) fn record_list<'py>(obj: &Bound<'py, PyAny>) -> Option<Bound<'py, PyList>> {
+    if let Ok(list) = obj.cast::<PyList>() {
+        return Some(list.clone());
+    }
+    obj.cast::<PyTuple>().ok().map(PyTupleMethods::to_list)
+}
+
 /// Extract a list of dicts from a parent dict, converting each element with `convert_fn`.
 /// Returns an empty Vec if the key is absent.
 fn extract_dict_list<'py, T>(
@@ -1006,10 +1096,10 @@ fn extract_dict_list<'py, T>(
     match dict.get_item(key)? {
         None => Ok(Vec::new()),
         Some(v) => {
-            let list = v.cast::<PyList>().map_err(|_| {
+            let list = record_list(&v).ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(format!("'{key}' must be a list of dicts"))
             })?;
-            dict_list(list, key, convert_fn)
+            dict_list(&list, key, convert_fn)
         }
     }
 }
@@ -1050,6 +1140,17 @@ pub fn calibration_bin_to_py<'py>(
     d.set_item("avg_accuracy", bin.avg_accuracy)?;
     d.set_item("count", bin.count)?;
     Ok(d)
+}
+
+/// One image's segment matches into `dict`: the four keys
+/// `primitives.match_segments` returns and every `PanopticEval.eval_imgs`
+/// record carries after its `image_id`. One writer, so the two cannot drift.
+pub(crate) fn set_segment_matches(dict: &Bound<'_, PyDict>, m: &ImageMatches) -> PyResult<()> {
+    dict.set_item("matched", &m.matched)?;
+    dict.set_item("missed", &m.missed)?;
+    dict.set_item("false_positives", &m.false_positives)?;
+    dict.set_item("ignored", &m.ignored)?;
+    Ok(())
 }
 
 /// A label map — a numpy integer or bool array of any shape — held as a
@@ -1174,6 +1275,18 @@ pub(crate) fn label_pair<'py>(
         )));
     }
     Ok((g, p))
+}
+
+/// [`label_pair`] for the free functions, where a nested list is welcome as
+/// it is everywhere in `metrics` and `primitives`: `numpy.asarray` first,
+/// which hands an array back unchanged. `SemanticEval.update` takes arrays
+/// only, and calls [`label_pair`] itself.
+pub(crate) fn label_pair_or_lists<'py>(
+    gt: &Bound<'py, PyAny>,
+    pred: &Bound<'py, PyAny>,
+) -> PyResult<(LabelArray<'py>, LabelArray<'py>)> {
+    let asarray = gt.py().import("numpy")?.getattr("asarray")?;
+    label_pair(&asarray.call1((gt,))?, &asarray.call1((pred,))?)
 }
 
 /// A flat `(side, side)` block of confusion counts as a numpy `uint64` array.

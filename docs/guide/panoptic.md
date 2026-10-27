@@ -122,6 +122,27 @@ r["provenance"]                    # "parity_verified"
 — `PQ, SQ, RQ, PQ_th, SQ_th, RQ_th, PQ_st, SQ_st, RQ_st`, fractions in
 `[0, 1]` — which is what detection frameworks log, usually multiplied by 100.
 
+### Per-image matches
+
+`ev.eval_imgs` keeps what the matcher decided in each image, by segment id —
+the panoptic counterpart of detection's `evalImgs`. The images where the model
+missed the most segments:
+
+```python
+ev.evaluate()
+worst = sorted(ev.eval_imgs, key=lambda r: len(r["missed"]), reverse=True)
+for r in worst[:5]:
+    print(r["image_id"], len(r["missed"]), "missed,", len(r["false_positives"]), "false positives")
+```
+
+Each record is `image_id` plus the four lists
+[`primitives.match_segments`](../api/primitives.md#match_segments) returns:
+`matched` as `(gt_id, pred_id, iou)`, `missed`, `false_positives`, and
+`ignored`. That function and
+[`segment_overlaps`](../api/primitives.md#segment_overlaps) are the matcher
+`PanopticEval` runs, callable on your own label maps, so a variant of PQ
+written in Python starts from the same matches.
+
 ### mIoU from the same pixels
 
 Panoptic papers report mIoU beside PQ: the panoptic prediction scored as a

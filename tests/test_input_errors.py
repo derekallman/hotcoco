@@ -21,7 +21,8 @@ import math
 import hotcoco
 import numpy as np
 import pytest
-from hotcoco import COCO, COCOeval, StreamingEval, mask, panoptic, semantic
+from helpers import PanopticCase
+from hotcoco import COCO, COCOeval, StreamingEval, mask, panoptic, primitives, semantic
 
 IMAGES = [{"id": 1, "width": 100, "height": 100, "file_name": "a.jpg"}]
 CATS = [{"id": 1, "name": "cat"}]
@@ -316,6 +317,165 @@ def test_a_dataset_list_that_is_not_a_list(tmp_path):
     )
 
 
+# ------------------------------------------------------- panoptic segments
+
+SEGMENT = {"id": 1, "category_id": 1, "area": 4, "iscrowd": 0}
+
+
+def segment_outcomes(tmp_path, field, value):
+    """A ``segments_info`` entry in a panoptic dict, a panoptic JSON file, and
+    ``primitives.match_segments``. The evaluators are only built: a bad record
+    fails there, before any PNG is read."""
+    seg = with_field(SEGMENT, field, value)
+    dataset = {
+        "images": [{"id": 1, "width": 2, "height": 2, "file_name": "1.jpg"}],
+        "annotations": [{"image_id": 1, "file_name": "1.png", "segments_info": [seg]}],
+        "categories": [{"id": 1, "name": "x", "isthing": 1}],
+    }
+    path = tmp_path / "panoptic.json"
+    path.write_text(json.dumps(dataset))
+    return {
+        "dict": outcome(lambda: panoptic.PanopticEval(dataset, dataset), None),
+        "json": outcome(lambda: panoptic.PanopticEval(str(path), str(path)), None),
+        "match_segments": outcome(lambda: primitives.match_segments([seg], [seg], {(1, 1): 4}), None),
+    }
+
+
+SEGMENT_CASES = [
+    ("id", 1.5, "reject"),
+    ("id", -1, "reject"),
+    ("id", "1", "reject"),
+    ("id", True, "reject"),
+    ("id", MISSING, "reject"),
+    ("category_id", None, "reject"),
+    ("category_id", MISSING, "reject"),
+    ("area", -1, "reject"),
+    ("area", "4", "reject"),
+    ("iscrowd", "yes", "reject"),
+    ("iscrowd", None, "reject"),
+    ("iscrowd", 0.5, "reject"),
+    ("bbox", "x", "reject"),
+    ("bbox", [1, 2, 3], "reject"),
+    ("segmentation", 7, "reject"),
+    ("bbox", None, "accept"),
+    ("id", 1.0, "accept"),
+    ("area", None, "accept"),
+    ("area", MISSING, "accept"),
+    ("iscrowd", MISSING, "accept"),
+    ("iscrowd", 1.0, "accept"),
+]
+
+
+@pytest.mark.parametrize(
+    "field, value, expect",
+    SEGMENT_CASES,
+    ids=[f"{f}={'missing' if v is MISSING else repr(v)}" for f, v, _ in SEGMENT_CASES],
+)
+def test_segment_record(tmp_path, field, value, expect):
+    assert_agree(segment_outcomes(tmp_path, field, value), expect)
+
+
+@pytest.mark.parametrize("value", [np.int64(1), np.uint32(1), np.float64(1.0)], ids=lambda v: type(v).__name__)
+def test_a_numpy_scalar_is_an_id_in_a_segment(value):
+    """A segment read from a dict follows the one id rule on both paths. A JSON file
+    cannot hold a numpy scalar, so it is no path here."""
+    seg = {"id": value, "category_id": value}
+    dataset = {
+        "images": [{"id": 1, "width": 2, "height": 2}],
+        "annotations": [{"image_id": 1, "file_name": "1.png", "segments_info": [seg]}],
+        "categories": [{"id": 1, "name": "x", "isthing": 1}],
+    }
+    panoptic.PanopticEval(dataset, dataset)
+    assert primitives.match_segments([seg], [seg], {(1, 1): 4})["matched"] == [(1, 1, 1.0)]
+    bad = {**dataset, "annotations": [{"image_id": 1, "segments_info": [{"id": 1.5, "category_id": 1}]}]}
+    with pytest.raises(ValueError, match=r"^pred: annotations\[0\]: segments_info\[0\]: field 'id': "):
+        panoptic.PanopticEval(dataset, bad)
+
+
+def test_a_tuple_of_records_is_the_list_a_json_file_would_hold():
+    """``json.dump`` writes a tuple as an array, so a dict holding one loads as the file does."""
+    seg = {"id": 1, "category_id": 1}
+    panoptic_dict = {
+        "images": ({"id": 1, "width": 2, "height": 2},),
+        "annotations": ({"image_id": 1, "file_name": "1.png", "segments_info": (seg,)},),
+        "categories": ({"id": 1, "name": "x", "isthing": 1},),
+    }
+    panoptic.PanopticEval(panoptic_dict, panoptic_dict)
+    coco = COCO({"images": tuple(IMAGES), "annotations": (GT,), "categories": tuple(CATS)})
+    assert coco.getAnnIds() == [1]
+    assert primitives.match_segments((seg,), (seg,), {(1, 1): 4})["matched"] == [(1, 1, 1.0)]
+
+
+def test_an_isthing_of_none_is_absent_in_a_dict_as_null_is_in_a_file(tmp_path):
+    """The JSON loader reads ``"isthing": null`` as no ``isthing``; a dict reads ``None`` the same."""
+    dataset = {
+        "images": [{"id": 1, "width": 2, "height": 2}],
+        "annotations": [{"image_id": 1, "file_name": "1.png", "segments_info": []}],
+        "categories": [{"id": 1, "name": "x", "isthing": None}],
+    }
+    path = tmp_path / "panoptic.json"
+    path.write_text(json.dumps(dataset))
+    for ev in (panoptic.PanopticEval(dataset, dataset), panoptic.PanopticEval(str(path), str(path))):
+        assert ev.provenance() == "extension"
+    detection = {"images": IMAGES, "annotations": [GT], "categories": [with_field(CATS[0], "isthing", None)]}
+    assert COCO(detection).loadCats(1)[0].get("isthing") is None
+
+
+def test_greedy_match_takes_the_ground_truth_count_from_its_flags_when_sim_is_empty():
+    """``[]`` has no columns to count, so an image with no detections is still sized by
+    its ground truths' flags, as ``np.zeros((0, G))`` would be."""
+    m = primitives.greedy_match([], [], 0.5, iscrowd=[0, 1], gt_ignore=[False, False])
+    assert m["gt_matches"].tolist() == [-1, -1] and m["dt_matches"].tolist() == []
+    with pytest.raises(ValueError, match="gt_ignore and iscrowd must have the same length"):
+        primitives.greedy_match([], [], 0.5, iscrowd=[0, 1], gt_ignore=[False])
+
+
+def test_a_pair_with_no_union_is_one_error_on_both_paths(tmp_path):
+    """The void id 0 listed as a segment with no stated area: its pixels are its area
+    and its void overlap at once, so its union with pred 0 is empty. panopticapi
+    divides by zero there; both paths here raise, naming the pair."""
+    gt = np.ones((2, 2), dtype=np.uint32)
+    gt[0] = 0
+    segments = [{"id": 0, "category_id": 1}, {"id": 1, "category_id": 1}]
+    paths = PanopticCase("no-union").add(1, gt, segments, gt, segments).write(tmp_path)
+    message = "ground-truth segment 0 and predicted segment 0 have no union, so their IoU is not a number"
+    with pytest.raises(ValueError, match=f"image 1: {message}"):
+        panoptic.PanopticEval(paths["gt"][0], paths["pred"][0]).evaluate()
+    with pytest.raises(ValueError, match=message):
+        primitives.match_segments(segments, segments, primitives.segment_overlaps(gt, gt))
+
+
+def test_bad_values_for_the_matchers_are_value_errors():
+    seg = [{"id": 1, "category_id": 1}]
+    # The control: well-formed, so accepted.
+    primitives.match_segments(seg, seg, {(1, 1): 4, (0, 1): 4})
+    for call, message in (
+        (lambda: primitives.segment_overlaps([[0, 1]], [[0, 1, 2]]), "same shape"),
+        (lambda: primitives.segment_overlaps([[0, -1]], [[0, 1]]), "gt pixel 1 has a negative label"),
+        (lambda: primitives.segment_overlaps([[0, 1]], np.array([[0, 2**32]])), "pred pixel 1 has label 4294967296"),
+        (lambda: primitives.match_segments(seg, [], {(1, 1): 4}), "segment 1 is in the label map but not in segments"),
+        (
+            lambda: primitives.match_segments(seg, seg, {(1, 0): 4}),
+            "segment 1 is in segments_info but not in the label",
+        ),
+        (lambda: primitives.match_segments(seg, seg, {(1, 1): -4}), r"overlaps\[\(1, 1\)\]"),
+        (lambda: primitives.match_segments(seg, seg, {(1, "a"): 4}), r"overlaps\[\(1, 'a'\)\]"),
+        (lambda: primitives.match_segments(seg, seg, {1: 4}), "pair"),
+        (lambda: primitives.match_segments(seg, seg, {(1, 1): 2**64 - 1, (0, 1): 5}), "more pixels"),
+        # A stated area of 0 under 4 overlapping pixels: the union is 0.
+        (lambda: primitives.match_segments([{"id": 1, "category_id": 1, "area": 0}], seg, {(1, 1): 4}), "not a number"),
+        (lambda: primitives.greedy_match([[0.5, math.nan]], [0.9]), "sim contains NaN"),
+        (lambda: primitives.greedy_match([[0.5]], [math.nan]), "scores contains NaN"),
+        (lambda: primitives.greedy_match([[0.5]], [0.9], [0.5, math.nan]), "iou_thrs contains NaN"),
+        (lambda: primitives.greedy_match([[0.5]], [0.9, 0.8]), "scores and sim's rows must have the same length"),
+        (lambda: primitives.greedy_match([[0.5]], [0.9], iscrowd=[0, 1]), "iscrowd and sim's columns"),
+        (lambda: primitives.greedy_match([[0.5]], [0.9], gt_ignore=[]), "gt_ignore and sim's columns"),
+        (lambda: primitives.greedy_match([[0.5], [0.5, 0.5]], [0.9, 0.8]), "rectangular"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            call()
+
+
 def test_a_record_error_names_the_record_and_the_field():
     with pytest.raises(ValueError, match=r"annotations\[1\]: field 'bbox': "):
         COCO({"images": IMAGES, "annotations": [GT, with_field(GT, "bbox", "x")], "categories": CATS})
@@ -336,6 +496,13 @@ def test_an_argument_of_the_wrong_kind_is_a_type_error():
         lambda: gt.load_res(42),
         lambda: mask.decode(42),
         lambda: semantic.SemanticEval(3).update([[0, 1]], [[0, 1]]),
+        lambda: primitives.segment_overlaps([[0.5]], [[0.5]]),
+        lambda: primitives.segment_overlaps(["a"], ["b"]),
+        lambda: primitives.match_segments([], [], [((1, 1), 4)]),
+        lambda: primitives.match_segments(42, [], {}),
+        lambda: primitives.greedy_match("x", []),
+        lambda: primitives.greedy_match([[0.5]], [0.9], "0.5"),
+        lambda: primitives.greedy_match([[0.5]], [0.9], iscrowd=42),
     ):
         with pytest.raises(TypeError):
             call()

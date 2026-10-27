@@ -130,8 +130,14 @@ fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
     out
 }
 
-/// Generate the default COCO IoU threshold range: 0.50, 0.55, …, 0.95.
-pub(crate) fn default_iou_thrs() -> Vec<f64> {
+/// COCO's ten IoU thresholds: 0.50, 0.55, …, 0.95.
+///
+/// Public for the same reason [`default_rec_thrs`] is: a caller matching
+/// with [`primitives::greedy`](crate::primitives::greedy) directly needs the
+/// thresholds `Params` defaults to, computed the way numpy's `linspace`
+/// computes them, or its matches are at thresholds a few ulp from
+/// `COCOeval`'s.
+pub fn default_iou_thrs() -> Vec<f64> {
     linspace(0.5, 0.95, 10)
 }
 

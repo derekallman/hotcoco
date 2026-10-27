@@ -81,6 +81,22 @@ impl Overlaps {
         builder.finish()
     }
 
+    /// The histogram from counts already taken: `(gt id, pred id, pixels)`
+    /// triples in any order. A pair given twice has its counts summed, and a
+    /// pair with no pixels is left out, so the result is the one
+    /// [`compute`](Self::compute) returns for maps with those counts.
+    ///
+    /// The way in for a histogram built elsewhere — panopticapi's
+    /// `gt_pred_map`, or one read back from a file. The counts must sum to
+    /// at most `u64::MAX`, as the pixels of any pair of label maps do.
+    pub fn from_counts(counts: impl IntoIterator<Item = (u32, u32, u64)>) -> Self {
+        let mut builder = OverlapsBuilder::default();
+        for (g, p, n) in counts {
+            builder.add(pair_key(g, p), n);
+        }
+        builder.finish()
+    }
+
     /// Pixels carrying `gt` in the ground-truth map and `pred` in the
     /// prediction map; `0` when the pair never co-occurs.
     pub fn get(&self, gt: u32, pred: u32) -> u64 {
@@ -140,12 +156,18 @@ pub struct OverlapsBuilder {
     run_len: u64,
 }
 
+/// One `(gt id, pred id)` pair as the builder's map key.
+#[inline]
+fn pair_key(gt: u32, pred: u32) -> u64 {
+    (u64::from(gt) << 32) | u64::from(pred)
+}
+
 impl OverlapsBuilder {
     /// One pixel carrying `gt` on the ground-truth side and `pred` on the
     /// prediction side.
     #[inline]
     pub fn push(&mut self, gt: u32, pred: u32) {
-        let key = (u64::from(gt) << 32) | u64::from(pred);
+        let key = pair_key(gt, pred);
         if key == self.run_key && self.run_len > 0 {
             self.run_len += 1;
         } else {
@@ -156,9 +178,14 @@ impl OverlapsBuilder {
     }
 
     fn flush(&mut self) {
-        if self.run_len > 0 {
-            *self.counts.entry(self.run_key).or_insert(0) += self.run_len;
-            self.run_len = 0;
+        let (key, n) = (self.run_key, std::mem::take(&mut self.run_len));
+        self.add(key, n);
+    }
+
+    /// `n` pixels of the pair `key`; a pair with none is no pair.
+    fn add(&mut self, key: u64, n: u64) {
+        if n > 0 {
+            *self.counts.entry(key).or_insert(0) += n;
         }
     }
 
@@ -215,7 +242,9 @@ pub struct Segment {
 /// slices it was given.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SegmentMatches {
-    /// `(gt index, pred index, iou)` for every pair with IoU above `0.5`.
+    /// `(gt index, pred index, iou)` for every pair with IoU above `0.5`, in
+    /// [`Overlaps::iter`] order — by ground-truth label, the order panopticapi
+    /// sums the IoUs in. The other three lists are in list order.
     pub matched: Vec<(usize, usize, f64)>,
     /// Ground-truth indices that are neither matched nor crowd.
     pub missed: Vec<usize>,
@@ -241,6 +270,11 @@ pub struct SegmentMatches {
 ///   one — the **last** crowd segment of that category in `gt` order, as the
 ///   reference's dict overwrite picks it. Otherwise it is a false positive.
 ///
+/// A label listed more than once is one segment: its last entry, at the
+/// first one's position — what the reference's dict over `segments_info`
+/// holds. The indices returned point at the entries kept; the others appear
+/// in no list.
+///
 /// Labels in the maps that no [`Segment`] describes are skipped in matching,
 /// and ground-truth pixels under such a label are not void: they neither
 /// shrink a union nor help a prediction get ignored. Whether such labels are
@@ -252,12 +286,8 @@ pub struct SegmentMatches {
 /// If a prediction has `area == 0`, since the ignore rule divides by it. A
 /// caller that built `pred` from [`Overlaps::pred_areas`] cannot hit this.
 pub fn match_segments(gt: &[Segment], pred: &[Segment], overlaps: &Overlaps) -> SegmentMatches {
-    // Label -> index. A repeated label keeps the last entry, as a dict built
-    // from the segment list would.
-    let gt_index: FxHashMap<u32, usize> =
-        gt.iter().enumerate().map(|(i, s)| (s.label, i)).collect();
-    let pred_index: FxHashMap<u32, usize> =
-        pred.iter().enumerate().map(|(i, s)| (s.label, i)).collect();
+    let (gt_index, gt_kept) = dict_entries(gt);
+    let (pred_index, pred_kept) = dict_entries(pred);
 
     let mut out = SegmentMatches::default();
     let mut gt_matched = vec![false; gt.len()];
@@ -281,7 +311,8 @@ pub fn match_segments(gt: &[Segment], pred: &[Segment], overlaps: &Overlaps) -> 
 
     // Category -> label of its crowd segment, last one in `gt` order winning.
     let mut crowd_by_category: FxHashMap<u64, u32> = FxHashMap::default();
-    for (gi, g) in gt.iter().enumerate() {
+    for gi in gt_kept {
+        let g = &gt[gi];
         if gt_matched[gi] {
             continue;
         }
@@ -292,7 +323,8 @@ pub fn match_segments(gt: &[Segment], pred: &[Segment], overlaps: &Overlaps) -> 
         }
     }
 
-    for (pi, p) in pred.iter().enumerate() {
+    for pi in pred_kept {
+        let p = &pred[pi];
         if pred_matched[pi] {
             continue;
         }
@@ -308,6 +340,39 @@ pub fn match_segments(gt: &[Segment], pred: &[Segment], overlaps: &Overlaps) -> 
         }
     }
 
+    out
+}
+
+/// The reference's dict over a segment list: the index of each label's last
+/// entry, in the order the labels first appear ([`dict_order`]), and label
+/// -> that index.
+fn dict_entries(segments: &[Segment]) -> (FxHashMap<u32, usize>, Vec<usize>) {
+    let indices: Vec<usize> = (0..segments.len()).collect();
+    let kept: Vec<usize> = dict_order(&indices, |&i| u64::from(segments[i].label))
+        .into_iter()
+        .copied()
+        .collect();
+    let index = kept.iter().map(|&i| (segments[i].label, i)).collect();
+    (index, kept)
+}
+
+/// `items` in input order, each key once, with the record of the key's
+/// *last* occurrence at the position of its *first* — what a Python dict
+/// built from the list holds, which is how panopticapi reads both the
+/// category list and each image's `segments_info`. The one spelling of that
+/// rule, for this kernel and the panoptic driver alike.
+pub(crate) fn dict_order<T>(items: &[T], key: impl Fn(&T) -> u64) -> Vec<&T> {
+    let mut position: FxHashMap<u64, usize> = FxHashMap::default();
+    let mut out: Vec<&T> = Vec::with_capacity(items.len());
+    for item in items {
+        match position.get(&key(item)) {
+            Some(&i) => out[i] = item,
+            None => {
+                position.insert(key(item), out.len());
+                out.push(item);
+            }
+        }
+    }
     out
 }
 
@@ -338,6 +403,42 @@ mod tests {
         assert_eq!(o.gt_areas(), vec![(0, 1), (1, 3), (2, 2)]);
         let total: u64 = o.iter().map(|(_, _, n)| n).sum();
         assert_eq!(total, 6);
+    }
+
+    #[test]
+    fn counts_taken_elsewhere_are_the_same_histogram() {
+        let gt = [1, 1, 2, 2, 0, 1];
+        let pred = [5, 5, 5, 6, 6, 5];
+        let computed = Overlaps::compute(&gt, &pred);
+        // Unordered, one pair split in two, and a zero count that is no pair.
+        let given = Overlaps::from_counts([
+            (0, 6, 1),
+            (2, 6, 1),
+            (1, 5, 2),
+            (2, 5, 1),
+            (1, 5, 1),
+            (3, 3, 0),
+        ]);
+        assert_eq!(given, computed);
+        assert_eq!(Overlaps::from_counts([]), Overlaps::compute(&[], &[]));
+    }
+
+    /// A repeated label is one segment, as the reference's dict holds it: the
+    /// last entry, at the first one's position, and nowhere else.
+    #[test]
+    fn a_repeated_label_keeps_its_last_entry_at_its_first_position() {
+        let gt = [1, 1, 2, 2];
+        let pred = [7, 7, 8, 8];
+        let o = Overlaps::compute(&gt, &pred);
+        // gt label 1 is listed as category 6, then 5; pred 7 is category 5.
+        let m = match_segments(
+            &[seg(1, 6, 2), seg(2, 9, 2), seg(1, 5, 2)],
+            &[seg(7, 5, 2), seg(8, 4, 2), seg(8, 4, 2)],
+            &o,
+        );
+        assert_eq!(m.matched, vec![(2, 0, 1.0)]);
+        assert_eq!(m.missed, vec![1], "entry 0 is overwritten, not missed");
+        assert_eq!(m.false_positives, vec![2], "one segment for label 8");
     }
 
     #[test]

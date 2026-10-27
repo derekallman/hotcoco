@@ -20,7 +20,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   apart from the panoptic prefix under Changed. See
   [Filtering the warnings](https://derekallman.github.io/hotcoco/guide/results/#filtering-the-warnings).
 
+- **The matchers reach Python, both families at once.** `hotcoco.primitives`
+  binds the two matchers the evaluators run, on arrays you supply, so a metric
+  written from them gets the evaluators' matches. The three functions are
+  provisional: their signatures freeze once the tracking family has exercised
+  them.
+  - `primitives.greedy_match(sim, scores, iou_thrs=None, *, gt_ignore=None,
+    iscrowd=None)` is COCO's greedy matcher, pycocotools-exact: detections in
+    descending score order with ties in row order, the later of two equal
+    ground truths, ignored ground truths only when nothing else clears the
+    threshold, crowd ground truths absorbing any number of detections, and
+    pycocotools' `1 - 1e-10` clamp at a threshold of 1.0. It returns
+    `dt_matches`, `gt_matches`, and `dt_ignore` arrays, `(T, D)` and `(T, G)`,
+    or one axis fewer for a single threshold.
+  - `primitives.segment_overlaps(gt, pred)` counts the pixels of every
+    `(gt_id, pred_id)` pair in two panoptic label maps — panopticapi's
+    `gt_pred_map` — and `primitives.match_segments(gt_segments, pred_segments,
+    overlaps)` applies PQ's rules to one image's `segments_info` lists,
+    returning `matched` `(gt_id, pred_id, iou)` tuples and `missed`,
+    `false_positives`, and `ignored` ids.
+  - `tests/test_composed_metrics.py` holds the claim to `==`: PQ, SQ, RQ, and
+    every count written in Python from `segment_overlaps`, `match_segments`,
+    and `metrics.panoptic_quality` equal `PanopticEval`'s on every case
+    `test_parity_panoptic.py` checks against panopticapi, and every match
+    `greedy_match` makes equals `COCOeval`'s `evalImgs` at all ten thresholds
+    and all four area ranges.
+- **`PanopticEval.eval_imgs`** keeps each image's match records — `image_id`
+  plus `match_segments`'s four lists — where `evaluate()` used to keep only the
+  per-category counts. In Rust, `PanopticEval::eval_imgs()` returns
+  `&[ImageMatches]`.
+- In Rust, `panoptic::match_image` is the per-image step `PanopticEval` runs
+  and `match_segments` calls: panopticapi's checks and areas around the
+  kernel, in one place, with `panoptic::labels_from_ids` labeling segments
+  the way a map painted with ids does and `ImageMatches::from_indices`
+  turning the indices back into ids. `Overlaps::from_counts` builds the
+  overlap histogram from counts taken elsewhere. `params::default_iou_thrs` and
+  `metrics::counts::score_order` are public, so a caller of
+  `greedy_match_masked` can use the thresholds and ranking `COCOeval` does.
+
 ### Changed
+
+- **`primitives::panoptic::match_segments` treats a label listed twice as one
+  segment**, its last entry at its first one's position — panopticapi's dict
+  over `segments_info`. It already matched that way, but listed the
+  overwritten entry as a miss or false positive too. `PanopticEval` resolved
+  repeated ids before calling it, so its numbers do not change.
+- **A panoptic dict passed to `PanopticEval` is read field by field**, as a
+  detection dict is, rather than through `json.dumps`. A numpy scalar id is
+  accepted, as everywhere else in the API, and a bad record is a `ValueError`
+  naming it: `gt: annotations[0]: segments_info[1]: field 'id': ...`. A
+  category's `"isthing": None` reads as no `isthing`, as `null` does in a
+  file, in a `COCO` dict as well, which refused it before.
+- **A tuple of records in a dataset dict is read as the list** `json.dump`
+  writes for it, by `COCO` and `PanopticEval` alike, as pycocotools iterates
+  it. `COCO` refused one with a `ValueError` before.
+- The two errors for a predicted segment that is in one of the label map and
+  `segments_info` but not the other now say "label map" rather than "PNG" or
+  "mask", since `match_segments` raises them too. The error for a matched pair
+  with no union names both segments and both causes: a stated area below the
+  segment's pixels, or the void id 0 listed as a segment.
+- The synthetic panoptic cases moved from `tests/test_parity_panoptic.py` to
+  `scripts/helpers.py` (`PanopticCase`, `hand_panoptic_cases`,
+  `random_panoptic_cases`), shared with `tests/test_composed_metrics.py`, and
+  write their PNG files without importing panopticapi. New hand cases cover a
+  repeated id, ids past 32 bits, the void id 0 listed as a segment, an
+  understated area, and one prediction matching two ground truths, each
+  checked against panopticapi. `tests/test_array_spellings.py` reads label
+  maps through `segment_overlaps` and similarity matrices, scores,
+  thresholds, and flags through `greedy_match` in every dtype and layout.
 
 - **The panoptic `isthing` warning starts with `hotcoco: `**, as every other
   hotcoco warning does, so a filter on `^hotcoco:` matches it too. `summarize()`

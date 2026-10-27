@@ -9,12 +9,15 @@ import importlib.util
 import io
 import json
 import os
+import random
 import sys
 import tempfile
 import types
 import urllib.request
 from pathlib import Path
 from typing import NamedTuple
+
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Path constants
@@ -265,8 +268,6 @@ def reference_stats(gt_file, dt_file, iou_type):
 def float32_grids():
     """The default IoU and recall grids rounded through float32, as torchmetrics'
     ``torch.linspace(...).tolist()`` returns them: up to 4e-8 from the default."""
-    import numpy as np  # noqa: PLC0415
-
     iou = np.linspace(0.5, 0.95, 10, dtype=np.float32).astype(np.float64).tolist()
     rec = np.linspace(0.0, 1.0, 101, dtype=np.float32).astype(np.float64).tolist()
     return iou, rec
@@ -479,8 +480,6 @@ def perturb_label_map(gt_map, gt_segs, category_ids, rng, *, shift: int, erode_p
     earlier ones, so the result stays a partition. Returns
     ``(pred_map, segments_info)`` with ids from ``first_id``.
     """
-    import numpy as np
-
     h, w = gt_map.shape
     pred = np.zeros_like(gt_map)
     segs = []
@@ -519,6 +518,322 @@ def perturb_label_map(gt_map, gt_segs, category_ids, rng, *, shift: int, erode_p
         next_id += 1
     present = set(np.unique(pred).tolist())
     return pred, [s for s in segs if s["id"] in present]
+
+
+# ---------------------------------------------------------------------------
+# Panoptic: synthetic cases
+# ---------------------------------------------------------------------------
+#
+# Ground truth and prediction for a few images, as label maps plus segments_info,
+# written out the way the COCO panoptic release lays them out.
+# `tests/test_parity_panoptic.py` runs them through panopticapi and `PanopticEval`;
+# `tests/test_composed_metrics.py` through `PanopticEval` and the primitives.
+
+PANOPTIC_CATEGORIES = [
+    {"id": 1, "name": "person", "isthing": 1},
+    {"id": 2, "name": "car", "isthing": 1},
+    {"id": 7, "name": "dog", "isthing": 1},
+    {"id": 100, "name": "sky", "isthing": 0},
+    {"id": 101, "name": "road", "isthing": 0},
+]
+PANOPTIC_CATEGORY_IDS = [c["id"] for c in PANOPTIC_CATEGORIES]
+
+
+def id2rgb(label_map: np.ndarray) -> np.ndarray:
+    """A label map as COCO panoptic PNG colors: id = R + 256 G + 256² B, as panopticapi's `id2rgb`."""
+    ids = label_map.astype(np.uint32)
+    return np.stack([ids % 256, ids // 256 % 256, ids // 256**2 % 256], axis=-1).astype(np.uint8)
+
+
+class PanopticCase:
+    """Ground truth and prediction for a few images, as label maps + segments."""
+
+    def __init__(self, name: str, *, png_only: bool = False):
+        self.name = name
+        # True when the case leans on something only the PNG format can say —
+        # a PNG id with no segments_info entry, or a stated area that differs
+        # from the pixels — so the RLE path is not expected to reproduce it.
+        self.png_only = png_only
+        self.images: list[dict] = []
+        # image_id -> (label map, segments_info)
+        self.gt: dict[int, tuple[np.ndarray, list[dict]]] = {}
+        self.pred: dict[int, tuple[np.ndarray, list[dict]]] = {}
+        self.categories = [dict(c) for c in PANOPTIC_CATEGORIES]
+
+    def add(self, image_id: int, gt_map, gt_segs, pred_map, pred_segs):
+        h, w = gt_map.shape
+        self.images.append({"id": image_id, "height": h, "width": w, "file_name": f"{image_id}.jpg"})
+        self.gt[image_id] = (gt_map, gt_segs)
+        self.pred[image_id] = (pred_map, pred_segs)
+        return self
+
+    def write(self, root: Path) -> dict:
+        """Write PNG files + JSON the way the COCO panoptic release lays them out."""
+        from PIL import Image
+
+        paths = {}
+        for side, data in (("gt", self.gt), ("pred", self.pred)):
+            folder = root / f"panoptic_{side}"
+            folder.mkdir(parents=True, exist_ok=True)
+            annotations = []
+            for image_id, (label_map, segs) in data.items():
+                Image.fromarray(id2rgb(label_map)).save(folder / f"{image_id}.png")
+                annotations.append({"image_id": image_id, "file_name": f"{image_id}.png", "segments_info": segs})
+            payload = {"images": self.images, "annotations": annotations, "categories": self.categories}
+            json_path = root / f"panoptic_{side}.json"
+            json_path.write_text(json.dumps(payload))
+            paths[side] = (json_path, folder)
+        return paths
+
+    def as_coco(self, side: str):
+        """The same maps as a detection-style dataset with RLE masks."""
+        from hotcoco import COCO, mask
+
+        data = self.gt if side == "gt" else self.pred
+        annotations = []
+        next_id = 1
+        for image_id, (label_map, segs) in data.items():
+            for seg in segs:
+                binary = np.asfortranarray((label_map == seg["id"]).astype(np.uint8))
+                annotations.append(
+                    {
+                        "id": next_id,
+                        "image_id": image_id,
+                        "category_id": seg["category_id"],
+                        "iscrowd": seg.get("iscrowd", 0),
+                        "segmentation": mask.encode(binary),
+                        "area": int(binary.sum()),
+                    }
+                )
+                next_id += 1
+        return COCO({"images": self.images, "annotations": annotations, "categories": self.categories})
+
+
+def segments_from_map(label_map: np.ndarray, category_of, rng: random.Random, *, crowd_rate=0.0, area_noise=0.0):
+    """segments_info for every non-zero id in `label_map`."""
+    segs = []
+    for sid in sorted(int(v) for v in np.unique(label_map) if v != 0):
+        area = int((label_map == sid).sum())
+        if area_noise and rng.random() < area_noise:
+            # panopticapi takes the JSON's word for a ground-truth area.
+            area += rng.randint(-area // 4, area // 2)
+        segs.append(
+            {"id": sid, "category_id": category_of(sid), "area": area, "iscrowd": 1 if rng.random() < crowd_rate else 0}
+        )
+    return segs
+
+
+def random_partition(rng: random.Random, h: int, w: int, n: int, first_id: int = 1) -> np.ndarray:
+    """`n` rectangles painted in order, later over earlier; 0 stays void."""
+    m = np.zeros((h, w), dtype=np.uint32)
+    sid = first_id
+    for _ in range(n):
+        rh, rw = rng.randint(2, max(3, h // 2)), rng.randint(2, max(3, w // 2))
+        y, x = rng.randint(0, h - rh), rng.randint(0, w - rw)
+        m[y : y + rh, x : x + rw] = sid
+        sid += 1
+    return m
+
+
+def random_panoptic_case(seed: int, area_noise: float = 0.0) -> PanopticCase:
+    rng = random.Random(seed)
+    case = PanopticCase(f"random-{seed}" + ("-area-noise" if area_noise else ""), png_only=bool(area_noise))
+    for image_id in (1, 2):
+        h, w = rng.randint(12, 40), rng.randint(12, 40)
+        gt_map = random_partition(rng, h, w, rng.randint(2, 7))
+        cats = {}
+
+        def category_of(sid, cats=cats, rng=rng):
+            return cats.setdefault(sid, rng.choice(PANOPTIC_CATEGORY_IDS))
+
+        gt_segs = segments_from_map(gt_map, category_of, rng, crowd_rate=0.15, area_noise=area_noise)
+        pred_map, pred_segs = perturb_label_map(
+            gt_map, gt_segs, PANOPTIC_CATEGORY_IDS, rng, shift=3, erode_px=(1,), first_id=1000, spurious=3
+        )
+        case.add(image_id, gt_map, gt_segs, pred_map, pred_segs)
+    return case
+
+
+def random_panoptic_cases() -> list[PanopticCase]:
+    """Forty random cases, then ten whose stated ground-truth areas are off."""
+    return [random_panoptic_case(seed) for seed in range(40)] + [
+        random_panoptic_case(seed, area_noise=0.5) for seed in range(10)
+    ]
+
+
+def hand_panoptic_cases() -> list[PanopticCase]:
+    """One case per rule, with the geometry written out."""
+    cases = []
+
+    # Crowd absorption: a prediction mostly on a crowd region of its own
+    # category is ignored; the same prediction of another category is a FP.
+    gt = np.zeros((8, 8), dtype=np.uint32)
+    gt[:, :4] = 1  # crowd person
+    gt[0:2, 6:8] = 2  # person
+    pred = np.zeros_like(gt)
+    pred[0:3, :4] = 11  # on the crowd, cat person -> ignored
+    pred[4:7, :4] = 12  # on the crowd, cat car -> FP
+    pred[0:4, 6:8] = 13  # covers segment 2 plus void -> matched, IoU 1.0
+    cases.append(
+        PanopticCase("crowd").add(
+            1,
+            gt,
+            [
+                {"id": 1, "category_id": 1, "area": 32, "iscrowd": 1},
+                {"id": 2, "category_id": 1, "area": 4, "iscrowd": 0},
+            ],
+            pred,
+            [{"id": 11, "category_id": 1}, {"id": 12, "category_id": 2}, {"id": 13, "category_id": 1}],
+        )
+    )
+
+    # Exactly 0.5 is not a match.
+    gt = np.zeros((4, 4), dtype=np.uint32)
+    gt[:, 0:3] = 1
+    gt[:, 3] = 2
+    pred = np.zeros_like(gt)
+    pred[:, 0:2] = 11
+    pred[:, 2:4] = 12
+    # gt1 (12 px) vs pred 11 (8 px): inter 8, union 12 -> 0.667 match.
+    # gt2 (4 px) vs pred 12 (8 px): inter 4, union 8 -> 0.5 no match.
+    cases.append(
+        PanopticCase("half").add(
+            1,
+            gt,
+            [
+                {"id": 1, "category_id": 100, "area": 12, "iscrowd": 0},
+                {"id": 2, "category_id": 101, "area": 4, "iscrowd": 0},
+            ],
+            pred,
+            [{"id": 11, "category_id": 100}, {"id": 12, "category_id": 101}],
+        )
+    )
+
+    # A ground-truth PNG id with no segments_info entry: not void, so it
+    # neither shrinks the union nor helps a prediction get ignored.
+    gt = np.zeros((4, 8), dtype=np.uint32)
+    gt[:, 0:4] = 9  # unknown to the JSON
+    gt[:, 4:8] = 1
+    pred = np.zeros_like(gt)
+    pred[:, 2:8] = 11  # 8 on gt1, 8 on the unknown id: iou 16/(24+16-16) = 2/3
+    cases.append(
+        PanopticCase("unknown-gt-label", png_only=True).add(
+            1, gt, [{"id": 1, "category_id": 2, "area": 16, "iscrowd": 0}], pred, [{"id": 11, "category_id": 2}]
+        )
+    )
+
+    # The JSON's ground-truth area, not the PNG's, enters the union.
+    gt = np.zeros((4, 4), dtype=np.uint32)
+    gt[:, :] = 1
+    pred = np.zeros_like(gt)
+    pred[:, :] = 11
+    cases.append(
+        PanopticCase("json-area", png_only=True)
+        .add(1, gt, [{"id": 1, "category_id": 7, "area": 40, "iscrowd": 0}], pred, [{"id": 11, "category_id": 7}])
+        .add(2, gt, [{"id": 1, "category_id": 7, "area": 16, "iscrowd": 0}], pred, [{"id": 11, "category_id": 7}])
+    )
+
+    # An image where nothing was predicted, and one with nothing to find.
+    gt = np.zeros((6, 6), dtype=np.uint32)
+    gt[1:5, 1:5] = 1
+    empty = np.zeros_like(gt)
+    pred = np.zeros_like(gt)
+    pred[2:4, 2:4] = 11
+    cases.append(
+        PanopticCase("empty-sides")
+        .add(1, gt, [{"id": 1, "category_id": 1, "area": 16, "iscrowd": 0}], empty, [])
+        .add(2, empty, [], pred, [{"id": 11, "category_id": 100}])
+    )
+
+    # An id listed twice: panopticapi's dict keeps the last entry, at the
+    # first one's position. Here that turns segment 1 from a car into a
+    # person, which pred 11 then matches.
+    gt = np.zeros((4, 4), dtype=np.uint32)
+    gt[:, 0:2] = 1
+    gt[:, 2:4] = 2
+    pred = gt + 10 * (gt > 0)
+    cases.append(
+        PanopticCase("repeated-id", png_only=True).add(
+            1,
+            gt,
+            [
+                {"id": 1, "category_id": 2, "area": 8, "iscrowd": 0},
+                {"id": 2, "category_id": 100, "area": 8, "iscrowd": 0},
+                {"id": 1, "category_id": 1, "area": 8, "iscrowd": 0},
+            ],
+            pred,
+            [{"id": 11, "category_id": 1}, {"id": 12, "category_id": 100}, {"id": 11, "category_id": 1}],
+        )
+    )
+
+    # Ids past 32 bits, in no PNG: each its own missed segment, a repeated
+    # one once, as panopticapi's dict holds them.
+    gt = np.zeros((4, 4), dtype=np.uint32)
+    gt[:, 0:2] = 1
+    pred = gt * 11
+    cases.append(
+        PanopticCase("wide-ids", png_only=True).add(
+            1,
+            gt,
+            [
+                {"id": 1, "category_id": 1, "area": 8, "iscrowd": 0},
+                {"id": 2**33, "category_id": 1, "area": 4, "iscrowd": 0},
+                {"id": 2**34, "category_id": 2, "area": 4, "iscrowd": 0},
+                {"id": 2**33, "category_id": 2, "area": 4, "iscrowd": 0},
+            ],
+            pred,
+            [{"id": 11, "category_id": 1}],
+        )
+    )
+
+    # Id 0 listed as a segment: panopticapi scores the void pixels as one, and
+    # subtracts them from its union as void too. Ground-truth 0 misses pred 0
+    # (IoU 2 / (2 + 8 - 2 - 2)); pred 0, all on void, is ignored.
+    gt = np.zeros((2, 2), dtype=np.uint32)
+    gt[1] = 1
+    cases.append(
+        PanopticCase("void-id", png_only=True).add(
+            1,
+            gt,
+            [
+                {"id": 0, "category_id": 1, "area": 8, "iscrowd": 0},
+                {"id": 1, "category_id": 1, "area": 2, "iscrowd": 0},
+            ],
+            gt.copy(),
+            [{"id": 0, "category_id": 1}, {"id": 1, "category_id": 1}],
+        )
+    )
+
+    # Two ground truths stated at 1 pixel each, 3 found: pred 11 covers both
+    # at IoU 3 / (6 + 1 - 3) = 0.75 and matches twice, as panopticapi counts it.
+    gt = np.zeros((2, 3), dtype=np.uint32)
+    gt[0] = 1
+    gt[1] = 2
+    cases.append(
+        PanopticCase("double-match", png_only=True).add(
+            1,
+            gt,
+            [
+                {"id": 1, "category_id": 1, "area": 1, "iscrowd": 0},
+                {"id": 2, "category_id": 1, "area": 1, "iscrowd": 0},
+            ],
+            np.full_like(gt, 11),
+            [{"id": 11, "category_id": 1}],
+        )
+    )
+
+    # A stated ground-truth area below the pixels found is taken at its word:
+    # 8 pixels stated as 4 give pred 11 an IoU of 8 / (8 + 4 - 8) = 2.
+    gt = np.zeros((4, 4), dtype=np.uint32)
+    gt[:, 0:2] = 1
+    pred = gt * 11
+    cases.append(
+        PanopticCase("understated-area", png_only=True).add(
+            1, gt, [{"id": 1, "category_id": 7, "area": 4, "iscrowd": 0}], pred, [{"id": 11, "category_id": 7}]
+        )
+    )
+
+    return cases
 
 
 # ── running a reference from its pinned source ────────────────────────────────
