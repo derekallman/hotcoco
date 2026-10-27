@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+### Fixed
+
+## [1.3.1] - 2026-10-27
+
+### Changed
+
 - **One reader for the numeric numpy arguments in the bindings.**
   `convert::numpy_array` takes the dtype to read, the dtype kinds it accepts a
   cast from, and the layout the reader needs (aligned, or aligned and
