@@ -11,7 +11,10 @@ use pyo3::types::{PyDict, PyList};
 
 use hotcoco_core::panoptic::{METRIC_NAMES, PanopticDataset, PanopticEval};
 
-use crate::convert::{from_py_json, py_to_dataset, type_name};
+use crate::convert::{
+    py_to_dataset, py_to_panoptic_dataset, record_list, set_segment_matches, type_name,
+    with_context,
+};
 use crate::{PyCOCO, print_lines, provenance_str, serde_to_py, to_pyerr, warn_user};
 
 /// Whether a dict is COCO panoptic JSON — its annotations carry
@@ -20,7 +23,7 @@ fn is_panoptic_shaped(dict: &Bound<'_, PyDict>) -> PyResult<bool> {
     let Some(anns) = dict.get_item("annotations")? else {
         return Ok(false);
     };
-    let Ok(anns) = anns.cast::<PyList>() else {
+    let Some(anns) = record_list(&anns) else {
         return Ok(false);
     };
     if anns.is_empty() {
@@ -53,7 +56,7 @@ fn dataset_arg(
         if is_panoptic_shaped(dict)? {
             // A dict has no path to derive the folder from; without one its
             // segments must carry masks, and the run says so if they do not.
-            from_py_json(dict, name)?
+            py_to_panoptic_dataset(dict).map_err(|e| with_context(obj.py(), name, e))?
         } else {
             if folder.is_some() {
                 return Err(masks_carry_no_folder());
@@ -175,6 +178,29 @@ gives the order. ``-1.0`` where a split had no category to average. Empty before
             .result()
             .map(|r| r.stats().to_vec())
             .unwrap_or_default()
+    }
+
+    #[getter]
+    #[doc = "Per-image match records, the panoptic counterpart of ``COCOeval.eval_imgs``.
+
+One dict per ground-truth image, in the order ``evaluate()`` visits them:
+``image_id``, then the four keys ``primitives.match_segments`` returns —
+``matched`` as ``(gt_id, pred_id, iou)`` tuples, and ``missed``,
+``false_positives`` and ``ignored`` as segment ids. Crowd segments appear in
+none. Ids are the input's: the PNG colors of the COCO panoptic format, or the
+annotation ids of a ``COCO`` dataset, repeated where the annotations repeat
+them. ``matched`` is in the order the IoUs were summed: by id for the COCO
+panoptic format, by annotation order for a ``COCO`` dataset. Empty before
+``evaluate()``."]
+    fn eval_imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let records = PyList::empty(py);
+        for rec in self.inner.eval_imgs() {
+            let d = PyDict::new(py);
+            d.set_item("image_id", rec.image_id)?;
+            set_segment_matches(&d, rec)?;
+            records.append(d)?;
+        }
+        Ok(records.into_any().unbind())
     }
 
     #[doc = "Results as a dict in panopticapi's shape.

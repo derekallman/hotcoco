@@ -62,6 +62,22 @@ pub(crate) fn descending_score_key(score: f64) -> u64 {
     !ascending
 }
 
+/// The detection ranking: indices of `scores`, highest score first, tied
+/// scores in input order — pycocotools' stable sort, and the order `COCOeval`
+/// matches and accumulates in. A caller of
+/// [`primitives::greedy`](crate::primitives::greedy) ranks its rows with
+/// this.
+///
+/// ```
+/// # use hotcoco::metrics::counts::score_order;
+/// assert_eq!(score_order(&[0.5, 0.9, 0.5, -0.0, 0.0]), vec![1, 0, 2, 3, 4]);
+/// ```
+pub fn score_order(scores: &[f64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..scores.len()).collect();
+    order.sort_by_key(|&i| descending_score_key(scores[i]));
+    order
+}
+
 /// Precision interpolated at fixed recall thresholds, from cumulative TP/FP.
 ///
 /// `tp_cum` and `fp_cum` must already be cumulative (prefix-summed) over
@@ -475,10 +491,7 @@ pub fn average_precision(
         return 0.0;
     }
 
-    let mut order: Vec<usize> = (0..nd).collect();
-    // Stable, so ties keep input order.
-    order.sort_by_key(|&i| descending_score_key(scores[i]));
-
+    let order = score_order(scores);
     let mut scratch = ApScratch::default();
     average_precision_of_order_into(order, matched, ignored, num_gt, rec_thrs, &mut scratch)
 }

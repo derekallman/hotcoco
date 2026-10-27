@@ -12,12 +12,13 @@ Every integer dtype, in every memory layout numpy can produce, through every
 entry point that reads the array, must give exactly what a fresh C-contiguous
 ``int64`` copy of the same values gives. Every array goes through one reader,
 ``numpy_array`` in ``crates/hotcoco-pyo3/src/convert.rs``, and this file
-reaches it through each caller: ``label_array`` (label maps),
-``u64_matrix_arg`` (a confusion matrix), ``u64_vec`` (an id column),
-``f64_vec`` and ``f64_matrix_arg`` (a float column, a box table),
-``anns_from_array`` (a detection table), ``flag_vec`` (``iscrowd``),
-``bool_vec`` (``matched``), and the numpy scalars that ``extract_int`` reads
-inside a record.
+reaches it through each caller: ``label_array`` (label maps, for semantic
+counts and ``primitives.segment_overlaps``), ``u64_matrix_arg`` (a confusion
+matrix), ``u64_vec`` (an id column), ``f64_vec`` and ``f64_matrix_arg`` (a
+float column, a box table, the similarity matrix, scores, and thresholds of
+``primitives.greedy_match``), ``anns_from_array`` (a detection table),
+``flag_vec`` (``iscrowd``, ``gt_ignore``), ``bool_vec`` (``matched``), and the
+numpy scalars that ``extract_int`` reads inside a record.
 
 ``fuzz_dropin.py`` does this for a dataset's spellings; this is the array
 half, small enough to run in CI. Add a row here for every spelling a review
@@ -28,7 +29,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from hotcoco import COCO, metrics, semantic
+from hotcoco import COCO, metrics, primitives, semantic
 
 INT_DTYPES = [np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64]
 FLOAT_DTYPES = [np.float16, np.float32, np.float64]
@@ -114,6 +115,10 @@ def label_pair(dtype, layout, side, gt=GT, pred=PRED):
     return np.ascontiguousarray(gt), spelled(pred, dtype, layout)
 
 
+def reference_overlaps(gt=GT, pred=PRED):
+    return primitives.segment_overlaps(gt.tolist(), pred.tolist())
+
+
 @pytest.mark.parametrize("side", ["gt", "pred"])
 @pytest.mark.parametrize("layout", LAYOUTS)
 @pytest.mark.parametrize("dtype", INT_DTYPES, ids=lambda d: np.dtype(d).name)
@@ -123,6 +128,7 @@ def test_label_maps_count_the_same_in_every_spelling(dtype, layout, side):
     ev.update(gt, pred)
     assert np.array_equal(ev.confusion(), reference_confusion())
     assert np.array_equal(metrics.pixel_confusion(gt, pred, 3, ignore_index=IGNORE), reference_confusion())
+    assert primitives.segment_overlaps(gt, pred) == reference_overlaps()
 
 
 @pytest.mark.parametrize("side", ["gt", "pred"])
@@ -132,9 +138,11 @@ def test_a_bool_label_map_counts_the_same_in_every_spelling(layout, side):
     gt, pred = (GT % 2).astype(bool), (PRED % 2).astype(bool)
     want = semantic.SemanticEval(2, ignore_index=None)
     want.update(gt.astype(np.int64), pred.astype(np.int64))
+    spelled_pair = label_pair(np.bool_, layout, side, gt, pred)
     ev = semantic.SemanticEval(2, ignore_index=None)
-    ev.update(*label_pair(np.bool_, layout, side, gt, pred))
+    ev.update(*spelled_pair)
     assert np.array_equal(ev.confusion(), want.confusion())
+    assert primitives.segment_overlaps(*spelled_pair) == reference_overlaps(gt.astype(np.int64), pred.astype(np.int64))
 
 
 @pytest.mark.parametrize("side", ["gt", "pred"])
@@ -145,6 +153,19 @@ def test_a_batch_counts_the_same_in_every_spelling(dtype, layout, side):
     ev = semantic.SemanticEval(3, ignore_index=IGNORE)
     ev.update(gt, pred)
     assert np.array_equal(ev.confusion(), 2 * reference_confusion())
+    assert primitives.segment_overlaps(gt, pred) == {k: 2 * n for k, n in reference_overlaps().items()}
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_a_bad_label_is_named_by_its_row_major_position(layout):
+    """The pixel an error names is ``gt.flat``'s index, whatever order the buffer is in."""
+    bad = GT.copy()
+    bad[2, 3] = -1
+    want = f"gt pixel {np.ravel_multi_index((2, 3), GT.shape)} has a negative label"
+    with pytest.raises(ValueError, match=want):
+        primitives.segment_overlaps(spelled(bad, np.int64, layout), PRED)
+    with pytest.raises(ValueError, match=want):
+        metrics.pixel_confusion(spelled(bad, np.int64, layout), PRED, 3, ignore_index=IGNORE)
 
 
 # --- a confusion matrix: metrics.mean_iou -------------------------------------
@@ -243,6 +264,58 @@ def test_metric_columns_read_the_same_in_every_spelling(dtype, layout):
     assert metrics.calibration_error(scores, matched) == metrics.calibration_error(SCORES.tolist(), MATCHED)
 
 
+# --- greedy_match: a similarity matrix, scores, thresholds, and flags ------------
+
+# Multiples of 1/8, exact in every float dtype. Chosen so that each threshold
+# matches differently, and so does the transpose, which is what a column-major
+# buffer read row-major would be.
+SIM = np.array([[1.0, 0.75, 0.25, 0.0], [0.0, 0.75, 0.125, 0.5], [1.0, 1.0, 0.25, 0.0], [0.5, 0.875, 0.625, 0.0]])
+THRESHOLDS = np.array([0.5, 0.625, 0.75])
+
+
+def greedy_reference(**flags):
+    return primitives.greedy_match(SIM.tolist(), SCORES.tolist(), THRESHOLDS.tolist(), **flags)
+
+
+def same_matches(got, want):
+    return got.keys() == want.keys() and all(np.array_equal(got[k], want[k]) for k in want)
+
+
+def test_the_similarity_matrix_tells_its_spellings_apart():
+    assert not same_matches(primitives.greedy_match(SIM.T.copy(), SCORES, THRESHOLDS), greedy_reference())
+    assert len({tuple(row) for row in greedy_reference()["dt_matches"]}) == len(THRESHOLDS)
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+@pytest.mark.parametrize("dtype", FLOAT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_a_similarity_matrix_matches_the_same_in_every_spelling(dtype, layout):
+    got = primitives.greedy_match(spelled(SIM, dtype, layout), SCORES, THRESHOLDS)
+    assert same_matches(got, greedy_reference())
+
+
+@pytest.mark.parametrize("layout", COLUMN_LAYOUTS)
+@pytest.mark.parametrize("dtype", FLOAT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_greedy_match_columns_read_the_same_in_every_spelling(dtype, layout):
+    got = primitives.greedy_match(SIM, spelled_column(SCORES, dtype, layout), spelled_column(THRESHOLDS, dtype, layout))
+    assert same_matches(got, greedy_reference())
+
+
+@pytest.mark.parametrize("layout", COLUMN_LAYOUTS)
+@pytest.mark.parametrize("dtype", [np.bool_] + INT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_greedy_match_flags_read_the_same_in_every_spelling(dtype, layout):
+    crowd = np.roll(FLAGS, 1)
+    want = greedy_reference(gt_ignore=FLAGS.tolist(), iscrowd=crowd.tolist())
+    got = primitives.greedy_match(
+        SIM,
+        SCORES,
+        THRESHOLDS,
+        gt_ignore=spelled_column(FLAGS, dtype, layout),
+        iscrowd=spelled_column(crowd, dtype, layout),
+    )
+    assert same_matches(got, want)
+    assert not same_matches(want, greedy_reference()), "the flags must change the matches"
+
+
 def degenerate(shape, dtype, width=5):
     """A zero-size array, or one with a length-one axis, in ``dtype``. The last is a
     one-row view with an odd row stride, which numpy still flags C-contiguous."""
@@ -264,6 +337,7 @@ def test_a_degenerate_shape_is_one_slice(shape, dtype):
     ev = semantic.SemanticEval(3)
     ev.update(gt, gt)
     assert ev.confusion()[0, 0] == gt.size
+    assert primitives.segment_overlaps(gt, gt) == ({(0, 0): gt.size} if gt.size else {})
 
 
 @pytest.mark.parametrize("shape", [(0, 6), "odd stride"], ids=str)

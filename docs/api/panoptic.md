@@ -59,6 +59,7 @@ signatures and return shapes.
 | `summary_lines()` | `list[str]` | The same table as strings, without printing |
 | `run()` | `None` | `evaluate()` then `summarize()` |
 | `stats` | `list[float]` | The nine headline values, in `METRIC_NAMES` order; empty before `evaluate()` |
+| `eval_imgs` | `list[dict]` | Per-image match records, below; empty before `evaluate()` |
 | `results()` | `dict` | panopticapi's result shape, below |
 | `report()` | `dict` | The [`EvalReport`](cocoeval.md#report) every family produces |
 | `reference_deviations()` | `list[str]` | Why this run is not comparable to panopticapi; empty when it is |
@@ -70,6 +71,53 @@ the raw `PanopticResult` counts behind it, and `summary_lines()` is spelled
 `summarize_lines()`. `PanopticResult.pixels` is the category confusion matrix
 the mIoU comes from, with the unlabeled-prediction column a predicted void
 lands in, and `PanopticResult::semantic()` reads the `SemanticScores` off it.
+
+### `eval_imgs`
+
+What the matcher decided in each image — the panoptic counterpart of
+[`COCOeval.eval_imgs`](cocoeval.md#eval_imgs), and the records the per-class
+counts are summed from. This attribute is provisional, like the
+[matchers](primitives.md#match_segments) whose output it holds.
+
+=== "Python"
+
+    ```python
+    eval_imgs: list[dict]
+    ```
+
+=== "Rust"
+
+    ```rust
+    fn eval_imgs(&self) -> &[ImageMatches]
+    ```
+
+One record per ground-truth image, in the order `evaluate()` visits them:
+
+```python
+{
+    "image_id": 139,
+    "matched": [(3226956, 1001, 0.8817), (6979964, 1002, 0.9512)],   # (gt_id, pred_id, iou)
+    "missed": [8345037],
+    "false_positives": [1003],
+    "ignored": [1004],
+}
+```
+
+The four lists are what [`primitives.match_segments`](primitives.md#match_segments)
+returns for the image. Every non-crowd ground-truth segment is in `matched` or
+`missed`, every predicted segment in `matched`, `false_positives`, or
+`ignored`. A segment can be in `matched` twice when a stated area below a
+segment's pixels, or the void id 0 listed as a ground truth, lets it match
+two, as panopticapi counts it. Crowd segments are in none, and neither is a
+`segments_info` entry a later one with the same id overwrites, as
+panopticapi's dict overwrites it.
+
+Ids are the input's: the PNG colors of the COCO panoptic format, or the
+annotation ids of a `COCO` dataset — repeated in the records where the
+annotations repeat them, as converters that write `id: 0` everywhere do.
+`matched` is in the order its IoUs were summed: by id for the COCO panoptic
+format, as `match_segments` orders it, and by annotation order for a `COCO`
+dataset. The other three lists follow `segments_info`, or annotation, order.
 
 ### `results()`
 
@@ -143,14 +191,16 @@ The driver composes the two shared layers, as detection does:
 
 | | Python | Rust |
 |---|---|---|
-| Segment overlaps and matching | — | `primitives::panoptic::{Overlaps, match_segments, pq_iou}` |
+| Segment overlaps and matching | [`primitives.segment_overlaps`](primitives.md#segment_overlaps), [`primitives.match_segments`](primitives.md#match_segments) | `primitives::panoptic::{Overlaps, match_segments, pq_iou}` |
 | Counts and formulas | [`metrics.panoptic_quality`](metrics.md#panoptic_quality) | `metrics::panoptic::{PqCounts, PqScores, pq_average}` |
 
-`Overlaps::compute(gt, pred)` is the per-image histogram of `(gt id, pred id)`
-pixel co-occurrences; `match_segments` applies the protocol's rules to it;
-`PqCounts::scores()` and `pq_average` turn counts into PQ, SQ, RQ. The
-formulas are callable from Python as `metrics.panoptic_quality`; the matcher
-is not bound yet, and lands with the rest of the composability work.
+`segment_overlaps` is the per-image histogram of `(gt id, pred id)` pixel
+co-occurrences; `match_segments` applies the protocol's rules to it;
+`panoptic_quality` turns counts into PQ, SQ, RQ. Summed per category and
+averaged, the three reproduce `PanopticEval`'s numbers exactly — the
+[`match_segments`](primitives.md#match_segments) section has the counting
+rule. Add the IoUs in a running sum, image by image: Python's `sum()`
+compensates for rounding since 3.12, and the last bit then differs.
 
 ## Data model
 

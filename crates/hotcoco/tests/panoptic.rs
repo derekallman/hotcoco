@@ -263,6 +263,123 @@ fn worked_example_scores_by_hand() {
 }
 
 #[test]
+fn match_records_name_every_segment_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (gt, pred, gt_segs, pred_segs, cats) = worked_example();
+    let mut ev = PanopticEval::new(
+        png_dataset(dir.path(), "gt", &gt, gt_segs, cats),
+        png_dataset(dir.path(), "pred", &pred, pred_segs, Vec::new()),
+    );
+    assert!(ev.eval_imgs().is_empty(), "no records before run()");
+    ev.run().expect("runs");
+
+    let [rec] = ev.eval_imgs() else {
+        panic!("one record per image: {:?}", ev.eval_imgs())
+    };
+    assert_eq!(rec.image_id, 1);
+    // pred 7 covers 12 of segment 1's 16 pixels and nothing else: 0.75.
+    assert_eq!(rec.matched, vec![(1, 7, 0.75), (2, 8, 1.0)]);
+    assert_eq!(rec.missed, Vec::<u64>::new());
+    assert_eq!(rec.false_positives, Vec::<u64>::new());
+    // pred 9 lies entirely on void.
+    assert_eq!(rec.ignored, vec![9]);
+
+    // A crowd segment is in no list; predictions it absorbs are ignored.
+    let gt = Map::filled(4, 8, 0).rect(0, 4, 0, 4, 1).rect(0, 2, 6, 8, 2);
+    let pred = Map::filled(4, 8, 0)
+        .rect(0, 3, 0, 4, 7)
+        .rect(0, 4, 6, 8, 8)
+        .rect(3, 4, 4, 6, 9);
+    let mut ev = PanopticEval::new(
+        png_dataset(
+            dir.path(),
+            "gt2",
+            &gt,
+            vec![
+                segment(1, 10, Some(gt.area(1)), true),
+                segment(2, 10, Some(gt.area(2)), false),
+                segment(3, 10, Some(5), false),
+            ],
+            vec![category(10, Some(true))],
+        ),
+        png_dataset(
+            dir.path(),
+            "pred2",
+            &pred,
+            vec![
+                segment(7, 10, None, false),
+                segment(8, 10, None, false),
+                segment(9, 10, None, false),
+            ],
+            Vec::new(),
+        ),
+    );
+    ev.run().expect("runs");
+    let rec = &ev.eval_imgs()[0];
+    assert_eq!(rec.matched, vec![(2, 8, 1.0)]);
+    // Segment 3 is in the JSON and not the PNG: a miss, as panopticapi has it.
+    assert_eq!(rec.missed, vec![3]);
+    // pred 9: 2 of its 2 pixels on void beside the crowd -> ignored, not FP.
+    assert_eq!(rec.ignored, vec![7, 9]);
+    assert_eq!(rec.false_positives, Vec::<u64>::new());
+    let c = &ev.result().expect("result").per_category[&10];
+    assert_eq!(
+        (c.tp, c.fp, c.fn_),
+        (
+            rec.matched.len() as u64,
+            rec.false_positives.len() as u64,
+            rec.missed.len() as u64
+        )
+    );
+}
+
+/// The PNG path labels a segment by its id and the mask path by its position,
+/// and `matched` follows the label: the order each path sums the IoUs in.
+/// Ids the mask path is given twice stay two segments, under one id.
+#[test]
+fn match_records_follow_each_paths_labels() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let map = Map::filled(4, 4, 0)
+        .rect(0, 4, 0, 2, 30)
+        .rect(0, 4, 2, 4, 10);
+    let segs = vec![segment(30, 1, None, false), segment(10, 1, None, false)];
+    let cats = vec![category(1, Some(true))];
+
+    let mut png = PanopticEval::new(
+        png_dataset(dir.path(), "gt", &map, segs.clone(), cats.clone()),
+        png_dataset(dir.path(), "pred", &map, segs.clone(), Vec::new()),
+    );
+    png.run().expect("png path runs");
+    assert_eq!(
+        png.eval_imgs()[0].matched,
+        vec![(10, 10, 1.0), (30, 30, 1.0)]
+    );
+
+    let mut masks = PanopticEval::new(
+        PanopticDataset::from_dataset(&mask_dataset(&map, &segs, cats.clone())),
+        PanopticDataset::from_dataset(&mask_dataset(&map, &segs, Vec::new())),
+    );
+    masks.run().expect("mask path runs");
+    assert_eq!(
+        masks.eval_imgs()[0].matched,
+        vec![(30, 30, 1.0), (10, 10, 1.0)]
+    );
+
+    // A converter's `id: 0` on every annotation: two segments, both id 0.
+    let mut zeros = mask_dataset(&map, &segs, cats);
+    for ann in &mut zeros.annotations {
+        ann.id = 0;
+    }
+    let mut ev = PanopticEval::new(
+        PanopticDataset::from_dataset(&zeros),
+        PanopticDataset::from_dataset(&zeros),
+    );
+    ev.run().expect("repeated ids run on the mask path");
+    assert_eq!(ev.eval_imgs()[0].matched, vec![(0, 0, 1.0), (0, 0, 1.0)]);
+    assert_eq!(ev.result().expect("result").per_category[&1].tp, 2);
+}
+
+#[test]
 fn png_and_mask_paths_agree() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (gt, pred, gt_segs, pred_segs, cats) = worked_example();
@@ -349,7 +466,7 @@ fn reference_errors_are_errors_here() {
     let err = ev.run().expect_err("png id missing from json");
     assert!(
         err.to_string()
-            .contains("segment 9 is in the PNG but not in segments_info"),
+            .contains("segment 9 is in the label map but not in segments_info"),
         "{err}"
     );
 
@@ -363,7 +480,7 @@ fn reference_errors_are_errors_here() {
     let err = ev.run().expect_err("json id missing from png");
     assert!(
         err.to_string()
-            .contains("segment 11 is in segments_info but not in the mask"),
+            .contains("segment 11 is in segments_info but not in the label map"),
         "{err}"
     );
 

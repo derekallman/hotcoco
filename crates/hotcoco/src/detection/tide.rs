@@ -174,8 +174,7 @@ impl CatData {
     /// is exactly the permutation `average_precision` computes, and stably sorting
     /// an already-sorted array is the identity.
     fn rank_by_score_desc(&mut self) {
-        let mut order: Vec<usize> = (0..self.scores.len()).collect();
-        order.sort_by_key(|&i| crate::metrics::counts::descending_score_key(self.scores[i]));
+        let order = crate::metrics::counts::score_order(&self.scores);
         self.scores = order.iter().map(|&i| self.scores[i]).collect();
         self.matched = order.iter().map(|&i| self.matched[i]).collect();
         self.ignored = order.iter().map(|&i| self.ignored[i]).collect();

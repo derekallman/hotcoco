@@ -272,7 +272,8 @@ PQ, SQ, and RQ from match counts.
     ```
 
 The formulas behind [`panoptic`](panoptic.md), for counts your own matcher
-produced: `PQ = Σ IoU / (TP + ½ FP + ½ FN)`, `SQ = Σ IoU / TP`,
+produced — or [`primitives.match_segments`](primitives.md#match_segments), the
+one `PanopticEval` uses: `PQ = Σ IoU / (TP + ½ FP + ½ FN)`, `SQ = Σ IoU / TP`,
 `RQ = TP / (TP + ½ FP + ½ FN)`, so `PQ = SQ × RQ`.
 
 ```python
@@ -367,5 +368,5 @@ them when averaging per-class values so a sentinel does not drag the mean down.
 **Bootstrap confidence intervals** (`metrics::bootstrap::bootstrap_ci`) take the
 statistic as a closure. `compare()` uses them internally and returns the intervals.
 
-**Greedy matching** lives one layer down — see
-[Primitives](primitives.md#rust-only).
+**Greedy matching** lives one layer down, and is callable from Python there —
+see [`primitives.greedy_match`](primitives.md#greedy_match).

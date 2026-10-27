@@ -57,7 +57,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::Error;
 use crate::metrics::panoptic::{PqCounts, PqScores, pq_average};
 use crate::metrics::semantic::{PixelConfusion, SemanticScores};
-use crate::primitives::panoptic::{Overlaps, Segment, VOID, match_segments};
+use crate::primitives::panoptic::{
+    Overlaps, Segment, SegmentMatches, VOID, dict_order, match_segments,
+};
 use crate::report::{EvalReport, Provenance};
 use crate::types::{Category, Segmentation, placeholder_cat_name};
 
@@ -109,6 +111,70 @@ pub struct PanopticResult {
     /// (which PQ matches but never reports, as panopticapi does).
     /// [`semantic`](Self::semantic) reads mIoU off it.
     pub pixels: PixelConfusion,
+}
+
+/// One image's matching outcome, by segment id: what [`match_image`]
+/// decided, with the indices it returns turned into the `id` of each
+/// [`SegmentInfo`]. Detection's `evalImgs` is the counterpart. Provisional,
+/// like the matcher.
+///
+/// Every non-crowd ground-truth segment is in `matched` or `missed`; every
+/// predicted segment is in `matched`, `false_positives`, or `ignored`. A
+/// segment can be in `matched` twice when a stated area below a segment's
+/// pixels, or the void id 0 listed as a ground truth, lets it match two, as
+/// panopticapi counts it. Crowd
+/// segments appear nowhere, since PQ never scores one, and neither does an
+/// entry a later one with the same id overwrites, as panopticapi's dict over
+/// `segments_info` overwrites it. Ids are what the input
+/// states — the PNG color in the COCO panoptic format, the annotation id for
+/// a dataset built by [`PanopticDataset::from_dataset`], where ids the
+/// annotations repeat are repeated here too.
+///
+/// `#[non_exhaustive]`: an output record that callers read; build one with
+/// [`from_indices`](Self::from_indices).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ImageMatches {
+    pub image_id: u64,
+    /// `(gt id, pred id, iou)` for every matched pair, in the order their
+    /// IoUs are summed: by the ground truth's label in the map, which is its
+    /// id in the COCO panoptic format and its position among the image's
+    /// annotations for a dataset built by [`PanopticDataset::from_dataset`].
+    pub matched: Vec<(u64, u64, f64)>,
+    /// Ground-truth segments nothing matched, in `segments_info` order.
+    pub missed: Vec<u64>,
+    /// Predicted segments that matched nothing and count against the model,
+    /// in `segments_info` order.
+    pub false_positives: Vec<u64>,
+    /// Predicted segments that matched nothing but lie mostly on void or on a
+    /// crowd region of their category, and count for nothing.
+    pub ignored: Vec<u64>,
+}
+
+impl ImageMatches {
+    /// The record of `m`, the indices [`match_image`] returned for `gt` and
+    /// `pred`, by the ids of the entries they point at.
+    pub fn from_indices(
+        image_id: u64,
+        m: &SegmentMatches,
+        gt: &[(u32, &SegmentInfo)],
+        pred: &[(u32, &SegmentInfo)],
+    ) -> Self {
+        let ids = |side: &[(u32, &SegmentInfo)], idx: &[usize]| -> Vec<u64> {
+            idx.iter().map(|&i| side[i].1.id).collect()
+        };
+        ImageMatches {
+            image_id,
+            matched: m
+                .matched
+                .iter()
+                .map(|&(gi, pi, iou)| (gt[gi].1.id, pred[pi].1.id, iou))
+                .collect(),
+            missed: ids(gt, &m.missed),
+            false_positives: ids(pred, &m.false_positives),
+            ignored: ids(pred, &m.ignored),
+        }
+    }
 }
 
 impl PanopticResult {
@@ -186,12 +252,14 @@ pub struct PanopticEval {
     gt: PanopticDataset,
     pred: PanopticDataset,
     result: Option<PanopticResult>,
+    /// Beside `result` rather than in it: the result is the summary, and
+    /// these grow with the dataset.
+    eval_imgs: Vec<ImageMatches>,
 }
 
-/// One side of one image: its label map and, for each segment the matcher
-/// will see, the label painted for it. The reference's dict semantics are
-/// already applied — a repeated id keeps the last record at the first
-/// record's position.
+/// One side of one image: its label map and each `segments_info` entry
+/// beside the label painted for it. A label listed twice is left for
+/// [`match_image`] to resolve, as panopticapi's dict does.
 struct Side<'a> {
     pixels: Pixels,
     segments: Vec<(u32, &'a SegmentInfo)>,
@@ -244,13 +312,15 @@ struct Context<'a> {
     cat_index: FxHashMap<u64, usize>,
 }
 
-/// What one image contributes: PQ counts by category id, and pixel counts by
-/// `(gt category index, pred category index)`, the predicted void in the
-/// unlabeled column. Sparse, since an image touches a few dozen category
-/// pairs and the dense matrix is summed once in `run()`.
+/// What one image contributes: PQ counts by category id, pixel counts by
+/// `(gt category index, pred category index)` — the predicted void in the
+/// unlabeled column — and the matches both were counted from. Sparse, since
+/// an image touches a few dozen category pairs and the dense matrix is summed
+/// once in `run()`.
 struct ImageCounts {
     pq: FxHashMap<u64, PqCounts>,
     pixels: FxHashMap<(usize, usize), u64>,
+    matches: ImageMatches,
 }
 
 impl PanopticEval {
@@ -261,6 +331,7 @@ impl PanopticEval {
             gt,
             pred,
             result: None,
+            eval_imgs: Vec::new(),
         }
     }
 
@@ -328,7 +399,9 @@ impl PanopticEval {
             .collect::<crate::error::Result<_>>()?;
 
         let mut pixels = PixelConfusion::with_unlabeled_pred(per_category.len());
+        let mut eval_imgs = Vec::with_capacity(per_image.len());
         for counts in per_image {
+            eval_imgs.push(counts.matches);
             for (category_id, c) in counts.pq {
                 // A ground-truth category the file does not define is counted
                 // by panopticapi and never reported; the same here.
@@ -357,7 +430,15 @@ impl PanopticEval {
             n_images: pairs.len(),
             pixels,
         });
+        self.eval_imgs = eval_imgs;
         Ok(())
+    }
+
+    /// Per-image match records from the last [`run`](Self::run), one per
+    /// ground-truth annotation in the order it was evaluated; empty before
+    /// the first run. The counterpart of detection's `eval_imgs`.
+    pub fn eval_imgs(&self) -> &[ImageMatches] {
+        &self.eval_imgs
     }
 
     /// Ways this run departs from what panopticapi would compute.
@@ -535,23 +616,118 @@ impl PanopticEval {
     }
 }
 
-/// `items` in input order, each key once, with the record of the key's
-/// *last* occurrence at the position of its *first* — what a Python dict
-/// built from the list holds, which is how panopticapi reads both the
-/// category list and each image's `segments_info`.
-fn dict_order<T>(items: &[T], key: impl Fn(&T) -> u64) -> Vec<&T> {
-    let mut position: FxHashMap<u64, usize> = FxHashMap::default();
-    let mut out: Vec<&T> = Vec::with_capacity(items.len());
-    for item in items {
-        match position.get(&key(item)) {
-            Some(&i) => out[i] = item,
-            None => {
-                position.insert(key(item), out.len());
-                out.push(item);
-            }
-        }
+/// Each segment beside its label in a map painted with segment ids, as the
+/// COCO panoptic format paints them: the id itself. An id past 32 bits is in
+/// no such map, but stays its own segment, as it is in panopticapi's dict: it
+/// takes a spare label that no listed id uses and `in_map` says the map does
+/// not hold. Provisional, like [`match_image`], which takes what this returns.
+pub fn labels_from_ids(
+    segments: &[SegmentInfo],
+    in_map: impl Fn(u32) -> bool,
+) -> Vec<(u32, &SegmentInfo)> {
+    let fits = |s: &SegmentInfo| u32::try_from(s.id).ok();
+    if segments.iter().all(|s| fits(s).is_some()) {
+        return segments.iter().map(|s| (s.id as u32, s)).collect();
     }
-    out
+    let used: FxHashSet<u32> = segments.iter().filter_map(fits).collect();
+    let mut spare = (0..=u32::MAX)
+        .rev()
+        .filter(|&l| !used.contains(&l) && !in_map(l));
+    let mut wide: FxHashMap<u64, u32> = FxHashMap::default();
+    segments
+        .iter()
+        .map(|s| {
+            let label = fits(s).unwrap_or_else(|| {
+                *wide
+                    .entry(s.id)
+                    .or_insert_with(|| spare.next().expect("fewer segments than labels"))
+            });
+            (label, s)
+        })
+        .collect()
+}
+
+/// One image's segments matched the way [`PanopticEval`] matches them: the
+/// per-image step of [`run`](PanopticEval::run), and what Python's
+/// `primitives.match_segments` calls. Provisional, like the kernel it wraps.
+///
+/// `gt` and `pred` hold each `segments_info` entry beside the label it is
+/// painted with in the two label maps `overlaps` was counted from — its id,
+/// in the COCO panoptic format. Around [`match_segments`] this applies
+/// panopticapi's checks and areas: a prediction's area is its pixel count in
+/// `overlaps`, and a ground truth's is the `area` it states, or its pixel
+/// count when it states none. A label listed twice is resolved by the kernel,
+/// as panopticapi's dict resolves it, and the indices returned point into
+/// `gt` and `pred`.
+///
+/// # Errors
+///
+/// [`Error::InvalidInput`] for the two checks panopticapi makes on a
+/// prediction — a label with pixels in `overlaps` but no entry, and an
+/// entry with no pixels — and for a matched pair with no union, whose IoU is
+/// not a number where panopticapi would divide by zero. A stated
+/// ground-truth `area` smaller than its pixels does that, as can a segment
+/// listed with the void id `0`, which panopticapi scores as a segment and so
+/// does this. Messages name the segment, not the image.
+pub fn match_image(
+    gt: &[(u32, &SegmentInfo)],
+    pred: &[(u32, &SegmentInfo)],
+    overlaps: &Overlaps,
+) -> crate::error::Result<SegmentMatches> {
+    let area_of = |areas: &[(u32, u64)], label: u32| {
+        areas
+            .binary_search_by_key(&label, |&(l, _)| l)
+            .ok()
+            .map(|i| areas[i].1)
+    };
+
+    let pred_areas = overlaps.pred_areas();
+    let listed: FxHashSet<u32> = pred.iter().map(|&(label, _)| label).collect();
+    if let Some(&(label, _)) = pred_areas
+        .iter()
+        .find(|(l, _)| *l != VOID && !listed.contains(l))
+    {
+        return Err(Error::InvalidInput(format!(
+            "predicted segment {label} is in the label map but not in segments_info"
+        )));
+    }
+    let mut pred_segments = Vec::with_capacity(pred.len());
+    for &(label, seg) in pred {
+        let area = area_of(&pred_areas, label).ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "predicted segment {} is in segments_info but not in the label map",
+                seg.id
+            ))
+        })?;
+        pred_segments.push(Segment {
+            label,
+            category_id: seg.category_id,
+            area,
+            iscrowd: false,
+        });
+    }
+
+    let gt_areas = overlaps.gt_areas();
+    let gt_segments: Vec<Segment> = gt
+        .iter()
+        .map(|&(label, seg)| Segment {
+            label,
+            category_id: seg.category_id,
+            area: seg.area.or_else(|| area_of(&gt_areas, label)).unwrap_or(0),
+            iscrowd: seg.iscrowd,
+        })
+        .collect();
+
+    let m = match_segments(&gt_segments, &pred_segments, overlaps);
+    if let Some(&(gi, pi, _)) = m.matched.iter().find(|(_, _, iou)| !iou.is_finite()) {
+        return Err(Error::InvalidInput(format!(
+            "ground-truth segment {} and predicted segment {} have no union, so their IoU is \
+             not a number; a stated area smaller than the segment's pixels does this, as can \
+             the void id 0",
+            gt[gi].1.id, pred[pi].1.id
+        )));
+    }
+    Ok(m)
 }
 
 /// Categories as the reference's `{id: category}` dict holds them.
@@ -572,16 +748,10 @@ fn load_side<'a>(
 ) -> crate::error::Result<Side<'a>> {
     if let (Some(folder), Some(file_name)) = (folder, &ann.file_name) {
         let png = raster::read_png(&folder.join(file_name))?;
-        // The reference's dict over `segments_info` applies here, where the
-        // id is the PNG color. An id a 24-bit color cannot spell is not in
-        // the PNG; `u32::MAX` is a label no PNG carries.
-        let segments = dict_order(&ann.segments_info, |s| s.id)
-            .into_iter()
-            .map(|s| (u32::try_from(s.id).unwrap_or(u32::MAX), s))
-            .collect();
+        // The id is the PNG color, and no PNG color reaches a spare label.
         return Ok(Side {
             pixels: Pixels::Png(png),
-            segments,
+            segments: labels_from_ids(&ann.segments_info, |_| false),
         });
     }
 
@@ -643,100 +813,71 @@ fn eval_image(
     }
 
     let overlaps = overlaps(gt.pixels, pred.pixels);
-    let area_of = |areas: &[(u32, u64)], label: u32| {
-        areas
-            .binary_search_by_key(&label, |&(l, _)| l)
-            .ok()
-            .map(|i| areas[i].1)
+    let in_image = |e: Error| match e {
+        Error::InvalidInput(m) => Error::InvalidInput(format!("image {image_id}: {m}")),
+        other => other,
     };
-
-    // Prediction sanity checks, panopticapi's three, then areas from the map.
-    let pred_areas = overlaps.pred_areas();
-    let known: FxHashSet<u32> = pred.segments.iter().map(|&(label, _)| label).collect();
-    for &(label, _) in &pred_areas {
-        if label != VOID && !known.contains(&label) {
-            return Err(Error::InvalidInput(format!(
-                "image {image_id}: predicted segment {label} is in the PNG but not in segments_info"
-            )));
+    // The entry panopticapi's dict over `segments_info` keeps for each
+    // label, as the matcher resolves it: the last one.
+    let gt_kept: FxHashMap<u32, &SegmentInfo> = gt.segments.iter().copied().collect();
+    let pred_kept: FxHashMap<u32, &SegmentInfo> = pred.segments.iter().copied().collect();
+    // panopticapi checks a prediction's category in its loop over the PNG's
+    // ids, in id order, where an id the JSON does not list stops it; the
+    // checks `match_image` makes come after.
+    for (label, _) in overlaps.pred_areas() {
+        match pred_kept.get(&label) {
+            None if label == VOID => {}
+            None => break,
+            Some(seg) if !ctx.cat_index.contains_key(&seg.category_id) => {
+                return Err(Error::InvalidInput(format!(
+                    "image {image_id}: predicted segment {} has unknown category_id {}",
+                    seg.id, seg.category_id
+                )));
+            }
+            Some(_) => {}
         }
     }
-    let mut pred_segments = Vec::with_capacity(pred.segments.len());
-    for &(label, seg) in &pred.segments {
-        let area = area_of(&pred_areas, label).ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "image {image_id}: predicted segment {} is in segments_info but not in the mask",
-                seg.id
-            ))
-        })?;
-        if !ctx.cat_index.contains_key(&seg.category_id) {
-            return Err(Error::InvalidInput(format!(
-                "image {image_id}: predicted segment {} has unknown category_id {}",
-                seg.id, seg.category_id
-            )));
-        }
-        pred_segments.push(Segment {
-            label,
-            category_id: seg.category_id,
-            area,
-            iscrowd: false,
-        });
-    }
-
-    let gt_areas = overlaps.gt_areas();
-    let gt_segments: Vec<Segment> = gt
-        .segments
-        .iter()
-        .map(|&(label, seg)| Segment {
-            label,
-            category_id: seg.category_id,
-            area: seg
-                .area
-                .unwrap_or_else(|| area_of(&gt_areas, label).unwrap_or(0)),
-            iscrowd: seg.iscrowd,
-        })
-        .collect();
+    let matches = match_image(&gt.segments, &pred.segments, &overlaps).map_err(in_image)?;
 
     // The same overlaps read by category: a ground-truth void or unlisted id
-    // is ignored; a predicted void lands in the last column. Both category
-    // lookups hit, since an unlisted prediction id was an error above and a
-    // ground-truth id is listed by construction of `labels`.
+    // is ignored; a predicted void lands in the last column. Both lookups of
+    // a prediction hit, since `match_image` refused an unlisted label and the
+    // check above an unknown category.
     let n_cats = ctx.cat_index.len();
-    let gt_cat: FxHashMap<u32, usize> = gt_segments
-        .iter()
-        .filter_map(|s| ctx.cat_index.get(&s.category_id).map(|&i| (s.label, i)))
-        .collect();
-    let pred_cat: FxHashMap<u32, usize> = pred_segments
-        .iter()
-        .map(|s| (s.label, ctx.cat_index[&s.category_id]))
-        .collect();
     let mut pixels: FxHashMap<(usize, usize), u64> = FxHashMap::default();
     for (g, p, count) in overlaps.iter() {
-        let Some(&gi) = gt_cat.get(&g) else {
+        let Some(&gi) = gt_kept
+            .get(&g)
+            .and_then(|s| ctx.cat_index.get(&s.category_id))
+        else {
             continue;
         };
-        let pi = if p == VOID { n_cats } else { pred_cat[&p] };
+        let pi = if p == VOID {
+            n_cats
+        } else {
+            ctx.cat_index[&pred_kept[&p].category_id]
+        };
         *pixels.entry((gi, pi)).or_default() += count;
     }
 
-    let matches = match_segments(&gt_segments, &pred_segments, &overlaps);
+    let gt_cat = |gi: usize| gt.segments[gi].1.category_id;
+    let pred_cat = |pi: usize| pred.segments[pi].1.category_id;
     let mut counts: FxHashMap<u64, PqCounts> = FxHashMap::default();
-    for (gi, _, iou) in matches.matched {
-        if !iou.is_finite() {
-            return Err(Error::InvalidInput(format!(
-                "image {image_id}: ground-truth segment {} states an area smaller than its \
-                 pixels overlap, so its IoU is not a number",
-                gt.segments[gi].1.id
-            )));
-        }
-        let c = counts.entry(gt_segments[gi].category_id).or_default();
+    for &(gi, _, iou) in &matches.matched {
+        let c = counts.entry(gt_cat(gi)).or_default();
         c.tp += 1;
         c.iou += iou;
     }
-    for gi in matches.missed {
-        counts.entry(gt_segments[gi].category_id).or_default().fn_ += 1;
+    for &gi in &matches.missed {
+        counts.entry(gt_cat(gi)).or_default().fn_ += 1;
     }
-    for pi in matches.false_positives {
-        counts.entry(pred_segments[pi].category_id).or_default().fp += 1;
+    for &pi in &matches.false_positives {
+        counts.entry(pred_cat(pi)).or_default().fp += 1;
     }
-    Ok(ImageCounts { pq: counts, pixels })
+
+    Ok(ImageCounts {
+        pq: counts,
+        pixels,
+        matches: ImageMatches::from_indices(image_id, &matches, &gt.segments, &pred.segments),
+    })
 }
