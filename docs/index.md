@@ -96,7 +96,7 @@ pip install hotcoco
 
 <div class="feature-card" markdown>
 <strong>Compose</strong>
-<p>IoU kernels, matchers, and metric functions are public and work on plain numpy arrays. Every evaluation returns the same report shape, and each number is marked as standard or a hotcoco extension.</p>
+<p>IoU kernels, matchers, and metric functions are public and work on plain numpy arrays — <a href="guide/custom-metrics/">build your own metric</a> from the matchers the evaluators run. Every evaluation returns the same report shape, and each number is marked as standard or a hotcoco extension.</p>
 </div>
 
 </div>

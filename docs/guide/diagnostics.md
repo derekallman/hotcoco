@@ -65,7 +65,7 @@ for idx in top_idx:
     print(f"GT {gt_cat} predicted as {pred_cat}: {flat[idx]} times")
 ```
 
-Stricter thresholds and score floors are available — for example `ev.confusion_matrix(iou_thr=0.75, max_det=50, min_score=0.3)`. See the [API reference](../api/cocoeval.md#confusion_matrix) for all parameters and defaults.
+Stricter thresholds and score floors are available — for example `ev.confusion_matrix(iou_thr=0.75, max_det=50, min_score=0.3)`. See the [API reference](../api/cocoeval.md#confusion_matrix) for all parameters and defaults. To change how the pass pairs boxes instead, build the matrix from the primitives: see [Cross-class confusion matrix](custom-metrics.md#cross-class-confusion-matrix).
 
 ## TIDE error analysis
 

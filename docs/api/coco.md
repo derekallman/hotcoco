@@ -150,6 +150,9 @@ Get annotation IDs matching the given filters. All filters are ANDed together.
     area filter. `get_ann_ids` keeps the typed forms — `iscrowd` a `bool` or
     `None`, `area_rng` two values or `None`.
 
+    Ids come back in ascending order, not the order the dataset lists the
+    annotations in, which is the order `COCOeval` breaks ties in.
+
 === "Rust"
 
     ```rust

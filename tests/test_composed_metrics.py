@@ -10,22 +10,21 @@ driver reports, exactly — ``==``, not a tolerance.
   every per-image match record.
 - **Detection matching.** ``bbox_iou`` and ``greedy_match`` per (image,
   category): every match ``COCOeval`` records in ``evalImgs``, at all ten
-  thresholds and all four area ranges, and so its true- and false-positive
-  counts at IoU 0.50.
+  thresholds and all four area ranges.
 
 The panoptic cases are the ones ``test_parity_panoptic.py`` checks
 ``PanopticEval`` against panopticapi on; this file checks the primitives
-against ``PanopticEval``.
+against ``PanopticEval``. ``test_build_your_own_metric.py`` checks the guide
+page's metrics, true- and false-positive counts included, the same way.
 """
 
 from __future__ import annotations
 
-import random
 from collections import defaultdict
 
 import numpy as np
 import pytest
-from helpers import hand_panoptic_cases, random_panoptic_cases
+from helpers import detection_corpus, hand_panoptic_cases, random_panoptic_cases
 from hotcoco import COCO, COCOeval, metrics, panoptic, primitives
 
 CASES = hand_panoptic_cases() + random_panoptic_cases()
@@ -123,52 +122,21 @@ def test_match_segments_takes_panopticapis_own_histogram():
 
 # ── detection matches from bbox_iou + greedy_match ───────────────────────────
 
-IMAGES = [{"id": i, "width": 100, "height": 100} for i in range(1, 16)]
-CATEGORIES = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}, {"id": 3, "name": "c"}]
 EVERY_AREA = [0.0, 1e10]
-
-
-def detection_corpus(seed):
-    """Ground truth and detections built to tie: duplicate boxes (equal IoU to two
-    ground truths), coarse scores (equal scores), crowd regions that several
-    detections fall inside, and boxes of every size for the area ranges."""
-    rng = random.Random(seed)
-    gts, dts = [], []
-
-    def box():
-        w, h = rng.choice([6, 12, 20, 40, 60]), rng.choice([6, 12, 20, 40, 60])
-        return [rng.randint(0, 100 - w), rng.randint(0, 100 - h), w, h]
-
-    def jitter(b, px):
-        return [b[0] + rng.randint(-px, px), b[1] + rng.randint(-px, px), b[2], b[3]]
-
-    for image in IMAGES:
-        for category in CATEGORIES:
-            cell = {"image_id": image["id"], "category_id": category["id"]}
-            boxes = [box() for _ in range(rng.randint(0, 4))]
-            if boxes and rng.random() < 0.3:
-                boxes.append(list(boxes[0]))  # a duplicate ground truth
-            for b in boxes:
-                crowd = int(rng.random() < 0.15)
-                gts.append({**cell, "id": len(gts) + 1, "bbox": b, "iscrowd": crowd, "area": float(b[2] * b[3])})
-                for _ in range(rng.randint(0, 3 if crowd else 2)):
-                    dts.append({**cell, "bbox": jitter(b, 3), "score": rng.choice([0.3, 0.5, 0.5, 0.9])})
-            for _ in range(rng.randint(0, 2)):
-                dts.append({**cell, "bbox": box(), "score": rng.random()})
-    gt = COCO({"images": IMAGES, "annotations": gts, "categories": CATEGORIES})
-    return gt, gt.load_res(dts)
 
 
 def cells(seed):
     """``COCOeval``'s ``evalImgs`` entries for a corpus, each beside the ground truths
     and detections of its (image, category), in the order the datasets hold them."""
-    gt, dt = detection_corpus(seed)
+    dataset, results = detection_corpus(seed)
+    gt = COCO(dataset)
+    dt = gt.load_res(results)
     ev = COCOeval(gt, dt, "bbox")
     ev.evaluate()
 
     def by_cell(coco):
         out = defaultdict(list)
-        for ann in coco.loadAnns(sorted(coco.getAnnIds())):
+        for ann in coco.dataset["annotations"]:
             out[ann["image_id"], ann["category_id"]].append(ann)
         return out
 
@@ -191,20 +159,6 @@ def match_cell(gts, dts, area_range, iou_thrs):
     outside = np.array([not lo <= d["area"] <= hi for d in dts], dtype=bool)
     ignore = m["dt_ignore"] | ((m["dt_matches"] < 0) & outside)
     return m, ignore
-
-
-def test_true_and_false_positives_at_iou_50_are_cocoevals():
-    """The question the tutorial starts from: TP and FP per image at IoU 0.50."""
-    for e, gts, dts in cells(seed=1):
-        if e["aRng"] != EVERY_AREA:
-            continue
-        m, ignore = match_cell(gts, dts, EVERY_AREA, 0.5)
-        matched = m["dt_matches"] >= 0
-        tp, fp = int((matched & ~ignore).sum()), int((~matched & ~ignore).sum())
-
-        want_matched = np.array(e["dtMatches"][0]) > 0
-        want_ignore = np.array(e["dtIgnore"][0], dtype=bool)
-        assert (tp, fp) == (int((want_matched & ~want_ignore).sum()), int((~want_matched & ~want_ignore).sum()))
 
 
 @pytest.mark.parametrize("seed", [0, 1])

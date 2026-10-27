@@ -29,6 +29,7 @@ Nothing here scores — feed the pairs to [`metrics`](metrics.md) for that. The
 matchers are the ones the evaluators run, not copies: `COCOeval` matches with
 `greedy_match`'s kernel and `PanopticEval` with `match_segments`'s, so a metric
 you build from them gets the evaluators' answers.
+[Build your own metric](../guide/custom-metrics.md) builds three.
 
 This module is the strict layer: `bbox_iou` takes boxes and `mask_iou` takes
 RLEs, and neither guesses which it was handed. [`hotcoco.mask`](mask.md) is the

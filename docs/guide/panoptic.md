@@ -141,7 +141,8 @@ Each record is `image_id` plus the four lists
 `ignored`. That function and
 [`segment_overlaps`](../api/primitives.md#segment_overlaps) are the matcher
 `PanopticEval` runs, callable on your own label maps, so a variant of PQ
-written in Python starts from the same matches.
+written in Python starts from the same matches — see
+[panoptic quality from the segment matcher](custom-metrics.md#panoptic-quality-from-the-segment-matcher).
 
 ### mIoU from the same pixels
 

@@ -21,6 +21,7 @@ Reach for `metrics` when you have arrays rather than a COCO dataset.
 
 [`primitives`](primitives.md) is the layer below: it decides *which prediction pairs
 with which ground truth*; `metrics` turns those matches into numbers.
+[Build your own metric](../guide/custom-metrics.md) puts the two together.
 
 Float and bool parameters accept lists or 1-D numpy arrays interchangeably —
 signatures written `Sequence[float]` also take an ndarray.

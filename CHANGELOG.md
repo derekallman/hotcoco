@@ -45,6 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `test_parity_panoptic.py` checks against panopticapi, and every match
     `greedy_match` makes equals `COCOeval`'s `evalImgs` at all ten thresholds
     and all four area ranges.
+- **Build your own metric**, a guide page that builds three metrics in Python
+  from `primitives` and `metrics`: precision, recall, and F1 at one IoU and
+  score threshold from `bbox_iou` and `greedy_match`; a cross-class confusion
+  matrix from the same matcher with the category split dropped; and PQ from
+  `segment_overlaps` and `match_segments`. `tests/test_build_your_own_metric.py`
+  runs every code block on the page and holds each number to the family that
+  owns it: the counts to `COCOeval`'s `evalImgs`, the matrix to
+  `COCOeval.confusion_matrix()`, and PQ to `PanopticEval`. See
+  [Build your own metric](https://derekallman.github.io/hotcoco/guide/custom-metrics/).
 - **`PanopticEval.eval_imgs`** keeps each image's match records — `image_id`
   plus `match_segments`'s four lists — where `evaluate()` used to keep only the
   per-category counts. In Rust, `PanopticEval::eval_imgs()` returns

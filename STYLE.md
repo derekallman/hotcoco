@@ -61,7 +61,9 @@ restating it. Before writing a paragraph, check whether its owner already exists
 parameters, and return shapes. Never copy a return-shape table into a guide. The guide
 splits three ways: the core pipeline in `docs/guide/evaluation.md`, LVIS and Open Images
 protocols in `docs/guide/lvis-open-images.md`, and confusion, TIDE, calibration, and
-comparison in `docs/guide/diagnostics.md`.
+comparison in `docs/guide/diagnostics.md`. Metrics composed from `primitives` and
+`metrics` live in `docs/guide/custom-metrics.md`, which links to diagnostics for reading
+what it builds.
 
 Admonitions flag genuine traps only. If the same admonition would appear twice on one
 page, replace all of them with one note at the top.

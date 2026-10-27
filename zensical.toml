@@ -21,6 +21,7 @@ nav = [
     { "Panoptic segmentation" = "guide/panoptic.md" },
     { "Semantic segmentation" = "guide/semantic.md" },
     { "Model diagnostics" = "guide/diagnostics.md" },
+    { "Build your own metric" = "guide/custom-metrics.md" },
     { "Dataset operations" = "guide/datasets.md" },
     { "Working with results" = "guide/results.md" },
     { "Mask operations" = "guide/masks.md" },

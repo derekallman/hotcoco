@@ -836,6 +836,52 @@ def hand_panoptic_cases() -> list[PanopticCase]:
     return cases
 
 
+# ── a detection corpus built to tie ───────────────────────────────────────────
+#
+# `tests/test_composed_metrics.py` matches it with `greedy_match` against
+# `COCOeval`'s `evalImgs`; `tests/test_build_your_own_metric.py` runs the
+# custom-metrics guide's code on it.
+
+
+def detection_corpus(seed: int) -> tuple[dict, list[dict]]:
+    """A ground-truth dataset and a results list built to tie: duplicate boxes
+    (equal IoU to two ground truths), coarse scores (equal scores), crowd regions
+    that several detections fall inside, and boxes of every size for the area
+    ranges. The ground-truth ids are shuffled out of dataset order, as val2017's
+    are, so code that reads annotations in id order breaks ties differently from
+    `COCOeval`, which reads them in dataset order."""
+    rng = random.Random(seed)
+    images = [{"id": i, "width": 100, "height": 100} for i in range(1, 16)]
+    categories = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}, {"id": 3, "name": "c"}]
+    gts, dts = [], []
+
+    def box():
+        w, h = rng.choice([6, 12, 20, 40, 60]), rng.choice([6, 12, 20, 40, 60])
+        return [rng.randint(0, 100 - w), rng.randint(0, 100 - h), w, h]
+
+    def jitter(b, px):
+        return [b[0] + rng.randint(-px, px), b[1] + rng.randint(-px, px), b[2], b[3]]
+
+    for image in images:
+        for category in categories:
+            cell = {"image_id": image["id"], "category_id": category["id"]}
+            boxes = [box() for _ in range(rng.randint(0, 4))]
+            if boxes and rng.random() < 0.3:
+                boxes.append(list(boxes[0]))  # a duplicate ground truth
+            for b in boxes:
+                crowd = int(rng.random() < 0.15)
+                gts.append({**cell, "bbox": b, "iscrowd": crowd, "area": float(b[2] * b[3])})
+                for _ in range(rng.randint(0, 3 if crowd else 2)):
+                    dts.append({**cell, "bbox": jitter(b, 3), "score": rng.choice([0.3, 0.5, 0.5, 0.9])})
+            for _ in range(rng.randint(0, 2)):
+                dts.append({**cell, "bbox": box(), "score": rng.random()})
+    ids = list(range(1, len(gts) + 1))
+    rng.shuffle(ids)
+    for gt, gt_id in zip(gts, ids):
+        gt["id"] = gt_id
+    return {"images": images, "annotations": gts, "categories": categories}, dts
+
+
 # ── running a reference from its pinned source ────────────────────────────────
 #
 # Some references are not pip-installable, or drag in a framework the metric code
