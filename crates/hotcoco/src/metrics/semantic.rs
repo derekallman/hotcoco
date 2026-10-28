@@ -1,7 +1,8 @@
-//! Semantic segmentation — per-class IoU and accuracy from a pixel confusion
-//! matrix, and the four means over them.
+//! Semantic segmentation — per-class IoU, accuracy, and Dice from a pixel
+//! confusion matrix, and the five means over them; boundary IoU from the
+//! maps themselves, in [`boundary`].
 //!
-//! The whole metric family is a function of one matrix: [`PixelConfusion`],
+//! Everything but the boundary is a function of one matrix: [`PixelConfusion`],
 //! `num_classes × num_classes` counts of pixels with ground-truth class `g`
 //! predicted as `p`, summed over every image. Pixels are matched by position,
 //! so there is no matcher to call; this module builds the matrix and reads
@@ -10,8 +11,10 @@
 //! ```text
 //! IoU_c  = TP_c / (TP_c + FP_c + FN_c)       per class, when the class is on either side
 //! Acc_c  = TP_c / (TP_c + FN_c)              per class, when the class has ground truth
+//! Dice_c = 2 TP_c / (2 TP_c + FP_c + FN_c)   per class, when the class is on either side
 //! mIoU   = mean of IoU_c over the classes that have one
 //! mAcc   = mean of Acc_c over the classes that have one
+//! mDice  = mean of Dice_c over the classes that have one
 //! fwIoU  = Σ IoU_c · (TP_c + FN_c) / Σ (TP_c + FN_c)
 //! aAcc   = Σ TP_c / Σ (TP_c + FN_c)          overall pixel accuracy
 //! ```
@@ -23,8 +26,9 @@
 //! choice between references, and this module follows those two rather than
 //! detectron2's `SemSegEvaluator`: a class predicted somewhere but absent from
 //! every ground-truth map has IoU `0` and counts toward `mIoU`, where detectron2
-//! drops it. `fwIoU` is detectron2's; mmseg has none. The pinned sources and the
-//! frozen comparison are `scripts/gen_semantic_fixtures.py`.
+//! drops it. `fwIoU` is detectron2's; mmseg has none. `mDice` is mmseg's, under
+//! the same rules as `mIoU`. The pinned sources and the frozen comparison are
+//! `scripts/gen_semantic_fixtures.py`.
 //!
 //! ```
 //! use hotcoco::metrics::semantic::PixelConfusion;
@@ -38,6 +42,8 @@
 //! assert_eq!(s.miou, 0.5);
 //! ```
 
+pub mod boundary;
+
 use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
@@ -47,12 +53,13 @@ use crate::error::Error;
 use crate::primitives::sim::iou_from_counts;
 use crate::report::EvalReport;
 
-/// The headline metrics, in the order [`SemanticScores::stats`] reports them.
-pub const METRIC_NAMES: [&str; 4] = ["mIoU", "fwIoU", "mAcc", "aAcc"];
+/// The confusion-matrix metrics, in the order [`SemanticScores::stats`]
+/// reports them. The semantic driver's `METRIC_NAMES` adds `mBIoU`.
+pub const METRIC_NAMES: [&str; 5] = ["mIoU", "fwIoU", "mAcc", "aAcc", "mDice"];
 
 /// An integer label type a label map can hold: every integer primitive numpy
 /// stores a class-id map in.
-pub trait Label: Copy {
+pub trait Label: Copy + PartialEq {
     /// The label as an index, or `None` for a negative value.
     fn index(self) -> Option<u64>;
 
@@ -261,18 +268,28 @@ impl ClassCounts {
     pub fn acc(&self) -> Option<f64> {
         (self.gt_area > 0).then(|| self.tp as f64 / self.gt_area as f64)
     }
+
+    /// Dice — `2 TP / (2 TP + FP + FN)`, mmseg's `mDice` per class — or
+    /// `None` when the class appears on neither side.
+    pub fn dice(&self) -> Option<f64> {
+        let both = self.gt_area + self.pred_area;
+        (both > 0).then(|| 2.0 * self.tp as f64 / both as f64)
+    }
 }
 
-/// One class's two numbers, each `-1.0` where it is not computed.
+/// One class's three numbers, each `-1.0` where it is not computed.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ClassScores {
     /// IoU, or the sentinel when the class is on neither side.
     pub iou: f64,
     /// Accuracy, or the sentinel when the class has no ground truth.
     pub acc: f64,
+    /// Dice, or the sentinel when the class is on neither side.
+    pub dice: f64,
 }
 
-/// Everything a confusion matrix yields: the four means and the per-class pair.
+/// Everything a confusion matrix yields: the five means and the per-class
+/// scores.
 ///
 /// Each mean is the `-1.0` sentinel when nothing fed it — a split with every
 /// pixel ignored, for instance.
@@ -286,7 +303,9 @@ pub struct SemanticScores {
     pub macc: f64,
     /// Overall pixel accuracy.
     pub aacc: f64,
-    /// `IoU` and `Acc` per class, indexed by class id.
+    /// Mean Dice over the classes that have one.
+    pub mdice: f64,
+    /// `IoU`, `Acc`, and `Dice` per class, indexed by class id.
     pub per_class: Vec<ClassScores>,
 }
 
@@ -296,13 +315,13 @@ impl SemanticScores {
         is_computed(self.miou)
     }
 
-    /// The four means, in [`METRIC_NAMES`] order.
-    pub fn stats(&self) -> [f64; 4] {
-        [self.miou, self.fwiou, self.macc, self.aacc]
+    /// The five means, in [`METRIC_NAMES`] order.
+    pub fn stats(&self) -> [f64; 5] {
+        [self.miou, self.fwiou, self.macc, self.aacc, self.mdice]
     }
 
-    /// Record these scores on a report: the four means as metrics, and `IoU`
-    /// and `Acc` per class under `class_names` (in class order) where
+    /// Record these scores on a report: the five means as metrics, and `IoU`,
+    /// `Acc`, and `Dice` per class under `class_names` (in class order) where
     /// computed. The one place a semantic block is written, for every family
     /// that reports one.
     #[must_use]
@@ -314,11 +333,10 @@ impl SemanticScores {
         report = report.with_metrics(METRIC_NAMES.iter().copied().zip(self.stats()));
         for (name, s) in class_names.into_iter().zip(&self.per_class) {
             let name = name.into();
-            if is_computed(s.iou) {
-                report = report.with_class_metric(name.clone(), "IoU", s.iou);
-            }
-            if is_computed(s.acc) {
-                report = report.with_class_metric(name, "Acc", s.acc);
+            for (metric, value) in [("IoU", s.iou), ("Acc", s.acc), ("Dice", s.dice)] {
+                if is_computed(value) {
+                    report = report.with_class_metric(name.clone(), metric, value);
+                }
             }
         }
         report
@@ -684,21 +702,43 @@ impl PixelConfusion {
             .collect()
     }
 
-    /// The four means and the per-class pair.
+    /// The five means and the per-class scores.
     pub fn scores(&self) -> SemanticScores {
         semantic_scores(&self.all_class_counts())
+    }
+}
+
+/// A running mean: the sum of the values seen and how many there were.
+#[derive(Default)]
+struct Mean {
+    sum: f64,
+    n: usize,
+}
+
+impl Mean {
+    /// Add `v` when it is computed; the sentinel for an absent value.
+    fn push(&mut self, v: Option<f64>) -> f64 {
+        if let Some(v) = v {
+            self.sum += v;
+            self.n += 1;
+        }
+        v.unwrap_or(-1.0)
+    }
+
+    fn get(&self) -> f64 {
+        mean_or_missing(self.sum, self.n)
     }
 }
 
 /// [`SemanticScores`] from per-class counts, in class order.
 ///
 /// The averaging rules are mmseg's `np.nanmean`: a class without an IoU
-/// (nothing on either side) is left out of `mIoU`, one without ground truth
-/// is left out of `mAcc`, and the sentinel stands in for either per class.
-/// `fwIoU` weights by ground-truth share, so classes without ground truth
-/// weigh nothing; `aAcc` is total correct over total counted.
+/// (nothing on either side) is left out of `mIoU` and `mDice`, one without
+/// ground truth is left out of `mAcc`, and the sentinel stands in for any
+/// per class. `fwIoU` weights by ground-truth share, so classes without
+/// ground truth weigh nothing; `aAcc` is total correct over total counted.
 pub fn semantic_scores(classes: &[ClassCounts]) -> SemanticScores {
-    let (mut iou_sum, mut iou_n, mut acc_sum, mut acc_n) = (0.0, 0usize, 0.0, 0usize);
+    let (mut iou, mut acc, mut dice) = (Mean::default(), Mean::default(), Mean::default());
     let (mut tp_total, mut gt_total) = (0u64, 0u64);
     let mut weighted = 0.0;
     let per_class = classes
@@ -706,20 +746,13 @@ pub fn semantic_scores(classes: &[ClassCounts]) -> SemanticScores {
         .map(|c| {
             tp_total += c.tp;
             gt_total += c.gt_area;
-            let iou = c.iou();
-            let acc = c.acc();
-            if let Some(v) = iou {
-                iou_sum += v;
-                iou_n += 1;
+            if let Some(v) = c.iou() {
                 weighted += v * c.gt_area as f64;
             }
-            if let Some(v) = acc {
-                acc_sum += v;
-                acc_n += 1;
-            }
             ClassScores {
-                iou: iou.unwrap_or(-1.0),
-                acc: acc.unwrap_or(-1.0),
+                iou: iou.push(c.iou()),
+                acc: acc.push(c.acc()),
+                dice: dice.push(c.dice()),
             }
         })
         .collect();
@@ -727,8 +760,9 @@ pub fn semantic_scores(classes: &[ClassCounts]) -> SemanticScores {
     // weighing one, so the count is the ground-truth total.
     let pixels = usize::try_from(gt_total).unwrap_or(usize::MAX);
     SemanticScores {
-        miou: mean_or_missing(iou_sum, iou_n),
-        macc: mean_or_missing(acc_sum, acc_n),
+        miou: iou.get(),
+        macc: acc.get(),
+        mdice: dice.get(),
         fwiou: mean_or_missing(weighted, pixels),
         aacc: mean_or_missing(tp_total as f64, pixels),
         per_class,
@@ -790,7 +824,13 @@ mod tests {
         // fwIoU: 0.75 · 4/6 + (1/3) · 2/6 + 0 · 0.
         assert!((s.fwiou - (0.75 * 4.0 + 2.0 / 3.0) / 6.0).abs() < 1e-15);
         assert!((s.aacc - 4.0 / 6.0).abs() < 1e-15);
-        assert_eq!(s.stats(), [s.miou, s.fwiou, s.macc, s.aacc]);
+        // Dice: 2 · 3 / (4 + 3), 2 · 1 / (2 + 2), and 0 / (0 + 1) — counted,
+        // as its IoU is.
+        assert!((s.per_class[0].dice - 6.0 / 7.0).abs() < 1e-15);
+        assert_eq!(s.per_class[1].dice, 0.5);
+        assert_eq!(s.per_class[2].dice, 0.0);
+        assert!((s.mdice - (6.0 / 7.0 + 0.5) / 3.0).abs() < 1e-15);
+        assert_eq!(s.stats(), [s.miou, s.fwiou, s.macc, s.aacc, s.mdice]);
     }
 
     /// The matrix `update` builds from the pair, one pixel per call — every
@@ -945,7 +985,7 @@ mod tests {
             .expect("valid test input");
         let s = m.scores();
         assert!(!s.is_computed());
-        assert_eq!(s.stats(), [-1.0, -1.0, -1.0, -1.0]);
+        assert_eq!(s.stats(), [-1.0; 5]);
     }
 
     #[test]

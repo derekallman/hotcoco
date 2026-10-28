@@ -191,10 +191,11 @@ See the [panoptic guide](guide/panoptic.md).
 
 ## Semantic segmentation
 
-The third family: mIoU, fwIoU, mAcc, and aAcc from class-id label maps,
-matching mmsegmentation's `IoUMetric`. Fed one batch at a time from a
-validation loop, or from folders of PNG files; the state is one confusion
-matrix, so shards merge and the evaluator pickles:
+The third family: mIoU, fwIoU, mAcc, aAcc, and mDice from class-id label
+maps, matching mmsegmentation's `IoUMetric`, and boundary IoU beside them.
+Fed one batch at a time from a validation loop, or from folders of PNG
+files; the state is one confusion matrix plus the boundary counts, so shards
+merge and the evaluator pickles:
 
 ```python
 from hotcoco import semantic

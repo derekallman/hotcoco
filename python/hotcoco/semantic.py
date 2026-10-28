@@ -1,9 +1,12 @@
-"""Semantic segmentation metrics — mIoU, fwIoU, mAcc, and aAcc.
+"""Semantic segmentation metrics — mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU.
 
 The third metric family, beside :mod:`hotcoco.detection` and
 :mod:`hotcoco.panoptic`, on the same engine: the formulas live in ``metrics``
 (``pixel_confusion`` and ``mean_iou``), and this module drives them over a
-dataset and reports an ``EvalReport``.
+dataset and reports an ``EvalReport``. Boundary IoU is the one metric here
+that is not a function of the confusion matrix: it reads a band along each
+class's contour off the maps themselves, so ``update`` takes maps with their
+shape, and ``boundary_dilation=None`` leaves it out.
 
 The evaluator is fed incrementally, the way a validation loop produces label
 maps. Each call takes a ground-truth map and a prediction of the same shape,
@@ -14,7 +17,7 @@ maps. Each call takes a ground-truth map and a prediction of the same shape,
     ev = semantic.SemanticEval(19)                  # Cityscapes train ids; 255 is ignored
     for gt, logits in loader:
         ev.update(gt.numpy(), logits.argmax(1).numpy())
-    ev.summarize()                                  # per-class IoU and Acc, then the means
+    ev.summarize()                                  # per-class IoU, Acc, Dice, BIoU, then the means
     ev.report()["metrics"]["mIoU"]
 
 Or from saved predictions — PNG files named like the ground truth's, with the
@@ -30,7 +33,8 @@ diagnostic: which classes are being mistaken for which.
 
 The numbers match mmsegmentation's ``IoUMetric`` and torchmetrics'
 ``multiclass_jaccard_index`` on frozen label maps, with one documented choice
-where detectron2 differs; see the semantic guide.
+where detectron2 differs, and boundary IoU matches the kernel its authors
+published; see the semantic guide.
 """
 
 from __future__ import annotations

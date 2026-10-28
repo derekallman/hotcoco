@@ -1,4 +1,4 @@
-"""Type stubs for hotcoco.semantic — mIoU, fwIoU, mAcc, aAcc."""
+"""Type stubs for hotcoco.semantic — mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU."""
 
 from __future__ import annotations
 
@@ -14,7 +14,12 @@ class SemanticEval:
     """Semantic segmentation evaluation against mmsegmentation's protocol."""
 
     def __init__(
-        self, classes: int | Sequence[str], *, ignore_index: int | None = 255, reduce_zero_label: bool = False
+        self,
+        classes: int | Sequence[str],
+        *,
+        ignore_index: int | None = 255,
+        reduce_zero_label: bool = False,
+        boundary_dilation: float | None = 0.02,
     ) -> None: ...
     def update(self, gt: npt.NDArray[Any], pred: npt.NDArray[Any]) -> None: ...
     def update_png(self, gt: str | os.PathLike[str], pred: str | os.PathLike[str]) -> None: ...

@@ -1,4 +1,5 @@
-//! Python bindings for `hotcoco::semantic` — mIoU, fwIoU, mAcc, aAcc.
+//! Python bindings for `hotcoco::semantic` — mIoU, fwIoU, mAcc, aAcc, mDice,
+//! and boundary IoU.
 //!
 //! `SemanticEval` is the driver object. Unlike `COCOeval` and `PanopticEval`
 //! it is fed incrementally: a training loop calls `update(gt, pred)` per
@@ -11,6 +12,7 @@ use std::path::PathBuf;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+use hotcoco_core::metrics::semantic::boundary::DEFAULT_DILATION_RATIO;
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
@@ -19,8 +21,8 @@ use crate::{
     to_pyerr, warn,
 };
 
-#[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
-mmsegmentation's protocol.
+#[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, aAcc, and mDice
+against mmsegmentation's protocol, and boundary IoU against the paper's.
 
 Parameters
 ----------
@@ -35,6 +37,10 @@ reduce_zero_label : bool, default False
     ground-truth ``0`` becomes ``255`` and every other ground-truth label
     shifts down by one. Needs ``ignore_index=255``; the constructor raises
     ``ValueError`` otherwise.
+boundary_dilation : float or None, default 0.02
+    The boundary IoU band as a share of the image diagonal, the paper's 2%.
+    ``None`` leaves boundary IoU out: ``mBIoU`` is then ``-1.0`` and the
+    update is a little faster. A negative value raises ``ValueError``.
 
 Example
 -------
@@ -45,7 +51,7 @@ Example
     ev = semantic.SemanticEval(19)                 # Cityscapes train ids
     for gt, pred in loader:                         # (H, W) or (N, H, W) integer arrays
         ev.update(gt, pred.argmax(1).numpy())
-    ev.summarize()                                  # per-class IoU and Acc, then the means
+    ev.summarize()                                  # per-class scores, then the means
     ev.report()[\"metrics\"][\"mIoU\"]
 
 From saved predictions, PNG files named like the ground truth's::
@@ -84,15 +90,17 @@ fn evaluator_for(classes: &Bound<'_, PyAny>) -> PyResult<SemanticEval> {
 #[pymethods]
 impl PySemanticEval {
     #[new]
-    #[pyo3(signature = (classes, *, ignore_index=Some(255), reduce_zero_label=false))]
+    #[pyo3(signature = (classes, *, ignore_index=Some(255), reduce_zero_label=false, boundary_dilation=Some(DEFAULT_DILATION_RATIO)))]
     fn new(
         classes: &Bound<'_, PyAny>,
         ignore_index: Option<u64>,
         reduce_zero_label: bool,
+        boundary_dilation: Option<f64>,
     ) -> PyResult<Self> {
         let inner = evaluator_for(classes)?
             .ignore_index(ignore_index)
-            .reduce_zero_label(reduce_zero_label);
+            .reduce_zero_label(reduce_zero_label)
+            .boundary_dilation(boundary_dilation);
         inner.check_options().map_err(to_pyerr)?;
         Ok(PySemanticEval { inner })
     }
@@ -100,7 +108,8 @@ impl PySemanticEval {
     #[doc = "Count one ground-truth label map against one prediction.
 
 Both are integer numpy arrays of the same shape — ``(H, W)``, or ``(N, H, W)``
-for a batch, up to 32 dimensions — in any integer or bool dtype. A
+for a batch, up to 32 dimensions, the last two the map's height and width —
+in any integer or bool dtype. A
 C-contiguous, aligned ``uint8``, ``uint16``, ``uint64``, ``int32``, or
 ``int64`` array is read in place; any other array is one numpy copy,
 ``uint64`` for an unsigned dtype and ``int64`` otherwise, contiguous and
@@ -115,9 +124,15 @@ pair is counted then."]
         pred: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         let (g, p) = label_pair(gt, pred)?;
+        // The last two axes are the map; a 1-D array is one row.
+        let (h, w) = match g.shape() {
+            [.., h, w] => (*h, *w),
+            [n] => (1, *n),
+            [] => (1, 1),
+        };
         let (gt, pred) = (g.map(), p.map());
         let inner = &mut self.inner;
-        py.detach(|| inner.update_maps(&gt, &pred))
+        py.detach(|| inner.update_maps(&gt, &pred, h, w))
             .map_err(to_pyerr)
     }
 
@@ -150,14 +165,14 @@ counted then."]
 
     #[doc = "Add another evaluator's counts into this one — the shards of a
 distributed run. Raises ``ValueError`` if it was built with different classes
-or options."]
+or options, ``boundary_dilation`` included."]
     fn merge(&mut self, other: &PySemanticEval) -> PyResult<()> {
         self.inner.merge(&other.inner).map_err(to_pyerr)
     }
 
-    #[doc = "The confusion matrix behind every number, as a ``uint64`` array of
-shape ``(num_classes, num_classes)``: row the ground-truth class, column the
-predicted class, after ignoring."]
+    #[doc = "The confusion matrix behind every number but boundary IoU, as a
+``uint64`` array of shape ``(num_classes, num_classes)``: row the ground-truth
+class, column the predicted class, after ignoring."]
     fn confusion(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let m = self.inner.confusion();
         confusion_counts_to_py(py, m.counts().to_vec(), m.num_classes())
@@ -182,16 +197,17 @@ batch is one, and one per PNG pair."]
     }
 
     #[getter]
-    #[doc = "The four headline values as fractions, in ``semantic.METRIC_NAMES``
-order: mIoU, fwIoU, mAcc, aAcc. ``-1.0`` where nothing was counted."]
+    #[doc = "The six headline values as fractions, in ``semantic.METRIC_NAMES``
+order: mIoU, fwIoU, mAcc, aAcc, mDice, mBIoU. ``-1.0`` where nothing was
+counted, and for mBIoU when boundary IoU is off."]
     fn stats(&self) -> Vec<f64> {
         self.inner.stats().to_vec()
     }
 
-    #[doc = "Print the table: one row per class with IoU and Acc in percent, then
-the four means. Each entry of ``reference_deviations()`` is emitted first as
-a ``ReferenceDeviationWarning``. Before anything is counted, prints nothing
-and emits a ``CallOrderWarning``."]
+    #[doc = "Print the table: one row per class with IoU, Acc, Dice, and BIoU in
+percent, then the six means. Each entry of ``reference_deviations()`` is
+emitted first as a ``ReferenceDeviationWarning``. Before anything is counted,
+prints nothing and emits a ``CallOrderWarning``."]
     fn summarize(&self, py: Python<'_>) -> PyResult<()> {
         if self.inner.n_images() == 0 {
             return warn::<CallOrderWarning>(py, "summarize() called before update().");
@@ -212,8 +228,9 @@ and emits a ``CallOrderWarning``."]
         Ok(self.inner.summarize_lines())
     }
 
-    #[doc = "Results as a dict: ``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc`` as fractions;
-``per_class``, a list in class-id order of ``{\"name\", \"IoU\", \"Acc\", \"tp\",
+    #[doc = "Results as a dict: ``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc``, ``mDice``,
+``mBIoU`` as fractions and ``boundary_dilation``; ``per_class``, a list in
+class-id order of ``{\"name\", \"IoU\", \"Acc\", \"Dice\", \"BIoU\", \"tp\",
 \"gt_area\", \"pred_area\"}`` with ``-1.0`` for a score that is not computed;
 ``n_images``, ``n_pixels``, ``provenance``, ``reference_deviations`` and
 ``hotcoco_version``."]
@@ -222,16 +239,18 @@ and emits a ``CallOrderWarning``."]
     }
 
     #[doc = "The run as the ``EvalReport`` dict every hotcoco family produces:
-``task``, ``provenance``, ``metrics`` (the four means), ``per_class`` (``IoU``
-and ``Acc`` by class name, computed values only), ``per_group`` (empty),
-``curves`` (empty) and ``params``."]
+``task``, ``provenance``, ``metrics`` (the means; ``mBIoU`` only when boundary
+IoU is on), ``per_class`` (``IoU``, ``Acc``, ``Dice``, and ``BIoU`` by class
+name, computed values only), ``per_group`` (empty), ``curves`` (empty) and
+``params``."]
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         serde_to_py(py, &self.inner.report())
     }
 
     #[doc = "Ways this run departs from what mmsegmentation would compute. Empty
 means the numbers are comparable to the reference — every option here is a
-reference option with the reference's meaning."]
+reference option with the reference's meaning. Boundary IoU follows its own
+paper rather than mmseg, which has none, so it is not a departure."]
     fn reference_deviations(&self) -> Vec<String> {
         self.inner.reference_deviations()
     }

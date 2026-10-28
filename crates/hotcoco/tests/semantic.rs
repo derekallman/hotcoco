@@ -29,6 +29,7 @@ use serde::Deserialize;
 struct Fixture {
     cases: Vec<Case>,
     min_pred_only_cases: f64,
+    min_boundary_differs: f64,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +48,7 @@ struct Expected {
     mmseg: Mmseg,
     torchmetrics: Torchmetrics,
     detectron2: Detectron2,
+    boundary_iou: BoundaryIou,
 }
 
 #[derive(Deserialize)]
@@ -54,9 +56,19 @@ struct Expected {
 struct Mmseg {
     IoU: Vec<Option<f64>>,
     Acc: Vec<Option<f64>>,
+    Dice: Vec<Option<f64>>,
     aAcc: Option<f64>,
     mIoU: Option<f64>,
     mAcc: Option<f64>,
+    mDice: Option<f64>,
+}
+
+/// The paper's definition through the authors' `mask_to_boundary`.
+#[derive(Deserialize)]
+#[allow(non_snake_case)]
+struct BoundaryIou {
+    BIoU: Vec<Option<f64>>,
+    mBIoU: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +85,7 @@ struct Detectron2 {
     fwIoU: Option<f64>,
     mACC: Option<f64>,
     pACC: Option<f64>,
+    mBIoU: Option<f64>,
 }
 
 fn fixture() -> Fixture {
@@ -96,7 +109,8 @@ fn flat(map: &[Vec<i64>]) -> Vec<i64> {
 fn evaluator(case: &Case) -> SemanticEval {
     let mut ev = fresh(case);
     for (gt, pred) in case.gt.iter().zip(&case.pred) {
-        ev.update(&flat(gt), &flat(pred)).unwrap();
+        ev.update(&flat(gt), &flat(pred), gt.len(), gt[0].len())
+            .unwrap();
     }
     ev
 }
@@ -115,7 +129,7 @@ fn matches_mmseg_per_class_and_in_the_means() {
     for case in &fixture().cases {
         let s = evaluator(case).scores();
         let m = &case.expected.mmseg;
-        for (c, (iou, acc)) in m.IoU.iter().zip(&m.Acc).enumerate() {
+        for (c, ((iou, acc), dice)) in m.IoU.iter().zip(&m.Acc).zip(&m.Dice).enumerate() {
             assert!(
                 close(s.per_class[c].iou, *iou, 1e-9),
                 "case {}: class {c} IoU {} vs mmseg {iou:?}",
@@ -128,7 +142,20 @@ fn matches_mmseg_per_class_and_in_the_means() {
                 case.id,
                 s.per_class[c].acc
             );
+            assert!(
+                close(s.per_class[c].dice, *dice, 1e-9),
+                "case {}: class {c} Dice {} vs mmseg {dice:?}",
+                case.id,
+                s.per_class[c].dice
+            );
         }
+        assert!(
+            close(s.mdice, m.mDice, 1e-9),
+            "case {}: mDice {} vs {:?}",
+            case.id,
+            s.mdice,
+            m.mDice
+        );
         assert!(
             close(s.miou, m.mIoU, 1e-9),
             "case {}: mIoU {} vs {:?}",
@@ -151,6 +178,76 @@ fn matches_mmseg_per_class_and_in_the_means() {
             m.aAcc
         );
     }
+}
+
+/// Per-class boundary IoU as the paper defines it, through the authors'
+/// `mask_to_boundary`; detectron2's label-map erosion differs on most cases.
+#[test]
+fn boundary_iou_matches_the_authors_kernel_and_not_detectron2() {
+    let fixture = fixture();
+    let mut differs = 0;
+    for case in &fixture.cases {
+        let ev = evaluator(case);
+        let b = ev.boundary_scores().expect("boundary IoU is on by default");
+        let want = &case.expected.boundary_iou;
+        for (c, biou) in want.BIoU.iter().enumerate() {
+            assert!(
+                close(b.per_class[c], *biou, 1e-9),
+                "case {}: class {c} BIoU {} vs {biou:?}",
+                case.id,
+                b.per_class[c]
+            );
+        }
+        assert!(
+            close(b.mbiou, want.mBIoU, 1e-9),
+            "case {}: mBIoU {} vs {:?}",
+            case.id,
+            b.mbiou,
+            want.mBIoU
+        );
+        if let Some(d) = case.expected.detectron2.mBIoU
+            && is_computed(b.mbiou)
+            && (b.mbiou - d).abs() > 1e-9
+        {
+            differs += 1;
+        }
+    }
+    assert!(
+        differs as f64 >= fixture.min_boundary_differs * fixture.cases.len() as f64,
+        "detectron2 agreed on all but {differs} cases"
+    );
+}
+
+#[test]
+fn boundary_iou_off_leaves_the_rest_alone() {
+    let case = fixture().cases.pop().unwrap();
+    let on = evaluator(&case);
+    let mut off = fresh(&case).boundary_dilation(None);
+    for (gt, pred) in case.gt.iter().zip(&case.pred) {
+        off.update(&flat(gt), &flat(pred), gt.len(), gt[0].len())
+            .unwrap();
+    }
+    assert!(off.boundary_scores().is_none());
+    assert_eq!(off.scores(), on.scores());
+    let (a, b) = (on.stats(), off.stats());
+    assert_eq!(&a[..5], &b[..5]);
+    assert!(is_computed(a[5]) && b[5] == -1.0);
+    assert!(
+        !off.report().metrics.contains_key("mBIoU"),
+        "a metric not computed is not reported"
+    );
+    assert!(on.report().metrics.contains_key("mBIoU"));
+    let mut on = on;
+    assert!(
+        on.merge(&off).is_err(),
+        "boundary settings must agree to merge"
+    );
+    assert!(
+        SemanticEval::new(2)
+            .boundary_dilation(Some(-0.1))
+            .check_options()
+            .is_err()
+    );
 }
 
 #[test]
@@ -254,7 +351,8 @@ fn shards_merge_to_the_whole() {
             .zip(&case.pred)
             .map(|(gt, pred)| {
                 let mut ev = fresh(case);
-                ev.update(&flat(gt), &flat(pred)).unwrap();
+                ev.update(&flat(gt), &flat(pred), gt.len(), gt[0].len())
+                    .unwrap();
                 ev
             })
             .collect();
@@ -288,12 +386,18 @@ fn merge_refuses_a_different_configuration() {
 #[test]
 fn a_rejected_pair_counts_nothing() {
     let mut ev = SemanticEval::new(2);
-    ev.update(&[0u8, 1], &[0u8, 1]).unwrap();
+    ev.update(&[0u8, 1], &[0u8, 1], 1, 2).unwrap();
     let before = ev.clone();
-    let err = ev.update(&[0u8, 1], &[0u8, 7]).unwrap_err().to_string();
+    let err = ev
+        .update(&[0u8, 1], &[0u8, 7], 1, 2)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("pred pixel 1 has label 7"), "{err}");
     assert_eq!(ev, before);
-    let err = ev.update(&[0u8, 1, 1], &[0u8, 1]).unwrap_err().to_string();
+    let err = ev
+        .update(&[0u8, 1, 1], &[0u8, 1], 1, 3)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("same number of pixels"), "{err}");
     assert_eq!(ev, before);
 }
@@ -303,11 +407,11 @@ fn an_ignored_pixel_is_neither_right_nor_wrong_whatever_it_predicts() {
     // Padding carries the ignore index on both sides; the prediction there
     // is out of range as a class and must not be checked.
     let mut ev = SemanticEval::new(2);
-    ev.update(&[255u8, 0, 1], &[255u8, 0, 1]).unwrap();
+    ev.update(&[255u8, 0, 1], &[255u8, 0, 1], 1, 3).unwrap();
     assert_eq!(ev.confusion().total(), 2);
     assert_eq!(ev.stats()[0], 1.0);
     let mut ev = SemanticEval::new(2).reduce_zero_label(true);
-    ev.update(&[0u8, 1, 2], &[255u8, 0, 1]).unwrap();
+    ev.update(&[0u8, 1, 2], &[255u8, 0, 1], 1, 3).unwrap();
     assert_eq!(ev.confusion().total(), 2);
     assert_eq!(ev.stats()[0], 1.0);
 }
@@ -316,7 +420,7 @@ fn an_ignored_pixel_is_neither_right_nor_wrong_whatever_it_predicts() {
 fn reduce_zero_label_shifts_the_ground_truth_only() {
     // File labels 0 (other), 1, 2 over two classes; predictions already 0/1.
     let mut ev = SemanticEval::new(2).reduce_zero_label(true);
-    ev.update(&[0u8, 1, 2, 2], &[1u8, 0, 1, 1]).unwrap();
+    ev.update(&[0u8, 1, 2, 2], &[1u8, 0, 1, 1], 1, 4).unwrap();
     assert_eq!(ev.confusion().total(), 3);
     assert_eq!(ev.confusion().get(0, 0), 1);
     assert_eq!(ev.confusion().get(1, 1), 2);
@@ -331,14 +435,18 @@ fn reduce_zero_label_shifts_the_ground_truth_only() {
 fn reduce_zero_label_follows_mmseg_on_255() {
     let mut ev = SemanticEval::new(300).reduce_zero_label(true);
     // File labels: 0 and 255 unlabeled; 256 shifts to 255 and is masked; 1 → 0.
-    ev.update(&[0u16, 255, 256, 1], &[0u16, 0, 0, 0]).unwrap();
+    ev.update(&[0u16, 255, 256, 1], &[0u16, 0, 0, 0], 1, 4)
+        .unwrap();
     assert_eq!(ev.confusion().total(), 1);
     assert_eq!(ev.confusion().get(0, 0), 1);
 
     let mut ev = SemanticEval::new(2)
         .reduce_zero_label(true)
         .ignore_index(Some(100));
-    let err = ev.update(&[1u8, 2], &[0u8, 1]).unwrap_err().to_string();
+    let err = ev
+        .update(&[1u8, 2], &[0u8, 1], 1, 2)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("needs ignore_index 255"), "{err}");
     assert_eq!(ev.n_images(), 0);
 }
@@ -346,7 +454,7 @@ fn reduce_zero_label_follows_mmseg_on_255() {
 #[test]
 fn report_has_the_contract_shape() {
     let mut ev = SemanticEval::with_class_names(vec!["road".into(), "sky".into(), "void".into()]);
-    ev.update(&[0u8, 0, 1, 255], &[0u8, 1, 1, 1]).unwrap();
+    ev.update(&[0u8, 0, 1, 255], &[0u8, 1, 1, 1], 1, 4).unwrap();
     let report = ev.report();
     assert_eq!(report.task, "semantic");
     assert_eq!(report.provenance, Provenance::ParityVerified);
@@ -386,7 +494,7 @@ fn report_has_the_contract_shape() {
 #[test]
 fn summary_prints_one_row_per_class_and_the_means() {
     let mut ev = SemanticEval::new(2);
-    ev.update(&[0u8, 1], &[0u8, 1]).unwrap();
+    ev.update(&[0u8, 1], &[0u8, 1], 1, 2).unwrap();
     let lines = ev.summarize_lines();
     assert_eq!(lines.len(), 2 + 2 + 2, "{lines:?}");
     assert!(
@@ -443,8 +551,12 @@ fn folders_pair_by_file_name() {
     let mut ev = SemanticEval::new(2);
     assert_eq!(ev.update_folders(&gt_dir, &pred_dir).unwrap(), 2);
     let mut by_array = SemanticEval::new(2);
-    by_array.update(&[0u8, 0, 1, 255], &[0u8, 1, 1, 1]).unwrap();
-    by_array.update(&[1u8, 1, 1, 1], &[1u8, 1, 0, 1]).unwrap();
+    by_array
+        .update(&[0u8, 0, 1, 255], &[0u8, 1, 1, 1], 1, 4)
+        .unwrap();
+    by_array
+        .update(&[1u8, 1, 1, 1], &[1u8, 1, 0, 1], 1, 4)
+        .unwrap();
     assert_eq!(ev, by_array);
 
     write_png(

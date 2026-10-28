@@ -55,12 +55,64 @@ def close(got, want, tol=TOL):
 def test_matches_mmseg(case):
     res = evaluator(case).results()
     m = case["expected"]["mmseg"]
-    for c, (iou, acc) in enumerate(zip(m["IoU"], m["Acc"])):
+    for c, (iou, acc, dice) in enumerate(zip(m["IoU"], m["Acc"], m["Dice"])):
         assert close(res["per_class"][c]["IoU"], iou), (c, res["per_class"][c]["IoU"], iou)
         assert close(res["per_class"][c]["Acc"], acc), (c, res["per_class"][c]["Acc"], acc)
+        assert close(res["per_class"][c]["Dice"], dice), (c, res["per_class"][c]["Dice"], dice)
     assert close(res["mIoU"], m["mIoU"])
     assert close(res["mAcc"], m["mAcc"])
     assert close(res["aAcc"], m["aAcc"])
+    assert close(res["mDice"], m["mDice"])
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda c: f"case{c['id']}")
+def test_boundary_iou_matches_the_authors_kernel(case):
+    """Per-class boundary IoU as the paper defines it, through the authors'
+    ``mask_to_boundary``, frozen by ``gen_semantic_fixtures.py``."""
+    res = evaluator(case).results()
+    b = case["expected"]["boundary_iou"]
+    for c, biou in enumerate(b["BIoU"]):
+        assert close(res["per_class"][c]["BIoU"], biou), (c, res["per_class"][c]["BIoU"], biou)
+    assert close(res["mBIoU"], b["mBIoU"])
+
+
+def test_detectron2_boundary_iou_differs():
+    """detectron2's ``SemSegEvaluator`` erodes the label map rather than each
+    class's mask, so its number depends on how the classes are numbered; the
+    fixture shows the difference rather than assuming it."""
+    differs = 0
+    for case in CASES:
+        res = evaluator(case).results()
+        d = case["expected"]["detectron2"]["mBIoU"]
+        if d is not None and res["mBIoU"] != -1.0 and not close(res["mBIoU"], d):
+            differs += 1
+    assert differs >= FIXTURE["min_boundary_differs"] * len(CASES)
+
+
+def test_boundary_iou_can_be_turned_off():
+    case = CASES[-1]
+    ev = semantic.SemanticEval(
+        case["num_classes"], ignore_index=case["ignore_index"], reduce_zero_label=case["reduce_zero_label"]
+    )
+    off = semantic.SemanticEval(
+        case["num_classes"],
+        ignore_index=case["ignore_index"],
+        reduce_zero_label=case["reduce_zero_label"],
+        boundary_dilation=None,
+    )
+    for gt, pred in zip(case["gt"], case["pred"]):
+        ev.update(np.array(gt), np.array(pred))
+        off.update(np.array(gt), np.array(pred))
+    on, res = ev.results(), off.results()
+    assert on["mBIoU"] != -1.0 and res["mBIoU"] == -1.0
+    assert all(c["BIoU"] == -1.0 for c in res["per_class"])
+    assert res["mIoU"] == on["mIoU"] and res["mDice"] == on["mDice"]
+    assert "mBIoU" not in off.report()["metrics"]
+    assert off.stats == ev.stats[:-1] + [-1.0]
+    with pytest.raises(ValueError, match="boundary"):
+        ev.merge(off)
+    with pytest.raises(ValueError, match="boundary_dilation"):
+        semantic.SemanticEval(2, boundary_dilation=-0.1)
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: f"case{c['id']}")
@@ -144,9 +196,11 @@ def test_metrics_functions_agree_with_the_evaluator():
     assert np.array_equal(total, ev.confusion())
     scores = metrics.mean_iou(total)
     res = ev.results()
-    assert scores["mIoU"] == res["mIoU"] and scores["fwIoU"] == res["fwIoU"]
+    assert scores["mIoU"] == res["mIoU"] and scores["fwIoU"] == res["fwIoU"] and scores["mDice"] == res["mDice"]
     assert scores["IoU"] == [c["IoU"] for c in res["per_class"]]
     assert scores["Acc"] == [c["Acc"] for c in res["per_class"]]
+    assert scores["Dice"] == [c["Dice"] for c in res["per_class"]]
+    assert "mBIoU" not in scores, "a confusion matrix has no boundary"
 
 
 def test_shards_merge_and_pickle():
@@ -174,7 +228,13 @@ def test_report_contract():
     assert report["task"] == "semantic"
     assert report["provenance"] == "parity_verified"
     assert list(report["metrics"]) == sorted(semantic.METRIC_NAMES)
-    assert report["per_class"] == {"road": {"IoU": 0.5, "Acc": 0.5}, "sky": {"IoU": 0.5, "Acc": 1.0}}
+    assert semantic.METRIC_NAMES == ["mIoU", "fwIoU", "mAcc", "aAcc", "mDice", "mBIoU"]
+    # Every pixel of a 2 × 2 map is within one pixel of its edge, so the
+    # boundary IoU is the IoU here.
+    assert report["per_class"] == {
+        "road": {"IoU": 0.5, "Acc": 0.5, "Dice": 2 / 3, "BIoU": 0.5},
+        "sky": {"IoU": 0.5, "Acc": 1.0, "Dice": 2 / 3, "BIoU": 0.5},
+    }
     assert report["per_group"] == {} and report["curves"] == {}
     assert report["params"]["ignore_index"] == 255 and report["params"]["n_pixels"] == 3
     assert ev.reference_deviations() == []

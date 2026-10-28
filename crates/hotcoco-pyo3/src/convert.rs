@@ -1218,7 +1218,7 @@ pub(crate) enum LabelArray<'py> {
 }
 
 impl LabelArray<'_> {
-    fn shape(&self) -> &[usize] {
+    pub(crate) fn shape(&self) -> &[usize] {
         match self {
             LabelArray::U8(a) => a.shape(),
             LabelArray::U16(a) => a.shape(),

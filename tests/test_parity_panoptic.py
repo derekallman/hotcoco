@@ -304,12 +304,12 @@ def test_report_has_the_family_shape(tmp_path):
     report = ev.report()
     assert report["task"] == "panoptic"
     assert report["provenance"] == "parity_verified"
-    assert set(report["metrics"]) == set(panoptic.METRIC_NAMES) | {"mIoU", "fwIoU", "mAcc", "aAcc"}
+    assert set(report["metrics"]) == set(panoptic.METRIC_NAMES) | {"mIoU", "fwIoU", "mAcc", "aAcc", "mDice"}
     assert ev.stats == [report["metrics"][k] for k in panoptic.METRIC_NAMES]
     assert set(report["per_group"]) <= {"all", "things", "stuff"}
     assert set(report["per_group"]["all"]) == {"PQ", "SQ", "RQ", "n"}
     for name, scores in report["per_class"].items():
-        assert set(scores) <= {"PQ", "SQ", "RQ", "IoU", "Acc"}, name
+        assert set(scores) <= {"PQ", "SQ", "RQ", "IoU", "Acc", "Dice"}, name
         assert all(0.0 <= v <= 1.0 for v in scores.values()), name
     assert report["curves"] == {}
     assert report["params"]["n_images"] == 2

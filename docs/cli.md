@@ -385,8 +385,9 @@ coco panoptic eval --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-fold
 
 ### `coco semantic eval`
 
-Semantic segmentation — mIoU, fwIoU, mAcc, aAcc — from two folders of PNG
-label maps paired by file name, as mmsegmentation's `IoUMetric` computes it.
+Semantic segmentation — mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU —
+from two folders of PNG label maps paired by file name, as mmsegmentation's
+`IoUMetric` computes the first five. `--no-boundary-iou` leaves the last out.
 See the [semantic guide](guide/semantic.md).
 
 ```bash
@@ -629,8 +630,9 @@ coco-eval semantic --gt gt/ --pred preds/ --classes 19
 coco-eval semantic --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label -o report.json
 ```
 
-Prints the per-class table and a `stats:` line with the four means; `-o` writes
+Prints the per-class table and a `stats:` line with the six means; `-o` writes
 the results — the same content as `results()` in Python — as JSON.
+`--no-boundary-iou` leaves boundary IoU out, as in the Python CLI.
 
 ---
 

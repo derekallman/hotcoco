@@ -6,6 +6,7 @@ use anstream::stderr;
 use anstyle::{AnsiColor, Color, Style};
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
+use hotcoco::metrics::semantic::boundary::DEFAULT_DILATION_RATIO;
 use hotcoco::params::IouType;
 use hotcoco::{COCO, COCOeval, PanopticDataset, PanopticEval, SemanticEval};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -67,7 +68,7 @@ enum Command {
     /// Panoptic quality: PQ, SQ, RQ from two COCO panoptic JSON files
     Panoptic(PanopticArgs),
 
-    /// Semantic segmentation: mIoU, fwIoU, mAcc, aAcc from two folders of PNG label maps
+    /// Semantic segmentation: mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU from two folders of PNG label maps
     Semantic(SemanticArgs),
 
     /// Print a shell completion script
@@ -160,7 +161,11 @@ struct SemanticArgs {
     #[arg(long)]
     reduce_zero_label: bool,
 
-    /// Write the results (the four means, every class with its counts) to a JSON file
+    /// Leave boundary IoU out (mBIoU reads -1.0); the band is 2% of the image diagonal otherwise
+    #[arg(long)]
+    no_boundary_iou: bool,
+
+    /// Write the results (the six means, every class with its counts) to a JSON file
     #[arg(long, short)]
     output: Option<PathBuf>,
 }
@@ -365,7 +370,8 @@ fn run_semantic(args: SemanticArgs) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     .ignore_index(u64::try_from(args.ignore_index).ok())
-    .reduce_zero_label(args.reduce_zero_label);
+    .reduce_zero_label(args.reduce_zero_label)
+    .boundary_dilation((!args.no_boundary_iou).then_some(DEFAULT_DILATION_RATIO));
 
     let n = timed_eval("Evaluating label maps...", "label maps", || {
         ev.update_folders(&args.gt, &args.pred)

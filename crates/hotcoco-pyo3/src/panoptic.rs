@@ -234,10 +234,10 @@ the counts beside it are all zero either way. Also carries ``provenance``,
 
     #[doc = "The run as the ``EvalReport`` dict every hotcoco family produces:
 ``task``, ``provenance``, ``metrics`` (the nine headline values, plus ``mIoU``,
-``fwIoU``, ``mAcc`` and ``aAcc`` — the same pixels scored as semantic
+``fwIoU``, ``mAcc``, ``aAcc`` and ``mDice`` — the same pixels scored as semantic
 segmentation, every segment painted with its category, a predicted void
 counting as a miss and not as a class), ``per_class`` (PQ/SQ/RQ by category
-name for evaluable categories, and IoU/Acc where computed), ``per_group``
+name for evaluable categories, and IoU, Acc, and Dice where computed), ``per_group``
 (``all``, ``things``, ``stuff`` with their ``n``), ``curves`` (empty) and
 ``params``."]
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

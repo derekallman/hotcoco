@@ -316,24 +316,31 @@ plus the PNG-free mask path against the PNG path — runs in CI on every commit.
 
 **References:** [mmsegmentation](https://github.com/open-mmlab/mmsegmentation) `IoUMetric`
 at v1.2.2 (`c685fe6`), [torchmetrics](https://github.com/Lightning-AI/torchmetrics)
-1.9.0 `multiclass_jaccard_index`, and [detectron2](https://github.com/facebookresearch/detectron2)
-`SemSegEvaluator` at `1e3e13b`, each run from its pinned source by
-`scripts/gen_semantic_fixtures.py` and frozen to `tests/fixtures/semantic_expected.json`.
-**Inputs:** 64 synthetic cases — 2 to 9 classes, 1 to 4 label maps each, ignored
-pixels in half of them, `reduce_zero_label` in a fifth, classes present on one side
-only, and four hand-built corners (a perfect prediction, an all-ignored split, a class
-never predicted, a class never in the ground truth).
+1.9.0 `multiclass_jaccard_index`, [detectron2](https://github.com/facebookresearch/detectron2)
+`SemSegEvaluator` at `1e3e13b`, and the Boundary IoU authors'
+[`boundary-iou-api`](https://github.com/bowenc0221/boundary-iou-api) `mask_to_boundary`
+at `37d2558`, each run from its pinned source by `scripts/gen_semantic_fixtures.py`
+and frozen to `tests/fixtures/semantic_expected.json`.
+**Inputs:** 67 synthetic cases — 60 random ones of 2 to 9 classes, 1 to 4 label maps
+each, ignored pixels in half of them, `reduce_zero_label` in a fifth, classes present
+on one side only; four hand-built corners (a perfect prediction, an all-ignored split,
+a class never predicted, a class never in the ground truth); and three maps of 60 × 80
+to 90 × 120 built from rectangles, so the boundary band is two or three pixels wide
+and most pixels are interior.
 
-Against mmseg, the reference hotcoco follows: every per-class IoU and Acc, `mIoU`,
-`mAcc`, and `aAcc` within 1e-9 on all 64 cases (the differences are 0 or one
-`float64` ulp). Against torchmetrics, per-class IoU and `mIoU` within 1e-6 — it
-reduces in `float32`, and sits about 1e-8 from mmseg. Against detectron2, `fwIoU`,
-`mAcc`, and `aAcc` within 1e-9, and `mIoU` identical on the 35 cases with no
-predicted-but-absent class and different on all 29 that have one, which is the
-[documented convention choice](guide/semantic.md#verification) being observed. The
-metric is a pure function of the confusion matrix, so this synthetic comparison
-covers it; there is no real-dataset run for the family. Both suites run on every
-commit.
+Against mmseg, the reference hotcoco follows: every per-class IoU, Acc, and Dice,
+`mIoU`, `mAcc`, `aAcc`, and `mDice` within 1e-9 on all 67 cases (the differences are
+0 or one `float64` ulp). Against torchmetrics, per-class IoU and `mIoU` within 1e-6 —
+it reduces in `float32`, and sits about 1e-8 from mmseg. Against detectron2, `fwIoU`,
+`mAcc`, and `aAcc` within 1e-9, and `mIoU` identical on the cases with no
+predicted-but-absent class and different on all 30 that have one, which is the
+[documented convention choice](guide/semantic.md#verification) being observed.
+Against the authors' kernel, every per-class boundary IoU and `mBIoU` within 1e-9;
+against detectron2's label-map erosion, `mBIoU` differs on 58 of the 67 cases, which
+is the [second documented choice](guide/semantic.md#verification) being observed. The
+confusion-matrix metrics are pure functions of the matrix and the band a pure
+function of the maps, so this synthetic comparison covers them; there is no
+real-dataset run for the family. Both suites run on every commit.
 
 ### Verify it yourself
 
@@ -421,7 +428,7 @@ just download-panoptic                      # 35 MB — panoptic val2017 + pertu
 just parity-panoptic                        # PQ/SQ/RQ vs panopticapi
 uv run pytest tests/test_mask_parity.py     # hotcoco.mask vs pycocotools.mask, bit for bit
 uv run pytest tests/test_parity_oid.py      # Open Images vs the TF Object Detection API
-uv run pytest tests/test_parity_semantic.py # mIoU vs mmseg, torchmetrics, detectron2 (frozen)
+uv run pytest tests/test_parity_semantic.py # mIoU, mDice vs mmseg, torchmetrics, detectron2; boundary IoU vs its authors' kernel (frozen)
 just fuzz                                   # hypothesis fuzzer, ~10,000 generated datasets
 ```
 

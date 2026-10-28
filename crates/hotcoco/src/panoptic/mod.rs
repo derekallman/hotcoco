@@ -187,11 +187,12 @@ impl MatchIds {
 }
 
 impl PanopticResult {
-    /// mIoU, fwIoU, mAcc, aAcc, and per-category IoU and Acc, over the
-    /// categories in `per_category` order — the panoptic prediction scored as
-    /// a semantic one, the way Mask2Former's and Panoptic-DeepLab's papers
-    /// report mIoU beside PQ. The predicted-void column is not a class: it
-    /// feeds each category's `FN` and nothing else.
+    /// mIoU, fwIoU, mAcc, aAcc, mDice, and per-category IoU, Acc, and Dice,
+    /// over the categories in `per_category` order — the panoptic prediction
+    /// scored as a semantic one, the way Mask2Former's and Panoptic-DeepLab's
+    /// papers report mIoU beside PQ. The predicted-void column is not a
+    /// class: it feeds each category's `FN` and nothing else. No boundary
+    /// IoU: that needs the maps, and this is the confusion matrix.
     pub fn semantic(&self) -> SemanticScores {
         self.pixels.scores()
     }

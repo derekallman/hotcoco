@@ -150,7 +150,7 @@ Panoptic papers report mIoU beside PQ: the panoptic prediction scored as a
 semantic one. `report()` carries it, with no second pass over the pixels:
 
 ```python
-r["metrics"]["mIoU"], r["metrics"]["fwIoU"], r["metrics"]["mAcc"], r["metrics"]["aAcc"]
+r["metrics"]["mIoU"], r["metrics"]["fwIoU"], r["metrics"]["mAcc"], r["metrics"]["aAcc"], r["metrics"]["mDice"]
 r["per_class"]["person"]["IoU"]
 ```
 
@@ -160,8 +160,9 @@ included, and the two maps are compared pixel by pixel. Ground-truth void is
 ignored, as is a PNG id with no `segments_info` entry. A *predicted* void is
 not a class: a pixel the model left unlabeled counts as a miss for its
 ground-truth class and a false positive for nothing. The formulas and their
-conventions are the [semantic family](semantic.md#what-miou-measures)'s, so a
-model evaluated both ways gets one definition of mIoU.
+conventions are the [semantic family](semantic.md#what-the-metrics-measure)'s,
+so a model evaluated both ways gets one definition of mIoU. Boundary IoU is
+not among them: it reads the maps, and this pass keeps only the matrix.
 
 ## From the CLI
 

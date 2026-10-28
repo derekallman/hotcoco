@@ -323,19 +323,20 @@ fn pixel_confusion(
 }
 
 #[pyfunction]
-#[doc = "mIoU, fwIoU, mAcc, and aAcc from a pixel confusion matrix.
+#[doc = "mIoU, fwIoU, mAcc, aAcc, and mDice from a pixel confusion matrix.
 
 Takes a square integer array — row the ground-truth class, column the
 predicted class, as :func:`pixel_confusion` and ``SemanticEval.confusion()``
 produce — and returns a dict::
 
-    {\"mIoU\": 0.62, \"fwIoU\": 0.81, \"mAcc\": 0.74, \"aAcc\": 0.90,
-     \"IoU\": [0.9, 0.5, ...], \"Acc\": [0.95, 0.6, ...]}   # per class, by id
+    {\"mIoU\": 0.62, \"fwIoU\": 0.81, \"mAcc\": 0.74, \"aAcc\": 0.90, \"mDice\": 0.72,
+     \"IoU\": [0.9, 0.5, ...], \"Acc\": [0.95, 0.6, ...], \"Dice\": [0.95, 0.67, ...]}   # per class, by id
 
-mmsegmentation's conventions: a class on neither side has no IoU, one with no
-ground truth has no accuracy, and either is ``-1.0`` here and left out of its
-mean. A class predicted but never in the ground truth scores IoU ``0`` and
-counts toward ``mIoU``.
+mmsegmentation's conventions: a class on neither side has no IoU or Dice, one
+with no ground truth has no accuracy, and any of those is ``-1.0`` here and
+left out of its mean. A class predicted but never in the ground truth scores
+IoU ``0`` and counts toward ``mIoU``. Boundary IoU is not a function of the
+matrix; ``SemanticEval`` computes it from the maps.
 
 Example:
     >>> from hotcoco import metrics
@@ -356,8 +357,13 @@ fn mean_iou(py: Python<'_>, confusion: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>>
     d.set_item("fwIoU", s.fwiou)?;
     d.set_item("mAcc", s.macc)?;
     d.set_item("aAcc", s.aacc)?;
+    d.set_item("mDice", s.mdice)?;
     d.set_item("IoU", s.per_class.iter().map(|c| c.iou).collect::<Vec<_>>())?;
     d.set_item("Acc", s.per_class.iter().map(|c| c.acc).collect::<Vec<_>>())?;
+    d.set_item(
+        "Dice",
+        s.per_class.iter().map(|c| c.dice).collect::<Vec<_>>(),
+    )?;
     Ok(d.into_any().unbind())
 }
 

@@ -3,26 +3,29 @@
 Semantic segmentation labels every pixel with a class and nothing else — no
 instances, no scores, one class-id map per image. Its metric is **mean
 intersection over union (mIoU)**, reported beside per-class IoU, pixel
-accuracy, and their frequency-weighted and class-averaged forms, and the
+accuracy, Dice, and their frequency-weighted and class-averaged forms, and the
 reference implementation most published numbers come from is
 [mmsegmentation](https://github.com/open-mmlab/mmsegmentation)'s `IoUMetric`.
-hotcoco computes the same numbers from the same maps — in memory during a
-validation loop, or from saved PNG files — and reports them in the same
-[`EvalReport`](results.md#the-evaluation-report) shape as detection and
-panoptic.
+**Boundary IoU** restricts IoU to a band along each class's contour, which
+mIoU is blind to on large regions. hotcoco computes all of them from the
+same maps — in memory during a validation loop, or from saved PNG files — and
+reports them in the same [`EvalReport`](results.md#the-evaluation-report)
+shape as detection and panoptic.
 
-## What mIoU measures
+## What the metrics measure
 
-Everything comes from one `num_classes × num_classes` confusion matrix:
-how many pixels of ground-truth class `g` were predicted as class `p`, summed
-over every image in the split. From its diagonal (TP), rows (TP + FN), and
-columns (TP + FP):
+All but boundary IoU come from one `num_classes × num_classes` confusion
+matrix: how many pixels of ground-truth class `g` were predicted as class
+`p`, summed over every image in the split. From its diagonal (TP), rows
+(TP + FN), and columns (TP + FP):
 
 ```
 IoU_c  = TP_c / (TP_c + FP_c + FN_c)       per class
 Acc_c  = TP_c / (TP_c + FN_c)              per class: recall over the class's pixels
+Dice_c = 2 TP_c / (2 TP_c + FP_c + FN_c)   per class: the F1 of the class's pixels
 mIoU   = mean of IoU_c over the classes that have one
 mAcc   = mean of Acc_c over the classes that have ground truth
+mDice  = mean of Dice_c over the classes that have one
 fwIoU  = Σ IoU_c · (TP_c + FN_c) / Σ (TP_c + FN_c)    weighted by ground-truth share
 aAcc   = Σ TP_c / Σ (TP_c + FN_c)          overall pixel accuracy
 ```
@@ -32,10 +35,34 @@ Two rules decide which pixels and classes count:
 - a ground-truth pixel equal to the **ignore index** — `255` by default, as in
   mmseg, Cityscapes, and VOC — is left out on both sides, so a prediction there
   is neither right nor wrong;
-- a class with no pixel on either side has no IoU and is left out of `mIoU`;
-  one with no ground truth has no accuracy and is left out of `mAcc`. Both
-  read as `-1.0`, hotcoco's ["not computed"](results.md#the-evaluation-report)
-  marker, never as a low score.
+- a class with no pixel on either side has no IoU or Dice and is left out of
+  `mIoU` and `mDice`; one with no ground truth has no accuracy and is left
+  out of `mAcc`. Each reads as `-1.0`, hotcoco's
+  ["not computed"](results.md#the-evaluation-report) marker, never as a low
+  score.
+
+### Boundary IoU
+
+A segmentation can score a high IoU on a large region while getting every
+contour wrong, because the interior pixels dominate. Boundary IoU
+([Cheng et al., CVPR 2021](https://arxiv.org/abs/2103.16562)) keeps only a
+band along each mask's contour: the pixels of the mask within `d` of a pixel
+outside it or of the image edge, with `d` 2% of the image diagonal (46
+pixels on a 2048 × 1024 Cityscapes frame). Per class, the ground-truth band
+and the predicted band are intersected and unioned, summed over the split,
+and divided:
+
+```
+BIoU_c = Σ |B(G_c) ∩ B(P_c)| / Σ |B(G_c) ∪ B(P_c)|    per class, over the split
+mBIoU  = mean of BIoU_c over the classes whose union is not empty
+```
+
+Ignored ground-truth pixels drop out of both bands, as they do from the
+matrix. The band is a function of the maps, not of the confusion matrix, so
+this is the one metric here that needs each map's shape; `update` reads it
+off the array, a PNG file carries it, and the pass costs a fraction of the
+counting. It is on by default and `boundary_dilation=None` leaves it out,
+which reads as `-1.0` in `mBIoU`; `boundary_dilation=0.01` narrows the band.
 
 ## Evaluate from a validation loop
 
@@ -54,13 +81,13 @@ ev.summarize()
 ```
 
 ```
-Class    |    IoU    Acc
--------------------------
-class_0  |  97.81  98.92
-class_1  |  83.12  90.44
+Class    |    IoU    Acc   Dice   BIoU
+---------------------------------------
+class_0  |  97.81  98.92  98.89  81.20
+class_1  |  83.12  90.44  90.78  62.35
 ...
--------------------------
-mIoU 76.42  fwIoU 92.10  mAcc 84.07  aAcc 95.88   (500 images, 1046249374 pixels)
+---------------------------------------
+mIoU 76.42  fwIoU 92.10  mAcc 84.07  aAcc 95.88  mDice 85.31  mBIoU 58.70   (500 images, 1046249374 pixels)
 ```
 
 Pass the class names instead of a count for a readable table and a
@@ -71,8 +98,8 @@ ground-truth pixel equal to `ignore_index`; one that is not raises
 
 ### Distributed runs
 
-The whole state is one confusion matrix, so an evaluator pickles and two
-evaluators `merge()`:
+The whole state is one confusion matrix and the boundary counts beside it,
+so an evaluator pickles and two evaluators `merge()`:
 
 ```python
 import torch.distributed as dist
@@ -123,39 +150,42 @@ does not have.
 
 ```python
 r = ev.report()
-r["metrics"]                        # {"mIoU", "fwIoU", "mAcc", "aAcc"}, fractions in [0, 1]
-r["per_class"]["road"]              # {"IoU": ..., "Acc": ...}, computed values only
+r["metrics"]                        # {"mIoU", "fwIoU", "mAcc", "aAcc", "mDice", "mBIoU"}, fractions in [0, 1]
+r["per_class"]["road"]              # {"IoU", "Acc", "Dice", "BIoU"}, computed values only
 r["provenance"]                     # "parity_verified"
 
-ev.results()["per_class"][0]        # {"name", "IoU", "Acc", "tp", "gt_area", "pred_area"}
-ev.stats                            # the four means in semantic.METRIC_NAMES order
+ev.results()["per_class"][0]        # {"name", "IoU", "Acc", "Dice", "BIoU", "tp", "gt_area", "pred_area"}
+ev.stats                            # the six means in semantic.METRIC_NAMES order
 ```
 
 `confusion()` returns the matrix itself as a `uint64` array, row the
 ground-truth class, column the predicted class. It is the diagnostic this
 family has: a class with a low IoU is either being missed (its row leaks into
 other columns) or over-predicted (its column collects other rows), and the
-matrix says which, and into what.
+matrix says which, and into what. A class whose `BIoU` sits well below its
+`IoU` is the other diagnosis: the region is found and its outline is not.
 
 The formulas are callable without an evaluator, the way `sklearn.metrics` and
 `torchmetrics.functional` are, for a loop that keeps its own counts:
 [`metrics.pixel_confusion`](../api/metrics.md#pixel_confusion) builds one
 pair's matrix and [`metrics.mean_iou`](../api/metrics.md#mean_iou) reads the
-numbers off a summed one.
+numbers off a summed one, boundary IoU excepted.
 
 ## mIoU of a panoptic prediction
 
 A panoptic model is also scored as a semantic one in its papers. Nothing
 needs re-reading for that: `PanopticEval.report()` already carries `mIoU`,
-`fwIoU`, `mAcc`, and `aAcc` from the pixels it matched, under the same
-definitions as this page — see
-[mIoU from the same pixels](panoptic.md#miou-from-the-same-pixels).
+`fwIoU`, `mAcc`, `aAcc`, and `mDice` from the pixels it matched, under the
+same definitions as this page — see
+[mIoU from the same pixels](panoptic.md#miou-from-the-same-pixels). Boundary
+IoU is not among them, since that pass keeps the matrix and not the maps.
 
 ## From the CLI
 
 ```bash
 coco semantic eval --gt annotations/validation --pred predictions/ --classes 150 --reduce-zero-label
 coco semantic eval --gt gt/ --pred predictions/ --classes names.txt --json
+coco semantic eval --gt gt/ --pred predictions/ --classes 19 --no-boundary-iou
 ```
 
 The Rust binary has the same subcommand: `coco-eval semantic --gt ... --pred ... --classes ...`.
@@ -173,28 +203,34 @@ absent from every ground-truth map: its union is non-empty and its IoU is
 hotcoco follows mmseg and torchmetrics — the convention two of three
 references share, and the one SegFormer-lineage numbers are reported under —
 and the difference is visible only on a split where some class is never in
-the ground truth. `fwIoU` is detectron2's definition; mmseg has none.
+the ground truth. `fwIoU` is detectron2's definition; mmseg has none. `mDice`
+is mmseg's, under the same rules as `mIoU`.
+
+Boundary IoU has a paper and a kernel but no semantic evaluator to compare
+against: the authors' `boundary-iou-api` covers instance and panoptic
+segmentation, and the per-class accumulation above is the paper's description.
+hotcoco holds its band to the authors' `mask_to_boundary`, run on every class
+of every map, and the sums to the definition. detectron2's `SemSegEvaluator`
+also reports a `BoundaryIoU`, but it erodes the whole label map and keeps
+`label − window minimum`, so a class has a boundary only beside a
+lower-numbered class and the number depends on how the classes are numbered.
+hotcoco does not follow it, and the fixture records its numbers so the
+difference is observed on most cases rather than assumed.
 
 The comparison is frozen rather than run live, because every reference needs
-torch: `scripts/gen_semantic_fixtures.py` downloads the three sources at
-pinned commits (mmseg v1.2.2, detectron2 `1e3e13b`, torchmetrics 1.9.0), runs
-them on 64 synthetic cases that exercise ignored pixels, `reduce_zero_label`,
-classes on one side only, and all-ignored splits, and writes the outputs to
-`tests/fixtures/semantic_expected.json`. The Rust and Python suites then
-check per-class IoU and Acc, `mIoU`, `mAcc`, and `aAcc` against mmseg to
-1e-9, per-class IoU and `mIoU` against torchmetrics to 1e-6 (it reduces in
-`float32`), `fwIoU`, `mAcc`, and `aAcc` against detectron2 to 1e-9, and that
-detectron2's `mIoU` *differs* on every case with a predicted-but-absent class,
-so the convention choice is observed, not assumed. The metric is a pure
-function of the confusion matrix, so synthetic maps cover it completely; there
-is no real-dataset parity run for this family. See
-[Semantic parity](../benchmarks.md#semantic).
-
-## Not included
-
-**Dice** is the same matrix read differently — per class, `2 · IoU / (1 + IoU)`
-— and the convention of medical segmentation rather than of the ADE20K and
-Cityscapes literature. **Boundary IoU** restricts IoU to a band along each
-mask's contour and needs an erosion primitive and its own reference. Neither
-ships; the [roadmap](https://github.com/derekallman/hotcoco/blob/main/ROADMAP.md)
-records both as open if asked for.
+torch or OpenCV: `scripts/gen_semantic_fixtures.py` downloads the sources at
+pinned commits (mmseg v1.2.2, detectron2 `1e3e13b`, `boundary-iou-api`
+`37d2558`, torchmetrics 1.9.0), runs them on 67 synthetic cases that exercise
+ignored pixels, `reduce_zero_label`, classes on one side only, all-ignored
+splits, and maps large enough for a band wider than one pixel, and writes the
+outputs to `tests/fixtures/semantic_expected.json`. The Rust and Python
+suites then check per-class IoU, Acc, and Dice, `mIoU`, `mAcc`, `aAcc`, and
+`mDice` against mmseg to 1e-9, per-class IoU and `mIoU` against torchmetrics
+to 1e-6 (it reduces in `float32`), `fwIoU`, `mAcc`, and `aAcc` against
+detectron2 to 1e-9, per-class and mean boundary IoU against the authors'
+kernel to 1e-9, that detectron2's `mIoU` *differs* on every case with a
+predicted-but-absent class, and that its boundary IoU differs on at least half
+the cases, so both choices are observed, not assumed. The confusion-matrix
+metrics are pure functions of the matrix and the boundary band is a pure
+function of the maps, so synthetic maps cover them; there is no real-dataset
+parity run for this family. See [Semantic parity](../benchmarks.md#semantic).

@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Dice and boundary IoU in the semantic family.** `SemanticEval` reports
+  `mDice` and per-class `Dice` — mmsegmentation's `mDice`, from the same
+  confusion matrix under the same rules as `mIoU`, checked against it on the
+  frozen fixture — and `mBIoU` with per-class `BIoU`, the Boundary IoU of
+  Cheng et al. (CVPR 2021) applied per class as the paper describes: the
+  pixels of each class within 2% of the image diagonal of a pixel outside it
+  or of the image edge, intersections and unions summed over the split,
+  ignored pixels dropped from both. The band is checked against the authors'
+  `mask_to_boundary` on every class of every fixture map; the fixture also
+  records detectron2's `SemSegEvaluator` boundary number, which erodes the
+  whole label map and depends on how classes are numbered, and the test
+  shows it differs on most cases. `semantic.METRIC_NAMES` is six entries,
+  `mDice` and `mBIoU` appended, so `stats` keeps its first four positions;
+  `metrics.mean_iou` returns `mDice` and `Dice` too; `PanopticEval.report()`
+  carries `mDice` beside `mIoU`. `SemanticEval(boundary_dilation=0.02)` sets
+  the band, `None` leaves boundary IoU out and `mBIoU` reads `-1.0`, and
+  both CLIs take `--no-boundary-iou`. The summary table gains two columns.
+  Rust: `SemanticEval::update` and `update_maps` take the map's height and
+  width, since the band needs the shape; `ClassScores` and `SemanticScores`
+  gain `dice` and `mdice`; `metrics::semantic::boundary` holds the kernel.
 - **Warning categories.** Every Python warning hotcoco emits is now one of four
   subclasses of `HotcocoWarning`, a `UserWarning` subclass, all exported from the
   top level, so a filter can name its kind instead of matching its text.

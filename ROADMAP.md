@@ -68,11 +68,6 @@ enough to verify against exists, the same bar every other family clears.
   helper that returns those two as frames, pandas optional, the way sklearn's
   `classification_report(output_dict=True)` is used. The headline `metrics`
   stay a dict and `curves` stay arrays; neither is a table.
-- **Dice and boundary IoU** for the semantic family, if asked for. Dice is the
-  same confusion matrix read differently (`2·IoU / (1 + IoU)` per class), the
-  convention of medical segmentation. Boundary IoU restricts IoU to a band
-  along each mask's contour and needs an erosion primitive and detectron2's
-  `SemSegEvaluator` as the reference.
 - **CrowdPose** — crowded-scene keypoint evaluation with the modified OKS
   crowd factor.
 - **Per-sequence video breakdowns** — per-clip metric trends, following the

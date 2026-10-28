@@ -321,7 +321,9 @@ the arrays across images, then hand the total to `mean_iou`.
 
 ### `mean_iou`
 
-mIoU, fwIoU, mAcc, aAcc, and the per-class pair from a confusion matrix.
+mIoU, fwIoU, mAcc, aAcc, mDice, and the per-class scores from a confusion
+matrix. Boundary IoU is not a function of the matrix; `SemanticEval` computes
+it from the maps.
 
 === "Python"
 
@@ -338,12 +340,12 @@ mIoU, fwIoU, mAcc, aAcc, and the per-class pair from a confusion matrix.
 
 Takes a square integer array as `pixel_confusion` and
 `SemanticEval.confusion()` produce it and returns
-`{"mIoU", "fwIoU", "mAcc", "aAcc", "IoU": [...], "Acc": [...]}`, the lists
-by class id. mmsegmentation's conventions: a class on neither side has no
-IoU, a class with no ground truth has no accuracy, and either is `-1.0` and
-left out of its mean; a class predicted but never in the ground truth scores
-IoU `0` and counts toward `mIoU`. The [semantic guide](../guide/semantic.md#what-miou-measures)
-has the formulas.
+`{"mIoU", "fwIoU", "mAcc", "aAcc", "mDice", "IoU": [...], "Acc": [...], "Dice": [...]}`,
+the lists by class id. mmsegmentation's conventions: a class on neither side
+has no IoU or Dice, a class with no ground truth has no accuracy, and any of
+those is `-1.0` and left out of its mean; a class predicted but never in the
+ground truth scores IoU `0` and counts toward `mIoU`. The
+[semantic guide](../guide/semantic.md#what-the-metrics-measure) has the formulas.
 
 ```python
 >>> metrics.mean_iou([[3, 1], [0, 2]])["mIoU"]

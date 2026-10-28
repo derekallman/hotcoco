@@ -668,7 +668,10 @@ def cmd_semantic_eval(args):
 
     with _family_errors(args):
         ev = semantic.SemanticEval(
-            _semantic_classes(args.classes), ignore_index=args.ignore_index, reduce_zero_label=args.reduce_zero_label
+            _semantic_classes(args.classes),
+            ignore_index=args.ignore_index,
+            reduce_zero_label=args.reduce_zero_label,
+            boundary_dilation=None if args.no_boundary_iou else 0.02,
         )
         with _maybe_spinner("Evaluating label maps...", args.json), Timer() as t:
             n = ev.update_folders(args.gt, args.pred)
@@ -1145,10 +1148,10 @@ def main():
 
     semantic_parser = subparsers.add_parser(
         "semantic",
-        help="semantic segmentation metrics (mIoU, fwIoU, mAcc, aAcc)",
+        help="semantic segmentation metrics (mIoU, fwIoU, mAcc, aAcc, mDice, boundary IoU)",
         description=(
-            "Semantic segmentation metrics. `coco semantic eval` scores mIoU, fwIoU, mAcc, and aAcc "
-            "against mmsegmentation's protocol."
+            "Semantic segmentation metrics. `coco semantic eval` scores mIoU, fwIoU, mAcc, aAcc, and mDice "
+            "against mmsegmentation's protocol, and boundary IoU against its paper's."
         ),
     )
     semantic_sub = semantic_parser.add_subparsers(dest="semantic_command", metavar="<command>")
@@ -1157,9 +1160,9 @@ def main():
         parents=[_json_parent],
         help="evaluate predicted label maps against ground truth",
         description=(
-            "Compute mIoU, fwIoU, mAcc, and aAcc from two folders of PNG label maps, the files at the "
-            "top of each folder paired by name — 8- or 16-bit grayscale, or palette images whose index "
-            "is the class, as ADE20K and VOC store them."
+            "Compute mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU from two folders of PNG label maps, "
+            "the files at the top of each folder paired by name — 8- or 16-bit grayscale, or palette images "
+            "whose index is the class, as ADE20K and VOC store them."
         ),
         epilog=textwrap.dedent("""\
             examples:
@@ -1189,6 +1192,12 @@ def main():
         dest="reduce_zero_label",
         action="store_true",
         help="mmseg's rule for files with 'other' at 0 (ADE20K): 0 is ignored, other labels shift down by one",
+    )
+    semantic_eval_parser.add_argument(
+        "--no-boundary-iou",
+        dest="no_boundary_iou",
+        action="store_true",
+        help="leave boundary IoU out (mBIoU reads -1.0); the band is 2%% of the image diagonal otherwise",
     )
 
     healthcheck_parser = subparsers.add_parser(
