@@ -8,6 +8,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::{Shell, generate};
 use hotcoco::metrics::semantic::boundary::DEFAULT_DILATION_RATIO;
 use hotcoco::params::IouType;
+use hotcoco::semantic::FolderPairing;
 use hotcoco::{COCO, COCOeval, PanopticDataset, PanopticEval, SemanticEval};
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -164,6 +165,18 @@ struct SemanticArgs {
     /// Leave boundary IoU out (mBIoU reads -1.0); the band is 2% of the image diagonal otherwise
     #[arg(long)]
     no_boundary_iou: bool,
+
+    /// Read the subfolders of --gt and --pred too (Cityscapes keeps a folder per city)
+    #[arg(long)]
+    recursive: bool,
+
+    /// What a ground-truth file's name ends in; the rest of the name is its key
+    #[arg(long, default_value = ".png")]
+    gt_suffix: String,
+
+    /// What a prediction's name ends in; its key must match a ground-truth file's
+    #[arg(long, default_value = ".png")]
+    pred_suffix: String,
 
     /// Write the results (the six means, every class with its counts) to a JSON file
     #[arg(long, short)]
@@ -373,8 +386,13 @@ fn run_semantic(args: SemanticArgs) -> Result<(), Box<dyn std::error::Error>> {
     .reduce_zero_label(args.reduce_zero_label)
     .boundary_dilation((!args.no_boundary_iou).then_some(DEFAULT_DILATION_RATIO));
 
+    let pairing = FolderPairing {
+        recursive: args.recursive,
+        gt_suffix: args.gt_suffix,
+        pred_suffix: args.pred_suffix,
+    };
     let n = timed_eval("Evaluating label maps...", "label maps", || {
-        ev.update_folders(&args.gt, &args.pred)
+        ev.update_folders(&args.gt, &args.pred, &pairing)
     })?;
     let _ = writeln!(stderr(), "{DIM}{n} label-map pairs{RESET}");
     ev.summarize();

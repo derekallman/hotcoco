@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use hotcoco::Provenance;
 use hotcoco::metrics::is_computed;
-use hotcoco::semantic::{METRIC_NAMES, SemanticEval};
+use hotcoco::semantic::{FolderPairing, METRIC_NAMES, SemanticEval};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -549,7 +549,11 @@ fn folders_pair_by_file_name() {
     std::fs::write(gt_dir.join("notes.txt"), "ignored").unwrap();
 
     let mut ev = SemanticEval::new(2);
-    assert_eq!(ev.update_folders(&gt_dir, &pred_dir).unwrap(), 2);
+    assert_eq!(
+        ev.update_folders(&gt_dir, &pred_dir, &FolderPairing::default())
+            .unwrap(),
+        2
+    );
     let mut by_array = SemanticEval::new(2);
     by_array
         .update(&[0u8, 0, 1, 255], &[0u8, 1, 1, 1], 1, 4)
@@ -565,7 +569,7 @@ fn folders_pair_by_file_name() {
         png::ColorType::Grayscale,
     );
     let err = SemanticEval::new(2)
-        .update_folders(&gt_dir, &pred_dir)
+        .update_folders(&gt_dir, &pred_dir, &FolderPairing::default())
         .unwrap_err()
         .to_string();
     assert!(
@@ -582,7 +586,7 @@ fn folders_pair_by_file_name() {
     );
     let mut fresh = SemanticEval::new(2);
     let err = fresh
-        .update_folders(&gt_dir, &pred_dir)
+        .update_folders(&gt_dir, &pred_dir, &FolderPairing::default())
         .unwrap_err()
         .to_string();
     assert!(err.contains("b.png") && err.contains("label 9"), "{err}");
@@ -591,6 +595,100 @@ fn folders_pair_by_file_name() {
 
 fn write_gray_png(path: &std::path::Path, data: &[u8]) {
     write_png(path, data, png::ColorType::Grayscale);
+}
+
+/// Cityscapes' layout: a folder per city, several files per frame telling
+/// each other apart by suffix, and the predictions flat under the image's
+/// name.
+#[test]
+fn folders_pair_recursively_by_stem_and_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let gt = dir.path().join("gtFine").join("val");
+    let pred = dir.path().join("preds");
+    for city in ["aachen", "bremen"] {
+        std::fs::create_dir_all(gt.join(city)).unwrap();
+    }
+    std::fs::create_dir_all(&pred).unwrap();
+    let label = "_gtFine_labelTrainIds.png";
+    let image = "_leftImg8bit.png";
+    write_gray_png(
+        &gt.join("aachen")
+            .join(format!("aachen_000000_000019{label}")),
+        &[0, 0, 1, 255],
+    );
+    // Another file of the frame: the wrong suffix, and not a label map.
+    write_gray_png(
+        &gt.join("aachen")
+            .join("aachen_000000_000019_gtFine_color.png"),
+        &[9, 9, 9, 9],
+    );
+    write_gray_png(
+        &gt.join("bremen")
+            .join(format!("bremen_000001_000019{label}")),
+        &[1, 1, 1, 1],
+    );
+    write_gray_png(
+        &pred.join(format!("aachen_000000_000019{image}")),
+        &[0, 1, 1, 1],
+    );
+    write_gray_png(
+        &pred.join(format!("bremen_000001_000019{image}")),
+        &[1, 1, 0, 1],
+    );
+
+    let pairing = FolderPairing {
+        recursive: true,
+        gt_suffix: label.into(),
+        pred_suffix: image.into(),
+    };
+    let mut ev = SemanticEval::new(2);
+    assert_eq!(ev.update_folders(&gt, &pred, &pairing).unwrap(), 2);
+    let mut by_array = SemanticEval::new(2);
+    by_array
+        .update(&[0u8, 0, 1, 255], &[0u8, 1, 1, 1], 1, 4)
+        .unwrap();
+    by_array
+        .update(&[1u8, 1, 1, 1], &[1u8, 1, 0, 1], 1, 4)
+        .unwrap();
+    assert_eq!(ev, by_array);
+
+    // Without `recursive` the city folders are not entered.
+    let flat = FolderPairing {
+        recursive: false,
+        ..pairing.clone()
+    };
+    let err = SemanticEval::new(2)
+        .update_folders(&gt, &pred, &flat)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("no files ending in"), "{err}");
+
+    // Two predictions with one stem are ambiguous, wherever they sit.
+    std::fs::create_dir_all(pred.join("again")).unwrap();
+    write_gray_png(
+        &pred
+            .join("again")
+            .join(format!("aachen_000000_000019{image}")),
+        &[0, 1, 1, 1],
+    );
+    let err = SemanticEval::new(2)
+        .update_folders(&gt, &pred, &pairing)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("two prediction files") && err.contains("aachen_000000_000019"),
+        "{err}"
+    );
+
+    // The default pairing is the `.png` files at the top of each folder, by name.
+    assert_eq!(
+        FolderPairing::default(),
+        FolderPairing {
+            recursive: false,
+            gt_suffix: ".png".into(),
+            pred_suffix: ".png".into()
+        }
+    );
 }
 
 /// A label error names both files and its side, so a ground-truth file with

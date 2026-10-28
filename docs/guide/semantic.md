@@ -119,16 +119,32 @@ integers, and the order they are added in cannot change the sum.
 ## Evaluate saved predictions
 
 A folder of predicted PNG files, named like the ground truth's, evaluates in
-one call, reading pairs in parallel. The PNG files at the top of each folder
-are paired by file name; a dataset laid out otherwise (Cityscapes keeps a
-folder per city and several PNG files per frame) goes through `update_png`
-on the pairs you choose.
+one call, reading pairs in parallel. By default the PNG files at the top of
+each folder are paired by file name:
 
 ```python
 ev = semantic.SemanticEval(150, reduce_zero_label=True)       # ADE20K
 ev.update_folders("ADEChallengeData2016/annotations/validation", "predictions/")
 ev.report()["metrics"]["mIoU"]
 ```
+
+Cityscapes keeps a folder per city and several files per frame, told apart by
+suffix, and predictions are usually saved flat under the image's name. Three
+options pair that layout: `recursive` walks the subfolders, and the suffixes
+say what to strip from each side's name to get the key the two sides share.
+A prediction is found wherever it sits in its tree, so nested ground truth
+pairs with flat predictions; two predictions with one key raise `ValueError`.
+
+```python
+ev = semantic.SemanticEval(19)
+ev.update_folders(
+    "gtFine/val", "predictions/",
+    recursive=True, gt_suffix="_gtFine_labelTrainIds.png", pred_suffix="_leftImg8bit.png",
+)
+```
+
+This is mmsegmentation's `seg_map_suffix` and `img_suffix` rule. A pairing
+no suffix expresses goes through `update_png` on the pairs you choose.
 
 A label-map PNG is single-channel: 8-bit grayscale (Cityscapes
 `labelTrainIds`, ADE20K), 16-bit grayscale for more than 256 classes, or a

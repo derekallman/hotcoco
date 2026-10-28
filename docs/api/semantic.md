@@ -59,7 +59,7 @@ signatures and return shapes.
 |--------|---------|-------------|
 | `update(gt, pred)` | `None` | Count one ground-truth map against one prediction: integer arrays of the same shape, `(H, W)` or `(N, H, W)`, any integer dtype; the last two axes are the map. `ValueError` on a shape mismatch or a label out of range; nothing from the pair is counted then |
 | `update_png(gt, pred)` | `None` | Count one pair of PNG label maps — 8- or 16-bit grayscale, or a palette image whose index is the class. `OSError` for a file that cannot be read; `ValueError` for one that is not a label map, two maps of different sizes, or a label out of range |
-| `update_folders(gt_folder, pred_folder)` | `int` | Count every PNG at the top of `gt_folder` against the file of the same name in `pred_folder`, in parallel; returns the pairs counted. `OSError` for a folder that cannot be listed, `ValueError` on a missing prediction, or whatever `update_png` raises on the first pair it rejects; nothing is counted then |
+| `update_folders(gt_folder, pred_folder, *, recursive=False, gt_suffix=".png", pred_suffix=".png")` | `int` | Count every ground-truth file under `gt_folder` against its prediction under `pred_folder`, in parallel; returns the pairs counted. A ground-truth file is one at the top of the folder, or anywhere below it with `recursive`, whose name ends in `gt_suffix`; its key is the name minus the suffix, and its prediction is `key + pred_suffix` anywhere in the prediction tree under the same walk. The defaults pair the `.png` files at the top of each folder by name. `OSError` for a folder that cannot be listed; `ValueError` if no ground-truth file ends in the suffix, if one has no prediction, or if two predictions share a key; or whatever `update_png` raises on the first pair it rejects. Nothing is counted then |
 | `merge(other)` | `None` | Add another evaluator's counts — the shards of a distributed run. `ValueError` if it was built with different classes or options, `boundary_dilation` included |
 | `confusion()` | `ndarray[uint64]` | The `(num_classes, num_classes)` matrix behind every number but boundary IoU: row the ground-truth class, column the predicted class |
 | `summarize()` | `None` | Print one row per class with IoU, Acc, Dice, and BIoU in percent, then the six means. Before anything is counted, prints nothing and emits a `CallOrderWarning` |
@@ -80,7 +80,9 @@ several maps one after another), `update_maps` takes two `LabelMap`s of
 run-time width, `results()` returns a `SemanticResults` with `to_json()` and
 `save()`, `confusion()` returns the `metrics::semantic::PixelConfusion`,
 `boundary()` the `BoundaryCounts` beside it, `boundary_scores()` their
-`BoundaryScores`, and `summary_lines()` is spelled `summarize_lines()`.
+`BoundaryScores`, `update_folders` takes the three pairing options as a
+`semantic::FolderPairing` (`Default` is the Python defaults), and
+`summary_lines()` is spelled `summarize_lines()`.
 
 ### `results()`
 

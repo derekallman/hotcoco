@@ -29,6 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Rust: `SemanticEval::update` and `update_maps` take the map's height and
   width, since the band needs the shape; `ClassScores` and `SemanticScores`
   gain `dice` and `mdice`; `metrics::semantic::boundary` holds the kernel.
+- **`SemanticEval.update_folders` pairs nested layouts.** Three keyword
+  options, `recursive`, `gt_suffix`, and `pred_suffix`: a ground-truth file
+  is one under the folder — at its top, or anywhere below it with
+  `recursive` — whose name ends in the suffix, its key is the name minus the
+  suffix, and its prediction is `key + pred_suffix` wherever it sits in the
+  prediction tree, so Cityscapes' folder per city and several files per
+  frame pair with flat predictions in one call. Two predictions with one key
+  raise `ValueError`. The defaults are the old behavior exactly. Both CLIs
+  take `--recursive`, `--gt-suffix`, and `--pred-suffix`. Rust: the options
+  are a `semantic::FolderPairing`, which `update_folders` now takes.
 - **Warning categories.** Every Python warning hotcoco emits is now one of four
   subclasses of `HotcocoWarning`, a `UserWarning` subclass, all exported from the
   top level, so a filter can name its kind instead of matching its text.

@@ -187,6 +187,30 @@ def test_png_folders_match_arrays(tmp_path, mode):
     assert ev.results()["mIoU"] == evaluator(case).results()["mIoU"]
 
 
+def test_png_folders_pair_like_cityscapes(tmp_path):
+    """A folder per city, several files per frame told apart by suffix, and
+    flat predictions saved under the image's name, paired by the stem."""
+    case = next(c for c in CASES if c["ignore_index"] == 255 and not c["reduce_zero_label"] and len(c["gt"]) > 1)
+    gt_dir, pred_dir = tmp_path / "gtFine" / "val", tmp_path / "preds"
+    pred_dir.mkdir()
+    for i, (gt, pred) in enumerate(zip(case["gt"], case["pred"])):
+        city = gt_dir / f"city{i}"
+        city.mkdir(parents=True)
+        Image.fromarray(np.array(gt, dtype=np.uint8)).save(city / f"city{i}_{i:06d}_gtFine_labelTrainIds.png")
+        Image.fromarray(np.array(gt, dtype=np.uint8)).save(city / f"city{i}_{i:06d}_gtFine_instanceIds.png")
+        Image.fromarray(np.array(pred, dtype=np.uint8)).save(pred_dir / f"city{i}_{i:06d}_leftImg8bit.png")
+    suffixes = dict(gt_suffix="_gtFine_labelTrainIds.png", pred_suffix="_leftImg8bit.png")
+    ev = semantic.SemanticEval(case["num_classes"])
+    assert ev.update_folders(gt_dir, pred_dir, recursive=True, **suffixes) == len(case["gt"])
+    assert ev.results() == evaluator(case).results()
+    with pytest.raises(ValueError, match="no files ending in"):
+        semantic.SemanticEval(case["num_classes"]).update_folders(gt_dir, pred_dir, **suffixes)
+    (pred_dir / "again").mkdir()
+    Image.fromarray(np.zeros((2, 2), dtype=np.uint8)).save(pred_dir / "again" / "city0_000000_leftImg8bit.png")
+    with pytest.raises(ValueError, match="two prediction files"):
+        semantic.SemanticEval(case["num_classes"]).update_folders(gt_dir, pred_dir, recursive=True, **suffixes)
+
+
 def test_metrics_functions_agree_with_the_evaluator():
     case = CASES[0]
     total = np.zeros((case["num_classes"],) * 2, dtype=np.uint64)

@@ -14,7 +14,7 @@
 //! use hotcoco::semantic::SemanticEval;
 //! # fn main() -> hotcoco::error::Result<()> {
 //! let mut ev = SemanticEval::new(150).reduce_zero_label(true);   // ADE20K
-//! ev.update_folders(Path::new("annotations/validation"), Path::new("predictions"))?;
+//! ev.update_folders(Path::new("annotations/validation"), Path::new("predictions"), &Default::default())?;
 //! ev.summarize();                            // per-class scores, then the means
 //! let miou = ev.scores().miou;
 //! # Ok(())
@@ -26,13 +26,13 @@
 //! A training loop has the maps in memory: [`SemanticEval::update`] takes a
 //! ground-truth map and a prediction of the same size, any integer type,
 //! with the map's height and width, as often as there are batches. Saved
-//! predictions are PNG files beside the
-//! ground truth's: [`SemanticEval::update_folders`] pairs the PNG files at
-//! the top of the two folders by file name and reads both: 8- or 16-bit
-//! grayscale, or a palette image whose index is the class. A dataset laid
-//! out otherwise (Cityscapes keeps a folder per city and several PNG files
-//! per frame) goes through [`SemanticEval::update_png`] on the pairs the
-//! caller chooses.
+//! predictions are PNG files: [`SemanticEval::update_folders`] pairs the
+//! ground-truth files with the predictions as a [`FolderPairing`] says — by
+//! name at the top of the two folders by default, or by stem through
+//! subfolders and suffixes for a layout such as Cityscapes' — and reads
+//! both: 8- or 16-bit grayscale, or a palette image whose index is the
+//! class. Any other pairing goes through [`SemanticEval::update_png`] on the
+//! pairs the caller chooses.
 //! Either way the state is one `num_classes × num_classes` matrix, so two
 //! evaluators over disjoint shards [`merge`](SemanticEval::merge) into the
 //! whole-split result.
@@ -478,22 +478,25 @@ impl SemanticEval {
         Ok(())
     }
 
-    /// Count every PNG in `gt_folder` against the file of the same name in
-    /// `pred_folder`, in parallel. Returns how many pairs were counted.
+    /// Count every ground-truth file under `gt_folder` against its prediction
+    /// under `pred_folder`, paired as `pairing` says, in parallel. Returns
+    /// how many pairs were counted.
     ///
     /// # Errors
     ///
-    /// If the ground-truth folder has no PNG files, if a ground-truth file
-    /// has no prediction of the same name (every missing name is listed, up
-    /// to five), or on the first pair [`update_png`](Self::update_png) would
-    /// reject. Nothing is counted on an error.
+    /// If the ground-truth folder has no file ending in the suffix, if a
+    /// ground-truth file has no prediction (every missing one is listed, up
+    /// to five), if two predictions share a name, or on the first pair
+    /// [`update_png`](Self::update_png) would reject. Nothing is counted on
+    /// an error.
     pub fn update_folders(
         &mut self,
         gt_folder: &Path,
         pred_folder: &Path,
+        pairing: &FolderPairing,
     ) -> crate::error::Result<usize> {
         self.check_options()?;
-        let pairs = png_pairs(gt_folder, pred_folder)?;
+        let pairs = png_pairs(gt_folder, pred_folder, pairing)?;
         let fresh = || Tally::new(self.num_classes(), self.tally.boundary_dilation());
         let rules = self.rules;
         // One tally per rayon split rather than per image, so the reduction
@@ -719,48 +722,116 @@ impl SemanticEval {
     }
 }
 
-/// The PNG files of `gt_folder`, sorted by name, each paired with the file
-/// of the same name in `pred_folder`.
+/// How [`SemanticEval::update_folders`] pairs a ground-truth file with its
+/// prediction. A ground-truth file is one under `gt_folder` — at its top, or
+/// anywhere below it with `recursive` — whose name ends in `gt_suffix`; its
+/// key is the name with the suffix removed, and its prediction is the file
+/// named `key + pred_suffix` under `pred_folder`, found by the same walk,
+/// wherever it sits. Suffixes compare without regard to case, so `.PNG`
+/// pairs with `.png`. The default pairs the `.png` files at the top of each
+/// folder by name.
+///
+/// Cityscapes keeps a folder per city and several files per frame, so its
+/// ground truth is `recursive: true` with `gt_suffix:
+/// "_gtFine_labelTrainIds.png"`, and `pred_suffix` is whatever the
+/// predictions were saved under — mmsegmentation's `seg_map_suffix` and
+/// `img_suffix`, the same rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderPairing {
+    /// Walk the folders' subfolders too.
+    pub recursive: bool,
+    /// What a ground-truth file's name ends in.
+    pub gt_suffix: String,
+    /// What its prediction's name ends in.
+    pub pred_suffix: String,
+}
+
+impl Default for FolderPairing {
+    fn default() -> Self {
+        FolderPairing {
+            recursive: false,
+            gt_suffix: ".png".into(),
+            pred_suffix: ".png".into(),
+        }
+    }
+}
+
+/// The files of `folder` — at its top, or anywhere below it with `recursive`.
+fn list_files(folder: &Path, recursive: bool, side: &str) -> crate::error::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut folders = vec![folder.to_path_buf()];
+    while let Some(dir) = folders.pop() {
+        let entries = std::fs::read_dir(&dir).map_err(|e| {
+            Error::io(
+                e,
+                format_args!("cannot read {side} folder {}", dir.display()),
+            )
+        })?;
+        for path in entries.flatten().map(|entry| entry.path()) {
+            if path.is_dir() {
+                if recursive {
+                    folders.push(path);
+                }
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// The ground-truth files under `gt_folder`, each paired with its prediction
+/// under `pred_folder` as `pairing` says, ordered by key.
 fn png_pairs(
     gt_folder: &Path,
     pred_folder: &Path,
+    pairing: &FolderPairing,
 ) -> crate::error::Result<Vec<(PathBuf, PathBuf)>> {
-    let is_png = |p: &Path| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"));
-    let mut gts: Vec<PathBuf> = std::fs::read_dir(gt_folder)
-        .map_err(|e| {
-            Error::io(
-                e,
-                format_args!("cannot read ground-truth folder {}", gt_folder.display()),
-            )
-        })?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter(|p| is_png(p))
+    let (gt_suffix, pred_suffix) = (
+        pairing.gt_suffix.to_lowercase(),
+        pairing.pred_suffix.to_lowercase(),
+    );
+    // A file's key: its name without the suffix, lowercased on both sides;
+    // `None` for a name that does not end in the suffix.
+    let key = |p: &Path, suffix: &str| -> Option<String> {
+        let name = p.file_name()?.to_string_lossy().to_lowercase();
+        name.strip_suffix(suffix).map(str::to_owned)
+    };
+    let mut gts: Vec<(String, PathBuf)> = list_files(gt_folder, pairing.recursive, "ground-truth")?
+        .into_iter()
+        .filter_map(|p| key(&p, &gt_suffix).map(|k| (k, p)))
         .collect();
     gts.sort();
     if gts.is_empty() {
         return Err(Error::InvalidInput(format!(
-            "no PNG files in ground-truth folder {}",
-            gt_folder.display()
+            "no files ending in {} in ground-truth folder {}{}",
+            pairing.gt_suffix,
+            gt_folder.display(),
+            if pairing.recursive {
+                ""
+            } else {
+                " (its subfolders are not read without `recursive`)"
+            }
         )));
     }
-    // Names compare case-insensitively on both sides, since the extension
-    // filter above accepts `.PNG` as well as `.png`.
-    let key = |p: &Path| p.file_name().map(|n| n.to_string_lossy().to_lowercase());
-    let pred_names: BTreeMap<String, PathBuf> = std::fs::read_dir(pred_folder)
-        .map_err(|e| {
-            Error::io(
-                e,
-                format_args!("cannot read prediction folder {}", pred_folder.display()),
-            )
-        })?
-        .filter_map(|entry| entry.ok().map(|e| e.path()))
-        .filter_map(|p| key(&p).map(|k| (k, p)))
-        .collect();
+    let mut preds: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for p in list_files(pred_folder, pairing.recursive, "prediction")? {
+        let Some(k) = key(&p, &pred_suffix) else {
+            continue;
+        };
+        if let Some(first) = preds.insert(k.clone(), p.clone()) {
+            return Err(Error::InvalidInput(format!(
+                "two prediction files have the name {k}{}: {} and {}",
+                pairing.pred_suffix,
+                first.display(),
+                p.display()
+            )));
+        }
+    }
     let mut pairs = Vec::with_capacity(gts.len());
     let mut missing = Vec::new();
-    for gt in gts {
-        let name = key(&gt).expect("a read_dir entry has a name");
-        match pred_names.get(&name) {
+    for (k, gt) in gts {
+        match preds.get(&k) {
             Some(pred) => pairs.push((gt, pred.clone())),
             None => missing.push(
                 gt.file_name()
@@ -783,8 +854,9 @@ fn png_pairs(
             String::new()
         };
         return Err(Error::InvalidInput(format!(
-            "{} ground-truth file(s) have no prediction of the same name in {}: {shown}{more}",
+            "{} ground-truth file(s) have no prediction ending in {} in {}: {shown}{more}",
             missing.len(),
+            pairing.pred_suffix,
             pred_folder.display()
         )));
     }

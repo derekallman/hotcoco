@@ -674,7 +674,9 @@ def cmd_semantic_eval(args):
             boundary_dilation=None if args.no_boundary_iou else 0.02,
         )
         with _maybe_spinner("Evaluating label maps...", args.json), Timer() as t:
-            n = ev.update_folders(args.gt, args.pred)
+            n = ev.update_folders(
+                args.gt, args.pred, recursive=args.recursive, gt_suffix=args.gt_suffix, pred_suffix=args.pred_suffix
+            )
     return _family_result(args, ev, f"{n:,} label maps", t.elapsed)
 
 
@@ -1160,15 +1162,18 @@ def main():
         parents=[_json_parent],
         help="evaluate predicted label maps against ground truth",
         description=(
-            "Compute mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU from two folders of PNG label maps, "
-            "the files at the top of each folder paired by name — 8- or 16-bit grayscale, or palette images "
-            "whose index is the class, as ADE20K and VOC store them."
+            "Compute mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU from two folders of PNG label maps — "
+            "8- or 16-bit grayscale, or palette images whose index is the class, as ADE20K and VOC store "
+            "them. The files at the top of each folder are paired by name; --recursive, --gt-suffix, and "
+            "--pred-suffix pair a nested layout such as Cityscapes' by stem."
         ),
         epilog=textwrap.dedent("""\
             examples:
               coco semantic eval --gt gt/ --pred preds/ --classes 19
               coco semantic eval --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label
               coco semantic eval --gt gt/ --pred pred/ --classes names.txt --json
+              coco semantic eval --gt gtFine/val --pred preds/ --classes 19 --recursive \\
+                  --gt-suffix _gtFine_labelTrainIds.png --pred-suffix _leftImg8bit.png
         """),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1198,6 +1203,25 @@ def main():
         dest="no_boundary_iou",
         action="store_true",
         help="leave boundary IoU out (mBIoU reads -1.0); the band is 2%% of the image diagonal otherwise",
+    )
+    semantic_eval_parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="read the subfolders of --gt and --pred too (Cityscapes keeps a folder per city)",
+    )
+    semantic_eval_parser.add_argument(
+        "--gt-suffix",
+        dest="gt_suffix",
+        default=".png",
+        metavar="SUFFIX",
+        help="what a ground-truth file's name ends in (default: .png); the rest of the name is its key",
+    )
+    semantic_eval_parser.add_argument(
+        "--pred-suffix",
+        dest="pred_suffix",
+        default=".png",
+        metavar="SUFFIX",
+        help="what a prediction's name ends in (default: .png); its key must match a ground-truth file's",
     )
 
     healthcheck_parser = subparsers.add_parser(

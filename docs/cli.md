@@ -388,7 +388,8 @@ coco panoptic eval --gt gt.json --pred pred.json --gt-folder gt_png/ --pred-fold
 Semantic segmentation — mIoU, fwIoU, mAcc, aAcc, mDice, and boundary IoU —
 from two folders of PNG label maps paired by file name, as mmsegmentation's
 `IoUMetric` computes the first five. `--no-boundary-iou` leaves the last out.
-See the [semantic guide](guide/semantic.md).
+`--recursive`, `--gt-suffix`, and `--pred-suffix` pair a nested layout such
+as Cityscapes' by stem. See the [semantic guide](guide/semantic.md).
 
 ```bash
 coco semantic eval --gt <dir> --pred <dir> --classes <N | names.txt> [options]
@@ -401,12 +402,18 @@ coco semantic eval --gt <dir> --pred <dir> --classes <N | names.txt> [options]
 | `--classes` | Number of classes, or a text file with one class name per line | *required* |
 | `--ignore-index N` | Ground truth label of unlabeled pixels; `-1` counts every pixel | `255` |
 | `--reduce-zero-label` | mmseg's rule for files with "other" at `0` (ADE20K): `0` is ignored, other labels shift down by one | off |
+| `--no-boundary-iou` | Leave boundary IoU out; `mBIoU` reads `-1.0` | off |
+| `--recursive` | Read the subfolders of `--gt` and `--pred` too | off |
+| `--gt-suffix SUFFIX` | What a ground-truth file's name ends in; the rest is its key | `.png` |
+| `--pred-suffix SUFFIX` | What a prediction's name ends in; its key must match a ground-truth file's | `.png` |
 | `--json` | `results()` plus the `report` as JSON | off |
 
 ```bash
 coco semantic eval --gt gt/ --pred preds/ --classes 19
 coco semantic eval --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label
 coco semantic eval --gt gt/ --pred pred/ --classes names.txt --json
+coco semantic eval --gt gtFine/val --pred preds/ --classes 19 --recursive \
+    --gt-suffix _gtFine_labelTrainIds.png --pred-suffix _leftImg8bit.png
 ```
 
 ---
@@ -628,6 +635,8 @@ The semantic family, with the same flags as [`coco semantic eval`](#coco-semanti
 ```bash
 coco-eval semantic --gt gt/ --pred preds/ --classes 19
 coco-eval semantic --gt annotations/validation --pred preds/ --classes 150 --reduce-zero-label -o report.json
+coco-eval semantic --gt gtFine/val --pred preds/ --classes 19 --recursive \
+    --gt-suffix _gtFine_labelTrainIds.png --pred-suffix _leftImg8bit.png
 ```
 
 Prints the per-class table and a `stats:` line with the six means; `-o` writes

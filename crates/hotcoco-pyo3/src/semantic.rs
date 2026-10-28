@@ -13,7 +13,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use hotcoco_core::metrics::semantic::boundary::DEFAULT_DILATION_RATIO;
-use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
+use hotcoco_core::semantic::{FolderPairing, METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
 use crate::{
@@ -146,20 +146,41 @@ different sizes, or a label out of range."]
         py.detach(|| inner.update_png(&gt, &pred)).map_err(to_pyerr)
     }
 
-    #[doc = "Count every PNG in ``gt_folder`` against the file of the same name in
-``pred_folder``, in parallel without the GIL. Returns how many pairs were
-counted. Raises ``OSError`` for a folder that cannot be listed,
-``ValueError`` if a ground-truth file has no prediction of the same name, or
-whatever ``update_png`` would raise on the first pair it rejects; nothing is
-counted then."]
+    #[doc = "Count every ground-truth file under ``gt_folder`` against its prediction
+under ``pred_folder``, in parallel without the GIL. Returns how many pairs
+were counted.
+
+A ground-truth file is one at the top of ``gt_folder`` — or anywhere below
+it with ``recursive`` — whose name ends in ``gt_suffix``; its key is the name
+with the suffix removed, and its prediction is the file named
+``key + pred_suffix`` under ``pred_folder``, found by the same walk, wherever
+it sits. The defaults pair the ``.png`` files at the top of each folder by
+name. Cityscapes keeps a folder per city and several files per frame::
+
+    ev.update_folders(\"gtFine/val\", \"preds\", recursive=True,
+                      gt_suffix=\"_gtFine_labelTrainIds.png\", pred_suffix=\"_leftImg8bit.png\")
+
+Raises ``OSError`` for a folder that cannot be listed; ``ValueError`` if no
+ground-truth file ends in the suffix, if one has no prediction, or if two
+predictions share a key; or whatever ``update_png`` would raise on the first
+pair it rejects. Nothing is counted then."]
+    #[pyo3(signature = (gt_folder, pred_folder, *, recursive=false, gt_suffix=".png".into(), pred_suffix=".png".into()))]
     fn update_folders(
         &mut self,
         py: Python<'_>,
         gt_folder: PathBuf,
         pred_folder: PathBuf,
+        recursive: bool,
+        gt_suffix: String,
+        pred_suffix: String,
     ) -> PyResult<usize> {
+        let pairing = FolderPairing {
+            recursive,
+            gt_suffix,
+            pred_suffix,
+        };
         let inner = &mut self.inner;
-        py.detach(|| inner.update_folders(&gt_folder, &pred_folder))
+        py.detach(|| inner.update_folders(&gt_folder, &pred_folder, &pairing))
             .map_err(to_pyerr)
     }
 
