@@ -114,11 +114,9 @@ Sum the counts, then divide:
 
 ```python
 def precision_recall_f1(tp, fp, fn):
-    """-1.0 where a ratio has nothing to divide, hotcoco's "not computed"."""
-
-    def ratio(num, den):
-        return float(num / den) if den else -1.0
-
+    """Each ratio is the mean of an indicator over what it divides by, so
+    `mean_or_missing` gives `-1.0`, hotcoco's "not computed", where there is nothing."""
+    ratio = metrics.mean_or_missing
     return ratio(tp, tp + fp), ratio(tp, tp + fn), ratio(2 * tp, 2 * tp + fp + fn)
 
 
@@ -269,7 +267,8 @@ def pq_average(categories, counts):
     """PQ, SQ, and RQ averaged over the categories with something to score."""
     scores = [metrics.panoptic_quality(*counts[c["id"]]) for c in categories]
     scores = [s for s in scores if metrics.is_computed(s[0])]
-    return tuple(np.mean(scores, axis=0).tolist()) if scores else (-1.0, -1.0, -1.0)
+    totals = np.reshape(scores, (-1, 3)).sum(axis=0)  # three zeros when nothing scored
+    return tuple(metrics.mean_or_missing(total, len(scores)) for total in totals)
 ```
 
 ```python

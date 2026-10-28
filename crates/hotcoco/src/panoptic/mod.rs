@@ -113,10 +113,22 @@ pub struct PanopticResult {
     pub pixels: PixelConfusion,
 }
 
-/// One image's matching outcome, by segment id: what [`match_image`]
-/// decided, with the indices it returns turned into the `id` of each
-/// [`SegmentInfo`]. Detection's `evalImgs` is the counterpart. Provisional,
+/// One image's matching outcome, by segment id: the image and its
+/// [`MatchIds`]. Detection's `evalImgs` is the counterpart. Provisional,
 /// like the matcher.
+///
+/// `#[non_exhaustive]`: an output record that callers read.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ImageMatches {
+    pub image_id: u64,
+    #[serde(flatten)]
+    pub matches: MatchIds,
+}
+
+/// What [`match_image`] decided, with the indices it returns turned into the
+/// `id` of each [`SegmentInfo`] — the lists `primitives.match_segments`
+/// returns, and the payload of [`ImageMatches`].
 ///
 /// Every non-crowd ground-truth segment is in `matched` or `missed`; every
 /// predicted segment is in `matched`, `false_positives`, or `ignored`. A
@@ -134,8 +146,7 @@ pub struct PanopticResult {
 /// [`from_indices`](Self::from_indices).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub struct ImageMatches {
-    pub image_id: u64,
+pub struct MatchIds {
     /// `(gt id, pred id, iou)` for every matched pair, in the order their
     /// IoUs are summed: by the ground truth's label in the map, which is its
     /// id in the COCO panoptic format and its position among the image's
@@ -151,11 +162,10 @@ pub struct ImageMatches {
     pub ignored: Vec<u64>,
 }
 
-impl ImageMatches {
-    /// The record of `m`, the indices [`match_image`] returned for `gt` and
-    /// `pred`, by the ids of the entries they point at.
+impl MatchIds {
+    /// `m`, the indices [`match_image`] returned for `gt` and `pred`, by the
+    /// ids of the entries they point at.
     pub fn from_indices(
-        image_id: u64,
         m: &SegmentMatches,
         gt: &[(u32, &SegmentInfo)],
         pred: &[(u32, &SegmentInfo)],
@@ -163,8 +173,7 @@ impl ImageMatches {
         let ids = |side: &[(u32, &SegmentInfo)], idx: &[usize]| -> Vec<u64> {
             idx.iter().map(|&i| side[i].1.id).collect()
         };
-        ImageMatches {
-            image_id,
+        MatchIds {
             matched: m
                 .matched
                 .iter()
@@ -879,6 +888,9 @@ fn eval_image(
     Ok(ImageCounts {
         pq: counts,
         pixels,
-        matches: ImageMatches::from_indices(image_id, &matches, &gt.segments, &pred.segments),
+        matches: ImageMatches {
+            image_id,
+            matches: MatchIds::from_indices(&matches, &gt.segments, &pred.segments),
+        },
     })
 }

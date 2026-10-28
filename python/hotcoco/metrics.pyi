@@ -41,6 +41,10 @@ def mean_iou(confusion: npt.ArrayLike) -> dict[str, Any]:
     """``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc`` and per-class ``IoU``/``Acc`` lists from a square count matrix."""
     ...
 
+def mean_or_missing(total: float, count: int) -> float:
+    """The mean of ``count`` values summing to ``total``, or ``-1.0`` when ``count`` is 0."""
+    ...
+
 def is_computed(v: float) -> bool:
     """Whether a metric value was actually computed (``-1.0`` means "not computed")."""
     ...
@@ -57,6 +61,7 @@ __all__ = [
     "is_computed",
     "is_missing",
     "mean_iou",
+    "mean_or_missing",
     "panoptic_quality",
     "pixel_confusion",
     "precision_recall_curve",

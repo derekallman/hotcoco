@@ -350,6 +350,25 @@ has the formulas.
 0.7083333333333333
 ```
 
+### `mean_or_missing`
+
+```python
+mean_or_missing(total: float, count: int) -> float
+```
+
+The mean of `count` values summing to `total`, or `-1.0` when `count` is 0. This
+is the one producer of the sentinel `is_computed` reads back: every family's means
+go through it, so a composed metric that does too never spells `-1.0` itself. A
+ratio of counts is the mean of an indicator, so precision is
+`mean_or_missing(tp, tp + fp)`.
+
+```python
+>>> metrics.mean_or_missing(1.5, 2)
+0.75
+>>> metrics.mean_or_missing(0.0, 0)
+-1.0
+```
+
 ### `is_computed` and `is_missing`
 
 ```python
@@ -360,7 +379,8 @@ is_missing(v: float) -> bool
 `-1.0` in any metric means "not computed for this configuration" — an area range
 with no ground truth, or a category absent from the split — never a low score.
 `is_missing(v)` is true for that sentinel and `is_computed(v)` is its negation. Use
-them when averaging per-class values so a sentinel does not drag the mean down.
+them when averaging per-class values so a sentinel does not drag the mean down;
+`mean_or_missing` produces the mean of what is left.
 
 ---
 

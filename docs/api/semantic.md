@@ -59,8 +59,8 @@ signatures and return shapes.
 | `update_folders(gt_folder, pred_folder)` | `int` | Count every PNG at the top of `gt_folder` against the file of the same name in `pred_folder`, in parallel; returns the pairs counted. `OSError` for a folder that cannot be listed, `ValueError` on a missing prediction, or whatever `update_png` raises on the first pair it rejects; nothing is counted then |
 | `merge(other)` | `None` | Add another evaluator's counts — the shards of a distributed run. `ValueError` if it was built with different classes or options |
 | `confusion()` | `ndarray[uint64]` | The `(num_classes, num_classes)` matrix behind every number: row the ground-truth class, column the predicted class |
-| `summarize()` | `None` | Print one row per class with IoU and Acc in percent, then the four means |
-| `summary_lines()` | `list[str]` | The same table as strings, without printing |
+| `summarize()` | `None` | Print one row per class with IoU and Acc in percent, then the four means. Before anything is counted, prints nothing and emits a `CallOrderWarning` |
+| `summary_lines()` | `list[str]` | The same table as strings, without printing. Empty, with a `CallOrderWarning`, before anything is counted |
 | `stats` | `list[float]` | The four means as fractions, in `METRIC_NAMES` order; `-1.0` where nothing was counted |
 | `class_names`, `num_classes`, `n_images` | | The configuration and how many updates were counted: one per `update` call, so an `(N, H, W)` batch is one, and one per PNG pair |
 | `results()` | `dict` | The results shape, below |

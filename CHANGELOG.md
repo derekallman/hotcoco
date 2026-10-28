@@ -81,8 +81,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `metrics::counts::score_order` are public, so a caller of
   `greedy_match_masked` can use the thresholds and ranking `COCOeval` does.
 
+- **`metrics.mean_or_missing(total, count)`**, the mean of `count` values
+  summing to `total`, or `-1.0` when `count` is 0 — the one producer of the
+  "not computed" sentinel `metrics.is_computed` reads back, now reachable
+  from Python so a composed metric never spells `-1.0` itself. The
+  build-your-own-metric guide uses it.
+
 ### Changed
 
+- **`CocoEvaluator.accumulate()` and `summarize()` emit a `CallOrderWarning`**
+  when there is nothing to evaluate — no `update()` call, or `accumulate()`
+  skipped — where they printed a `Warning:` line to stdout before.
+  **`PanopticEval.summary_lines()` before `evaluate()`, and
+  `SemanticEval.summarize()` and `summary_lines()` before anything is
+  counted, emit one too**; they were silent, returning an empty list or
+  printing a table of dashes.
+- **Rust: `ImageMatches` is `{ image_id, matches: MatchIds }`**, with the four
+  id lists moved into `MatchIds`, which `primitives.match_segments` builds
+  without an image. JSON output is unchanged (`matches` is flattened). A
+  Rust-visible break, named here because those ship in minors while the crate
+  has no outside dependents.
 - **The Rust library no longer prints loader warnings to stderr.** `COCO::warn`
   only records them for `load_warnings()`; the Python bindings emit them as
   `DatasetWarning` (under Added) and `hotcoco-cli` prints them after a load,
@@ -136,6 +154,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A bool inside a number field of a dict record is a `ValueError`**, as it
+  is from a JSON file, where `true` is not a number: `bbox`, `area`, `score`,
+  `keypoints`, and `obb` of an annotation or a result, and `bbox` of a
+  panoptic segment, read `True` as `1.0` before. `tests/test_input_errors.py`
+  holds the dict and file paths to the same answer.
 - **`getAnnIds(areaRng=...)` and `get_ann_ids(area_rng=...)` exclude the
   range's end points**, as pycocotools' `getAnnIds` does (`lo < area < hi`);
   they included them before. `filter()` and evaluation's area ranges still

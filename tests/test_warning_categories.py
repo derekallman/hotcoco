@@ -25,6 +25,7 @@ from hotcoco import (
     COCO,
     CallOrderWarning,
     COCOeval,
+    CocoEvaluator,
     ConversionWarning,
     DatasetWarning,
     HotcocoWarning,
@@ -37,6 +38,7 @@ PYO3_SRC = WORKSPACE / "crates" / "hotcoco-pyo3" / "src"
 LIB_RS = "crates/hotcoco-pyo3/src/lib.rs"
 PANOPTIC_RS = "crates/hotcoco-pyo3/src/panoptic.rs"
 SEMANTIC_RS = "crates/hotcoco-pyo3/src/semantic.rs"
+INTEGRATIONS_PY = "python/hotcoco/integrations.py"
 
 IMAGES = [{"id": 1, "width": 100, "height": 100}]
 CATS = [{"id": 1, "name": "thing"}]  # no `isthing`: a panoptic reference deviation
@@ -130,6 +132,41 @@ SITES = [
         "isthing",
         PANOPTIC_RS,
         id="panoptic-deviation",
+    ),
+    pytest.param(
+        lambda _: panoptic.PanopticEval(_gt(), _gt()).summary_lines(),
+        CallOrderWarning,
+        r"summary_lines\(\) called before evaluate",
+        PANOPTIC_RS,
+        id="panoptic-summary-lines",
+    ),
+    pytest.param(
+        lambda _: semantic.SemanticEval(2).summarize(),
+        CallOrderWarning,
+        r"summarize\(\) called before update",
+        SEMANTIC_RS,
+        id="semantic-summarize",
+    ),
+    pytest.param(
+        lambda _: semantic.SemanticEval(2).summary_lines(),
+        CallOrderWarning,
+        r"summary_lines\(\) called before update",
+        SEMANTIC_RS,
+        id="semantic-summary-lines",
+    ),
+    pytest.param(
+        lambda _: CocoEvaluator(_gt(), ["bbox"]).accumulate(),
+        CallOrderWarning,
+        "no results for iou_type='bbox'",
+        INTEGRATIONS_PY,
+        id="coco-evaluator-accumulate",
+    ),
+    pytest.param(
+        lambda _: CocoEvaluator(_gt(), ["bbox"]).summarize(),
+        CallOrderWarning,
+        "no evaluation for iou_type='bbox'",
+        INTEGRATIONS_PY,
+        id="coco-evaluator-summarize",
     ),
 ]
 

@@ -335,7 +335,7 @@ Match one image's segments by panoptic quality's rules.
     `panoptic::match_image` is the Python function's Rust twin, and the
     per-image step `PanopticEval` runs — it applies panopticapi's checks and
     areas around the kernel. Both return indices into the slices they were
-    given, and `ImageMatches::from_indices` turns them into the ids the
+    given, and `MatchIds::from_indices` turns them into the ids the
     Python function returns.
 
 A ground-truth and a predicted segment match when their categories agree, the

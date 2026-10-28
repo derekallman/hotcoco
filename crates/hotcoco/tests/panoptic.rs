@@ -278,11 +278,11 @@ fn match_records_name_every_segment_once() {
     };
     assert_eq!(rec.image_id, 1);
     // pred 7 covers 12 of segment 1's 16 pixels and nothing else: 0.75.
-    assert_eq!(rec.matched, vec![(1, 7, 0.75), (2, 8, 1.0)]);
-    assert_eq!(rec.missed, Vec::<u64>::new());
-    assert_eq!(rec.false_positives, Vec::<u64>::new());
+    assert_eq!(rec.matches.matched, vec![(1, 7, 0.75), (2, 8, 1.0)]);
+    assert_eq!(rec.matches.missed, Vec::<u64>::new());
+    assert_eq!(rec.matches.false_positives, Vec::<u64>::new());
     // pred 9 lies entirely on void.
-    assert_eq!(rec.ignored, vec![9]);
+    assert_eq!(rec.matches.ignored, vec![9]);
 
     // A crowd segment is in no list; predictions it absorbs are ignored.
     let gt = Map::filled(4, 8, 0).rect(0, 4, 0, 4, 1).rect(0, 2, 6, 8, 2);
@@ -316,19 +316,19 @@ fn match_records_name_every_segment_once() {
     );
     ev.run().expect("runs");
     let rec = &ev.eval_imgs()[0];
-    assert_eq!(rec.matched, vec![(2, 8, 1.0)]);
+    assert_eq!(rec.matches.matched, vec![(2, 8, 1.0)]);
     // Segment 3 is in the JSON and not the PNG: a miss, as panopticapi has it.
-    assert_eq!(rec.missed, vec![3]);
+    assert_eq!(rec.matches.missed, vec![3]);
     // pred 9: 2 of its 2 pixels on void beside the crowd -> ignored, not FP.
-    assert_eq!(rec.ignored, vec![7, 9]);
-    assert_eq!(rec.false_positives, Vec::<u64>::new());
+    assert_eq!(rec.matches.ignored, vec![7, 9]);
+    assert_eq!(rec.matches.false_positives, Vec::<u64>::new());
     let c = &ev.result().expect("result").per_category[&10];
     assert_eq!(
         (c.tp, c.fp, c.fn_),
         (
-            rec.matched.len() as u64,
-            rec.false_positives.len() as u64,
-            rec.missed.len() as u64
+            rec.matches.matched.len() as u64,
+            rec.matches.false_positives.len() as u64,
+            rec.matches.missed.len() as u64
         )
     );
 }
@@ -351,7 +351,7 @@ fn match_records_follow_each_paths_labels() {
     );
     png.run().expect("png path runs");
     assert_eq!(
-        png.eval_imgs()[0].matched,
+        png.eval_imgs()[0].matches.matched,
         vec![(10, 10, 1.0), (30, 30, 1.0)]
     );
 
@@ -361,7 +361,7 @@ fn match_records_follow_each_paths_labels() {
     );
     masks.run().expect("mask path runs");
     assert_eq!(
-        masks.eval_imgs()[0].matched,
+        masks.eval_imgs()[0].matches.matched,
         vec![(30, 30, 1.0), (10, 10, 1.0)]
     );
 
@@ -375,7 +375,10 @@ fn match_records_follow_each_paths_labels() {
         PanopticDataset::from_dataset(&zeros),
     );
     ev.run().expect("repeated ids run on the mask path");
-    assert_eq!(ev.eval_imgs()[0].matched, vec![(0, 0, 1.0), (0, 0, 1.0)]);
+    assert_eq!(
+        ev.eval_imgs()[0].matches.matched,
+        vec![(0, 0, 1.0), (0, 0, 1.0)]
+    );
     assert_eq!(ev.result().expect("result").per_category[&1].tp, 2);
 }
 

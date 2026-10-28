@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use hotcoco_core::mask::RleRef;
 use hotcoco_core::metrics::semantic::LabelMap;
-use hotcoco_core::panoptic::{ImageMatches, PanopticAnnotation, PanopticDataset, SegmentInfo};
+use hotcoco_core::panoptic::{MatchIds, PanopticAnnotation, PanopticDataset, SegmentInfo};
 use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rle, Segmentation};
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
@@ -123,6 +123,56 @@ pub(crate) fn extract_flag(v: &Bound<'_, PyAny>) -> PyResult<bool> {
         return Ok(f != 0.0);
     }
     Err(not_a(v, "a bool or 0/1 flag")?)
+}
+
+/// A number inside a record — a box edge, an area, a score, a keypoint — as
+/// a float: `int`, `float`, or a numpy number, never a bool of any spelling.
+/// `True` is the number 1 to Python, but a JSON `true` is not a number, and a
+/// record must load alike from a dict and from the file it is saved to, the
+/// rule [`extract_int`] applies to an id.
+pub(crate) fn extract_float(v: &Bound<'_, PyAny>) -> PyResult<f64> {
+    if let Ok(f) = v.cast_exact::<PyFloat>() {
+        return Ok(f.value());
+    }
+    if v.is_exact_instance_of::<PyInt>() {
+        return v.extract();
+    }
+    if is_bool(v) {
+        return Err(not_a(v, "a number")?);
+    }
+    v.extract()
+}
+
+/// The items of a sequence, for reading one by one. A `str` is refused, as
+/// PyO3 refuses it for a `Vec`: its items are strings, never numbers.
+fn sequence_items<'py>(v: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyAny>>> {
+    if v.is_instance_of::<PyString>() {
+        return Err(not_a(v, "a sequence of numbers")?);
+    }
+    v.try_iter()
+        .map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(format!(
+                "expected a sequence, got {}",
+                type_name(v)
+            ))
+        })?
+        .collect()
+}
+
+/// Exactly `N` numbers from a sequence, each read by [`extract_float`].
+fn float_array<const N: usize>(v: &Bound<'_, PyAny>) -> PyResult<[f64; N]> {
+    let items = sequence_items(v)?;
+    if items.len() != N {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "expected a sequence of length {N} (got {})",
+            items.len()
+        )));
+    }
+    let mut out = [0.0; N];
+    for (slot, item) in out.iter_mut().zip(&items) {
+        *slot = extract_float(item)?;
+    }
+    Ok(out)
 }
 
 /// The error for `v`, which is not `expected`: a `ValueError` when `v` is a
@@ -535,14 +585,14 @@ fn set_ann_field(ann: &mut Annotation, key: &str, value: &Bound<'_, PyAny>) -> P
         "id" => ann.id = extract_int(value)?,
         "image_id" => ann.image_id = extract_int(value)?,
         "category_id" => ann.category_id = extract_int(value)?,
-        "bbox" => ann.bbox = value.extract()?,
-        "area" => ann.area = value.extract()?,
+        "bbox" => ann.bbox = optional(value, float_array::<4>)?,
+        "area" => ann.area = optional(value, extract_float)?,
         "segmentation" => ann.segmentation = optional(value, py_to_segmentation)?,
         "iscrowd" => ann.iscrowd = extract_flag(value)?,
         "keypoints" => ann.keypoints = optional(value, py_to_keypoints)?,
         "num_keypoints" => ann.num_keypoints = optional(value, extract_int)?,
-        "obb" => ann.obb = value.extract::<Option<[f64; 5]>>()?.map(Box::new),
-        "score" => ann.score = value.extract()?,
+        "obb" => ann.obb = optional(value, float_array::<5>)?.map(Box::new),
+        "score" => ann.score = optional(value, extract_float)?,
         "is_group_of" => ann.is_group_of = optional(value, extract_flag)?,
         _ => return Ok(false),
     }
@@ -567,9 +617,13 @@ fn optional<'py, T>(
 /// Flat `[x, y, v, …]` is the COCO spelling; an `(N, 3)` array is how the
 /// same triplets sit in a tensor. Both mean one thing.
 fn py_to_keypoints(value: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
-    value.extract::<Vec<f64>>().or_else(|flat_err| {
-        value
-            .extract::<Vec<[f64; 3]>>()
+    let items = sequence_items(value)?;
+    let flat: PyResult<Vec<f64>> = items.iter().map(extract_float).collect();
+    flat.or_else(|flat_err| {
+        items
+            .iter()
+            .map(float_array::<3>)
+            .collect::<PyResult<Vec<_>>>()
             .map(|rows| rows.into_iter().flatten().collect())
             .map_err(|_| flat_err)
     })
@@ -959,7 +1013,7 @@ fn set_segment_field(seg: &mut SegmentInfo, key: &str, value: &Bound<'_, PyAny>)
         "id" => seg.id = extract_int(value)?,
         "category_id" => seg.category_id = extract_int(value)?,
         "area" => seg.area = optional(value, extract_int)?,
-        "bbox" => seg.bbox = optional(value, |v| v.extract())?,
+        "bbox" => seg.bbox = optional(value, float_array::<4>)?,
         "iscrowd" => seg.iscrowd = extract_flag(value)?,
         "segmentation" => seg.segmentation = optional(value, py_to_segmentation)?,
         _ => {}
@@ -1136,7 +1190,7 @@ pub fn calibration_bin_to_py<'py>(
 /// One image's segment matches into `dict`: the four keys
 /// `primitives.match_segments` returns and every `PanopticEval.eval_imgs`
 /// record carries after its `image_id`. One writer, so the two cannot drift.
-pub(crate) fn set_segment_matches(dict: &Bound<'_, PyDict>, m: &ImageMatches) -> PyResult<()> {
+pub(crate) fn set_segment_matches(dict: &Bound<'_, PyDict>, m: &MatchIds) -> PyResult<()> {
     dict.set_item("matched", &m.matched)?;
     dict.set_item("missed", &m.missed)?;
     dict.set_item("false_positives", &m.false_positives)?;

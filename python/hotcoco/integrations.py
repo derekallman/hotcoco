@@ -12,12 +12,13 @@ needs torch.distributed).
 from __future__ import annotations
 
 import os
+import warnings
 from collections import defaultdict
 
 import numpy as _np
 
 from . import mask as mask_utils
-from .hotcoco import COCO, COCOeval, Params
+from .hotcoco import COCO, CallOrderWarning, COCOeval, Params
 
 
 class CocoDetection:
@@ -171,7 +172,11 @@ class CocoEvaluator:
         for iou_type in self.iou_types:
             results = self.results[iou_type]
             if not results:
-                print(f"Warning: no results for iou_type={iou_type!r}")
+                warnings.warn(
+                    f"hotcoco: no results for iou_type={iou_type!r}: update() was not called, or every batch was empty",
+                    CallOrderWarning,
+                    stacklevel=2,
+                )
                 continue
 
             coco_dt = self.coco_gt.load_res(results)
@@ -192,7 +197,11 @@ class CocoEvaluator:
         for iou_type in self.iou_types:
             ev = self.coco_eval.get(iou_type)
             if ev is None:
-                print(f"Warning: no evaluation for iou_type={iou_type!r}")
+                warnings.warn(
+                    f"hotcoco: no evaluation for iou_type={iou_type!r}: accumulate() was not called, or had no results",
+                    CallOrderWarning,
+                    stacklevel=2,
+                )
                 continue
             print(f"IoU metric: {iou_type}")
             ev.summarize()

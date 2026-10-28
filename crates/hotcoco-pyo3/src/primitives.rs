@@ -17,7 +17,7 @@ use pyo3::types::PyDict;
 use hotcoco_core::Rle;
 use hotcoco_core::metrics::counts::score_order;
 use hotcoco_core::metrics::semantic::{Label, LabelMap, LabelPairOp};
-use hotcoco_core::panoptic::{ImageMatches, SegmentInfo, labels_from_ids, match_image};
+use hotcoco_core::panoptic::{MatchIds, SegmentInfo, labels_from_ids, match_image};
 use hotcoco_core::params::default_iou_thrs;
 use hotcoco_core::primitives::greedy::{self, GtMasks, coco_match_floor};
 use hotcoco_core::primitives::panoptic::{Overlaps, Side};
@@ -603,10 +603,8 @@ fn match_segments(
     let gt = labels_from_ids(&gt_infos, |l| overlaps.iter().any(|(g, _, _)| g == l));
     let pred = labels_from_ids(&pred_infos, |l| overlaps.iter().any(|(_, p, _)| p == l));
     let m = match_image(&gt, &pred, &overlaps).map_err(to_pyerr)?;
-    // No image here; the record's `image_id` is not written.
-    let record = ImageMatches::from_indices(0, &m, &gt, &pred);
     let out = PyDict::new(py);
-    set_segment_matches(&out, &record)?;
+    set_segment_matches(&out, &MatchIds::from_indices(&m, &gt, &pred))?;
     Ok(out.into_any().unbind())
 }
 

@@ -56,7 +56,7 @@ signatures and return shapes.
 |--------|---------|-------------|
 | `evaluate()` | `None` | Score every ground-truth image against its prediction, in parallel. Raises `ValueError` on the inputs panopticapi rejects |
 | `summarize()` | `None` | Print the table — PQ, SQ, RQ, N for All, Things, Stuff — in percent |
-| `summary_lines()` | `list[str]` | The same table as strings, without printing |
+| `summary_lines()` | `list[str]` | The same table as strings, without printing. Empty, with a `CallOrderWarning`, before `evaluate()` |
 | `run()` | `None` | `evaluate()` then `summarize()` |
 | `stats` | `list[float]` | The nine headline values, in `METRIC_NAMES` order; empty before `evaluate()` |
 | `eval_imgs` | `list[dict]` | Per-image match records, below; empty before `evaluate()` |
@@ -88,7 +88,7 @@ counts are summed from. This attribute is provisional, like the
 === "Rust"
 
     ```rust
-    fn eval_imgs(&self) -> &[ImageMatches]
+    fn eval_imgs(&self) -> &[ImageMatches]   // { image_id, matches: MatchIds }
     ```
 
 One record per ground-truth image, in the order `evaluate()` visits them:

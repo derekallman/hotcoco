@@ -7,7 +7,7 @@ import tempfile
 import numpy as np
 import pytest
 from helpers import VAL2017
-from hotcoco import COCO, CocoDetection, CocoEvaluator
+from hotcoco import COCO, CallOrderWarning, CocoDetection, CocoEvaluator
 
 GT_FILE = str(VAL2017["bbox"]["gt"])
 DT_FILE = str(VAL2017["bbox"]["dt"])
@@ -114,9 +114,9 @@ class TestCocoEvaluator:
 
     def test_empty_results_warns(self, coco_gt, capsys):
         ev = CocoEvaluator(coco_gt, ["bbox"])
-        ev.accumulate()
-        captured = capsys.readouterr()
-        assert "no results" in captured.out.lower()
+        with pytest.warns(CallOrderWarning, match="no results"):
+            ev.accumulate()
+        assert capsys.readouterr().out == ""
 
     def test_bbox_eval_from_dicts(self, coco_gt):
         """Full pipeline using pre-computed detection dicts (no torch needed)."""

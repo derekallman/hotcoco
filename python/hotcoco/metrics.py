@@ -38,6 +38,7 @@ confusion_matrix = _metrics.confusion_matrix
 panoptic_quality = _metrics.panoptic_quality
 pixel_confusion = _metrics.pixel_confusion
 mean_iou = _metrics.mean_iou
+mean_or_missing = _metrics.mean_or_missing
 is_computed = _metrics.is_computed
 is_missing = _metrics.is_missing
 
@@ -49,6 +50,7 @@ __all__ = [
     "is_computed",
     "is_missing",
     "mean_iou",
+    "mean_or_missing",
     "panoptic_quality",
     "pixel_confusion",
     "precision_recall_curve",

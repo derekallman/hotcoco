@@ -362,6 +362,26 @@ fn mean_iou(py: Python<'_>, confusion: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>>
 }
 
 #[pyfunction]
+#[doc = "The mean of ``count`` values summing to ``total``, or ``-1.0`` when ``count`` is 0.
+
+The one producer of the \"not computed\" sentinel :func:`is_computed` reads back.
+Every family's means go through it — detection's per-category AP, the
+panoptic things and stuff splits, the semantic means — so a composed metric
+that does too never spells the sentinel itself. A ratio of counts is the mean
+of an indicator: precision is ``mean_or_missing(tp, tp + fp)``.
+
+Example:
+    >>> from hotcoco import metrics
+    >>> metrics.mean_or_missing(1.5, 2)
+    0.75
+    >>> metrics.mean_or_missing(0.0, 0)
+    -1.0
+"]
+fn mean_or_missing(total: f64, count: usize) -> f64 {
+    hotcoco_core::metrics::mean_or_missing(total, count)
+}
+
+#[pyfunction]
 #[doc = "Whether a metric value was actually computed.
 
 hotcoco reports ``-1.0`` for a metric that was *not computed for this
@@ -397,6 +417,7 @@ pub fn register(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
     m.add_function(wrap_pyfunction!(panoptic_quality, &m)?)?;
     m.add_function(wrap_pyfunction!(pixel_confusion, &m)?)?;
     m.add_function(wrap_pyfunction!(mean_iou, &m)?)?;
+    m.add_function(wrap_pyfunction!(mean_or_missing, &m)?)?;
     m.add_function(wrap_pyfunction!(is_computed, &m)?)?;
     m.add_function(wrap_pyfunction!(is_missing, &m)?)?;
     Ok(m)

@@ -887,6 +887,12 @@ def detection_corpus(seed: int) -> tuple[dict, list[dict]]:
                     dts.append({**cell, "bbox": jitter(b, 3), "score": rng.choice([0.3, 0.5, 0.5, 0.9])})
             for _ in range(rng.randint(0, 2)):
                 dts.append({**cell, "bbox": box(), "score": rng.random()})
+    # One box on each area-range bound (32² and 96²), matched by a detection of
+    # the same size, so a reading of the bounds as exclusive fails the gates.
+    for side in (32, 96):
+        b = [1, 1, side, side]
+        gts.append({"image_id": 1, "category_id": 1, "bbox": b, "iscrowd": 0, "area": float(side * side)})
+        dts.append({"image_id": 1, "category_id": 1, "bbox": list(b), "score": 0.7})
     ids = list(range(1, len(gts) + 1))
     rng.shuffle(ids)
     for gt, gt_id in zip(gts, ids):

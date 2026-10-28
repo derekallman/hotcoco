@@ -159,10 +159,13 @@ is emitted first as a ``ReferenceDeviationWarning``."]
         print_lines(py, &self.inner.summarize_lines())
     }
 
-    #[doc = "The summary table as a list of strings, without printing it. Empty
-before ``evaluate()``."]
-    fn summary_lines(&self) -> Vec<String> {
-        self.inner.summarize_lines()
+    #[doc = "The summary table as a list of strings, without printing it. Empty,
+with a ``CallOrderWarning``, before ``evaluate()``."]
+    fn summary_lines(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        if self.inner.result().is_none() {
+            warn::<CallOrderWarning>(py, "summary_lines() called before evaluate().")?;
+        }
+        Ok(self.inner.summarize_lines())
     }
 
     #[doc = "``evaluate()`` then ``summarize()``."]
@@ -199,7 +202,7 @@ than indexing the attribute in a loop."]
         for rec in self.inner.eval_imgs() {
             let d = PyDict::new(py);
             d.set_item("image_id", rec.image_id)?;
-            set_segment_matches(&d, rec)?;
+            set_segment_matches(&d, &rec.matches)?;
             records.append(d)?;
         }
         Ok(records.into_any().unbind())

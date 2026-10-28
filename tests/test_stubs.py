@@ -348,6 +348,9 @@ def test_functional_layer_needs_no_evaluator():
     pq, sq, rq = metrics.panoptic_quality(1.6, tp=2, fp=1, fn_=1)
     assert abs(pq - sq * rq) < 1e-12 and abs(sq - 0.8) < 1e-12
     assert metrics.panoptic_quality(0.0, 0, 0, 0) == (-1.0, -1.0, -1.0)
+    assert metrics.mean_or_missing(1.5, 2) == 0.75
+    assert metrics.mean_or_missing(0.0, 0) == -1.0
+    assert metrics.is_missing(metrics.mean_or_missing(0.0, 0))
     rows, _ = primitives.lsap([[1.0, 2.0], [3.0, 4.0]])
     assert len(rows) == 2
 

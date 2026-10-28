@@ -14,7 +14,10 @@ use pyo3::types::PyBytes;
 use hotcoco_core::semantic::{METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
-use crate::{ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
+use crate::{
+    CallOrderWarning, ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py,
+    to_pyerr, warn,
+};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, and aAcc against
 mmsegmentation's protocol.
@@ -187,17 +190,26 @@ order: mIoU, fwIoU, mAcc, aAcc. ``-1.0`` where nothing was counted."]
 
     #[doc = "Print the table: one row per class with IoU and Acc in percent, then
 the four means. Each entry of ``reference_deviations()`` is emitted first as
-a ``ReferenceDeviationWarning``."]
+a ``ReferenceDeviationWarning``. Before anything is counted, prints nothing
+and emits a ``CallOrderWarning``."]
     fn summarize(&self, py: Python<'_>) -> PyResult<()> {
+        if self.inner.n_images() == 0 {
+            return warn::<CallOrderWarning>(py, "summarize() called before update().");
+        }
         for w in self.inner.reference_deviations() {
             warn::<ReferenceDeviationWarning>(py, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }
 
-    #[doc = "The table as a list of strings, without printing it."]
-    fn summary_lines(&self) -> Vec<String> {
-        self.inner.summarize_lines()
+    #[doc = "The table as a list of strings, without printing it. Empty, with a
+``CallOrderWarning``, before anything is counted."]
+    fn summary_lines(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        if self.inner.n_images() == 0 {
+            warn::<CallOrderWarning>(py, "summary_lines() called before update().")?;
+            return Ok(Vec::new());
+        }
+        Ok(self.inner.summarize_lines())
     }
 
     #[doc = "Results as a dict: ``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc`` as fractions;
