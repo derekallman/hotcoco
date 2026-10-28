@@ -103,8 +103,9 @@ def test_get_ann_ids_empty_area_rng(both):
 
 
 def unordered_dataset():
-    """Several annotations per image, listed in neither id nor image order. No area
-    sits on a range bound, where pycocotools' ``<`` and hotcoco's ``<=`` differ."""
+    """Several annotations per image, listed in neither id nor image order. Two areas
+    sit exactly on bounds the queries use (20 and 1000), where pycocotools' strict
+    ``<`` leaves them out."""
     rows = [  # id, image, category, area, iscrowd
         (7, 3, 2, 500, 0),
         (2, 1, 1, 50, 0),
@@ -115,6 +116,8 @@ def unordered_dataset():
         (3, 2, 1, 700, 1),
         (6, 1, 1, 10, 0),
         (5, 4, 2, 150, 0),
+        (11, 2, 1, 1000, 0),
+        (10, 4, 1, 20, 0),
     ]
     return {
         "images": [{"id": i, "width": 100, "height": 100} for i in (1, 2, 3, 4)],

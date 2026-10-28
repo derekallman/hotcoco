@@ -31,8 +31,11 @@ use crate::convert::{
 use crate::to_pyerr;
 
 /// `iscrowd` as one flag per ground truth — see [`flag_vec`] for the accepted
-/// spellings.
-fn extract_iscrowd(obj: &Bound<'_, PyAny>, gt_len: usize) -> PyResult<Vec<bool>> {
+/// spellings; `None` is no crowd region.
+fn extract_iscrowd(obj: Option<&Bound<'_, PyAny>>, gt_len: usize) -> PyResult<Vec<bool>> {
+    let Some(obj) = obj else {
+        return Ok(vec![false; gt_len]);
+    };
     let crowd = flag_vec(obj, "iscrowd")?;
     check_parallel(crowd.len(), gt_len, "iscrowd", "gt")?;
     Ok(crowd)
@@ -44,7 +47,7 @@ pub(crate) fn rle_iou_matrix(
     py: Python<'_>,
     dt: &[Rle],
     gt: &[Rle],
-    iscrowd: &Bound<'_, PyAny>,
+    iscrowd: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
     // All inputs are owned by now; the O(D*G) kernel runs GIL-free like the
@@ -59,7 +62,7 @@ pub(crate) fn box_iou_matrix(
     py: Python<'_>,
     dt: &[[f64; 4]],
     gt: &[[f64; 4]],
-    iscrowd: &Bound<'_, PyAny>,
+    iscrowd: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let iscrowd = extract_iscrowd(iscrowd, gt.len())?;
     let flat = sim::bbox_iou_flat(dt, gt, &iscrowd);
@@ -67,7 +70,8 @@ pub(crate) fn box_iou_matrix(
 }
 
 #[pyfunction]
-#[pyo3(text_signature = "(dt, gt, iscrowd)")]
+#[pyo3(signature = (dt, gt, iscrowd=None))]
+#[pyo3(text_signature = "(dt, gt, iscrowd=None)")]
 #[doc = "Pairwise IoU between two sets of ``[x, y, w, h]`` boxes.
 
 Args:
@@ -75,8 +79,9 @@ Args:
         4-element rows.
     gt: ``(G, 4)`` array of any integer or float dtype, or a sequence of
         4-element rows.
-    iscrowd: One flag per ``gt`` box. A crowd box scores intersection over the
-        detection's area (IoA) instead of IoU.
+    iscrowd: One flag per ``gt`` box, or ``None`` for no crowd box. A crowd
+        box scores intersection over the detection's area (IoA) instead of
+        IoU, so leave this out only when no ground truth is a crowd region.
 
 Returns:
     numpy.ndarray: ``float64``, shape ``(D, G)``.
@@ -85,7 +90,7 @@ pub fn bbox_iou(
     py: Python<'_>,
     dt: &Bound<'_, PyAny>,
     gt: &Bound<'_, PyAny>,
-    iscrowd: &Bound<'_, PyAny>,
+    iscrowd: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let dt = boxes_arg(dt, "dt")?;
     let gt = boxes_arg(gt, "gt")?;
@@ -93,14 +98,16 @@ pub fn bbox_iou(
 }
 
 #[pyfunction]
-#[pyo3(text_signature = "(dt, gt, iscrowd)")]
+#[pyo3(signature = (dt, gt, iscrowd=None))]
+#[pyo3(text_signature = "(dt, gt, iscrowd=None)")]
 #[doc = "Pairwise IoU between two sets of RLE masks.
 
 Args:
     dt: Sequence of RLE dicts.
     gt: Sequence of RLE dicts.
-    iscrowd: One flag per ``gt`` mask. A crowd mask scores intersection over
-        the detection's area (IoA) instead of IoU.
+    iscrowd: One flag per ``gt`` mask, or ``None`` for no crowd mask. A crowd
+        mask scores intersection over the detection's area (IoA) instead of
+        IoU, so leave this out only when no ground truth is a crowd region.
 
 Returns:
     numpy.ndarray: ``float64``, shape ``(D, G)``.
@@ -109,7 +116,7 @@ pub fn mask_iou(
     py: Python<'_>,
     dt: &Bound<'_, PyAny>,
     gt: &Bound<'_, PyAny>,
-    iscrowd: &Bound<'_, PyAny>,
+    iscrowd: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
     let dt = extract_rle_list(dt)?;
     let gt = extract_rle_list(gt)?;

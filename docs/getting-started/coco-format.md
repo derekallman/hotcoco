@@ -85,7 +85,8 @@ by_weather = ev.slice_by(lambda img: img["weather"])
   detection with no score.
 - **`load_warnings`.** Anything the loader tolerated but flagged — duplicate
   annotation ids, sanitized non-finite values, orphaned result ids — is collected
-  on [`coco.load_warnings`](../api/coco.md#load_warnings) as well as printed.
+  on [`coco.load_warnings`](../api/coco.md#load_warnings) and emitted as a
+  `DatasetWarning`.
 - **Malformed geometry errors.** Corrupt RLE strings, out-of-range polygon
   coordinates, and impossible mask dimensions raise an error instead of
   producing garbage — hotcoco treats annotation files as untrusted input.

@@ -100,8 +100,9 @@ categories) are preserved through load, dataset ops, and `save` — see
 
 ### `load_warnings`
 
-The warnings the loader printed to stderr, kept inspectable afterwards; empty
-for a clean load. What the loader tolerates and flags is listed under
+The problems the loader tolerated, each also emitted as a
+[`DatasetWarning`](../guide/results.md#filtering-the-warnings) when the dataset
+was built; empty for a clean load. What the loader tolerates and flags is listed under
 [Loading quirks worth knowing](../getting-started/coco-format.md#loading-quirks-worth-knowing).
 
 ```python
@@ -148,7 +149,9 @@ Get annotation IDs matching the given filters. All filters are ANDed together.
     The camelCase `getAnnIds` also takes pycocotools' spellings:
     `iscrowd=0` or `1` (a numpy int or bool works too), and `areaRng=[]` for no
     area filter. `get_ann_ids` keeps the typed forms — `iscrowd` a `bool` or
-    `None`, `area_rng` two values or `None`.
+    `None`, `area_rng` two values or `None`. The range excludes its end points,
+    as pycocotools' `getAnnIds` does; evaluation's area ranges, and `filter()`,
+    include them.
 
 === "Rust"
 

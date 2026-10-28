@@ -867,3 +867,21 @@ def test_far_out_of_image_polygon_matches_pycocotools(poly, h, w):
     rh = hm.frPyObjects([poly], h, w)[0]
     assert int(pm.area(rp)) == int(hm.area(rh))
     assert rp["counts"] == rh["counts"]
+
+
+def test_iou_without_crowd_flags_is_iou_with_none_set():
+    """``iscrowd=None`` is no crowd region: the same matrix as all-false flags.
+    ``mask.iou``, pycocotools' spelling, still requires the flags."""
+    from hotcoco import primitives
+
+    dt = [[0, 0, 10, 10], [5, 5, 10, 10]]
+    gt = [[0, 0, 10, 10], [2, 2, 4, 4], [20, 20, 5, 5]]
+    expect = primitives.bbox_iou(dt, gt, [False] * 3)
+    np.testing.assert_array_equal(primitives.bbox_iou(dt, gt), expect)
+    np.testing.assert_array_equal(primitives.bbox_iou(dt, gt, iscrowd=None), expect)
+    assert not np.array_equal(primitives.bbox_iou(dt, gt, [True, False, False]), expect)
+    rle_dt = hm.frPyObjects(np.array(dt, dtype=float), 30, 30)
+    rle_gt = hm.frPyObjects(np.array(gt, dtype=float), 30, 30)
+    np.testing.assert_array_equal(primitives.mask_iou(rle_dt, rle_gt), primitives.mask_iou(rle_dt, rle_gt, [False] * 3))
+    with pytest.raises(TypeError):
+        hm.iou(dt, gt)

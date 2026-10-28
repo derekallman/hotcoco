@@ -105,7 +105,7 @@ Pairwise IoU between two sets of boxes.
     bbox_iou(
         dt: numpy.ndarray | Sequence[Sequence[float]],
         gt: numpy.ndarray | Sequence[Sequence[float]],
-        iscrowd: Sequence[bool] | numpy.ndarray,
+        iscrowd: Sequence[bool] | numpy.ndarray | None = None,
     ) -> numpy.ndarray
     ```
 
@@ -126,8 +126,9 @@ else is converted element by element. Returns shape `(len(dt), len(gt))`.
 
 Where `iscrowd[j]` is true, the denominator is the detection area alone rather
 than the union — a detection fully inside a crowd region scores 1.0. That is
-pycocotools' convention, and it is why `iscrowd` is required rather than
-optional: silently defaulting it would change crowd-region numbers.
+pycocotools' convention. `iscrowd=None` means no ground truth is a crowd region;
+pass the flags whenever one might be, because a crowd box scored as plain IoU
+is a different number, and nothing else reports the difference.
 
 [`mask.bbox_iou`](mask.md#bbox_iou) is this same function object.
 
@@ -140,7 +141,7 @@ Pairwise IoU between two sets of RLE masks.
 === "Python"
 
     ```python
-    mask_iou(dt: Sequence[dict], gt: Sequence[dict], iscrowd: Sequence[bool] | numpy.ndarray) -> numpy.ndarray
+    mask_iou(dt: Sequence[dict], gt: Sequence[dict], iscrowd: Sequence[bool] | numpy.ndarray | None = None) -> numpy.ndarray
     ```
 
 === "Rust"

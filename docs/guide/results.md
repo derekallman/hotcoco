@@ -388,6 +388,7 @@ categories, each a subclass of `HotcocoWarning`:
 | `ReferenceDeviationWarning` | `summarize()`, or `run()` through it, finds a configuration that `reference_deviations()` lists, once per entry. Semantic evaluation lists none today |
 | `CallOrderWarning` | A method is called before the step it needs, such as `accumulate()` before `evaluate()`. It goes ahead with nothing to work on: what it returns or prints is empty, and a metric computed from it later reads `-1.000` |
 | `ConversionWarning` | A format converter imports part of its input, such as `COCO.from_cvat()` skipping shapes COCO cannot express |
+| `DatasetWarning` | A dataset loads with a problem the loader tolerated: duplicate annotation ids, a category without a name, a non-finite number in a file. The text stays on [`load_warnings`](../api/coco.md#load_warnings) |
 
 When the configuration is deliberate, such as a training loop that evaluates with
 `max_dets=[1, 10, 500]` every epoch, silence that category and keep the rest:
@@ -408,6 +409,6 @@ configuration:
 filterwarnings = ["error::hotcoco.ReferenceDeviationWarning"]
 ```
 
-A filter on `HotcocoWarning` reaches all three. It subclasses `UserWarning`, so a filter
+A filter on `HotcocoWarning` reaches all four. It subclasses `UserWarning`, so a filter
 written for `UserWarning` still catches them too. Every message starts with
-`hotcoco: `. Loader messages are not Python warnings; see [`load_warnings`](../api/coco.md#load_warnings).
+`hotcoco: `.

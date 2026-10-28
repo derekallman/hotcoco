@@ -218,6 +218,13 @@ fn run_eval(args: EvalArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     let coco_gt = timed_load("ground truth", gt_path, || COCO::new(gt_path))?;
     let coco_dt = timed_load("detections", dt_path, || coco_gt.load_res(dt_path))?;
+    for w in coco_gt
+        .load_warnings()
+        .iter()
+        .chain(coco_dt.load_warnings())
+    {
+        eprintln!("hotcoco: {w}");
+    }
 
     let mut coco_eval = COCOeval::new(coco_gt, coco_dt, args.iou_type);
 

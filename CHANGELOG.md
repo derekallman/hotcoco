@@ -9,13 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Warning categories.** Every Python warning hotcoco emits is now one of three
+- **Warning categories.** Every Python warning hotcoco emits is now one of four
   subclasses of `HotcocoWarning`, a `UserWarning` subclass, all exported from the
   top level, so a filter can name its kind instead of matching its text.
   `summarize()` emits each reference deviation as a `ReferenceDeviationWarning`;
   a method called before the step it needs, such as `accumulate()` before
-  `evaluate()`, emits a `CallOrderWarning`; and `COCO.from_cvat()` skipping
-  shapes emits a `ConversionWarning`. The base is never emitted itself, so a
+  `evaluate()`, emits a `CallOrderWarning`; `COCO.from_cvat()` skipping
+  shapes emits a `ConversionWarning`; and a dataset that loads with a problem
+  the loader tolerates — duplicate annotation ids, a category without a name,
+  a non-finite number in a file — emits a `DatasetWarning` where `COCO()`,
+  `load_res()`, `from_arrays()`, `merge()`, the `dataset` setter, or a
+  converter built it, with the same text `load_warnings` keeps. The base is
+  never emitted itself, so a
   filter on `HotcocoWarning` reaches every kind and a filter on one subclass
   reaches only that one. To silence a deliberate configuration and keep the rest:
   `warnings.filterwarnings("ignore", category=hotcoco.ReferenceDeviationWarning)`.
@@ -78,6 +83,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The Rust library no longer prints loader warnings to stderr.** `COCO::warn`
+  only records them for `load_warnings()`; the Python bindings emit them as
+  `DatasetWarning` (under Added) and `hotcoco-cli` prints them after a load,
+  so a terminal shows the same lines as before. A Rust caller that read them
+  off stderr reads `load_warnings()` instead.
+- **`primitives.bbox_iou` and `mask_iou` take `iscrowd=None`** for no crowd
+  region, where the flags were required before; `mask.iou`, pycocotools'
+  spelling, still requires them. Pass the flags whenever a ground truth might
+  be a crowd region: a crowd box scored as plain IoU is a different number.
 - **`primitives::panoptic::match_segments` treats a label listed twice as one
   segment**, its last entry at its first one's position — panopticapi's dict
   over `segments_info`. It already matched that way, but listed the
@@ -122,6 +136,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`getAnnIds(areaRng=...)` and `get_ann_ids(area_rng=...)` exclude the
+  range's end points**, as pycocotools' `getAnnIds` does (`lo < area < hi`);
+  they included them before. `filter()` and evaluation's area ranges still
+  include them, as pycocotools' evaluation does.
 - **`getAnnIds()` and `get_ann_ids()` return ids in pycocotools' order** —
   dataset order, image by image in `imgIds` order when that is given — where
   they returned them sorted ascending before.

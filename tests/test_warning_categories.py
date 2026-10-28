@@ -26,6 +26,7 @@ from hotcoco import (
     CallOrderWarning,
     COCOeval,
     ConversionWarning,
+    DatasetWarning,
     HotcocoWarning,
     ReferenceDeviationWarning,
     panoptic,
@@ -81,6 +82,10 @@ def _accumulated(**params):
     return ev
 
 
+def _duplicate_ids(_):
+    COCO({"images": IMAGES, "annotations": [GT, dict(GT)], "categories": CATS})
+
+
 def _cvat_import(tmp_path):
     path = tmp_path / "annotations.xml"
     path.write_text(CVAT_WITH_A_POLYLINE)
@@ -90,6 +95,7 @@ def _cvat_import(tmp_path):
 # (trigger, category, message pattern, the file that emits it). A trigger takes
 # `tmp_path` so the CVAT row can write its file.
 SITES = [
+    pytest.param(_duplicate_ids, DatasetWarning, "duplicate annotation id", LIB_RS, id="loader-duplicate-ids"),
     pytest.param(_cvat_import, ConversionWarning, "skipped 1 unsupported", LIB_RS, id="cvat-skipped-shapes"),
     pytest.param(
         lambda _: _ev().accumulate(), CallOrderWarning, r"accumulate\(\) called before", LIB_RS, id="accumulate"
@@ -279,7 +285,7 @@ def test_semantic_has_no_deviation_yet():
         ev.summarize()
 
 
-LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning)
+LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning, DatasetWarning)
 
 
 def test_the_categories_nest_under_user_warning():

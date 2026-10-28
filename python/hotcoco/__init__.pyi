@@ -411,6 +411,9 @@ class CallOrderWarning(HotcocoWarning):
 class ConversionWarning(HotcocoWarning):
     """A format converter imported part of its input."""
 
+class DatasetWarning(HotcocoWarning):
+    """A dataset loaded with a problem the loader tolerated; the text is also on ``COCO.load_warnings``."""
+
 # ---------------------------------------------------------------------------
 # LVIS drop-in surface (lvis-api spellings)
 # ---------------------------------------------------------------------------

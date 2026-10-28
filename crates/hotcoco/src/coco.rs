@@ -104,8 +104,11 @@ pub(crate) enum AreaRule {
     Result,
 }
 
-/// Inclusive area-range predicate shared by [`COCO::get_ann_ids`] and
-/// [`COCO::filter`].
+/// The area-range predicate behind [`COCO::get_ann_ids`] and [`COCO::filter`].
+/// pycocotools is strict in `getAnnIds` (`lo < area < hi`) and inclusive in
+/// evaluation (`area < lo or area > hi` ignores), so `get_ann_ids` passes
+/// `Bounds::Open` and `filter`, which prepares data for evaluation,
+/// `Bounds::Closed`.
 ///
 /// An annotation without an `area` value never matches an explicit range.
 /// pycocotools' `getAnnIds` reads `ann['area']` unconditionally and raises
@@ -114,8 +117,18 @@ pub(crate) enum AreaRule {
 /// to make area-less annotations match any range starting at 0). An evaluator
 /// derives the area instead ([`COCO::fill_missing_areas`]), because it has to
 /// place every annotation in an area range.
-fn area_in_range(ann: &Annotation, rng: [f64; 2]) -> bool {
-    ann.area.is_some_and(|a| a >= rng[0] && a <= rng[1])
+fn area_in_range(ann: &Annotation, rng: [f64; 2], bounds: Bounds) -> bool {
+    ann.area.is_some_and(|a| match bounds {
+        Bounds::Open => a > rng[0] && a < rng[1],
+        Bounds::Closed => a >= rng[0] && a <= rng[1],
+    })
+}
+
+/// Whether an area range includes its end points; see [`area_in_range`].
+#[derive(Clone, Copy)]
+enum Bounds {
+    Open,
+    Closed,
 }
 
 /// How many annotations a `COCO`, or evaluated pairs a `COCOeval`, must hold
@@ -145,8 +158,8 @@ impl COCO {
     /// Load a COCO annotation JSON file and build indices.
     ///
     /// Non-fatal problems (non-finite floats normalized to `null`, duplicate
-    /// annotation ids) are printed to stderr and retained on the returned
-    /// object — see [`load_warnings`](Self::load_warnings).
+    /// annotation ids) are retained on the returned object — see
+    /// [`load_warnings`](Self::load_warnings).
     pub fn new(annotation_file: &Path) -> crate::error::Result<Self> {
         let (dataset, non_finite) = crate::json::read_dataset(annotation_file)?;
         let mut coco = Self::from_dataset(dataset);
@@ -162,18 +175,15 @@ impl COCO {
 
     /// Warnings collected while loading and indexing this dataset.
     ///
-    /// Each entry was also printed to stderr at the moment it arose (so CLI
-    /// behavior is unchanged); this accessor exists for callers — the Python
-    /// bindings, notebooks, servers — where stderr is invisible. Empty for a
-    /// clean load.
+    /// The library records them and prints nothing: the Python bindings emit
+    /// each one as a `DatasetWarning`, and `hotcoco-cli` prints them after a
+    /// load. Empty for a clean load.
     pub fn load_warnings(&self) -> &[String] {
         &self.warnings
     }
 
-    /// Record a non-fatal problem: print it to stderr and retain it for
-    /// [`load_warnings`](Self::load_warnings).
+    /// Record a non-fatal problem for [`load_warnings`](Self::load_warnings).
     fn warn(&mut self, msg: String) {
-        eprintln!("hotcoco: {msg}");
         self.warnings.push(msg);
     }
 
@@ -339,7 +349,9 @@ impl COCO {
     ///
     /// All filter parameters are optional (pass empty slices / None to skip).
     /// Ids come back in pycocotools' order: dataset order, image by image in
-    /// `img_ids` order when that is given.
+    /// `img_ids` order when that is given. `area_rng` excludes its end points,
+    /// as pycocotools' `getAnnIds` does; [`COCO::filter`] includes them, as
+    /// evaluation does.
     pub fn get_ann_ids(
         &self,
         img_ids: &[u64],
@@ -352,7 +364,7 @@ impl COCO {
                 return false;
             }
             if let Some(rng) = area_rng {
-                if !area_in_range(ann, rng) {
+                if !area_in_range(ann, rng, Bounds::Open) {
                     return false;
                 }
             }
@@ -1212,7 +1224,7 @@ impl COCO {
                     }
                 }
                 if let Some(rng) = area_rng {
-                    if !area_in_range(ann, rng) {
+                    if !area_in_range(ann, rng, Bounds::Closed) {
                         return false;
                     }
                 }

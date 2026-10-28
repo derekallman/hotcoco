@@ -590,8 +590,8 @@ pub fn iou(
     let dt = dt.unwrap_or_else(|| gt.as_ref().map_or(Rles(Vec::new()), IouInput::empty_like));
     let gt = gt.unwrap_or_else(|| dt.empty_like());
     match (dt, gt) {
-        (Rles(d), Rles(g)) => rle_iou_matrix(py, &d, &g, iscrowd),
-        (Boxes(d), Boxes(g)) => box_iou_matrix(py, &d, &g, iscrowd),
+        (Rles(d), Rles(g)) => rle_iou_matrix(py, &d, &g, Some(iscrowd)),
+        (Boxes(d), Boxes(g)) => box_iou_matrix(py, &d, &g, Some(iscrowd)),
         _ => Err(pyo3::exceptions::PyTypeError::new_err(
             "dt and gt must be the same kind: both RLE dicts or both boxes",
         )),

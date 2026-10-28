@@ -124,6 +124,14 @@ pyo3::create_exception!(
     "A format converter imported part of its input.\n\n\
      For example, ``COCO.from_cvat()`` skipping shapes COCO cannot express."
 );
+pyo3::create_exception!(
+    hotcoco,
+    DatasetWarning,
+    HotcocoWarning,
+    "A dataset loaded with a problem the loader tolerated.\n\n\
+     Duplicate annotation ids, a category without a name, a non-finite \
+     number in a file. The same text is kept on ``COCO.load_warnings``."
+);
 
 /// Emit `hotcoco: {msg}` as a warning of class `W` through Python's
 /// `warnings` machinery.
@@ -143,6 +151,17 @@ pub(crate) fn warn<W: pyo3::PyTypeInfo>(py: Python<'_>, msg: &str) -> PyResult<(
     let msg = std::ffi::CString::new(format!("hotcoco: {msg}"))
         .unwrap_or_else(|_| c"hotcoco: warning text contained a NUL byte".to_owned());
     PyErr::warn(py, py.get_type::<W>().as_any(), &msg, 1)
+}
+
+/// Emit a just-loaded dataset's [`load_warnings`](hotcoco_core::COCO::load_warnings)
+/// as Python warnings, where the user data came in: a constructor, the
+/// ``dataset`` setter, ``load_res``, ``from_arrays``, ``merge``, a converter.
+/// The library only records them.
+fn warn_on_load(py: Python<'_>, coco: &hotcoco_core::COCO) -> PyResult<()> {
+    for w in coco.load_warnings() {
+        warn::<DatasetWarning>(py, w)?;
+    }
+    Ok(())
 }
 
 /// Print each line through Python's `print`, so it lands on `sys.stdout`.
@@ -251,8 +270,10 @@ impl PyCOCO {
 
     /// A dataset with no image directory to inherit: a conversion from a foreign
     /// format, or a merge whose inputs came from different directories.
-    fn without_image_dir(dataset: hotcoco_core::Dataset) -> PyCOCO {
-        Self::shared(hotcoco_core::COCO::from_dataset(dataset))
+    fn without_image_dir(py: Python<'_>, dataset: hotcoco_core::Dataset) -> PyResult<PyCOCO> {
+        let coco = hotcoco_core::COCO::from_dataset(dataset);
+        warn_on_load(py, &coco)?;
+        Ok(Self::shared(coco))
     }
 
     /// No image directory either; takes a `COCO` to own or an `Arc` to share,
@@ -276,7 +297,7 @@ impl PyCOCO {
             if segmentation.is_some() {
                 return Err(segmentation_needs_array("load_res"));
             }
-            return self.inner.load_res(Path::new(&path)).map_err(to_pyerr);
+            return Self::loaded(res.py(), self.inner.load_res(Path::new(&path)));
         }
 
         // Case 2: list of annotation dicts
@@ -285,18 +306,28 @@ impl PyCOCO {
                 return Err(segmentation_needs_array("load_res"));
             }
             let anns = dict_list(list, "load_res", py_to_record)?;
-            return self.inner.load_res_anns(anns).map_err(to_pyerr);
+            return Self::loaded(res.py(), self.inner.load_res_anns(anns));
         }
 
         // Case 3: numpy array, shape (N, 6) or (N, 7)
         if let Some(anns) = anns_from_array(res, "load_res", segmentation)? {
-            return self.inner.load_res_anns(anns).map_err(to_pyerr);
+            return Self::loaded(res.py(), self.inner.load_res_anns(anns));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
             "load_res expects a file path (str), list of annotation dicts, \
              or numpy array of shape (N, 6) or (N, 7)",
         ))
+    }
+
+    /// A results set `load_res` built, its load warnings emitted.
+    fn loaded(
+        py: Python<'_>,
+        result: hotcoco_core::error::Result<hotcoco_core::COCO>,
+    ) -> PyResult<hotcoco_core::COCO> {
+        let coco = result.map_err(to_pyerr)?;
+        warn_on_load(py, &coco)?;
+        Ok(coco)
     }
 }
 
@@ -305,6 +336,7 @@ impl PyCOCO {
     #[new]
     #[pyo3(signature = (annotation_file=None, image_dir=None))]
     fn new(
+        py: Python<'_>,
         annotation_file: Option<&Bound<'_, PyAny>>,
         image_dir: Option<String>,
     ) -> PyResult<Self> {
@@ -326,6 +358,7 @@ impl PyCOCO {
             }
             None => hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset::default()),
         };
+        warn_on_load(py, &inner)?;
         Ok(PyCOCO {
             inner: Arc::new(inner),
             image_dir,
@@ -474,7 +507,7 @@ impl PyCOCO {
                           area=None, iscrowd=None, segmentation=None)"
     )]
     fn from_arrays(
-        _cls: &Bound<'_, PyType>,
+        cls: &Bound<'_, PyType>,
         images: &Bound<'_, PyList>,
         categories: &Bound<'_, PyList>,
         image_ids: &Bound<'_, PyAny>,
@@ -593,7 +626,7 @@ impl PyCOCO {
             annotations,
             ..Default::default()
         };
-        Ok(PyCOCO::without_image_dir(dataset))
+        PyCOCO::without_image_dir(cls.py(), dataset)
     }
 
     /// Convert an annotation's segmentation to RLE.
@@ -677,11 +710,11 @@ impl PyCOCO {
     /// Image and annotation IDs are remapped to be globally unique.
     /// Raises `ValueError` if the taxonomies differ.
     #[classmethod]
-    fn merge(_cls: &Bound<'_, PyType>, datasets: Vec<PyRef<'_, PyCOCO>>) -> PyResult<PyCOCO> {
+    fn merge(cls: &Bound<'_, PyType>, datasets: Vec<PyRef<'_, PyCOCO>>) -> PyResult<PyCOCO> {
         let ds_refs: Vec<&hotcoco_core::Dataset> =
             datasets.iter().map(|p| &p.inner.dataset).collect();
         let result = hotcoco_core::COCO::merge(&ds_refs).map_err(to_pyerr)?;
-        Ok(PyCOCO::without_image_dir(result))
+        PyCOCO::without_image_dir(cls.py(), result)
     }
 
     /// Split the dataset into train/val (or train/val/test) subsets.
@@ -901,8 +934,8 @@ impl PyCOCO {
         };
 
         hotcoco_core::convert::yolo_to_coco(Path::new(yolo_dir), &image_dims)
-            .map(PyCOCO::without_image_dir)
             .map_err(|e| to_pyerr(e.into()))
+            .and_then(|d| PyCOCO::without_image_dir(cls.py(), d))
     }
 
     /// Export the dataset to Pascal VOC annotation format.
@@ -972,10 +1005,9 @@ impl PyCOCO {
     /// >>> coco.save("voc2012_as_coco.json")
     #[classmethod]
     fn from_voc(cls: &Bound<'_, PyType>, voc_dir: &str) -> PyResult<PyCOCO> {
-        let _ = cls;
         hotcoco_core::convert::voc_to_coco(Path::new(voc_dir))
-            .map(PyCOCO::without_image_dir)
             .map_err(|e| to_pyerr(e.into()))
+            .and_then(|d| PyCOCO::without_image_dir(cls.py(), d))
     }
 
     /// Export the dataset to CVAT for Images 1.1 XML format.
@@ -1064,7 +1096,7 @@ impl PyCOCO {
                 ),
             )?;
         }
-        Ok(PyCOCO::without_image_dir(dataset))
+        PyCOCO::without_image_dir(cls.py(), dataset)
     }
 
     /// Export the dataset to DOTA oriented-bounding-box format.
@@ -1146,8 +1178,8 @@ impl PyCOCO {
         };
 
         hotcoco_core::convert::dota_to_coco(Path::new(label_dir), categories, &image_dims)
-            .map(PyCOCO::without_image_dir)
             .map_err(|e| to_pyerr(e.into()))
+            .and_then(|d| PyCOCO::without_image_dir(cls.py(), d))
     }
 
     /// Export the dataset to Open Images challenge CSV format.
@@ -1252,8 +1284,8 @@ impl PyCOCO {
             class_descriptions.map(Path::new),
             &image_dims,
         )
-        .map(PyCOCO::without_image_dir)
         .map_err(|e| to_pyerr(e.into()))
+        .and_then(|d| PyCOCO::without_image_dir(cls.py(), d))
     }
 
     /// Load Open Images detections as a result ``COCO``, aligned to this dataset.
@@ -1305,7 +1337,9 @@ impl PyCOCO {
     /// makes the follow-up `createIndex()` a no-op.
     #[setter]
     fn set_dataset(&mut self, dataset: &Bound<'_, PyDict>) -> PyResult<()> {
-        self.inner = Arc::new(hotcoco_core::COCO::from_dataset(py_to_dataset(dataset)?));
+        let inner = hotcoco_core::COCO::from_dataset(py_to_dataset(dataset)?);
+        warn_on_load(dataset.py(), &inner)?;
+        self.inner = Arc::new(inner);
         Ok(())
     }
 
@@ -3578,6 +3612,7 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("CallOrderWarning", py.get_type::<CallOrderWarning>())?;
     m.add("ConversionWarning", py.get_type::<ConversionWarning>())?;
+    m.add("DatasetWarning", py.get_type::<DatasetWarning>())?;
 
     // The functional layer — metric functions and matching kernels, callable
     // without a COCOeval. `__init__.py` also registers these in sys.modules so
