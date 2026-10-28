@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use crate::error::Error;
 use crate::metrics::bootstrap::bootstrap_ci;
+use crate::metrics::or_missing;
 
 use super::COCOeval;
 use super::accumulate::EvalGrouping;
@@ -261,8 +262,8 @@ pub fn compare(
     let mut per_category: Vec<CategoryDelta> = all_cat_ids
         .into_iter()
         .filter_map(|cat_id| {
-            let ap_a = per_cat_a.get(&cat_id).copied().unwrap_or(-1.0);
-            let ap_b = per_cat_b.get(&cat_id).copied().unwrap_or(-1.0);
+            let ap_a = or_missing(per_cat_a.get(&cat_id).copied());
+            let ap_b = or_missing(per_cat_b.get(&cat_id).copied());
             // Skip categories with no data in either model
             if ap_a < 0.0 && ap_b < 0.0 {
                 return None;

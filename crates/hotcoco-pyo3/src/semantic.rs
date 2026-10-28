@@ -244,7 +244,6 @@ prints nothing and emits a ``CallOrderWarning``."]
     fn summary_lines(&self, py: Python<'_>) -> PyResult<Vec<String>> {
         if self.inner.n_images() == 0 {
             warn::<CallOrderWarning>(py, "summary_lines() called before update().")?;
-            return Ok(Vec::new());
         }
         Ok(self.inner.summarize_lines())
     }

@@ -176,7 +176,7 @@ def boundary_iou_reference(gts, preds, num_classes, ignore_label, mask_to_bounda
             pred_b[c] += np.sum(bp)
     union = gt_b + pred_b - inter
     biou = np.where(union > 0, inter / np.maximum(union, 1), np.nan)
-    return {"BIoU": [_num(v) for v in biou], "mBIoU": _num(np.nanmean(biou)) if np.isfinite(biou).any() else None}
+    return {"BIoU": [_num(v) for v in biou], "mBIoU": _nanmean(biou)}
 
 
 def d2_boundary_confusion(ev, gt_maps, pred_maps, num_classes, ignore_label):
@@ -337,6 +337,13 @@ def _num(v) -> float | None:
     return None if np.isnan(v) else v
 
 
+def _nanmean(values) -> float | None:
+    """The mean over the classes that have a value, `null` when none has —
+    `np.nanmean` without its warning on an all-NaN input."""
+    values = np.asarray(values, dtype=np.float64)
+    return _nanmean(values)
+
+
 def evaluate_case(case, IoUMetric, SemSegEvaluator, tm, mask_to_boundary):
     num_classes = case["num_classes"]
     ignore = case["ignore_index"]
@@ -360,9 +367,9 @@ def evaluate_case(case, IoUMetric, SemSegEvaluator, tm, mask_to_boundary):
         "Acc": [_num(v) for v in mm_acc],
         "Dice": [_num(v) for v in mm_dice],
         "aAcc": _num(mm["aAcc"]),
-        "mIoU": _num(np.nanmean(mm_iou)) if np.isfinite(mm_iou).any() else None,
-        "mAcc": _num(np.nanmean(mm_acc)) if np.isfinite(mm_acc).any() else None,
-        "mDice": _num(np.nanmean(mm_dice)) if np.isfinite(mm_dice).any() else None,
+        "mIoU": _nanmean(mm_iou),
+        "mAcc": _nanmean(mm_acc),
+        "mDice": _nanmean(mm_dice),
     }
 
     # torchmetrics: whole split as one tensor pair. It reduces in float32, so
@@ -397,7 +404,7 @@ def evaluate_case(case, IoUMetric, SemSegEvaluator, tm, mask_to_boundary):
         "IoU": [_num(res[f"IoU-c{i}"] / 100) for i in range(num_classes)],
         "ACC": [_num(res[f"ACC-c{i}"] / 100) for i in range(num_classes)],
         "BoundaryIoU": [_num(v) for v in d2_biou],
-        "mBIoU": _num(np.nanmean(d2_biou)) if np.isfinite(d2_biou).any() else None,
+        "mBIoU": _nanmean(d2_biou),
     }
 
     boundary_iou = boundary_iou_reference(gts, preds, num_classes, ignore, mask_to_boundary)

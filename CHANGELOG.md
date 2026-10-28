@@ -186,9 +186,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - **A bool inside a number field of a dict record is a `ValueError`**, as it
   is from a JSON file, where `true` is not a number: `bbox`, `area`, `score`,
-  `keypoints`, and `obb` of an annotation or a result, and `bbox` of a
-  panoptic segment, read `True` as `1.0` before. `tests/test_input_errors.py`
-  holds the dict and file paths to the same answer.
+  `keypoints`, `obb`, and a polygon's points of an annotation or a result,
+  and `bbox` of a panoptic segment, read `True` as `1.0` before. A list of
+  numbers must be a sequence — a list, a tuple, a numpy array — not a set, a
+  dict, or a generator, which a file cannot hold either.
+  `tests/test_input_errors.py` holds the dict and file paths to the same
+  answer.
 - **`getAnnIds(areaRng=...)` and `get_ann_ids(area_rng=...)` exclude the
   range's end points**, as pycocotools' `getAnnIds` does (`lo < area < hi`);
   they included them before. `filter()` and evaluation's area ranges still

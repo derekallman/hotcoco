@@ -671,7 +671,8 @@ def cmd_semantic_eval(args):
             _semantic_classes(args.classes),
             ignore_index=args.ignore_index,
             reduce_zero_label=args.reduce_zero_label,
-            boundary_dilation=None if args.no_boundary_iou else 0.02,
+            # The band is the constructor's default unless the flag turns it off.
+            **({"boundary_dilation": None} if args.no_boundary_iou else {}),
         )
         with _maybe_spinner("Evaluating label maps...", args.json), Timer() as t:
             n = ev.update_folders(

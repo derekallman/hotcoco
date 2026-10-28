@@ -256,6 +256,7 @@ SEG_CASES = [
     ("rle counts short", {"size": [100, 100], "counts": [5, 5]}, None, {}),
     ("polygon of odd length", [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]], None, {}),
     ("polygon holding a str", [["a", 2.0, 3.0, 4.0, 5.0, 6.0]], "reject", {}),
+    ("polygon holding a bool", [[True, 2.0, 3.0, 4.0, 5.0, 6.0]], "reject", {}),
     ("polygon holding NaN", [[1.0, 2.0, math.nan, 4.0, 5.0, 6.0]], None, {"json": NAN_TOKEN}),
     ("segmentation='x'", "x", "reject", {}),
     ("segmentation=7", 7, "reject", {}),
@@ -609,6 +610,16 @@ def test_only_a_records_own_nan_score_is_rejected(tmp_path):
     )
     (det,) = gt.load_res(str(path)).dataset["annotations"]
     assert det["attributes"] == {"score": None}
+
+
+def test_a_number_list_is_a_sequence_not_any_iterable():
+    """A set has no order and a dict iterates its keys, so neither is a box;
+    a JSON file cannot hold them, and the dict path refuses them too."""
+    for value in ({10, 20, 30, 40}, {10: 0, 20: 0, 30: 0, 40: 0}, (x for x in (10, 20, 30, 40))):
+        with pytest.raises(ValueError, match="field 'bbox': expected a sequence"):
+            COCO({"images": IMAGES, "annotations": [with_field(GT, "bbox", value)], "categories": CATS})
+    for value in ([10, 20, 30, 40], (10, 20, 30, 40), np.array([10, 20, 30, 40])):
+        COCO({"images": IMAGES, "annotations": [with_field(GT, "bbox", value)], "categories": CATS})
 
 
 def test_a_numpy_bool_is_not_an_id():

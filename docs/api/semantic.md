@@ -161,5 +161,5 @@ where the reference has NaN; `semantic_scores` turns a class list into the
 five means with the `-1.0` sentinel filled in. `boundary_mask` marks the
 pixels of an `h × w` map whose `(2d + 1)`-square holds another label or
 leaves the map, which is the authors' `mask_to_boundary` for every class at
-once; `BoundaryCounts::update` counts a pair's bands per class, and its
+once; `BoundaryCounts` holds a class's band counts as `ClassCounts`, so its
 `iou()` per class is the boundary IoU.

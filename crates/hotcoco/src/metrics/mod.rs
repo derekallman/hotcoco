@@ -100,3 +100,38 @@ pub fn is_computed(v: f64) -> bool {
 pub fn is_missing(v: f64) -> bool {
     !is_computed(v)
 }
+
+/// A value that may not have been computed, as the sentinel convention
+/// spells it: the value, or `-1.0` for `None`. The other producer beside
+/// [`mean_or_missing`], for a score that is a ratio rather than a mean — a
+/// class's IoU, or a boundary IoU — so no caller spells the sentinel.
+#[inline]
+pub fn or_missing(v: Option<f64>) -> f64 {
+    v.unwrap_or(-1.0)
+}
+
+/// A running mean over the per-class values that were computed: the sum of
+/// the values seen and how many there were. The accumulator behind every
+/// family's `np.nanmean`-style average, so [`mean_or_missing`] is called
+/// from one place per mean.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Mean {
+    sum: f64,
+    n: usize,
+}
+
+impl Mean {
+    /// Add `v` when it is computed; returns it, or the sentinel for an
+    /// absent value, as the per-class entry.
+    pub(crate) fn push(&mut self, v: Option<f64>) -> f64 {
+        if let Some(v) = v {
+            self.sum += v;
+            self.n += 1;
+        }
+        or_missing(v)
+    }
+
+    pub(crate) fn get(&self) -> f64 {
+        mean_or_missing(self.sum, self.n)
+    }
+}

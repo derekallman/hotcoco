@@ -7,7 +7,8 @@ use hotcoco_core::{Annotation, Category, Dataset, DatasetStats, Extra, Image, Rl
 use numpy::{PyArray1, PyArrayDescrMethods, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{
-    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PyString, PyTuple,
+    PyBool, PyByteArray, PyBytes, PyDict, PyFloat, PyInt, PyList, PyMemoryView, PySequence,
+    PyString, PyTuple,
 };
 
 use crate::to_pyerr;
@@ -131,7 +132,9 @@ pub(crate) fn extract_flag(v: &Bound<'_, PyAny>) -> PyResult<bool> {
 /// record must load alike from a dict and from the file it is saved to, the
 /// rule [`extract_int`] applies to an id.
 pub(crate) fn extract_float(v: &Bound<'_, PyAny>) -> PyResult<f64> {
-    if let Ok(f) = v.cast_exact::<PyFloat>() {
+    // A `float` subclass is a `numpy.float64`, the common case for a record
+    // built from arrays; `bool` is not one, so the fast path cannot take it.
+    if let Ok(f) = v.cast::<PyFloat>() {
         return Ok(f.value());
     }
     if v.is_exact_instance_of::<PyInt>() {
@@ -143,34 +146,45 @@ pub(crate) fn extract_float(v: &Bound<'_, PyAny>) -> PyResult<f64> {
     v.extract()
 }
 
-/// The items of a sequence, for reading one by one. A `str` is refused, as
-/// PyO3 refuses it for a `Vec`: its items are strings, never numbers.
-fn sequence_items<'py>(v: &Bound<'py, PyAny>) -> PyResult<Vec<Bound<'py, PyAny>>> {
-    if v.is_instance_of::<PyString>() {
-        return Err(not_a(v, "a sequence of numbers")?);
+/// `v` checked to be a sequence of numbers to read by index — a list, a
+/// tuple, or a numpy array, which is not a `Sequence` to Python but indexes
+/// like one — and not any iterable: a set has no order and a dict iterates
+/// its keys, and a JSON file can hold neither. A `str` is refused, as PyO3
+/// refuses it for a `Vec`: its items are strings, never numbers.
+fn number_sequence<'a, 'py>(v: &'a Bound<'py, PyAny>) -> PyResult<&'a Bound<'py, PyAny>> {
+    let indexable = !v.is_instance_of::<PyString>()
+        && (v.cast::<PySequence>().is_ok() || v.cast::<numpy::PyUntypedArray>().is_ok());
+    if indexable {
+        Ok(v)
+    } else {
+        Err(not_a(v, "a sequence of numbers")?)
     }
-    v.try_iter()
-        .map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err(format!(
-                "expected a sequence, got {}",
-                type_name(v)
-            ))
-        })?
-        .collect()
+}
+
+/// Every number of a sequence, each read by [`extract_float`].
+fn float_vec(v: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+    let seq = number_sequence(v)?;
+    let mut out = Vec::with_capacity(seq.len()?);
+    for item in seq.try_iter()? {
+        out.push(extract_float(&item?)?);
+    }
+    Ok(out)
 }
 
 /// Exactly `N` numbers from a sequence, each read by [`extract_float`].
+/// Reads the items in place, as PyO3's own array extraction does: a box is
+/// read for every annotation of a dict dataset.
 fn float_array<const N: usize>(v: &Bound<'_, PyAny>) -> PyResult<[f64; N]> {
-    let items = sequence_items(v)?;
-    if items.len() != N {
+    let seq = number_sequence(v)?;
+    let len = seq.len()?;
+    if len != N {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "expected a sequence of length {N} (got {})",
-            items.len()
+            "expected a sequence of length {N} (got {len})"
         )));
     }
     let mut out = [0.0; N];
-    for (slot, item) in out.iter_mut().zip(&items) {
-        *slot = extract_float(item)?;
+    for (i, slot) in out.iter_mut().enumerate() {
+        *slot = extract_float(&seq.get_item(i)?)?;
     }
     Ok(out)
 }
@@ -617,15 +631,13 @@ fn optional<'py, T>(
 /// Flat `[x, y, v, …]` is the COCO spelling; an `(N, 3)` array is how the
 /// same triplets sit in a tensor. Both mean one thing.
 fn py_to_keypoints(value: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
-    let items = sequence_items(value)?;
-    let flat: PyResult<Vec<f64>> = items.iter().map(extract_float).collect();
-    flat.or_else(|flat_err| {
-        items
-            .iter()
-            .map(float_array::<3>)
-            .collect::<PyResult<Vec<_>>>()
-            .map(|rows| rows.into_iter().flatten().collect())
-            .map_err(|_| flat_err)
+    float_vec(value).or_else(|flat_err| {
+        let seq = number_sequence(value)?;
+        let mut out = Vec::with_capacity(3 * seq.len()?);
+        for row in seq.try_iter()? {
+            out.extend(float_array::<3>(&row?).map_err(|_| flat_err.clone_ref(value.py()))?);
+        }
+        Ok(out)
     })
 }
 
@@ -696,8 +708,12 @@ pub fn py_to_segmentation(obj: &Bound<'_, PyAny>) -> PyResult<Segmentation> {
     if let Ok(dict) = obj.cast::<PyDict>() {
         return RleDict::read(dict)?.into_segmentation();
     }
-    // Otherwise it's a polygon (list of lists)
-    let polys: Vec<Vec<f64>> = obj.extract()?;
+    // Otherwise it is a polygon: a list of rings, each a flat list of
+    // numbers read by the record rule, so a bool is refused here too.
+    let polys = number_sequence(obj)?
+        .try_iter()?
+        .map(|ring| float_vec(&ring?))
+        .collect::<PyResult<Vec<_>>>()?;
     Ok(Segmentation::Polygon(polys))
 }
 

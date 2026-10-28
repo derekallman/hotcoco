@@ -209,6 +209,12 @@ def test_png_folders_pair_like_cityscapes(tmp_path):
     Image.fromarray(np.zeros((2, 2), dtype=np.uint8)).save(pred_dir / "again" / "city0_000000_leftImg8bit.png")
     with pytest.raises(ValueError, match="two prediction files"):
         semantic.SemanticEval(case["num_classes"]).update_folders(gt_dir, pred_dir, recursive=True, **suffixes)
+    (pred_dir / "again" / "city0_000000_leftImg8bit.png").unlink()
+    # Two ground-truth files with one stem would count the frame twice.
+    (gt_dir / "again").mkdir()
+    Image.fromarray(np.zeros((2, 2), dtype=np.uint8)).save(gt_dir / "again" / "city0_000000_gtFine_labelTrainIds.png")
+    with pytest.raises(ValueError, match="two ground-truth files"):
+        semantic.SemanticEval(case["num_classes"]).update_folders(gt_dir, pred_dir, recursive=True, **suffixes)
 
 
 def test_metrics_functions_agree_with_the_evaluator():

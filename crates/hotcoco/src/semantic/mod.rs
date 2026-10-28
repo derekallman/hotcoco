@@ -65,10 +65,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::metrics::is_computed;
 pub use crate::metrics::semantic::LabelMap;
 use crate::metrics::semantic::boundary::{BoundaryCounts, BoundaryScores, DEFAULT_DILATION_RATIO};
 use crate::metrics::semantic::{ClassCounts, Label, LabelPairOp, PixelConfusion, SemanticScores};
+use crate::metrics::{is_computed, or_missing};
 use crate::report::{EvalReport, Provenance};
 
 use self::png::read_class_map;
@@ -76,7 +76,13 @@ use self::png::read_class_map;
 /// The headline metrics, in the order [`SemanticEval::stats`] reports them:
 /// [`crate::metrics::semantic::METRIC_NAMES`] — the confusion-matrix means —
 /// then `mBIoU`.
-pub const METRIC_NAMES: [&str; 6] = ["mIoU", "fwIoU", "mAcc", "aAcc", "mDice", "mBIoU"];
+pub const METRIC_NAMES: [&str; 6] = with_mbiou(crate::metrics::semantic::METRIC_NAMES);
+
+/// The confusion-matrix names with `mBIoU` appended, so the two constants
+/// cannot drift.
+const fn with_mbiou(five: [&str; 5]) -> [&str; 6] {
+    [five[0], five[1], five[2], five[3], five[4], "mBIoU"]
+}
 
 /// One class in [`SemanticResults`]: its scores — the sentinel where not
 /// computed — beside the counts they came from.
@@ -147,10 +153,12 @@ impl SemanticResults {
 
 /// The label rules apart from the matrix they fill, so a pair can count
 /// into the evaluator's own matrix or into a parallel split's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct LabelRules {
     ignore_index: Option<u64>,
     reduce_zero_label: bool,
+    /// The boundary IoU band as a share of the image diagonal; `None` is off.
+    boundary_dilation: Option<f64>,
 }
 
 impl LabelRules {
@@ -161,6 +169,13 @@ impl LabelRules {
     /// nor in range, and what mmseg does with it is an accident of
     /// `torch.histc`, so there is nothing to be faithful to.
     fn check(self) -> crate::error::Result<()> {
+        if let Some(ratio) = self.boundary_dilation
+            && !(ratio >= 0.0 && ratio.is_finite())
+        {
+            return Err(Error::InvalidInput(format!(
+                "boundary_dilation is a share of the image diagonal, 0 or more, not {ratio}"
+            )));
+        }
         if self.reduce_zero_label && self.ignore_index != Some(255) {
             return Err(Error::InvalidInput(format!(
                 "reduce_zero_label follows mmseg's relabel, which marks unlabeled pixels \
@@ -175,18 +190,24 @@ impl LabelRules {
     /// With `reduce_zero_label`, mmseg's relabel: 0 and 255 are unlabeled,
     /// the rest shift down, and the ignore index (255, see `check`) masks
     /// the shifted label.
-    fn gt_label(self) -> impl Fn(u64) -> Option<u64> + Copy {
-        move |g| {
-            if self.reduce_zero_label {
-                if g == 0 || g == 255 {
-                    return None;
-                }
-                let shifted = g - 1;
-                (shifted != 255).then_some(shifted)
-            } else {
-                (Some(g) != self.ignore_index).then_some(g)
+    fn count_with<G: Label, P: Label>(
+        tally: &mut Tally,
+        gt: &[G],
+        pred: &[P],
+        h: usize,
+        w: usize,
+        gt_label: impl Fn(u64) -> Option<u64> + Copy,
+    ) -> crate::error::Result<()> {
+        // The confusion matrix checks every label and counts nothing on an
+        // error, so the boundary pass after it sees valid maps only.
+        tally.confusion.update_with(gt, pred, gt_label)?;
+        if let Some(boundary) = &mut tally.boundary {
+            let pixels = h * w;
+            for (g, p) in gt.chunks_exact(pixels).zip(pred.chunks_exact(pixels)) {
+                boundary.update(g, p, h, w, gt_label);
             }
         }
+        Ok(())
     }
 
     /// Count one pair of `h × w` maps — or a batch of them, one after
@@ -218,15 +239,17 @@ impl LabelRules {
                 gt.len()
             )));
         }
-        // The confusion matrix checks every label and counts nothing on an
-        // error, so the boundary pass after it sees valid maps only.
-        tally.confusion.update_with(gt, pred, self.gt_label())?;
-        if let Some(boundary) = &mut tally.boundary {
-            for (g, p) in gt.chunks_exact(pixels).zip(pred.chunks_exact(pixels)) {
-                boundary.update(g, p, h, w, self.gt_label());
-            }
+        // One ground-truth reading for the matrix and the band alike, chosen
+        // once here rather than per pixel: mmseg's relabel, or the ignore
+        // index.
+        if self.reduce_zero_label {
+            Self::count_with(tally, gt, pred, h, w, reduce_zero_label)
+        } else {
+            let ignore = self.ignore_index;
+            Self::count_with(tally, gt, pred, h, w, move |g| {
+                (Some(g) != ignore).then_some(g)
+            })
         }
-        Ok(())
     }
 
     /// Count one PNG pair into `tally`, each error naming the file.
@@ -272,6 +295,44 @@ impl LabelRules {
     }
 }
 
+/// mmseg's `reduce_zero_label` reading of a ground-truth label: 0 and 255
+/// are unlabeled, the rest shift down, and the ignore index (255, see
+/// [`LabelRules::check`]) masks the shifted label.
+fn reduce_zero_label(g: u64) -> Option<u64> {
+    if g == 0 || g == 255 {
+        return None;
+    }
+    let shifted = g - 1;
+    (shifted != 255).then_some(shifted)
+}
+
+/// Every number a run yields, computed once: the confusion-matrix scores and
+/// the boundary scores, `None` when boundary IoU is off.
+struct AllScores {
+    confusion: SemanticScores,
+    boundary: Option<BoundaryScores>,
+}
+
+impl AllScores {
+    /// The six headline values, in [`METRIC_NAMES`] order.
+    fn stats(&self) -> [f64; 6] {
+        let [a, b, c, d, e] = self.confusion.stats();
+        [a, b, c, d, e, self.mbiou()]
+    }
+
+    fn mbiou(&self) -> f64 {
+        or_missing(self.boundary.as_ref().map(|b| b.mbiou))
+    }
+
+    /// Boundary IoU per class, the sentinel throughout when it is off.
+    fn biou_per_class(&self) -> Vec<f64> {
+        match &self.boundary {
+            Some(b) => b.per_class.clone(),
+            None => vec![or_missing(None); self.confusion.per_class.len()],
+        }
+    }
+}
+
 /// What a pair counts into: the confusion matrix and, when boundary IoU is
 /// on, the boundary counts. One per evaluator, and one per parallel split.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,10 +347,6 @@ impl Tally {
             confusion: PixelConfusion::new(num_classes),
             boundary: boundary_dilation.map(|ratio| BoundaryCounts::new(num_classes, ratio)),
         }
-    }
-
-    fn boundary_dilation(&self) -> Option<f64> {
-        self.boundary.as_ref().map(BoundaryCounts::dilation_ratio)
     }
 
     fn add(&mut self, other: &Tally) {
@@ -321,25 +378,27 @@ impl SemanticEval {
 
     /// An evaluator whose classes are `names`, in class-id order.
     pub fn with_class_names(names: Vec<String>) -> Self {
-        let tally = Tally::new(names.len(), Some(DEFAULT_DILATION_RATIO));
+        let rules = LabelRules {
+            ignore_index: Some(255),
+            reduce_zero_label: false,
+            boundary_dilation: Some(DEFAULT_DILATION_RATIO),
+        };
         SemanticEval {
+            tally: Tally::new(names.len(), rules.boundary_dilation),
             class_names: names,
-            rules: LabelRules {
-                ignore_index: Some(255),
-                reduce_zero_label: false,
-            },
-            tally,
+            rules,
             n_images: 0,
         }
     }
 
     /// Set the boundary IoU band as a share of the image diagonal — the
     /// paper's `0.02` by default — or `None` to leave boundary IoU out,
-    /// which skips the pass and reports its sentinel. Resets the boundary
-    /// counts so far.
+    /// which skips the pass and reports its sentinel. A builder, for before
+    /// the first pair: the boundary counts start over.
     #[must_use]
     pub fn boundary_dilation(mut self, ratio: Option<f64>) -> Self {
-        self.tally.boundary = ratio.map(|r| BoundaryCounts::new(self.class_names.len(), r));
+        self.rules.boundary_dilation = ratio;
+        self.tally = Tally::new(self.class_names.len(), ratio);
         self
     }
 
@@ -400,15 +459,7 @@ impl SemanticEval {
     /// If `reduce_zero_label` is set with an ignore index other than `255`,
     /// or the boundary band is negative or not a number.
     pub fn check_options(&self) -> crate::error::Result<()> {
-        self.rules.check()?;
-        if let Some(ratio) = self.tally.boundary_dilation()
-            && !(ratio >= 0.0 && ratio.is_finite())
-        {
-            return Err(Error::InvalidInput(format!(
-                "boundary_dilation is a share of the image diagonal, 0 or more, not {ratio}"
-            )));
-        }
-        Ok(())
+        self.rules.check()
     }
 
     /// Count one `h × w` ground-truth map against one prediction of the same
@@ -497,7 +548,7 @@ impl SemanticEval {
     ) -> crate::error::Result<usize> {
         self.check_options()?;
         let pairs = png_pairs(gt_folder, pred_folder, pairing)?;
-        let fresh = || Tally::new(self.num_classes(), self.tally.boundary_dilation());
+        let fresh = || Tally::new(self.num_classes(), self.rules.boundary_dilation);
         let rules = self.rules;
         // One tally per rayon split rather than per image, so the reduction
         // is a handful of adds. Integer addition commutes, so the order the
@@ -543,14 +594,9 @@ impl SemanticEval {
         }
         if self.rules != other.rules {
             return Err(Error::InvalidInput(
-                "cannot merge evaluators with different ignore_index or \
-                 reduce_zero_label settings"
+                "cannot merge evaluators with different ignore_index, \
+                 reduce_zero_label, or boundary_dilation settings"
                     .into(),
-            ));
-        }
-        if self.tally.boundary_dilation() != other.tally.boundary_dilation() {
-            return Err(Error::InvalidInput(
-                "cannot merge evaluators with different boundary_dilation settings".into(),
             ));
         }
         self.commit(&other.tally, other.n_images);
@@ -570,9 +616,15 @@ impl SemanticEval {
 
     /// The six headline values, in [`METRIC_NAMES`] order.
     pub fn stats(&self) -> [f64; 6] {
-        let [a, b, c, d, e] = self.scores().stats();
-        let mbiou = self.boundary_scores().map_or(-1.0, |b| b.mbiou);
-        [a, b, c, d, e, mbiou]
+        self.all_scores().stats()
+    }
+
+    /// Both score sets, computed once for the methods that read every number.
+    fn all_scores(&self) -> AllScores {
+        AllScores {
+            confusion: self.scores(),
+            boundary: self.boundary_scores(),
+        }
     }
 
     /// Ways this run departs from what the reference would compute.
@@ -595,17 +647,11 @@ impl SemanticEval {
         }
     }
 
-    /// Boundary IoU per class, the sentinel throughout when it is off.
-    fn biou_per_class(&self) -> Vec<f64> {
-        self.boundary_scores()
-            .map_or_else(|| vec![-1.0; self.num_classes()], |b| b.per_class)
-    }
-
     /// The run as a struct — see [`SemanticResults`].
     pub fn results(&self) -> SemanticResults {
-        let scores = self.scores();
+        let all = self.all_scores();
+        let scores = &all.confusion;
         let counts = self.tally.confusion.all_class_counts();
-        let [.., mbiou] = self.stats();
         SemanticResults {
             hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
             provenance: self.provenance(),
@@ -615,13 +661,13 @@ impl SemanticEval {
             macc: scores.macc,
             aacc: scores.aacc,
             mdice: scores.mdice,
-            mbiou,
-            boundary_dilation: self.tally.boundary_dilation(),
+            mbiou: all.mbiou(),
+            boundary_dilation: self.rules.boundary_dilation,
             per_class: self
                 .class_names
                 .iter()
                 .zip(&scores.per_class)
-                .zip(self.biou_per_class())
+                .zip(all.biou_per_class())
                 .zip(counts)
                 .map(|(((name, s), biou), counts)| ClassResult {
                     name: name.clone(),
@@ -641,7 +687,11 @@ impl SemanticEval {
     /// boundary IoU in percent (`-` where not computed), then the six means
     /// — mmseg's table, with two columns more.
     pub fn summarize_lines(&self) -> Vec<String> {
-        let scores = self.scores();
+        if self.n_images == 0 {
+            return Vec::new();
+        }
+        let all = self.all_scores();
+        let scores = &all.confusion;
         let pct = |v: f64| {
             if is_computed(v) {
                 format!("{:6.2}", 100.0 * v)
@@ -662,7 +712,7 @@ impl SemanticEval {
             .class_names
             .iter()
             .zip(&scores.per_class)
-            .zip(self.biou_per_class())
+            .zip(all.biou_per_class())
         {
             out.push(format!(
                 "{name:<width$} | {} {} {} {}",
@@ -675,7 +725,7 @@ impl SemanticEval {
         out.push("-".repeat(width + 31));
         let means = METRIC_NAMES
             .iter()
-            .zip(self.stats())
+            .zip(all.stats())
             .map(|(name, v)| format!("{name} {}", pct(v).trim()))
             .collect::<Vec<_>>()
             .join("  ");
@@ -705,18 +755,13 @@ impl SemanticEval {
                 "num_classes": self.num_classes(),
                 "ignore_index": self.rules.ignore_index,
                 "reduce_zero_label": self.rules.reduce_zero_label,
-                "boundary_dilation": self.tally.boundary_dilation(),
+                "boundary_dilation": self.rules.boundary_dilation,
             }));
         let mut report = self
             .scores()
             .add_to_report(report, self.class_names.iter().cloned());
         if let Some(b) = self.boundary_scores() {
-            report = report.with_metrics([("mBIoU", b.mbiou)]);
-            for (name, biou) in self.class_names.iter().zip(b.per_class) {
-                if is_computed(biou) {
-                    report = report.with_class_metric(name.clone(), "BIoU", biou);
-                }
-            }
+            report = b.add_to_report(report, self.class_names.iter().cloned());
         }
         report
     }
@@ -767,12 +812,18 @@ fn list_files(folder: &Path, recursive: bool, side: &str) -> crate::error::Resul
                 format_args!("cannot read {side} folder {}", dir.display()),
             )
         })?;
-        for path in entries.flatten().map(|entry| entry.path()) {
-            if path.is_dir() {
+        for entry in entries.flatten() {
+            // `file_type` does not follow a symlink, so a link back up the
+            // tree is not walked; a link to a file is read as the file.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            let path = entry.path();
+            if kind.is_dir() {
                 if recursive {
                     folders.push(path);
                 }
-            } else {
+            } else if kind.is_file() || path.is_file() {
                 files.push(path);
             }
         }
@@ -787,21 +838,41 @@ fn png_pairs(
     pred_folder: &Path,
     pairing: &FolderPairing,
 ) -> crate::error::Result<Vec<(PathBuf, PathBuf)>> {
-    let (gt_suffix, pred_suffix) = (
-        pairing.gt_suffix.to_lowercase(),
-        pairing.pred_suffix.to_lowercase(),
-    );
     // A file's key: its name without the suffix, lowercased on both sides;
     // `None` for a name that does not end in the suffix.
     let key = |p: &Path, suffix: &str| -> Option<String> {
         let name = p.file_name()?.to_string_lossy().to_lowercase();
         name.strip_suffix(suffix).map(str::to_owned)
     };
-    let mut gts: Vec<(String, PathBuf)> = list_files(gt_folder, pairing.recursive, "ground-truth")?
-        .into_iter()
-        .filter_map(|p| key(&p, &gt_suffix).map(|k| (k, p)))
-        .collect();
-    gts.sort();
+    // Keyed on each side, so a stem that appears twice on either — which
+    // would count a frame twice, or against the wrong file — is an error.
+    let keyed = |folder: &Path,
+                 suffix: &str,
+                 side: &str|
+     -> crate::error::Result<BTreeMap<String, PathBuf>> {
+        let lowered = suffix.to_lowercase();
+        let mut files = BTreeMap::new();
+        for p in list_files(folder, pairing.recursive, side)? {
+            let Some(k) = key(&p, &lowered) else {
+                continue;
+            };
+            match files.entry(k) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(p);
+                }
+                std::collections::btree_map::Entry::Occupied(first) => {
+                    return Err(Error::InvalidInput(format!(
+                        "two {side} files have the name {}{suffix}: {} and {}",
+                        first.key(),
+                        first.get().display(),
+                        p.display()
+                    )));
+                }
+            }
+        }
+        Ok(files)
+    };
+    let gts = keyed(gt_folder, &pairing.gt_suffix, "ground-truth")?;
     if gts.is_empty() {
         return Err(Error::InvalidInput(format!(
             "no files ending in {} in ground-truth folder {}{}",
@@ -814,20 +885,7 @@ fn png_pairs(
             }
         )));
     }
-    let mut preds: BTreeMap<String, PathBuf> = BTreeMap::new();
-    for p in list_files(pred_folder, pairing.recursive, "prediction")? {
-        let Some(k) = key(&p, &pred_suffix) else {
-            continue;
-        };
-        if let Some(first) = preds.insert(k.clone(), p.clone()) {
-            return Err(Error::InvalidInput(format!(
-                "two prediction files have the name {k}{}: {} and {}",
-                pairing.pred_suffix,
-                first.display(),
-                p.display()
-            )));
-        }
-    }
+    let preds = keyed(pred_folder, &pairing.pred_suffix, "prediction")?;
     let mut pairs = Vec::with_capacity(gts.len());
     let mut missing = Vec::new();
     for (k, gt) in gts {

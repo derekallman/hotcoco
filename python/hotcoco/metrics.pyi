@@ -38,7 +38,8 @@ def pixel_confusion(
     ...
 
 def mean_iou(confusion: npt.ArrayLike) -> dict[str, Any]:
-    """``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc`` and per-class ``IoU``/``Acc`` lists from a square count matrix."""
+    """``mIoU``, ``fwIoU``, ``mAcc``, ``aAcc``, ``mDice`` and per-class ``IoU``/``Acc``/``Dice`` lists from a square
+    count matrix."""
     ...
 
 def mean_or_missing(total: float, count: int) -> float:

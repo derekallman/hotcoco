@@ -54,7 +54,9 @@ one malformed value through every path and fails on any disagreement.
   loader, array rows, dicts, and `from_arrays` columns alike. Do not restate it: the
   copies it replaced had drifted, and an array row turned `1e30` into 2⁶⁴ − 1. A bool
   is not an id in any record or column: a JSON `true` is not a number, so
-  `convert::extract_int` refuses a bool of any spelling (`convert::is_bool`) too. A
+  `convert::extract_int` refuses a bool of any spelling (`convert::is_bool`) too, and
+  so does `convert::extract_float`, the one reader of a number inside a record — a
+  box edge, an area, a score, a keypoint, a polygon point. A
   lookup argument (`getAnnIds(imgIds=[True])`) reads `True` as 1, as pycocotools does.
 - **I/O keeps its kind.** Wrap an `io::Error` with `Error::io(e, context)`, never in a
   string: a string loses the `ErrorKind` that makes it `FileNotFoundError`.

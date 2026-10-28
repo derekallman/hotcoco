@@ -48,7 +48,7 @@ use std::borrow::Cow;
 
 use serde::{Deserialize, Serialize};
 
-use super::{is_computed, mean_or_missing};
+use super::{Mean, is_computed, mean_or_missing};
 use crate::error::Error;
 use crate::primitives::sim::iou_from_counts;
 use crate::report::EvalReport;
@@ -365,36 +365,40 @@ pub struct PixelConfusion {
     scratch: LaneScratch,
 }
 
-/// The lane histogram a matrix keeps between the images it counts: at
-/// ADE20K's 150 classes it is 734 KB, past the allocator's mmap threshold,
-/// so a fresh one per image is a map, a page fault per touched page, and an
-/// unmap, for a buffer the next image needs again. Only a matrix of up to
-/// `MAX_LANED_CELLS` keeps one, so it holds at most
-/// `HISTOGRAM_LANES × MAX_LANED_CELLS` cells, 2 MB. It is not state: two
-/// matrices compare equal whatever it holds, a clone starts empty, and it
-/// is not serialized.
+/// Buffers a counter keeps between the images it counts, which are not its
+/// state: two counters compare equal whatever they hold, a clone starts
+/// empty, and they are not serialized. The confusion matrix keeps its lane
+/// histogram here — at ADE20K's 150 classes it is 734 KB, past the
+/// allocator's mmap threshold, so a fresh one per image is a map, a page
+/// fault per touched page, and an unmap, for a buffer the next image needs
+/// again — and the boundary counts keep their masks.
 #[derive(Default)]
-struct LaneScratch(Vec<u64>);
+pub(crate) struct Scratch<T>(pub(crate) T);
 
-impl Clone for LaneScratch {
+impl<T: Default> Clone for Scratch<T> {
     fn clone(&self) -> Self {
         Self::default()
     }
 }
 
-impl PartialEq for LaneScratch {
+impl<T> PartialEq for Scratch<T> {
     fn eq(&self, _: &Self) -> bool {
         true
     }
 }
 
-impl Eq for LaneScratch {}
+impl<T> Eq for Scratch<T> {}
 
-impl std::fmt::Debug for LaneScratch {
+impl<T> std::fmt::Debug for Scratch<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LaneScratch({} cells)", self.0.len())
+        write!(f, "Scratch<{}>", std::any::type_name::<T>())
     }
 }
+
+/// The lane histogram of [`PixelConfusion::update_with`]. Only a matrix of up
+/// to `MAX_LANED_CELLS` keeps one, so it holds at most
+/// `HISTOGRAM_LANES × MAX_LANED_CELLS` cells, 2 MB.
+type LaneScratch = Scratch<Vec<u64>>;
 
 impl PixelConfusion {
     /// An all-zero `num_classes × num_classes` matrix.
@@ -708,28 +712,6 @@ impl PixelConfusion {
     }
 }
 
-/// A running mean: the sum of the values seen and how many there were.
-#[derive(Default)]
-struct Mean {
-    sum: f64,
-    n: usize,
-}
-
-impl Mean {
-    /// Add `v` when it is computed; the sentinel for an absent value.
-    fn push(&mut self, v: Option<f64>) -> f64 {
-        if let Some(v) = v {
-            self.sum += v;
-            self.n += 1;
-        }
-        v.unwrap_or(-1.0)
-    }
-
-    fn get(&self) -> f64 {
-        mean_or_missing(self.sum, self.n)
-    }
-}
-
 /// [`SemanticScores`] from per-class counts, in class order.
 ///
 /// The averaging rules are mmseg's `np.nanmean`: a class without an IoU
@@ -746,11 +728,12 @@ pub fn semantic_scores(classes: &[ClassCounts]) -> SemanticScores {
         .map(|c| {
             tp_total += c.tp;
             gt_total += c.gt_area;
-            if let Some(v) = c.iou() {
+            let class_iou = c.iou();
+            if let Some(v) = class_iou {
                 weighted += v * c.gt_area as f64;
             }
             ClassScores {
-                iou: iou.push(c.iou()),
+                iou: iou.push(class_iou),
                 acc: acc.push(c.acc()),
                 dice: dice.push(c.dice()),
             }

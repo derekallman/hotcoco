@@ -29,8 +29,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{ClassCounts, Label};
-use crate::metrics::mean_or_missing;
+use super::{ClassCounts, Label, Scratch};
+use crate::metrics::{Mean, is_computed};
+use crate::report::EvalReport;
 
 /// The dilation the paper uses: 2% of the image diagonal.
 pub const DEFAULT_DILATION_RATIO: f64 = 0.02;
@@ -43,11 +44,13 @@ pub fn dilation(h: usize, w: usize, ratio: f64) -> usize {
     if d < 1.0 { 1 } else { d as usize }
 }
 
-/// Buffers [`boundary_mask`] reuses between calls.
+/// Buffers [`boundary_mask`] reuses between calls: the pass-1 marks, and
+/// two per-column counters for the vertical passes.
 #[derive(Debug, Default)]
 pub struct MaskScratch {
     rows: Vec<u8>,
-    columns: Vec<u32>,
+    since_mark: Vec<u32>,
+    run_edge: Vec<u32>,
 }
 
 /// Mark the boundary pixels of an `h × w` label map: `out[i]` is 1 when the
@@ -72,16 +75,21 @@ pub fn boundary_mask<L: Label>(
         "a label map of {h} × {w} has {} pixels",
         h * w
     );
-    out.clear();
+    // Every pixel is written by the passes below, so the buffers are sized
+    // and never zeroed.
     out.resize(h * w, 0);
     if h == 0 || w == 0 {
         return;
     }
-    let MaskScratch { rows, columns } = scratch;
-    rows.clear();
+    let MaskScratch {
+        rows,
+        since_mark,
+        run_edge,
+    } = scratch;
     rows.resize(h * w, 0);
     // Pass 1, each row on its own: a pixel is marked when its row segment
-    // `c - d ..= c + d` holds another label or leaves the row.
+    // `c - d ..= c + d` holds another label or leaves the row. Forward for
+    // the left side and the edges, backward for the right side.
     for (row, marks) in labels.chunks_exact(w).zip(rows.chunks_exact_mut(w)) {
         let mut run_start = 0;
         for c in 0..w {
@@ -89,74 +97,77 @@ pub fn boundary_mask<L: Label>(
                 run_start = c;
             }
             let other_left = run_start > 0 && c - run_start < d;
-            if other_left || c < d || c + d >= w {
-                marks[c] = 1;
-            }
+            marks[c] = u8::from(other_left || c < d || c + d >= w);
         }
         let mut run_end = w;
         for c in (0..w).rev() {
             if c + 1 < w && row[c] != row[c + 1] {
                 run_end = c + 1;
             }
-            if run_end < w && run_end - c <= d {
-                marks[c] = 1;
-            }
+            marks[c] |= u8::from(run_end < w && run_end - c <= d);
         }
     }
     // Pass 2, down each column: a pixel is marked when a row within `d` of
     // its own holds another label in its column, or had a mark from pass 1
     // in its column — that row's segment then holds another label too — or
     // when the window leaves the map. `since_mark` counts rows since a
-    // pass-1 mark in the column, `run_start` the row the column's current
+    // pass-1 mark in the column, `run_edge` the row the column's current
     // label began at.
-    columns.clear();
-    columns.resize(2 * w, 0);
-    let (since_mark, run_start) = columns.split_at_mut(w);
     let far = u32::MAX;
-    since_mark.fill(far);
-    run_start.fill(0);
+    since_mark.clear();
+    since_mark.resize(w, far);
+    run_edge.clear();
+    run_edge.resize(w, 0);
     let d32 = u32::try_from(d).unwrap_or(u32::MAX);
-    for r in 0..h {
-        let row = &labels[r * w..(r + 1) * w];
-        let marks = &rows[r * w..(r + 1) * w];
-        let next = &mut out[r * w..(r + 1) * w];
+    let mut above: Option<&[L]> = None;
+    for (r, ((row, marks), next)) in labels
+        .chunks_exact(w)
+        .zip(rows.chunks_exact(w))
+        .zip(out.chunks_exact_mut(w))
+        .enumerate()
+    {
+        let r32 = r as u32;
+        let row_edge = r < d || r + d >= h;
         for c in 0..w {
-            if r > 0 && row[c] != labels[(r - 1) * w + c] {
-                run_start[c] = r as u32;
+            if above.is_some_and(|up| row[c] != up[c]) {
+                run_edge[c] = r32;
             }
             since_mark[c] = if marks[c] == 1 {
                 0
             } else {
                 since_mark[c].saturating_add(1)
             };
-            let other_above = run_start[c] > 0 && (r as u32 - run_start[c]) < d32;
-            if other_above || since_mark[c] <= d32 || r < d || r + d >= h {
-                next[c] = 1;
-            }
+            let other_above = run_edge[c] > 0 && r32 - run_edge[c] < d32;
+            next[c] = u8::from(other_above || since_mark[c] <= d32 || row_edge);
         }
+        above = Some(row);
     }
-    // The same, bottom up, for a mark or another label below.
+    // Pass 3, the same bottom up, for a mark or another label below;
+    // `run_edge` is now the row after the column's current label ends.
     since_mark.fill(far);
-    let run_end = run_start;
-    run_end.fill(h as u32);
-    for r in (0..h).rev() {
-        let row = &labels[r * w..(r + 1) * w];
-        let marks = &rows[r * w..(r + 1) * w];
-        let next = &mut out[r * w..(r + 1) * w];
+    run_edge.fill(h as u32);
+    let mut below: Option<&[L]> = None;
+    for (r, ((row, marks), next)) in labels
+        .chunks_exact(w)
+        .zip(rows.chunks_exact(w))
+        .zip(out.chunks_exact_mut(w))
+        .enumerate()
+        .rev()
+    {
+        let r32 = r as u32;
         for c in 0..w {
-            if r + 1 < h && row[c] != labels[(r + 1) * w + c] {
-                run_end[c] = r as u32 + 1;
+            if below.is_some_and(|down| row[c] != down[c]) {
+                run_edge[c] = r32 + 1;
             }
             since_mark[c] = if marks[c] == 1 {
                 0
             } else {
                 since_mark[c].saturating_add(1)
             };
-            let other_below = run_end[c] < h as u32 && (run_end[c] - r as u32) <= d32;
-            if other_below || since_mark[c] <= d32 {
-                next[c] = 1;
-            }
+            let other_below = run_edge[c] < h as u32 && run_edge[c] - r32 <= d32;
+            next[c] |= u8::from(other_below || since_mark[c] <= d32);
         }
+        below = Some(row);
     }
 }
 
@@ -170,35 +181,16 @@ pub struct BoundaryCounts {
     dilation_ratio: f64,
     classes: Vec<ClassCounts>,
     #[serde(skip)]
-    scratch: Scratch,
+    scratch: Scratch<Buffers>,
 }
 
-/// The boundary masks and their passes' buffers, kept between images. Not
-/// state: two counts compare equal whatever it holds, a clone starts empty,
-/// and it is not serialized — as the confusion matrix's lane scratch.
+/// The boundary masks and their passes' buffers, kept between images in a
+/// [`Scratch`].
 #[derive(Default)]
-struct Scratch {
+struct Buffers {
     gt: Vec<u8>,
     pred: Vec<u8>,
     mask: MaskScratch,
-}
-
-impl Clone for Scratch {
-    fn clone(&self) -> Self {
-        Self::default()
-    }
-}
-
-impl PartialEq for Scratch {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl std::fmt::Debug for Scratch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Scratch({} pixels)", self.gt.len())
-    }
 }
 
 /// Boundary IoU per class and its mean, each the `-1.0` sentinel where the
@@ -218,7 +210,7 @@ impl BoundaryCounts {
         BoundaryCounts {
             dilation_ratio,
             classes: vec![ClassCounts::default(); num_classes],
-            scratch: Scratch::default(),
+            scratch: Scratch(Buffers::default()),
         }
     }
 
@@ -242,7 +234,7 @@ impl BoundaryCounts {
     /// # Panics
     ///
     /// If the maps are not `h * w` long, or a label is out of range.
-    pub fn update<G: Label, P: Label>(
+    pub(crate) fn update<G: Label, P: Label>(
         &mut self,
         gt: &[G],
         pred: &[P],
@@ -251,26 +243,29 @@ impl BoundaryCounts {
         gt_label: impl Fn(u64) -> Option<u64>,
     ) {
         let d = dilation(h, w, self.dilation_ratio);
-        let Scratch {
+        let Buffers {
             gt: gb,
             pred: pb,
             mask,
-        } = &mut self.scratch;
+        } = &mut self.scratch.0;
         boundary_mask(gt, h, w, d, gb, mask);
         boundary_mask(pred, h, w, d, pb, mask);
-        for (i, (&g, &p)) in gt.iter().zip(pred).enumerate() {
+        // Interior pixels, most of a map, cost the two mask reads and nothing else.
+        for (((&g, &p), &on_gt), &on_pred) in gt.iter().zip(pred).zip(&*gb).zip(&*pb) {
+            if on_gt | on_pred == 0 {
+                continue;
+            }
             let Some(g) = g.index().and_then(&gt_label) else {
                 continue;
             };
             let (g, p) = (g as usize, p.index().expect("a checked label") as usize);
-            let (on_gt, on_pred) = (gb[i] == 1, pb[i] == 1);
-            if on_gt {
+            if on_gt == 1 {
                 self.classes[g].gt_area += 1;
             }
-            if on_pred {
+            if on_pred == 1 {
                 self.classes[p].pred_area += 1;
             }
-            if on_gt && on_pred && g == p {
+            if on_gt & on_pred == 1 && g == p {
                 self.classes[g].tp += 1;
             }
         }
@@ -296,23 +291,33 @@ impl BoundaryCounts {
 
     /// The boundary IoU per class and its mean.
     pub fn scores(&self) -> BoundaryScores {
-        let (mut sum, mut n) = (0.0, 0);
-        let per_class = self
-            .classes
-            .iter()
-            .map(|c| {
-                let iou = c.iou();
-                if let Some(v) = iou {
-                    sum += v;
-                    n += 1;
-                }
-                iou.unwrap_or(-1.0)
-            })
-            .collect();
+        let mut mean = Mean::default();
+        let per_class = self.classes.iter().map(|c| mean.push(c.iou())).collect();
         BoundaryScores {
-            mbiou: mean_or_missing(sum, n),
+            mbiou: mean.get(),
             per_class,
         }
+    }
+}
+
+impl BoundaryScores {
+    /// Record these scores on a report: `mBIoU` as a metric, and `BIoU` per
+    /// class under `class_names` (in class order) where computed — the
+    /// boundary half of what [`SemanticScores::add_to_report`](super::SemanticScores::add_to_report)
+    /// writes.
+    #[must_use]
+    pub fn add_to_report<S: Into<String>>(
+        &self,
+        mut report: EvalReport,
+        class_names: impl IntoIterator<Item = S>,
+    ) -> EvalReport {
+        report = report.with_metrics([("mBIoU", self.mbiou)]);
+        for (name, biou) in class_names.into_iter().zip(&self.per_class) {
+            if is_computed(*biou) {
+                report = report.with_class_metric(name, "BIoU", *biou);
+            }
+        }
+        report
     }
 }
 

@@ -680,6 +680,34 @@ fn folders_pair_recursively_by_stem_and_suffix() {
         "{err}"
     );
 
+    std::fs::remove_dir_all(pred.join("again")).unwrap();
+
+    // Two ground-truth files with one stem would count the frame twice.
+    std::fs::create_dir_all(gt.join("again")).unwrap();
+    write_gray_png(
+        &gt.join("again")
+            .join(format!("aachen_000000_000019{label}")),
+        &[0, 0, 1, 255],
+    );
+    let err = SemanticEval::new(2)
+        .update_folders(&gt, &pred, &pairing)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("two ground-truth files") && err.contains("aachen_000000_000019"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(gt.join("again")).unwrap();
+
+    // A symlink back up the tree is not followed, so the walk ends.
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("..", gt.join("aachen").join("up")).unwrap();
+        let mut ev = SemanticEval::new(2);
+        assert_eq!(ev.update_folders(&gt, &pred, &pairing).unwrap(), 2);
+        std::fs::remove_file(gt.join("aachen").join("up")).unwrap();
+    }
+
     // The default pairing is the `.png` files at the top of each folder, by name.
     assert_eq!(
         FolderPairing::default(),

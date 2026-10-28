@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::mean_or_missing;
+use super::Mean;
 
 /// Match counts for one category, summed over images.
 ///
@@ -109,18 +109,18 @@ impl PqScores {
 /// no stuff categories reports "not computed" for the stuff split instead of
 /// failing.
 pub fn pq_average<'a>(counts: impl IntoIterator<Item = &'a PqCounts>) -> (PqScores, usize) {
-    let (mut pq, mut sq, mut rq, mut n) = (0.0, 0.0, 0.0, 0usize);
+    let (mut pq, mut sq, mut rq, mut n) = (Mean::default(), Mean::default(), Mean::default(), 0);
     for scores in counts.into_iter().filter_map(PqCounts::scores) {
-        pq += scores.pq;
-        sq += scores.sq;
-        rq += scores.rq;
+        pq.push(Some(scores.pq));
+        sq.push(Some(scores.sq));
+        rq.push(Some(scores.rq));
         n += 1;
     }
     (
         PqScores {
-            pq: mean_or_missing(pq, n),
-            sq: mean_or_missing(sq, n),
-            rq: mean_or_missing(rq, n),
+            pq: pq.get(),
+            sq: sq.get(),
+            rq: rq.get(),
         },
         n,
     )
