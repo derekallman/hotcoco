@@ -257,29 +257,24 @@ If formatting fails, run `cargo fmt --all` to fix, then re-commit. If clippy fai
 - When committing and pushing, always verify the current git status first to avoid trying to commit already-committed changes. Check `git status` and `git log --oneline -3` before any commit/push operation.
 - Keep commits clean: never include build artifacts, compiled files, or `__pycache__` directories. Review staged files carefully before committing. If unsure, ask before committing.
 - Commit message body: use bullet points, not prose paragraphs.
-- **Standard per-feature sequence:** gate → design checkpoint → code → one
-  `/code-review` → one `/simplify` → `/ship` → `/commit`. Per feature, not per
-  release.
+- **Per-feature sequence:** gate → code → `/ship` → `/commit`. Review is optional
+  and used once, when the change touches evaluation logic or a public API shape.
   - **The gate comes first.** The test that would catch the bug class — a row in
     `tests/test_array_spellings.py`, a path in `tests/test_input_errors.py`, a parity
     case, an acceptance test that reproduces a family's number — is written with the
     code, and is proven to fail (see Verifying a check can fail). Correctness is the
     gate's job, not review's.
-  - **Anything with a public surface gets a design checkpoint before code:** the API
-    in a paragraph — names, arguments, return shapes, error kinds — agreed with the
-    user first. Designing in the diff is how five review rounds get spent on a shape
-    that was never discussed.
-  - **Review is for improvement, not bug squashing:** altitude, reuse, naming, API
-    shape. Fix what is real, then `/simplify`, then stop. A fix round gets a test,
-    not another review. Do not loop until a pass is "clean": a reviewer asked to
-    find something finds something, and thirteen rounds across two 1.4 features
-    found guard blind spots and changelog wording, not wrong numbers.
-- **Branch-wide bug hunts are discretionary, and worth it before a release.** A diff
-  review reads the diff; a hunt has reviewers read whole families, and finds what
-  no diff review can (the 1.3 hunt found six of ten in a week-old commit). Run one
-  when the user asks, not by default: its findings tend to land in code with no
-  gate, and the lasting fix for that is a gate — a conformance test, a spelling
-  row, an error-path case — not another reader.
+  - **A new public API with more than one plausible shape gets a paragraph first:**
+    names, arguments, return shapes, error kinds — agreed with the user before code.
+    A warning, a flag, or a method that mirrors an existing one needs no checkpoint.
+  - **One review at most, aimed at improvement:** altitude, reuse, naming, API shape.
+    Fix what is real, then stop. A fix round gets a test, not another review. Thirteen
+    rounds across two 1.4 features found guard blind spots and changelog wording, not
+    wrong numbers; the process is sized for one maintainer, not a hundred.
+- **Branch-wide bug hunts are discretionary.** Run one before a release when the user
+  asks, not by default: its findings tend to land in code with no gate, and the lasting
+  fix for that is a gate — a conformance test, a spelling row, an error-path case — not
+  another reader.
 - `/ship` is the gate for communication surfaces — CHANGELOG, ROADMAP, docs sync, and parity. Do not commit and then update docs/CHANGELOG after; update everything first, then commit once.
 
 ### Worktrees

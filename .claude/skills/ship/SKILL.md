@@ -15,7 +15,11 @@ Work through these in order. Each step is a gate — do not proceed until it's d
 ### 1. CHANGELOG.md
 
 Add an entry under `[Unreleased]` for every meaningful change. Use bullet points,
-grouped under `Added`, `Changed`, `Fixed`, or `Removed` as appropriate. Be specific: name
+grouped under `Added`, `Changed`, `Fixed`, or `Removed` as appropriate. **One
+bullet is at most five lines.** Name what changed and where to read more; the
+guide page owns the explanation, the docstring owns the signature, and a reader
+skimming the release should finish a bullet in one breath. The 1.3 and 1.4 entries
+ran to 190 lines of paragraphs that restated the docs, which nobody reads twice. Be specific: name
 the function, file, flag, or behavior that changed. Vague entries like "improved
 performance" are not acceptable.
 
