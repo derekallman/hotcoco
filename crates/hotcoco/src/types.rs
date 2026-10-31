@@ -422,6 +422,20 @@ impl<'de, T: TryFrom<u64>> Deserialize<'de> for Uint<T> {
 /// a JSON file, a Python dict, an array row — so they agree on every value:
 /// `1.0`, from a file written through pandas, is the id 1, and `1.5`, `-1`,
 /// NaN, and `1e30` are not ids.
+/// Whether an `[x, y, w, h]` box lies inside a `w × h`-pixel image: no edge
+/// past any of the image's four, with the box's width and height at least
+/// zero. The one spelling of this test; the healthcheck and the results
+/// loader both call it.
+pub(crate) fn bbox_within_image(bbox: &[f64; 4], img_w: u32, img_h: u32) -> bool {
+    let [x, y, w, h] = *bbox;
+    x >= 0.0
+        && y >= 0.0
+        && w >= 0.0
+        && h >= 0.0
+        && x + w <= f64::from(img_w)
+        && y + h <= f64::from(img_h)
+}
+
 pub fn id_from_f64(v: f64) -> Option<u64> {
     // `u64::MAX as f64` rounds up to 2⁶⁴, which no u64 holds, so the bound is
     // strict; a cast at 2⁶⁴ would saturate to a different id.

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`load_res` warns on corner-pair boxes.** When most bbox detections run past
+  their image read as `[x, y, w, h]` but fit it read as `[x1, y1, x2, y2]`, the
+  loader emits a `DatasetWarning` pointing to the troubleshooting page; the Rust
+  CLI prints it. Silent before, with plausible wrong numbers. See
+  [Bbox format](https://derekallman.github.io/hotcoco/getting-started/troubleshooting/#bbox-format-x1-y1-x2-y2-vs-x-y-w-h).
 - **Dice and boundary IoU in the semantic family.** `SemanticEval` reports
   `mDice` and per-class `Dice` — mmsegmentation's `mDice`, from the same
   confusion matrix under the same rules as `mIoU`, checked against it on the

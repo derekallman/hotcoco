@@ -417,6 +417,11 @@ type:
 !!! tip
     A result carrying both `segmentation` and `keypoints` is treated as a segmentation result, matching pycocotools precedence.
 
+Problems the loader tolerates — an `image_id` or `category_id` the ground truth
+does not have, or bbox results whose boxes mostly read as
+[`[x1, y1, x2, y2]` corner pairs](../getting-started/troubleshooting.md#bbox-format-x1-y1-x2-y2-vs-x-y-w-h) —
+are each one `DatasetWarning`, kept on the result's [`load_warnings`](#load_warnings).
+
 ---
 
 ### `cap_detections_per_image`

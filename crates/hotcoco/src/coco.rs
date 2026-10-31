@@ -13,7 +13,7 @@ use crate::error::Error;
 use crate::mask;
 use crate::metrics::counts::descending_score_key;
 use crate::primitives::sim::worth_parallel;
-use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation};
+use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation, bbox_within_image};
 
 /// The COCO dataset API for loading, querying, and indexing annotations.
 #[derive(Clone)]
@@ -63,7 +63,7 @@ pub(crate) const LVIS_MAX_DETS_PER_IMAGE: usize = 300;
 ///
 /// `Obb` is a hotcoco extension with no pycocotools counterpart, so it sits last
 /// and cannot displace any of the three.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ResultKind {
     Bbox,
     Segm,
@@ -148,6 +148,25 @@ impl Drop for COCO {
         }
     }
 }
+
+/// How `bbox` sits in a `img_w × img_h` image under each reading of its four
+/// numbers. `Some(true)`: it runs past the image as `[x, y, w, h]` and fits it
+/// as `[x1, y1, x2, y2]`, the signature of a corner-pair box in a results file.
+/// `Some(false)`: any other box. `None`: the image size is unknown, so there is
+/// nothing to measure against.
+fn reads_as_corner_pair(bbox: &[f64; 4], img_w: u32, img_h: u32) -> Option<bool> {
+    if img_w == 0 || img_h == 0 {
+        return None;
+    }
+    let [x1, y1, x2, y2] = *bbox;
+    let as_xyxy = [x1, y1, x2 - x1, y2 - y1];
+    Some(!bbox_within_image(bbox, img_w, img_h) && bbox_within_image(&as_xyxy, img_w, img_h))
+}
+
+/// One `load_res_anns` validation pass's result: the first NaN score, unknown
+/// image, and unknown category, then the corner-pair census as
+/// `(boxes measured, boxes reading as corner pairs)`.
+type Checked = ([Option<usize>; 3], (usize, usize));
 
 /// Why `load_res` rejects a NaN score, from a file and a list alike.
 const NAN_SCORE_WHY: &str = "Scores order the detection ranking, and NaN makes that order \
@@ -684,29 +703,44 @@ impl COCO {
         // error and points here.) An image_id or category_id not in the GT is
         // a common mistake that makes the detections silently score low, so
         // the first of each is a warning.
+        // Beside the first offenders, a census of boxes that read as corner
+        // pairs: a corner-pair box evaluates to plausible, wrong numbers with
+        // no other symptom, so the loader is the one place to catch it. One
+        // box past the edge is a dataset quirk; a majority is a format.
+        let census = kind == Some(ResultKind::Bbox);
         let check = |i: usize, ann: &Annotation| {
-            [
+            let img = self.imgs.get(&ann.image_id);
+            let firsts = [
                 ann.score.is_some_and(f64::is_nan).then_some(i),
-                (!self.imgs.contains_key(&ann.image_id)).then_some(i),
+                img.is_none().then_some(i),
                 (has_cats && !self.cats.contains_key(&ann.category_id)).then_some(i),
-            ]
+            ];
+            let reading = match (census, ann.bbox.as_ref(), img) {
+                (true, Some(b), Some(&img)) => {
+                    let img = &self.dataset.images[img];
+                    reads_as_corner_pair(b, img.width, img.height)
+                }
+                _ => None,
+            };
+            (firsts, reading.map_or((0, 0), |r| (1, usize::from(r))))
         };
-        let earliest = |a: [Option<usize>; 3], b: [Option<usize>; 3]| {
-            std::array::from_fn(|j| match (a[j], b[j]) {
+        let combine = |(a, (n, m)): Checked, (b, (n2, m2)): Checked| {
+            let firsts = std::array::from_fn(|j| match (a[j], b[j]) {
                 (Some(x), Some(y)) => Some(x.min(y)),
                 (x, y) => x.or(y),
-            })
+            });
+            (firsts, (n + n2, m + m2))
         };
-        let [first_nan, first_img, first_cat] = if worth_parallel(anns.len()) {
+        let ([first_nan, first_img, first_cat], (n, m)) = if worth_parallel(anns.len()) {
             anns.par_iter()
                 .enumerate()
                 .map(|(i, ann)| check(i, ann))
-                .reduce(|| [None; 3], earliest)
+                .reduce(|| ([None; 3], (0, 0)), combine)
         } else {
             anns.iter()
                 .enumerate()
                 .map(|(i, ann)| check(i, ann))
-                .fold([None; 3], earliest)
+                .fold(([None; 3], (0, 0)), combine)
         };
         if let Some(i) = first_nan {
             let ann = &anns[i];
@@ -716,6 +750,16 @@ impl COCO {
             )));
         }
         let mut warnings = Vec::new();
+        if 2 * m > n {
+            warnings.push(format!(
+                "load_res() warning — {m} of {n} detection boxes run past their image \
+                 when read as [x, y, width, height] and fit it when read as \
+                 [x1, y1, x2, y2]. COCO boxes are [x, y, width, height]; corner-pair \
+                 boxes evaluate to plausible but wrong numbers. If yours are corner \
+                 pairs, convert them before evaluating: \
+                 https://derekallman.github.io/hotcoco/getting-started/troubleshooting/#bbox-format-x1-y1-x2-y2-vs-x-y-w-h"
+            ));
+        }
         if let Some(i) = first_img {
             warnings.push(format!(
                 "load_res() warning — found annotation with image_id {} not in the \

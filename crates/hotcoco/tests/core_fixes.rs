@@ -599,3 +599,77 @@ fn json_integral_floats_are_ints() {
         "iscrowd 0.5 is not a flag"
     );
 }
+
+// ── Corner-pair boxes in a results file ──────────────────────────────────────
+
+/// Boxes that fit the 20×20 GT image as `[x1, y1, x2, y2]` and run past it as
+/// `[x, y, w, h]`: one on both axes, one on y alone, one on x alone.
+fn corner_pair_dets() -> Vec<Annotation> {
+    [
+        [12.0, 12.0, 18.0, 18.0],
+        [4.0, 14.0, 10.0, 18.0],
+        [14.0, 2.0, 18.0, 8.0],
+    ]
+    .into_iter()
+    .map(|b| Annotation {
+        image_id: 1,
+        category_id: 1,
+        bbox: Some(b),
+        score: Some(0.5),
+        ..Default::default()
+    })
+    .collect()
+}
+
+fn box_format_warning(res: &COCO) -> Option<&String> {
+    res.load_warnings()
+        .iter()
+        .find(|w| w.contains("[x1, y1, x2, y2]"))
+}
+
+#[test]
+fn load_res_warns_when_most_boxes_look_like_corner_pairs() {
+    let gt = COCO::from_dataset(gt_dataset());
+    let res = gt.load_res_anns(corner_pair_dets()).unwrap();
+    let w = box_format_warning(&res).expect("expected a box-format warning");
+    assert!(w.contains("3 of 3"), "{w}");
+}
+
+#[test]
+fn load_res_box_format_warning_needs_a_majority() {
+    let gt = COCO::from_dataset(gt_dataset());
+    // Three corner-pair-looking boxes against four that fit as [x, y, w, h].
+    let mut dets = corner_pair_dets();
+    for _ in 0..4 {
+        dets.push(Annotation {
+            image_id: 1,
+            category_id: 1,
+            bbox: Some([1.0, 1.0, 3.0, 3.0]),
+            score: Some(0.5),
+            ..Default::default()
+        });
+    }
+    let res = gt.load_res_anns(dets).unwrap();
+    assert!(
+        box_format_warning(&res).is_none(),
+        "{:?}",
+        res.load_warnings()
+    );
+}
+
+#[test]
+fn load_res_box_format_warning_needs_image_sizes() {
+    // No image size: nothing to measure against.
+    let mut ds = gt_dataset();
+    for img in &mut ds.images {
+        img.width = 0;
+        img.height = 0;
+    }
+    let gt = COCO::from_dataset(ds);
+    let res = gt.load_res_anns(corner_pair_dets()).unwrap();
+    assert!(
+        box_format_warning(&res).is_none(),
+        "{:?}",
+        res.load_warnings()
+    );
+}

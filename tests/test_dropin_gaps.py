@@ -1104,6 +1104,19 @@ class TestLoadWarnings:
         coco = COCO(ds)
         assert any("annotation" in w for w in coco.load_warnings)
 
+    def test_corner_pair_boxes_are_reported(self):
+        # Boxes that fit the 100×100 images as [x1, y1, x2, y2] and run past
+        # them as [x, y, w, h]: the mistake the troubleshooting page describes.
+        gt = COCO(tiny_dataset())
+        dets = [{"image_id": 1, "category_id": 1, "bbox": [60, 60, 90, 90], "score": 0.9}]
+        with pytest.warns(hotcoco.DatasetWarning, match=r"1 of 1 detection boxes .* \[x1, y1, x2, y2\]"):
+            gt.load_res(dets)
+        # The same box as [x, y, w, h] fits, and a clean load says nothing.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            res = gt.load_res([{**dets[0], "bbox": [60, 60, 30, 30]}])
+        assert res.load_warnings == []
+
 
 # ---------------------------------------------------------------------------
 # Issue #5: findings from adopting hotcoco through TorchMetrics

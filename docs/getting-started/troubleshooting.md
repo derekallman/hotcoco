@@ -61,6 +61,13 @@ COCO uses `[x, y, width, height]` (top-left corner + size) in **pixel coordinate
 - Many model outputs use `[x1, y1, x2, y2]` (two corners) instead of `[x, y, w, h]`
 - Some formats, such as YOLO, use normalized coordinates in `[0, 1]` — COCO always expects pixel values
 
+`load_res` checks for the first mistake: when most detection boxes run past their
+image when read as `[x, y, w, h]` but fit it when read as `[x1, y1, x2, y2]`, it
+emits a `DatasetWarning` that points here. A box or two past the edge is a dataset
+quirk and says nothing; a majority is a format. The check needs the images'
+`width` and `height`, so it is silent on a ground truth without them. Normalized
+coordinates have no such signature and go unflagged.
+
 Convert before passing to `load_res`:
 
 ```python
@@ -77,7 +84,7 @@ detections = [
 
 ### `image_id` not found in ground truth
 
-If a detection's `image_id` doesn't exist in the ground-truth dataset, it won't raise an error — `load_res` accepts it, but the evaluator silently ignores it since there's no matching GT image to evaluate against. No warning is emitted, so mismatches can be hard to spot.
+If a detection's `image_id` doesn't exist in the ground-truth dataset, it won't raise an error — `load_res` accepts it and emits one `DatasetWarning` naming the first such id, and the evaluator ignores those detections since there's no matching GT image to evaluate against.
 
 Verify your image IDs match:
 
