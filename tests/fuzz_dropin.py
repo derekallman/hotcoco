@@ -40,7 +40,7 @@ import hypothesis.strategies as st
 import numpy as np
 import pycocotools.mask as pm
 import pytest
-from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, compare_metrics, metric_names_for, suppress_output
+from helpers import COCO_KEYPOINT_NAMES, COCO_SKELETON, compare_metrics, metric_names_for, rect_polygon, suppress_output
 from hypothesis import HealthCheck, given, settings
 from pycocotools.coco import COCO as PyCOCO
 from pycocotools.cocoeval import COCOeval as PyCOCOeval
@@ -51,10 +51,6 @@ IOU_TYPES = ("bbox", "segm", "keypoints")
 # ---------------------------------------------------------------------------
 # Canonical dataset strategy
 # ---------------------------------------------------------------------------
-
-
-def _rect_polygon(x, y, w, h):
-    return [[x, y, x + w, y, x + w, y + h, x, y + h]]
 
 
 def _rle_str(x, y, w, h, img_w, img_h):
@@ -116,7 +112,7 @@ def canonical_dataset(draw):
         img = images[draw(st.integers(0, n_img - 1))]
         x, y, w, h = box(img)
         use_rle = draw(st.booleans())
-        seg = _rle_str(x, y, w, h, img["width"], img["height"]) if use_rle else _rect_polygon(x, y, w, h)
+        seg = _rle_str(x, y, w, h, img["width"], img["height"]) if use_rle else rect_polygon(x, y, w, h)
         kps, n_vis = keypoints(x, y, w, h)
         anns.append(
             {
@@ -148,7 +144,7 @@ def canonical_dataset(draw):
         else:
             x, y, w, h = box(img)
         use_rle = draw(st.booleans())
-        seg = _rle_str(x, y, w, h, img["width"], img["height"]) if use_rle else _rect_polygon(x, y, w, h)
+        seg = _rle_str(x, y, w, h, img["width"], img["height"]) if use_rle else rect_polygon(x, y, w, h)
         kps, _ = keypoints(x, y, w, h)
         dets.append(
             {

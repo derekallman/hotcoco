@@ -142,6 +142,11 @@ def suppress_output(*, stderr: bool = True):
 # ---------------------------------------------------------------------------
 
 
+def rect_polygon(x, y, w, h):
+    """The `[x, y, w, h]` box as a one-ring COCO polygon."""
+    return [[x, y, x + w, y, x + w, y + h, x, y + h]]
+
+
 @contextlib.contextmanager
 def written_json(*objects, quiet: bool = False):
     """Write each object to its own temp ``.json`` file and yield their paths.

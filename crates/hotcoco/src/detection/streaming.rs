@@ -174,14 +174,12 @@ impl StreamingEval {
         if !self.params.use_cats {
             return Vec::new();
         }
-        let mut ids: Vec<u64> = anns
-            .into_iter()
-            .map(|a| a.category_id)
-            .filter(|&id| self.categories.get_cat(id).is_none())
-            .collect();
-        ids.sort_unstable();
-        ids.dedup();
-        ids
+        super::sorted_unique(
+            anns.into_iter()
+                .map(|a| a.category_id)
+                .filter(|&id| self.categories.get_cat(id).is_none())
+                .collect(),
+        )
     }
 
     /// Match a batch of images' ground truth against their detections now.
@@ -226,9 +224,7 @@ impl StreamingEval {
             return Err(crate::error::Error::UnknownCategoryIds(unknown));
         }
 
-        let mut ids: Vec<u64> = images.iter().map(|img| img.id).collect();
-        ids.sort_unstable();
-        ids.dedup();
+        let mut ids = super::sorted_unique(images.iter().map(|img| img.id).collect());
         if !self.params.img_ids.is_empty() {
             ids.retain(|id| self.params.img_ids.binary_search(id).is_ok());
         }

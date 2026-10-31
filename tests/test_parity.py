@@ -23,6 +23,7 @@ from helpers import (
     assert_metrics_match,
     float32_grids,
     grid_sensitive_records,
+    rect_polygon,
     run_both,
     suppress_output,
     written_json,
@@ -299,6 +300,77 @@ def _accumulated_arrays(
             rs_ev.params.max_dets = list(acc_max_dets)
         rs_ev.accumulate()
     return py_ev.eval, rs_ev.eval
+
+
+def _as_segm(gt, dts):
+    """The same dataset with a rectangle polygon on every annotation, for segm."""
+
+    def polygon(a):
+        return {**a, "segmentation": rect_polygon(*a["bbox"])}
+
+    gt = {**gt, "annotations": [polygon(a) for a in gt["annotations"]]}
+    return gt, [polygon(d) for d in dts]
+
+
+@pytest.mark.parametrize("iou_type", ["bbox", "segm"])
+@pytest.mark.parametrize(
+    ("max_dets", "use_cats", "img_ids"),
+    [
+        ([1, 10, 100], True, None),
+        ([1, 2, 3], True, None),
+        ([1, 10, 100], False, None),
+        ([1, 10, 100], True, [5, 3, 1, 3]),
+    ],
+)
+def test_ious_match_pycocotools(iou_type, max_dets, use_cats, img_ids):
+    """``ev.ious`` is pycocotools' attribute cell for cell: the same keys in the
+    same order, ``[]`` where either side is empty, and elsewhere the same
+    ``(D, G)`` matrix with detections in score order cut at the last cap.
+    ``[1, 2, 3]`` makes the cap bite on every cell of the tie-heavy dataset;
+    ``use_cats=False`` keys every cell by category ``-1``; an unsorted
+    ``img_ids`` with a repeat comes back sorted and unique, as ``np.unique``
+    leaves pycocotools'. The dict is fixed at ``evaluate()`` time: params
+    edited afterwards for ``accumulate()`` must not change it. Keypoints are
+    not compared: pycocotools' ``computeOks`` ignores ``useCats``."""
+    from pycocotools.coco import COCO as PyCOCO  # noqa: PLC0415
+    from pycocotools.cocoeval import COCOeval as PyCOCOeval  # noqa: PLC0415
+
+    gt, dts = _tie_heavy_dataset()
+    if iou_type == "segm":
+        gt, dts = _as_segm(gt, dts)
+    with written_json(gt, dts) as (gt_path, dt_path):
+        with suppress_output():
+            py_gt = PyCOCO(gt_path)
+            py_ev = PyCOCOeval(py_gt, py_gt.loadRes(dt_path), iou_type)
+            py_ev.params.maxDets = list(max_dets)
+            py_ev.params.useCats = int(use_cats)
+            if img_ids is not None:
+                py_ev.params.imgIds = list(img_ids)
+            py_ev.evaluate()
+        rs_gt = COCO(gt_path)
+        rs_ev = COCOeval(rs_gt, rs_gt.load_res(dt_path), iou_type)
+        assert rs_ev.ious == {}
+        rs_ev.params.max_dets = list(max_dets)
+        rs_ev.params.use_cats = use_cats
+        if img_ids is not None:
+            rs_ev.params.img_ids = list(img_ids)
+        rs_ev.evaluate()
+        # The pycocotools `accumulate(p)` idiom: new caps and category settings
+        # after `evaluate()`. `ious` describes the run that happened.
+        rs_ev.params.max_dets = [1]
+        rs_ev.params.use_cats = not use_cats
+        rs_ev.accumulate()
+
+    py_ious, rs_ious = py_ev.ious, rs_ev.ious
+    assert list(rs_ious) == list(py_ious)
+    assert any(len(v) for v in py_ious.values())
+    for key, expected in py_ious.items():
+        got = rs_ious[key]
+        if len(expected) == 0:
+            assert got == [], key
+        else:
+            assert isinstance(got, np.ndarray) and got.dtype == np.float64, key
+            np.testing.assert_array_equal(got, expected, err_msg=str(key))
 
 
 def _assert_arrays_bit_equal(py_eval, rs_eval, what):

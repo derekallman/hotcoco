@@ -1196,10 +1196,15 @@ pub(super) fn evaluate_pair_full<'a>(
 }
 
 /// One cell's similarity matrix: a row per detection and a column per ground
-/// truth, in the order of the cell's id lists, in one row-major buffer. A
-/// vector per row cost an allocation per detection, and with a ground truth or
-/// two per cell the row headers outweighed the values.
-pub(in crate::detection) struct IouMatrix {
+/// truth, in one row-major buffer. A vector per row cost an allocation per
+/// detection, and with a ground truth or two per cell the row headers
+/// outweighed the values.
+///
+/// Inside the detection driver the rows follow the cell's id lists. The
+/// matrices [`COCOeval::iou_matrices`](crate::COCOeval::iou_matrices) hand out have their rows
+/// in pycocotools' order instead; that method's doc says which.
+#[derive(Debug, Clone)]
+pub struct IouMatrix {
     cols: usize,
     values: Vec<f64>,
 }
@@ -1212,8 +1217,23 @@ impl IouMatrix {
     }
 
     /// Detection `di`'s similarities, or `None` past the last row.
-    pub(in crate::detection) fn row(&self, di: usize) -> Option<&[f64]> {
+    pub fn row(&self, di: usize) -> Option<&[f64]> {
         self.values.get(di * self.cols..(di + 1) * self.cols)
+    }
+
+    /// Number of rows: one per detection.
+    pub fn rows(&self) -> usize {
+        self.values.len() / self.cols
+    }
+
+    /// Number of columns: one per ground truth.
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// The values, row-major, without a copy.
+    pub fn into_values(self) -> Vec<f64> {
+        self.values
     }
 }
 

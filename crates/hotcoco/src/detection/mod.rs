@@ -41,7 +41,7 @@ pub use diagnostics::{
     AnnotationIndex, DtStatus, ErrorProfile, GtStatus, ImageDiagnostics, ImageSummary, LabelError,
     LabelErrorType,
 };
-pub use matching::EvalImg;
+pub use matching::{EvalImg, IouMatrix};
 pub use mode::{EvalMode, FreqGroup};
 pub use results::{EvalParams, EvalResults};
 pub use slice::{SliceResult, SlicedResults};
@@ -55,7 +55,22 @@ use std::sync::Arc;
 use crate::coco::{AreaRule, COCO};
 use crate::detection::hierarchy::Hierarchy;
 use crate::error::Error;
+use crate::metrics::counts::score_order;
 use crate::params::{IouType, Params};
+
+/// The category key of the one pooled cell per image under `use_cats = false`:
+/// a value no real category id takes, so the pooled cell cannot collide with
+/// category 0. `COCOeval::iou_matrices` keys the pooled cell by it; the Python
+/// `ious` dict spells it `-1`, as pycocotools does.
+pub const POOLED_CAT: u64 = u64::MAX;
+
+/// `ids` sorted and without repeats: the shape every id list evaluation walks
+/// has, and the one `np.unique` gives pycocotools'.
+pub(in crate::detection) fn sorted_unique(mut ids: Vec<u64>) -> Vec<u64> {
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
 
 /// How many of `n` items each parallel run takes, at least one.
 fn run_len(n: usize) -> usize {
@@ -359,17 +374,83 @@ impl COCOeval {
     /// per thread.
     ///
     /// So this accessor hands out one cell, never the map. The detection driver may
-    /// cache as much as it likes; nothing outside it may learn that a whole-dataset
-    /// cache exists. **Keep this driver-private** — it must not gain a `pub` variant,
-    /// and it must not return `&HashMap<..>`. `pub(in crate::detection)`, not
-    /// `pub(super)`: the visibility is the enforcement. `tests/architecture.rs`
-    /// separately bans direct `.ious` access outside this module.
+    /// cache as much as it likes; no analysis, `metrics`, or `primitives` code may
+    /// learn that a whole-dataset cache exists. **Keep this driver-private** — it
+    /// must not gain a `pub` variant, and it must not return `&HashMap<..>`.
+    /// `pub(in crate::detection)`, not `pub(super)`: the visibility is the
+    /// enforcement. `tests/architecture.rs` separately bans direct `.ious` access
+    /// outside this module. [`iou_matrices`](Self::iou_matrices) copies cells out
+    /// at the driver's boundary for pycocotools' `ious`; nothing in the crate
+    /// reads it.
     pub(in crate::detection) fn cell_ious(
         &self,
         img_id: u64,
         cat_id: u64,
     ) -> Option<&matching::IouMatrix> {
         self.ious.get(&(img_id, cat_id))
+    }
+
+    /// pycocotools' `ious`, cell for cell: for every image and category the
+    /// last [`evaluate`](Self::evaluate) ran over — its image ids and, with
+    /// `use_cats`, its category ids, each sorted and unique as `np.unique`
+    /// leaves pycocotools' — the cell's similarity matrix, or `None` where
+    /// either side is empty (pycocotools' `[]`). Rows are the cell's detections
+    /// in the order `evaluate()` ranked them, cut at [`Params::max_det`]
+    /// (pycocotools' `maxDets[-1]`; the same on a sorted list); columns are its
+    /// ground truths in annotation order. With `use_cats` off there is one
+    /// pooled cell per image, keyed by [`POOLED_CAT`]. Empty before
+    /// `evaluate()`, and fixed at that call as pycocotools' attribute is: it
+    /// reads the params that run resolved, so caps or category settings edited
+    /// afterwards for `accumulate()` do not move it. Built from the driver's
+    /// cache on every call.
+    ///
+    /// One known divergence: pycocotools' `computeOks` ignores `useCats`, so
+    /// for keypoints with it off pycocotools lists `[]` in every cell where
+    /// this returns the pooled OKS matrix.
+    pub fn iou_matrices(&self) -> Vec<((u64, u64), Option<IouMatrix>)> {
+        let Some(params) = self.eval_inputs.as_ref().map(|inputs| &inputs.params) else {
+            return Vec::new();
+        };
+        let img_ids = sorted_unique(params.img_ids.clone());
+        let cat_ids = if params.use_cats {
+            sorted_unique(params.cat_ids.clone())
+        } else {
+            vec![POOLED_CAT]
+        };
+        let cap = params.max_det();
+        let in_rank_order = |img_id: u64, cat_id: u64, matrix: &IouMatrix| {
+            let dt_ids = Self::get_anns_static(&self.coco_dt, params, img_id, cat_id);
+            let scores: Vec<f64> = dt_ids
+                .iter()
+                .map(|&id| {
+                    self.coco_dt
+                        .get_ann(id)
+                        .and_then(|ann| ann.score)
+                        .unwrap_or(0.0)
+                })
+                .collect();
+            let mut order = score_order(&scores);
+            order.truncate(cap);
+            if order.is_empty() {
+                return None;
+            }
+            let mut values = Vec::with_capacity(order.len() * matrix.cols());
+            for &di in &order {
+                values.extend_from_slice(matrix.row(di).unwrap_or(&[]));
+            }
+            Some(IouMatrix::new(values, matrix.cols()))
+        };
+        img_ids
+            .iter()
+            .flat_map(|&img_id| cat_ids.iter().map(move |&cat_id| (img_id, cat_id)))
+            .map(|key| {
+                let matrix = self
+                    .ious
+                    .get(&key)
+                    .and_then(|m| in_rank_order(key.0, key.1, m));
+                (key, matrix)
+            })
+            .collect()
     }
 
     /// The evaluated cells every whole-dataset analysis reads: `area = "all"` at

@@ -91,8 +91,9 @@ pub use convert::{
 pub use detection::{
     AccumulatedEval, AnnotationIndex, COCOeval, CalibrationResult, CategoryDelta, CompareOpts,
     ComparisonResult, ConfusionMatrix, DtStatus, ErrorProfile, EvalImg, EvalMode, EvalParams,
-    EvalResults, EvalShape, FreqGroup, GtStatus, ImageDiagnostics, ImageSummary, LabelError,
-    LabelErrorType, MetricDef, SliceResult, SlicedResults, StreamingEval, TideErrors, compare,
+    EvalResults, EvalShape, FreqGroup, GtStatus, ImageDiagnostics, ImageSummary, IouMatrix,
+    LabelError, LabelErrorType, MetricDef, POOLED_CAT, SliceResult, SlicedResults, StreamingEval,
+    TideErrors, compare,
 };
 pub use error::Error;
 // Re-exported at the root because it is the shape of `EvalImg`'s per-threshold

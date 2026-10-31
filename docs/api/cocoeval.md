@@ -197,6 +197,38 @@ For a worked example, see [Per-image evaluation results](../guide/results.md#per
 
 ---
 
+### `ious`
+
+pycocotools' `ious` attribute: the IoU (or OKS) matrix of every image and
+category `evaluate()` ran over, keyed by `(image_id, category_id)`. Empty before
+`evaluate()`, and fixed at that call as pycocotools' is: `params` edited
+afterwards for `accumulate()` do not move it.
+
+=== "Python"
+
+    ```python
+    ious: dict[tuple[int, int], np.ndarray | list]
+    ```
+
+    A value is a `(D, G)` float64 array of the cell's detections, in score order
+    and cut at the last `maxDets`, against its ground truths, or `[]` where
+    either side is empty, as in pycocotools. With `useCats` off the category key
+    is `-1`. The dict is built on each access. One divergence: for keypoints
+    with `useCats` off, pycocotools' `computeOks` ignores `useCats` and lists
+    `[]` in every cell; hotcoco gives the pooled OKS matrix.
+
+=== "Rust"
+
+    ```rust
+    fn iou_matrices(&self) -> Vec<((u64, u64), Option<IouMatrix>)>
+    ```
+
+    Every cell of the grid in key order, `None` where either side is empty; the
+    pooled cell under `use_cats = false` is keyed by `u64::MAX`. `IouMatrix`
+    offers `rows()`, `cols()`, `row(i)`, `values()`, and `into_values()`.
+
+---
+
 ### `eval`
 
 Accumulated precision/recall arrays, populated after `accumulate()`.

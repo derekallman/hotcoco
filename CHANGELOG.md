@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`COCOeval.ious`**, pycocotools' attribute: `{(image_id, category_id):
+  (D, G) array or []}` after `evaluate()`, cell for cell; torchmetrics'
+  `extended_summary=True` reads it. Rust: `COCOeval::iou_matrices()`, the public
+  `IouMatrix`, and `POOLED_CAT` for the pooled cell's key under `use_cats = false`.
+  See [`ious`](https://derekallman.github.io/hotcoco/api/cocoeval/#ious).
 - **`load_res` warns on corner-pair boxes.** When most bbox detections run past
   their image read as `[x, y, w, h]` but fit it read as `[x1, y1, x2, y2]`, the
   loader emits a `DatasetWarning` pointing to the troubleshooting page; the Rust

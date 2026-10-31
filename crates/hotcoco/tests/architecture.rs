@@ -348,6 +348,10 @@ fn greedy_matching_only_in_primitives() {
 /// enforcement — it cannot hand out the map — and this test keeps callers from
 /// bypassing it by touching the field directly.
 ///
+/// `COCOeval::iou_matrices()`, in the owner module, copies cells out for the
+/// Python `ious` attribute; its name is not spelled `ious` so the binding's
+/// call does not read as a field access here.
+///
 /// # Adding a sanctioned home
 ///
 /// [`CACHE_OWNERS`] is the driver, and only the driver: the module that owns the

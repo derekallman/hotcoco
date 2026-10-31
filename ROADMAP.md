@@ -15,9 +15,12 @@ are planned; a version number is assigned when one is ready to ship.
   headline metrics, provenance, PR curves, and error impact at a glance, with
   a sortable per-category table and hover detail below the fold.
   `ev.report().to_html(path)` plus a CLI flag; print CSS covers casual PDF
-  needs. Charts move from Plotly to vendored Observable Plot, browse's
-  dashboard tab migrates to the same templates, and the matplotlib PDF report
-  retires once the HTML report ships.
+  needs. The charts are the browse dashboard's Plotly charts, which already
+  draw the same six figures, so the two surfaces share one template set, and
+  the matplotlib PDF report retires once the HTML report prints well.
+- **Plot quality pass** — the matplotlib figures need design work beyond the
+  Cyanotype color swap: typography, spacing, legends, and defaults that look
+  right in a paper and a notebook without arguments.
 
 ## Multi-object tracking
 

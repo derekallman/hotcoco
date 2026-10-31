@@ -42,9 +42,7 @@ impl COCOeval {
         // both ascending, merged: the pairs come out sorted and distinct with no
         // set of pairs to build and no sort, which at 10x COCO val2017 took a
         // third of `evaluate()`, on one thread.
-        let mut img_ids = self.params.img_ids.clone();
-        img_ids.sort_unstable();
-        img_ids.dedup();
+        let img_ids = super::sorted_unique(self.params.img_ids.clone());
         if !self.params.use_cats {
             return img_ids
                 .into_iter()
@@ -52,7 +50,7 @@ impl COCOeval {
                     !self.coco_gt.get_ann_ids_for_img(img_id).is_empty()
                         || !self.coco_dt.get_ann_ids_for_img(img_id).is_empty()
                 })
-                .map(|img_id| (img_id, u64::MAX))
+                .map(|img_id| (img_id, super::POOLED_CAT))
                 .collect();
         }
         let allowed_cats: rustc_hash::FxHashSet<u64> = cat_ids.iter().copied().collect();
@@ -204,7 +202,7 @@ impl COCOeval {
         let cat_ids = if self.params.use_cats {
             self.params.cat_ids.clone()
         } else {
-            vec![u64::MAX] // placeholder single category (avoids collision with real category_id=0)
+            vec![super::POOLED_CAT]
         };
 
         // LVIS: scan GT image metadata to build per-image category sets.

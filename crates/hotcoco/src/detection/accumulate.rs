@@ -66,7 +66,7 @@ impl<'a> EvalGrouping<'a> {
                 .map(|(i, &id)| (id, i))
                 .collect()
         } else {
-            std::iter::once((u64::MAX, 0usize)).collect()
+            std::iter::once((crate::detection::POOLED_CAT, 0usize)).collect()
         };
 
         // Area-range keys as bit-exact f64 pairs. The range values are copied verbatim
@@ -807,7 +807,7 @@ mod tests {
                 .map(|(i, &id)| (id, i))
                 .collect()
         } else {
-            std::iter::once((u64::MAX, 0usize)).collect()
+            std::iter::once((crate::detection::POOLED_CAT, 0usize)).collect()
         };
         let area_rng_to_idx: HashMap<[u64; 2], usize> = params
             .area_ranges

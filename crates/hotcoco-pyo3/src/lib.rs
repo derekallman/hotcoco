@@ -2711,6 +2711,37 @@ Examples
         self.eval_imgs(py)
     }
 
+    /// pycocotools' ``ious``: ``{(image_id, category_id): matrix}`` for every
+    /// image and category ``evaluate()`` ran over, fixed at that call as
+    /// pycocotools' attribute is. A matrix is a ``(D, G)`` float64 array of the
+    /// cell's detections in score order, cut at the last ``maxDets``, against
+    /// its ground truths, or ``[]`` where either side is empty. ``{}`` before
+    /// ``evaluate()``; with ``useCats`` off the category key is ``-1``. Built
+    /// on each access, so hold a reference rather than reading it in a loop.
+    #[getter]
+    fn ious(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let dict = PyDict::new(py);
+        for ((img_id, cat_id), matrix) in self.inner.iou_matrices() {
+            let key = (
+                img_id,
+                if cat_id == hotcoco_core::POOLED_CAT {
+                    -1
+                } else {
+                    cat_id as i64
+                },
+            );
+            let value = match matrix {
+                Some(m) => {
+                    let shape = [m.rows(), m.cols()];
+                    shaped_array(py, m.into_values(), shape)?
+                }
+                None => PyList::empty(py).into_any().unbind(),
+            };
+            dict.set_item(key, value)?;
+        }
+        Ok(dict.into_any().unbind())
+    }
+
     /// The accumulated results — pycocotools semantics: a plain dict attribute,
     /// so the same object comes back on every access and in-place edits
     /// persist across reads. ``summarize()``, ``stats``, and ``results()``
