@@ -79,15 +79,35 @@ The pycocotools-named functions accept the argument types pycocotools accepts:
 
 `get_ann_ids` and [`hotcoco.primitives`](../api/primitives.md) keep stricter, typed signatures.
 
-## Getters return copies — assign back to apply
+## The dataset is live, params containers are copies
 
-The data lives in Rust, so `coco.dataset` returns a **copy** on each access, and
-`ev.coco_gt` and `ev.coco_dt` return a new object that shares the evaluator's
-data without copying it; an edit to that object, through `dataset` or
-`update_anns`, lands on a private copy and never reaches the evaluator.
-Attribute assignment
-(`ev.params.cat_ids = [...]`) works — the setter routes the change back to Rust —
-but mutating a *container inside* a copy is a no-op:
+`coco.dataset` is the dataset dict itself: the same object on every access, and
+the one you assigned if you built the `COCO` by assignment (`COCO(d)` reads `d`
+and does not keep it). pycocotools' in-memory idioms work as they do there:
+
+```python
+coco = COCO()
+coco.dataset = d                    # d is the dataset now; coco.dataset is d
+coco.dataset["annotations"].append(new_ann)
+coco.createIndex()                  # re-indexes from the dict, as in pycocotools
+
+for ann in dt.dataset["annotations"]:
+    ann["area"] = ann["area_segm"]  # torchmetrics' bbox+segm switch
+COCOeval(gt, dt, "segm")            # sees the edit: the dict is read back first
+```
+
+Every method that needs the data reads the dict back before it runs, so
+`createIndex()` is needed only after an edit made through a reference kept from
+before the last call. The read-back is one parse of the dict, tens of
+milliseconds for 40k annotations, and a bad edit raises there what assigning the
+dict would. For a field edit by id, [`update_anns`](../api/coco.md#update_anns)
+skips the parse. An evaluator built before an edit keeps the data it was built
+with: hotcoco resolves the datasets when `COCOeval` is constructed, pycocotools
+inside `evaluate()`.
+
+`ev.params` is different. Attribute assignment (`ev.params.cat_ids = [...]`)
+works, because the setter routes the change back to Rust, but mutating a
+*container inside* it is a no-op on a copy:
 
 ```python
 ev.params.cat_ids = [1, 2, 3]       # applied — attribute assignment works
@@ -98,24 +118,9 @@ md.append(200)
 ev.params.maxDets = md
 ```
 
-The same idiom applies to the dataset dict. pycocotools' in-memory construction
-flow works because assigning `coco.dataset` re-indexes:
-
-```python
-d = coco.dataset
-d["annotations"].append(new_ann)
-coco.dataset = d                    # replaces contents and rebuilds the index
-coco.createIndex()                  # supported, but a formality after assignment
-```
-
-Editing annotations that are already there does not need the whole dataset:
-
-```python
-coco.update_anns([{"id": ann_id, "area": mask_area}])   # the keys you pass, by id
-```
-
-See [`update_anns`](../api/coco.md#update_anns) for what it raises and when it
-re-indexes.
+`ev.coco_gt` and `ev.coco_dt` return a new object that shares the evaluator's
+data without copying it; an edit to that object, through `dataset` or
+`update_anns`, lands on a private copy and never reaches the evaluator.
 
 ## Known differences
 
@@ -126,7 +131,8 @@ re-indexes.
 | Annotation IDs | Requires unique positive integers | Also accepts 0-based IDs |
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |
 | Evaluating annotations missing `area` | Raises `KeyError` | Derives it in the evaluator's copy: the mask's pixel count, then the box's `w × h`, for ground truth; the box first for detections, as `load_res` does. The dataset keeps its missing areas |
-| Mutating `coco.dataset` / `ev.params` internals in place | Mutates shared state | No-op on a copy — [assign back to apply](#getters-return-copies-assign-back-to-apply) |
+| Mutating `ev.params` containers in place | Mutates shared state | No-op on a copy — [assign back to apply](#the-dataset-is-live-params-containers-are-copies) |
+| Evaluating a detection with a NaN score | Evaluates, with an undefined ranking | `load_res()` and `evaluate()` raise `ValueError` naming the detection |
 | `summarize()` or `run()` with non-default params | Prints the table only | Also emits a [`ReferenceDeviationWarning`](../guide/results.md#filtering-the-warnings) per deviation |
 | Summary stats when `maxDets` is not `[1, 10, 100]` | Reads AP (`stats[0]`) at 100, or reports `-1` when 100 is not a cap; reads the other AP lines and the last four AR lines at the third cap | Reads every AP line and the last four AR lines at the largest cap, as faster-coco-eval does. With three caps only `stats[0]` differs: `maxDets=[1, 10, 500]` reports AP at 500 where pycocotools reports `-1` |
 | A key or string holding a lone surrogate, such as `"\ud800"` | Kept; `json.dump` writes it back escaped | Raises `UnicodeEncodeError` or `ValueError` — text is stored as UTF-8, which has no form for a lone surrogate |

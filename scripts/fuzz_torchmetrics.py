@@ -5,8 +5,9 @@ builds the metric under a backend name torchmetrics knows, then replaces the
 backend's COCO, COCOeval and mask modules with hotcoco's. Everything torchmetrics
 does on top runs unchanged: `mask.encode` of every predicted mask in `update()`,
 `float32` threshold grids from `torch.linspace`, `mask.area` per annotation,
-`COCO()` + `dataset =` + `createIndex()`, `params` field writes, and one
-`COCOeval` per class with `class_metrics`.
+`COCO()` + `dataset =` + `createIndex()`, the bbox+segm `area` switch written
+into `coco_preds.dataset` in place, `params` field writes, and one `COCOeval`
+per class with `class_metrics`.
 
 Each case is a random batch of states shaped like a detector's output: `xyxy`
 boxes, `bool` masks, crowd regions, an optional `area`, scores with ties, sparse
@@ -21,10 +22,11 @@ are, and -1 when 100 is not one of them. hotcoco and faster-coco-eval read it at
 the largest cap, and RF-DETR, which evaluates at `[1, 10, 500]`, makes its
 pycocotools-exact backend do the same. The reference here does too.
 
-bbox+segm in one metric is not fuzzed: torchmetrics switches each prediction's
-`area` between the two IoU types by editing `coco_preds.dataset` in place, and
-hotcoco's `dataset` is a copy, so the edit never reaches it. RF-DETR evaluates
-each IoU type on its own prediction dataset for that reason.
+bbox+segm in one metric is the case that needs `coco.dataset` to be live:
+torchmetrics switches each prediction's `area` between the two IoU types by
+editing `coco_preds.dataset` in place, with no `createIndex()`. Until 1.4
+hotcoco's `dataset` was a copy and the edit never reached it, which is why
+RF-DETR evaluates each IoU type on its own prediction dataset.
 
 Usage:
     uv run --group torchmetrics python scripts/fuzz_torchmetrics.py [--cases N] [--seed S]
@@ -200,7 +202,7 @@ def gen_case(rng: np.random.Generator) -> tuple[dict, list[tuple[dict, dict]]]:
             target["masks"] = torch.stack(gt_masks) if gt_masks else torch.zeros(0, h, w, dtype=torch.bool)
         images.append((pred, target))
     config = {
-        "iou_type": "segm" if with_masks else "bbox",
+        "iou_type": ("bbox", "segm") if with_masks and rng.random() < 0.3 else ("segm" if with_masks else "bbox"),
         "max_detection_thresholds": [[1, 10, 100], [1, 10, 500], [1, 2, 3], [1, 5, 10]][int(rng.integers(4))],
         "class_metrics": bool(rng.random() < 0.5),
     }

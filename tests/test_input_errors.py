@@ -93,6 +93,20 @@ def streamed(iou_type, gt_anns, dt_anns, *, images=IMAGES, cats=CATS, **kw):
     return load
 
 
+def edited(coco, field, value):
+    """pycocotools' edit-in-place path: ``with_field``'s rule applied to the
+    first annotation of ``coco.dataset`` — ``MISSING`` deletes, anything else
+    sets — then ``createIndex()``, where the dict is read back and a bad value
+    raises."""
+    target = coco.dataset["annotations"][0]
+    if value is MISSING:
+        target.pop(field, None)
+    else:
+        target[field] = value
+    coco.createIndex()
+    return coco
+
+
 def numbers(value):
     """Whether ``value`` is a list of numbers, which an array row can hold."""
     return isinstance(value, list) and all(is_number(v) for v in value)
@@ -113,7 +127,11 @@ def gt_outcomes(tmp_path, field, value, skip=()):
     iou_type = "segm" if field == "segmentation" else "bbox"
     ann = with_field(GT, field, value)
     dataset = {"images": IMAGES, "annotations": [ann], "categories": CATS}
-    paths = {"dict": lambda: COCO(dataset), "streaming": streamed(iou_type, [ann], [DT])}
+    paths = {
+        "dict": lambda: COCO(dataset),
+        "edited dict": lambda: edited(COCO({"images": IMAGES, "annotations": [GT], "categories": CATS}), field, value),
+        "streaming": streamed(iou_type, [ann], [DT]),
+    }
     if value is not MISSING:
         path = tmp_path / "gt.json"
         path.write_text(json.dumps(dataset))
@@ -187,6 +205,7 @@ def dt_outcomes(tmp_path, field, value, skip=()):
     path.write_text(json.dumps([det]))
     paths = {
         "list": lambda: gt.load_res([det]),
+        "edited dict": lambda: edited(gt.load_res([DT]), field, value),
         "json": lambda: gt.load_res(str(path)),
         "streaming list": streamed(iou_type, [GT], [det]),
     }

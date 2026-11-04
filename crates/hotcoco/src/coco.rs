@@ -169,6 +169,15 @@ fn reads_as_corner_pair(bbox: &[f64; 4], img_w: u32, img_h: u32) -> Option<bool>
 type Checked = ([Option<usize>; 3], (usize, usize));
 
 /// Why `load_res` rejects a NaN score, from a file and a list alike.
+/// The error for annotation `i` carrying a NaN score; `context` is the caller's
+/// prefix (`"load_res(): "`), empty for the evaluator.
+fn nan_score_error(context: &str, i: usize, ann: &Annotation) -> Error {
+    Error::InvalidInput(format!(
+        "{context}annotation {i} (id {}, image_id {}) has a NaN score. {NAN_SCORE_WHY}",
+        ann.id, ann.image_id
+    ))
+}
+
 const NAN_SCORE_WHY: &str = "Scores order the detection ranking, and NaN makes that order \
      undefined — every metric downstream would be meaningless. Filter or repair these \
      detections before evaluating.";
@@ -220,6 +229,33 @@ impl COCO {
         };
         coco.create_index();
         coco
+    }
+
+    /// This `COCO` over a replaced dataset, re-indexed, with the rest of its
+    /// state kept: the per-image cap marker of
+    /// [`cap_detections_per_image`](Self::cap_detections_per_image) and the
+    /// warnings the loader recorded, with the warnings the new index raises
+    /// that were not recorded before appended after them. The Python
+    /// `dataset` setter and `createIndex()` build through this, so a results
+    /// set that was capped stays capped and a warning is recorded once.
+    #[must_use]
+    pub fn reindexed(&self, dataset: Dataset) -> COCO {
+        let mut rebuilt = COCO::from_dataset(dataset);
+        let fresh: Vec<String> = rebuilt
+            .warnings
+            .drain(..)
+            .filter(|w| !self.warnings.contains(w))
+            .collect();
+        rebuilt.warnings.clone_from(&self.warnings);
+        rebuilt.warnings.extend(fresh);
+        rebuilt.per_image_capped = self.per_image_capped;
+        rebuilt
+    }
+
+    /// Where the annotation with `id` sits in `dataset.annotations`, or `None`.
+    /// With duplicate ids, the last occurrence, as [`get_ann`](Self::get_ann).
+    pub fn ann_position(&self, id: u64) -> Option<usize> {
+        self.anns.position(id)
     }
 
     /// Rebuild the internal query indices from `dataset`.
@@ -743,11 +779,7 @@ impl COCO {
                 .fold(([None; 3], (0, 0)), combine)
         };
         if let Some(i) = first_nan {
-            let ann = &anns[i];
-            return Err(Error::InvalidInput(format!(
-                "load_res(): annotation {} (id {}, image_id {}) has a NaN score. {NAN_SCORE_WHY}",
-                i, ann.id, ann.image_id
-            )));
+            return Err(nan_score_error("load_res(): ", i, &anns[i]));
         }
         let mut warnings = Vec::new();
         if 2 * m > n {
@@ -989,6 +1021,30 @@ impl COCO {
                 false
             }
             None => ann.bbox.is_some(),
+        }
+    }
+
+    /// Check that no annotation has a NaN score.
+    ///
+    /// [`load_res`](Self::load_res) refuses one, with this error: scores order
+    /// the detection ranking, and NaN makes that order undefined, so AP becomes
+    /// a function of the sort. A results set built another way — a dataset dict
+    /// assigned to a `COCO`, [`from_dataset`](Self::from_dataset) — skips the
+    /// loader, so [`COCOeval::check_inputs`](crate::COCOeval::check_inputs)
+    /// runs this on the detections first.
+    ///
+    /// # Errors
+    ///
+    /// `Error::InvalidInput` naming the first such annotation.
+    pub fn check_scores(&self) -> crate::error::Result<()> {
+        let anns = &self.dataset.annotations;
+        match anns
+            .iter()
+            .enumerate()
+            .find(|(_, ann)| ann.score.is_some_and(f64::is_nan))
+        {
+            Some((i, ann)) => Err(nan_score_error("", i, ann)),
+            None => Ok(()),
         }
     }
 

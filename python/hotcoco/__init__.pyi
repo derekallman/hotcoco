@@ -71,7 +71,7 @@ class COCO:
     # --- Properties ---
     @property
     def dataset(self) -> dict[str, Any]:
-        """A fresh copy on every access — in-place mutation is a no-op; assign back to apply."""
+        """The dataset dict itself — the same object on every access; an edit is read back before the next call."""
         ...
     @dataset.setter
     def dataset(self, value: dict[str, Any]) -> None: ...

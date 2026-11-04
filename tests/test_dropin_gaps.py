@@ -15,6 +15,7 @@ import warnings
 import hotcoco
 import numpy as np
 import pytest
+from helpers import torchmetrics_dataset
 from hotcoco import COCO, COCOeval, LVISeval, LVISResults, mask
 
 
@@ -654,42 +655,6 @@ class TestCustomValuesReadBackAsJsonLoads:
         assert [_exact(anns[i + 1]["v"]) for i in range(len(values))] == want
 
 
-def _torchmetrics_dataset(predictions):
-    """A dataset shaped the way TorchMetrics' ``_get_coco_format`` builds one for
-    a bbox+segm run: ``area_bbox`` and ``area_segm`` on every annotation, RLE
-    ``counts`` as bytes, ``size`` a tuple, and ``score`` on predictions."""
-    rng = np.random.default_rng(7)
-    images, anns = [], []
-    for image_id in range(6):
-        images.append({"id": image_id})
-        for _ in range(4):
-            x, y = (int(v) for v in rng.integers(0, 20, size=2))
-            w, h = (int(v) for v in rng.integers(4, 12, size=2))
-            if predictions:  # jitter, so matches land at several IoUs
-                x, y = x + int(rng.integers(0, 3)), y + int(rng.integers(0, 3))
-            m = np.zeros((32, 32), np.uint8)
-            m[y : y + h, x : x + w] = 1
-            rle = mask.encode(np.asfortranarray(m))
-            assert isinstance(rle["counts"], bytes)
-            bbox = [float(v) for v in mask.toBbox(rle)]
-            ann = {
-                "id": len(anns) + 1,
-                "image_id": image_id,
-                "area": int(mask.area(rle)),
-                "category_id": 1 + len(anns) % 3,
-                "iscrowd": 0,
-                "area_bbox": bbox[2] * bbox[3],
-                "area_segm": int(mask.area(rle)),
-                "bbox": bbox,
-                "segmentation": {"size": tuple(rle["size"]), "counts": rle["counts"]},
-            }
-            if predictions:
-                ann["score"] = float(rng.random())
-            anns.append(ann)
-    categories = [{"id": c, "name": str(c)} for c in (1, 2, 3)]
-    return {"images": images, "annotations": anns, "categories": categories}
-
-
 def _strip(ds, keys):
     return {**ds, "annotations": [{k: v for k, v in a.items() if k not in keys} for a in ds["annotations"]]}
 
@@ -699,7 +664,7 @@ class TestTorchMetricsShapedAnnotations:
     annotation; they are the reason the direct path exists."""
 
     def test_custom_keys_round_trip(self, tmp_path):
-        dt = _torchmetrics_dataset(predictions=True)
+        dt = torchmetrics_dataset(predictions=True)
         coco = COCO(dt)
         coco.save(str(tmp_path / "dt.json"))
         saved = dict(_raw_json(tmp_path / "dt.json"))["annotations"]
@@ -707,7 +672,7 @@ class TestTorchMetricsShapedAnnotations:
             assert _typed(out["area_bbox"]) == _typed(src["area_bbox"])
             assert _typed(out["area_segm"]) == _typed(src["area_segm"])
             assert dict(raw)["area_bbox"][0] == "float" and dict(raw)["area_segm"][0] == "int"
-        res = COCO(_torchmetrics_dataset(predictions=False)).load_res(dt["annotations"])
+        res = COCO(torchmetrics_dataset(predictions=False)).load_res(dt["annotations"])
         assert _typed(res.load_anns(1)[0]["area_bbox"]) == _typed(dt["annotations"][0]["area_bbox"])
 
     @pytest.mark.parametrize("iou_type", ["bbox", "segm"])
@@ -721,7 +686,7 @@ class TestTorchMetricsShapedAnnotations:
             ev.summarize()
             return list(ev.stats)
 
-        gt, dt = _torchmetrics_dataset(predictions=False), _torchmetrics_dataset(predictions=True)
+        gt, dt = torchmetrics_dataset(predictions=False), torchmetrics_dataset(predictions=True)
         got = stats(gt, dt)
         assert got == stats(_strip(gt, custom), _strip(dt, custom))
         assert max(got) > 0

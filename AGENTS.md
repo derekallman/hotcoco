@@ -17,6 +17,13 @@ see `plans/PLAN.md` for the ladder, `plans/POSITIONING.md` for how the docs say 
 - `hotcoco-pyo3` uses `hotcoco-core` as the Cargo dependency alias for `hotcoco` to avoid name collision with the `hotcoco` Python module name
 - Python bindings return plain dicts (not wrapped Rust structs) matching pycocotools conventions
 - Mask operations handle numpy row-major <-> Rust column-major transposition in the PyO3 layer
+- `COCO.dataset` is live: the wrapper's data sits behind `live::LiveDataset` in
+  `crates/hotcoco-pyo3/src/live.rs`, whose `get` reads an edit to the dict back
+  before returning it, and whose `edit` is the one route for a Rust-side
+  mutation (it mirrors the result into the dict). The field is private to that
+  module, so a binding method cannot read stale data and compile;
+  `tests/test_live_dataset.py` calls every public method after an edit to prove
+  it, and a new method needs a row there.
 - `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expected — cdylib needs Python). Use `cargo check` instead, or build via maturin.
 - **Type stubs:** six hand-written files must track the Python API — `python/hotcoco/{__init__,detection,metrics,primitives,panoptic,semantic}.pyi`. Run `uv run pytest tests/test_stubs.py` for drift, and `uv run pyright` to type-check the shipped package against them. The tests check **names only, never signatures** — review those by hand when changing a signature. For `metrics` they check both directions (stub ⊇ `__all__`, and `__all__` ⊇ the extension module), because a new `#[pyfunction]` that the facade forgets to re-export is otherwise unreachable from Python with the suite green.
 

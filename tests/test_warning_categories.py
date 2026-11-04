@@ -36,6 +36,7 @@ from hotcoco import (
 
 PYO3_SRC = WORKSPACE / "crates" / "hotcoco-pyo3" / "src"
 LIB_RS = "crates/hotcoco-pyo3/src/lib.rs"
+LIVE_RS = "crates/hotcoco-pyo3/src/live.rs"
 PANOPTIC_RS = "crates/hotcoco-pyo3/src/panoptic.rs"
 SEMANTIC_RS = "crates/hotcoco-pyo3/src/semantic.rs"
 INTEGRATIONS_PY = "python/hotcoco/integrations.py"
@@ -88,6 +89,13 @@ def _duplicate_ids(_):
     COCO({"images": IMAGES, "annotations": [GT, dict(GT)], "categories": CATS})
 
 
+def _edit_makes_duplicate_ids(_):
+    """The read-back of an edited `dataset` warns about the problem the edit made."""
+    coco = COCO({"images": IMAGES, "annotations": [GT, {**GT, "id": GT["id"] + 1}], "categories": CATS})
+    coco.dataset["annotations"][1]["id"] = GT["id"]
+    coco.getAnnIds()
+
+
 def _cvat_import(tmp_path):
     path = tmp_path / "annotations.xml"
     path.write_text(CVAT_WITH_A_POLYLINE)
@@ -98,6 +106,9 @@ def _cvat_import(tmp_path):
 # `tmp_path` so the CVAT row can write its file.
 SITES = [
     pytest.param(_duplicate_ids, DatasetWarning, "duplicate annotation id", LIB_RS, id="loader-duplicate-ids"),
+    pytest.param(
+        _edit_makes_duplicate_ids, DatasetWarning, "duplicate annotation id", LIVE_RS, id="read-back-duplicate-ids"
+    ),
     pytest.param(_cvat_import, ConversionWarning, "skipped 1 unsupported", LIB_RS, id="cvat-skipped-shapes"),
     pytest.param(
         lambda _: _ev().accumulate(), CallOrderWarning, r"accumulate\(\) called before", LIB_RS, id="accumulate"

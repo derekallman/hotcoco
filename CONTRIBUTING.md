@@ -172,7 +172,7 @@ scripts regenerate them. What each reference comparison checks:
 
 | File | Compares hotcoco against |
 |---|---|
-| `test_parity.py`, `test_dropin_gaps.py`, `test_integrations.py` | pycocotools, metric by metric, on synthetic datasets |
+| `test_parity.py`, `test_dropin_gaps.py`, `test_live_dataset.py`, `test_integrations.py` | pycocotools, metric by metric, on synthetic datasets; `test_live_dataset.py` is its edit-the-dict idioms |
 | `test_adversarial.py` | pycocotools, per-(image, category) matching *decisions*, over 18 curated edge cases |
 | `test_mask_parity.py` | `pycocotools.mask`, every operation, bit for bit |
 | `test_parity_lvis.py` | lvis-api, all 13 metrics |

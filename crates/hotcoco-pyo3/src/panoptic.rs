@@ -50,11 +50,11 @@ fn dataset_arg(
             "{name}_folder applies to COCO panoptic JSON; a detection-style dataset carries its masks"
         ))
     };
-    let dataset = if let Ok(coco) = obj.extract::<PyRef<'_, PyCOCO>>() {
+    let dataset = if let Ok(coco) = obj.cast::<PyCOCO>() {
         if folder.is_some() {
             return Err(masks_carry_no_folder());
         }
-        PanopticDataset::from_dataset(&coco.inner.dataset)
+        PanopticDataset::from_dataset(&PyCOCO::synced(coco)?.dataset)
     } else if let Ok(dict) = obj.cast::<PyDict>() {
         if is_panoptic_shaped(dict)? {
             // A dict has no path to derive the folder from; without one its

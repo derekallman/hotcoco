@@ -129,18 +129,22 @@ impl COCOeval {
     /// Check that the inputs can be evaluated under the current `params`.
     ///
     /// [`evaluate`](Self::evaluate) runs it first, so a caller needs it only
-    /// to validate inputs without evaluating them. Today it covers mask
-    /// geometry (segm), where a polygon on an image without `height` and
-    /// `width` rasterizes to an empty mask and AP comes out 0 with nothing to
-    /// say why — see [`COCO::check_mask_dims`](crate::COCO::check_mask_dims).
+    /// to validate inputs without evaluating them. It covers a NaN score on a
+    /// detection, which `load_res` refuses but a results set built from a
+    /// dataset dict never passed through — see
+    /// [`COCO::check_scores`](crate::COCO::check_scores) — and mask geometry
+    /// (segm), where a polygon on an image without `height` and `width`
+    /// rasterizes to an empty mask and AP comes out 0 with nothing to say why
+    /// — see [`COCO::check_mask_dims`](crate::COCO::check_mask_dims).
     ///
     /// # Errors
     ///
-    /// An error naming the offending images, from either the ground truth or
-    /// the detections. Only the images and categories the evaluation covers
-    /// are checked.
+    /// An error naming the offending detection, or the offending images from
+    /// either the ground truth or the detections. Only the images and
+    /// categories the evaluation covers are checked for geometry.
     pub fn check_inputs(&self) -> crate::error::Result<()> {
         use crate::primitives::sim::SimKind;
+        self.coco_dt.check_scores()?;
         if SimKind::from(self.params.iou_type) == SimKind::Mask {
             // Only the (image, category) pairs `evaluate()` will visit: an
             // annotation on an image outside `params.img_ids`, with no image

@@ -69,12 +69,13 @@ print(coco.image_dir)  # "/data/coco/images"
 
 ### `dataset`
 
-The full dataset with `images`, `annotations`, and `categories`. Writable in
-Python: assigning a dataset dict replaces the contents and rebuilds the index.
-Reading it returns a copy, so edit the dict and assign it back — see
-[Getters return copies — assign back to apply](../getting-started/migration.md#getters-return-copies-assign-back-to-apply).
-To edit annotations that are already there, [`update_anns`](#update_anns) does
-it without a full rebuild.
+The full dataset with `images`, `annotations`, and `categories`: the same dict
+on every access, and the one assigned to it if there was one. Edit it in place
+as pycocotools code does, and the next call that needs the data reads it back.
+[The dataset is live](../getting-started/migration.md#the-dataset-is-live-params-containers-are-copies)
+owns the details: what `COCO(d)` keeps, the cost of the read-back, the one case
+that needs [`create_index`](#create_index), and when
+[`update_anns`](#update_anns) is the cheaper edit.
 
 Keys outside the COCO schema (custom metadata on images, annotations, or
 categories) are preserved through load, dataset ops, and `save` — see
@@ -94,6 +95,25 @@ categories) are preserved through load, dataset ops, and `save` — see
     let coco = COCO::new(Path::new("instances_val2017.json"))?;
     println!("{}", coco.dataset.images.len());       // 5000
     println!("{}", coco.dataset.annotations.len());  // 36781
+    ```
+
+---
+
+### `create_index`
+
+Read [`dataset`](#dataset) back and rebuild the index, as pycocotools'
+`createIndex()` does. Every method does this on its own before it runs, so the
+call is needed only for an edit made through a reference kept from before the
+last call. Raises what assigning `dataset` raises for the same dict:
+`ValueError` naming the record and the field.
+
+=== "Python"
+
+    ```python
+    d = coco.dataset
+    coco.get_ann_ids()                 # reads d back
+    d["annotations"].append(new_ann)   # a later edit through the kept reference
+    coco.create_index()                # read it back now
     ```
 
 ---
@@ -560,7 +580,7 @@ lookup holds.
 !!! tip
     An evaluator built before the edit keeps the annotations it was built
     with — mutate first, then construct it. See
-    [Getters return copies](../getting-started/migration.md#getters-return-copies-assign-back-to-apply).
+    [The dataset is live](../getting-started/migration.md#the-dataset-is-live-params-containers-are-copies).
 
 ---
 

@@ -75,6 +75,12 @@ Run COCO evaluation to compute AP/AR metrics.
         masks carry their own size and are not affected. Box evaluation never
         reads the fields.
 
+    !!! note "A NaN score is an error"
+        `evaluate()` raises the `ValueError` that `load_res()` raises for a
+        detection with a NaN score, so a results set built from a dataset dict —
+        the way torchmetrics builds one — gets the same check. pycocotools
+        evaluates it with an undefined ranking.
+
 === "Rust"
 
     ```rust

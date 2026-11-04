@@ -1163,23 +1163,23 @@ def _bbox_stats(coco_gt, coco_dt):
 
 def test_update_anns_area_moves_the_size_bucket_metrics():
     # The multi-IoU-type case: an annotation's active `area` has to follow the
-    # box for bbox and the mask for segm. Reading `coco.dataset`, editing the
-    # copy, and evaluating changes nothing — the mutator is what makes it land.
+    # box for bbox and the mask for segm. Editing `coco.dataset` in place lands
+    # before the next evaluation, as it does in pycocotools; `update_anns` is
+    # the targeted form with the same effect and no read-back of the dict.
     coco_gt, coco_dt = _size_bucket_fixture()
     before = _bbox_stats(coco_gt, coco_dt)
     assert before[3] == pytest.approx(1.0), "400 px² starts in the small bucket"
     assert before[4] == -1.0, "and nothing is medium yet"
 
-    # In-place mutation of the copy stays a no-op, as documented.
     coco_gt.dataset["annotations"][0]["area"] = 5000.0
-    unchanged = _bbox_stats(coco_gt, coco_dt)
-    assert unchanged[3] == pytest.approx(1.0)
-    assert unchanged[4] == -1.0
+    edited = _bbox_stats(coco_gt, coco_dt)
+    assert edited[3] == -1.0, "no small ground truth is left"
+    assert edited[4] == pytest.approx(1.0), "5000 px² is a medium annotation"
 
-    coco_gt.update_anns([{"id": 1, "area": 5000.0}])
+    coco_gt.update_anns([{"id": 1, "area": 400.0}])
     after = _bbox_stats(coco_gt, coco_dt)
-    assert after[3] == -1.0, "no small ground truth is left"
-    assert after[4] == pytest.approx(1.0), "5000 px² is a medium annotation"
+    assert after[3] == pytest.approx(1.0), "the targeted edit moves it back"
+    assert after[4] == -1.0
 
 
 def test_an_evaluator_built_before_an_edit_keeps_its_snapshot():

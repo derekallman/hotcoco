@@ -142,6 +142,51 @@ def suppress_output(*, stderr: bool = True):
 # ---------------------------------------------------------------------------
 
 
+def torchmetrics_dataset(predictions, *, seed=7, canvas=32, origin=20, box=(4, 12), half_mask=False, bytes_counts=True):
+    """A dataset shaped the way torchmetrics' ``_get_coco_format`` builds one for
+    a bbox+segm run: ``area_bbox`` and ``area_segm`` on every annotation, an RLE
+    ``segmentation``, and ``score`` on predictions. Six ``canvas``-square images
+    with four boxes each, origins below ``origin``, sides in ``box``, categories
+    1-3. ``bytes_counts`` keeps ``counts`` as the bytes ``mask.encode`` returns
+    with ``size`` a tuple, as torchmetrics does; ``half_mask`` fills the left half
+    of each box only, so the two areas land in different size ranges.
+    ``predictions`` jitters the boxes so matches land at several IoUs."""
+    from hotcoco import mask
+
+    rng = np.random.default_rng(seed)
+    images, anns = [], []
+    for image_id in range(6):
+        images.append({"id": image_id, "width": canvas, "height": canvas})
+        for _ in range(4):
+            x, y = (int(v) for v in rng.integers(0, origin, size=2))
+            w, h = (int(v) for v in rng.integers(*box, size=2))
+            if predictions:
+                x, y = x + int(rng.integers(0, 3)), y + int(rng.integers(0, 3))
+            m = np.zeros((canvas, canvas), np.uint8)
+            m[y : y + h, x : x + (w // 2 if half_mask else w)] = 1
+            rle = mask.encode(np.asfortranarray(m))
+            assert isinstance(rle["counts"], bytes)
+            bbox = [float(x), float(y), float(w), float(h)]
+            ann = {
+                "id": len(anns) + 1,
+                "image_id": image_id,
+                "area": int(mask.area(rle)),
+                "category_id": 1 + len(anns) % 3,
+                "iscrowd": 0,
+                "area_bbox": bbox[2] * bbox[3],
+                "area_segm": int(mask.area(rle)),
+                "bbox": bbox,
+                "segmentation": {"size": tuple(rle["size"]), "counts": rle["counts"]}
+                if bytes_counts
+                else {"size": list(rle["size"]), "counts": rle["counts"].decode()},
+            }
+            if predictions:
+                ann["score"] = float(rng.random())
+            anns.append(ann)
+    categories = [{"id": c, "name": str(c)} for c in (1, 2, 3)]
+    return {"images": images, "annotations": anns, "categories": categories}
+
+
 def rect_polygon(x, y, w, h):
     """The `[x, y, w, h]` box as a one-ring COCO polygon."""
     return [[x, y, x + w, y, x + w, y + h, x, y + h]]

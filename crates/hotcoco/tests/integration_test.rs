@@ -5870,6 +5870,39 @@ fn nan_detection_score_is_rejected() {
     );
 }
 
+/// A results set built from a dataset — the way a `COCO` assigned a dict is —
+/// never passed through `load_res`, so the evaluator refuses the NaN score
+/// itself, with the same words.
+#[test]
+fn evaluate_rejects_a_nan_score_the_loader_never_saw() {
+    let cats = vec![cat(1, "a")];
+    let gt = dataset(
+        vec![img(1)],
+        cats.clone(),
+        vec![ann(1, [10.0, 10.0, 50.0, 50.0])],
+    );
+    let mut bad = det(1, [10.0, 10.0, 50.0, 50.0], 0.9);
+    bad.score = Some(f64::NAN);
+    let dt = dataset(vec![img(1)], cats, vec![bad]);
+    let mut ev = COCOeval::new(
+        COCO::from_dataset(gt),
+        COCO::from_dataset(dt),
+        IouType::Bbox,
+    );
+    let msg = match ev.evaluate() {
+        Ok(()) => panic!("a NaN score must be rejected"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("NaN score"),
+        "error should name the problem, got: {msg}"
+    );
+    assert!(
+        msg.contains("id 1, image_id 1"),
+        "error should name the annotation, got: {msg}"
+    );
+}
+
 /// A fractional id in a detection row is refused before any cast: `1.5 as u64`
 /// is 1, a real id, so the row would score against the wrong image or category.
 #[test]

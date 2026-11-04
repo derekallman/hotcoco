@@ -129,6 +129,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`COCO.dataset` is the dataset, not a copy.** The same dict on every access,
+  the one assigned if there was one; an edit to it is read back before the next
+  call, and `createIndex()` reads it back at once instead of being a no-op, so
+  torchmetrics' bbox+segm `area` switch reaches hotcoco. Rust: `COCO::reindexed`,
+  `ann_position`. See [Migrating](https://derekallman.github.io/hotcoco/getting-started/migration/#the-dataset-is-live-params-containers-are-copies).
+- **`evaluate()` refuses a detection with a NaN score**, the `ValueError`
+  `load_res()` raises, so a results set built from a dataset dict — torchmetrics'
+  path — gets the same check. Rust: `COCO::check_scores`, run by
+  `COCOeval::check_inputs`.
 - **`CocoEvaluator.accumulate()` and `summarize()` emit a `CallOrderWarning`**
   when there is nothing to evaluate — no `update()` call, or `accumulate()`
   skipped — where they printed a `Warning:` line to stdout before.

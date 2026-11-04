@@ -11,6 +11,7 @@ use mask::transpose_mask;
 use hotcoco_core::Annotation;
 
 mod convert;
+mod live;
 mod mask;
 mod metrics;
 mod panoptic;
@@ -236,12 +237,13 @@ use convert::{
 /// this dataset. It is used by `browse()` and `coco explore` to locate
 /// image files. Propagated automatically through `filter`, `split`,
 /// `sample`, and `load_res`.
-// Clone shares the dataset: `COCO` is plain data with no interior mutability,
-// so wrappers over one `Arc` cannot observe each other by construction.
-#[pyclass(name = "COCO", subclass, from_py_object)]
-#[derive(Clone)]
+// Wrappers over one `Arc` cannot observe each other: `COCO` is plain data
+// with no interior mutability, and an edit replaces this wrapper's `Arc`.
+#[pyclass(name = "COCO", subclass)]
 pub(crate) struct PyCOCO {
-    pub(crate) inner: Arc<hotcoco_core::COCO>,
+    /// The data and the dict `dataset` hands out — see `live.rs`. Read it
+    /// through `live.get(py)`, which reads an edit to the dict back first.
+    live: live::LiveDataset,
     /// Root directory for image files. Used by `browse()` and `coco explore`.
     /// Set at construction time or assign directly: ``coco.image_dir = "/data/images"``.
     #[pyo3(get, set)]
@@ -258,7 +260,7 @@ impl PyCOCO {
     /// A dataset derived from this one — same images, so same `image_dir`.
     fn derived(&self, inner: impl Into<Arc<hotcoco_core::COCO>>) -> PyCOCO {
         PyCOCO {
-            inner: inner.into(),
+            live: live::LiveDataset::new(inner),
             image_dir: self.image_dir.clone(),
         }
     }
@@ -280,15 +282,22 @@ impl PyCOCO {
     /// which is how the evaluator's datasets are handed out without a copy.
     fn shared(inner: impl Into<Arc<hotcoco_core::COCO>>) -> PyCOCO {
         PyCOCO {
-            inner: inner.into(),
+            live: live::LiveDataset::new(inner),
             image_dir: None,
         }
+    }
+
+    /// Another wrapper's data, read back first. For a method that reads two
+    /// wrappers, which may be one object passed twice — `COCOeval(coco, coco)`
+    /// — so each is borrowed on its own and the borrows never overlap.
+    pub(crate) fn synced(coco: &Bound<'_, PyCOCO>) -> PyResult<Arc<hotcoco_core::COCO>> {
+        coco.borrow_mut().live.get(coco.py())
     }
 
     /// `load_res`'s three input forms, returning the owned `COCO` so a caller
     /// can transform it before wrapping. `segmentation` goes only with an array.
     fn load_res_core(
-        &self,
+        inner: &hotcoco_core::COCO,
         res: &Bound<'_, PyAny>,
         segmentation: Option<&Bound<'_, PyList>>,
     ) -> PyResult<hotcoco_core::COCO> {
@@ -297,7 +306,7 @@ impl PyCOCO {
             if segmentation.is_some() {
                 return Err(segmentation_needs_array("load_res"));
             }
-            return Self::loaded(res.py(), self.inner.load_res(Path::new(&path)));
+            return Self::loaded(res.py(), inner.load_res(Path::new(&path)));
         }
 
         // Case 2: list of annotation dicts
@@ -306,12 +315,12 @@ impl PyCOCO {
                 return Err(segmentation_needs_array("load_res"));
             }
             let anns = dict_list(list, "load_res", py_to_record)?;
-            return Self::loaded(res.py(), self.inner.load_res_anns(anns));
+            return Self::loaded(res.py(), inner.load_res_anns(anns));
         }
 
         // Case 3: numpy array, shape (N, 6) or (N, 7)
         if let Some(anns) = anns_from_array(res, "load_res", segmentation)? {
-            return Self::loaded(res.py(), self.inner.load_res_anns(anns));
+            return Self::loaded(res.py(), inner.load_res_anns(anns));
         }
 
         Err(pyo3::exceptions::PyTypeError::new_err(
@@ -359,39 +368,52 @@ impl PyCOCO {
             None => hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset::default()),
         };
         warn_on_load(py, &inner)?;
-        Ok(PyCOCO {
-            inner: Arc::new(inner),
-            image_dir,
-        })
+        let mut coco = Self::shared(inner);
+        coco.image_dir = image_dir;
+        Ok(coco)
     }
 
     #[pyo3(signature = (img_ids=IdList::default(), cat_ids=IdList::default(), area_rng=None, iscrowd=None))]
     fn get_ann_ids(
-        &self,
+        &mut self,
+        py: Python<'_>,
         img_ids: IdList,
         cat_ids: IdList,
         area_rng: Option<[f64; 2]>,
         iscrowd: Option<bool>,
-    ) -> Vec<u64> {
-        self.inner
-            .get_ann_ids(&img_ids.0, &cat_ids.0, area_rng, iscrowd)
+    ) -> PyResult<Vec<u64>> {
+        let inner = self.live.get(py)?;
+        Ok(inner.get_ann_ids(&img_ids.0, &cat_ids.0, area_rng, iscrowd))
     }
 
     #[pyo3(signature = (cat_nms=NameList::default(), sup_nms=NameList::default(), cat_ids=IdList::default()))]
-    fn get_cat_ids(&self, cat_nms: NameList, sup_nms: NameList, cat_ids: IdList) -> Vec<u64> {
+    fn get_cat_ids(
+        &mut self,
+        py: Python<'_>,
+        cat_nms: NameList,
+        sup_nms: NameList,
+        cat_ids: IdList,
+    ) -> PyResult<Vec<u64>> {
+        let inner = self.live.get(py)?;
         let cat_nms_ref: Vec<&str> = cat_nms.0.iter().map(String::as_str).collect();
         let sup_nms_ref: Vec<&str> = sup_nms.0.iter().map(String::as_str).collect();
-        self.inner
-            .get_cat_ids(&cat_nms_ref, &sup_nms_ref, &cat_ids.0)
+        Ok(inner.get_cat_ids(&cat_nms_ref, &sup_nms_ref, &cat_ids.0))
     }
 
     #[pyo3(signature = (img_ids=IdList::default(), cat_ids=IdList::default()))]
-    fn get_img_ids(&self, img_ids: IdList, cat_ids: IdList) -> Vec<u64> {
-        self.inner.get_img_ids(&img_ids.0, &cat_ids.0)
+    fn get_img_ids(
+        &mut self,
+        py: Python<'_>,
+        img_ids: IdList,
+        cat_ids: IdList,
+    ) -> PyResult<Vec<u64>> {
+        let inner = self.live.get(py)?;
+        Ok(inner.get_img_ids(&img_ids.0, &cat_ids.0))
     }
 
-    fn load_anns(&self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
-        let anns = self.inner.load_anns(&ids.0);
+    fn load_anns(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
+        let anns = inner.load_anns(&ids.0);
         let list = PyList::new(
             py,
             anns.iter()
@@ -401,8 +423,9 @@ impl PyCOCO {
         Ok(list.into_any().unbind())
     }
 
-    fn load_cats(&self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
-        let cats = self.inner.load_cats(&ids.0);
+    fn load_cats(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
+        let cats = inner.load_cats(&ids.0);
         let list = PyList::new(
             py,
             cats.iter()
@@ -412,8 +435,9 @@ impl PyCOCO {
         Ok(list.into_any().unbind())
     }
 
-    fn load_imgs(&self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
-        let imgs = self.inner.load_imgs(&ids.0);
+    fn load_imgs(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
+        let imgs = inner.load_imgs(&ids.0);
         let list = PyList::new(
             py,
             imgs.iter()
@@ -446,20 +470,27 @@ impl PyCOCO {
     /// Also available as ``loadRes()`` (camelCase alias).
     #[pyo3(signature = (res, *, segmentation=None))]
     fn load_res(
-        &self,
+        &mut self,
+        py: Python<'_>,
         res: &Bound<'_, PyAny>,
         segmentation: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyCOCO> {
-        self.load_res_core(res, segmentation)
-            .map(|inner| self.derived(inner))
+        let inner = self.live.get(py)?;
+        Self::load_res_core(&inner, res, segmentation).map(|inner| self.derived(inner))
     }
 
     /// ``LVISResults``' loader: ``load_res`` then the per-image cap, on a
     /// ``COCO`` this call owns — so a results set no image of which exceeds
     /// the cap is marked capped without the copy ``cap_detections_per_image``
     /// makes of a shared one. ``None`` keeps every detection.
-    fn _load_res_capped(&self, res: &Bound<'_, PyAny>, max_det: Option<usize>) -> PyResult<PyCOCO> {
-        self.load_res_core(res, None)
+    fn _load_res_capped(
+        &mut self,
+        py: Python<'_>,
+        res: &Bound<'_, PyAny>,
+        max_det: Option<usize>,
+    ) -> PyResult<PyCOCO> {
+        let inner = self.live.get(py)?;
+        Self::load_res_core(&inner, res, None)
             .map(|inner| self.derived(inner.cap_detections_per_image(max_det)))
     }
 
@@ -471,9 +502,14 @@ impl PyCOCO {
     /// ``LVISeval`` evaluates it as is instead of applying its default
     /// 300-per-image cap, as lvis-api's ``LVISEval`` takes an ``LVISResults``
     /// unchanged. ``LVISResults(gt, results, max_dets=)`` is the same cap.
-    fn cap_detections_per_image(&self, py: Python<'_>, max_det: Option<usize>) -> PyCOCO {
-        let inner = Arc::clone(&self.inner);
-        self.derived(py.detach(|| inner.cap_detections_per_image_shared(max_det)))
+    fn cap_detections_per_image(slf: &Bound<'_, Self>, max_det: Option<usize>) -> PyResult<PyCOCO> {
+        // Read back, then drop the borrow before detaching from the GIL, so a
+        // call on this object from another thread is not refused meanwhile.
+        let inner = Self::synced(slf)?;
+        let capped = slf
+            .py()
+            .detach(|| inner.cap_detections_per_image_shared(max_det));
+        Ok(slf.borrow().derived(capped))
     }
 
     /// Build a dataset from columns, with no Python dict per annotation.
@@ -634,9 +670,10 @@ impl PyCOCO {
     /// Returns the same shape as ``mask.encode`` and pycocotools:
     /// ``{"size": [h, w], "counts": bytes}`` — so the result feeds straight
     /// into ``mask.decode`` / ``mask.area`` / ``mask.iou``.
-    fn ann_to_rle(&self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
+    fn ann_to_rle(&mut self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
         let annotation = py_to_annotation(ann)?;
-        match self.inner.ann_to_rle(&annotation) {
+        match inner.ann_to_rle(&annotation) {
             Some(rle) => rle_to_coco_py(py, &rle),
             None => Err(pyo3::exceptions::PyValueError::new_err(
                 "Could not convert annotation to RLE (image not found?)",
@@ -645,12 +682,13 @@ impl PyCOCO {
     }
 
     fn ann_to_mask<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         ann: &Bound<'py, PyDict>,
     ) -> PyResult<Py<PyArray2<u8>>> {
+        let inner = self.live.get(py)?;
         let annotation = py_to_annotation(ann)?;
-        let rle = self.inner.ann_to_rle(&annotation).ok_or_else(|| {
+        let rle = inner.ann_to_rle(&annotation).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(
                 "Could not convert annotation to RLE (image not found?)",
             )
@@ -664,8 +702,9 @@ impl PyCOCO {
         Ok(arr.unbind())
     }
 
-    fn stats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let s = self.inner.stats();
+    fn stats(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
+        let s = inner.stats();
         dataset_stats_to_py(py, &s)
     }
 
@@ -675,12 +714,17 @@ impl PyCOCO {
     ///
     /// Returns a dict with ``"errors"``, ``"warnings"``, and ``"summary"`` keys.
     #[pyo3(signature = (dt=None))]
-    fn healthcheck(&self, py: Python<'_>, dt: Option<&PyCOCO>) -> PyResult<Py<PyAny>> {
+    fn healthcheck(slf: &Bound<'_, Self>, dt: Option<&Bound<'_, PyCOCO>>) -> PyResult<Py<PyAny>> {
+        // `dt` may be `slf` itself, so each is read back on its own borrow.
+        let gt = Self::synced(slf)?;
         let report = match dt {
-            Some(dt_coco) => self.inner.healthcheck_compatibility(&dt_coco.inner),
-            None => self.inner.healthcheck(),
+            Some(dt) => {
+                let dt = Self::synced(dt)?;
+                gt.healthcheck_compatibility(&dt)
+            }
+            None => gt.healthcheck(),
         };
-        serde_to_py(py, &report)
+        serde_to_py(slf.py(), &report)
     }
 
     /// Filter the dataset by category, by image, by annotation area, or by any combination.
@@ -689,19 +733,21 @@ impl PyCOCO {
     /// annotations are dropped unless `drop_empty_images=False`.
     #[pyo3(signature = (cat_ids=None, img_ids=None, area_rng=None, drop_empty_images=true))]
     fn filter(
-        &self,
+        &mut self,
+        py: Python<'_>,
         cat_ids: Option<Vec<u64>>,
         img_ids: Option<Vec<u64>>,
         area_rng: Option<[f64; 2]>,
         drop_empty_images: bool,
-    ) -> PyCOCO {
-        let result = self.inner.filter(
+    ) -> PyResult<PyCOCO> {
+        let inner = self.live.get(py)?;
+        let result = inner.filter(
             cat_ids.as_deref(),
             img_ids.as_deref(),
             area_rng,
             drop_empty_images,
         );
-        self.derived_from(result)
+        Ok(self.derived_from(result))
     }
 
     /// Merge a list of `COCO` datasets into one.
@@ -710,9 +756,13 @@ impl PyCOCO {
     /// Image and annotation IDs are remapped to be globally unique.
     /// Raises `ValueError` if the taxonomies differ.
     #[classmethod]
-    fn merge(cls: &Bound<'_, PyType>, datasets: Vec<PyRef<'_, PyCOCO>>) -> PyResult<PyCOCO> {
-        let ds_refs: Vec<&hotcoco_core::Dataset> =
-            datasets.iter().map(|p| &p.inner.dataset).collect();
+    fn merge(cls: &Bound<'_, PyType>, datasets: Vec<Bound<'_, PyCOCO>>) -> PyResult<PyCOCO> {
+        // One object may be listed twice, so each is read back on its own borrow.
+        let datasets = datasets
+            .iter()
+            .map(Self::synced)
+            .collect::<PyResult<Vec<_>>>()?;
+        let ds_refs: Vec<&hotcoco_core::Dataset> = datasets.iter().map(|c| &c.dataset).collect();
         let result = hotcoco_core::COCO::merge(&ds_refs).map_err(to_pyerr)?;
         PyCOCO::without_image_dir(cls.py(), result)
     }
@@ -723,13 +773,14 @@ impl PyCOCO {
     /// The shuffle is deterministic for the same `seed`. All splits share the full category list.
     #[pyo3(signature = (val_frac=0.2, test_frac=None, seed=42))]
     fn split(
-        &self,
+        &mut self,
         py: Python<'_>,
         val_frac: f64,
         test_frac: Option<f64>,
         seed: u64,
     ) -> PyResult<Py<PyAny>> {
-        let (train_ds, val_ds, test_ds) = self.inner.split(val_frac, test_frac, seed);
+        let inner = self.live.get(py)?;
+        let (train_ds, val_ds, test_ds) = inner.split(val_frac, test_frac, seed);
         let train_py = Py::new(py, self.derived_from(train_ds))?;
         let val_py = Py::new(py, self.derived_from(val_ds))?;
         if let Some(test_ds) = test_ds {
@@ -747,14 +798,22 @@ impl PyCOCO {
     /// Provide `n` for an exact count or `frac` for a fraction of total images.
     /// The sample is deterministic for the same `seed`.
     #[pyo3(signature = (n=None, frac=None, seed=42))]
-    fn sample(&self, n: Option<usize>, frac: Option<f64>, seed: u64) -> PyCOCO {
-        let result = self.inner.sample(n, frac, seed);
-        self.derived_from(result)
+    fn sample(
+        &mut self,
+        py: Python<'_>,
+        n: Option<usize>,
+        frac: Option<f64>,
+        seed: u64,
+    ) -> PyResult<PyCOCO> {
+        let inner = self.live.get(py)?;
+        let result = inner.sample(n, frac, seed);
+        Ok(self.derived_from(result))
     }
 
     /// Serialize the dataset to a COCO-format JSON file.
-    fn save(&self, path: &str) -> PyResult<()> {
-        hotcoco_core::report::save_json(&self.inner.dataset, Path::new(path)).map_err(to_pyerr)
+    fn save(&mut self, py: Python<'_>, path: &str) -> PyResult<()> {
+        let inner = self.live.get(py)?;
+        hotcoco_core::report::save_json(&inner.dataset, Path::new(path)).map_err(to_pyerr)
     }
 
     // camelCase aliases for pycocotools compatibility. The *parameter* names
@@ -767,15 +826,17 @@ impl PyCOCO {
     #[pyo3(name = "getAnnIds")]
     #[pyo3(signature = (imgIds=IdList::default(), catIds=IdList::default(), areaRng=None, iscrowd=None))]
     fn get_ann_ids_camel(
-        &self,
+        &mut self,
+        py: Python<'_>,
         imgIds: IdList,
         catIds: IdList,
         areaRng: Option<AreaRng>,
         iscrowd: Option<Flag>,
-    ) -> Vec<u64> {
+    ) -> PyResult<Vec<u64>> {
         // pycocotools' spellings, accepted here and not on `get_ann_ids`:
         // `areaRng=[]` for no filter, `iscrowd=0`/`1` for the flag.
         self.get_ann_ids(
+            py,
             imgIds,
             catIds,
             areaRng.and_then(|r| r.0),
@@ -786,49 +847,61 @@ impl PyCOCO {
     #[allow(non_snake_case)]
     #[pyo3(name = "getCatIds")]
     #[pyo3(signature = (catNms=NameList::default(), supNms=NameList::default(), catIds=IdList::default()))]
-    fn get_cat_ids_camel(&self, catNms: NameList, supNms: NameList, catIds: IdList) -> Vec<u64> {
-        self.get_cat_ids(catNms, supNms, catIds)
+    fn get_cat_ids_camel(
+        &mut self,
+        py: Python<'_>,
+        catNms: NameList,
+        supNms: NameList,
+        catIds: IdList,
+    ) -> PyResult<Vec<u64>> {
+        self.get_cat_ids(py, catNms, supNms, catIds)
     }
 
     #[allow(non_snake_case)]
     #[pyo3(name = "getImgIds")]
     #[pyo3(signature = (imgIds=IdList::default(), catIds=IdList::default()))]
-    fn get_img_ids_camel(&self, imgIds: IdList, catIds: IdList) -> Vec<u64> {
-        self.get_img_ids(imgIds, catIds)
+    fn get_img_ids_camel(
+        &mut self,
+        py: Python<'_>,
+        imgIds: IdList,
+        catIds: IdList,
+    ) -> PyResult<Vec<u64>> {
+        self.get_img_ids(py, imgIds, catIds)
     }
 
     #[pyo3(name = "loadAnns")]
-    fn load_anns_camel(&self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+    fn load_anns_camel(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
         self.load_anns(py, ids)
     }
 
     #[pyo3(name = "loadCats")]
-    fn load_cats_camel(&self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+    fn load_cats_camel(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
         self.load_cats(py, ids)
     }
 
     #[pyo3(name = "loadImgs")]
-    fn load_imgs_camel(&self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+    fn load_imgs_camel(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
         self.load_imgs(py, ids)
     }
 
     #[pyo3(name = "loadRes", signature = (res, *, segmentation=None))]
     fn load_res_camel(
-        &self,
+        &mut self,
+        py: Python<'_>,
         res: &Bound<'_, PyAny>,
         segmentation: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyCOCO> {
-        self.load_res(res, segmentation)
+        self.load_res(py, res, segmentation)
     }
 
     #[pyo3(name = "annToRLE")]
-    fn ann_to_rle_camel(&self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
+    fn ann_to_rle_camel(&mut self, py: Python<'_>, ann: &Bound<'_, PyDict>) -> PyResult<Py<PyAny>> {
         self.ann_to_rle(py, ann)
     }
 
     #[pyo3(name = "annToMask")]
     fn ann_to_mask_camel<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         ann: &Bound<'py, PyDict>,
     ) -> PyResult<Py<PyArray2<u8>>> {
@@ -872,8 +945,10 @@ impl PyCOCO {
     /// >>> stats = coco.to_yolo("labels/val2017/")
     /// >>> print(stats)
     /// {'images': 5000, 'annotations': 36781, 'skipped_crowd': 12, 'skipped_no_bbox': 0}
-    fn to_yolo(&self, py: Python<'_>, output_dir: &str) -> PyResult<Py<PyAny>> {
-        let stats = hotcoco_core::convert::coco_to_yolo(&self.inner.dataset, Path::new(output_dir))
+    fn to_yolo(slf: &Bound<'_, Self>, output_dir: &str) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let inner = Self::synced(slf)?;
+        let stats = hotcoco_core::convert::coco_to_yolo(&inner.dataset, Path::new(output_dir))
             .map_err(|e| to_pyerr(e.into()))?;
         let dict = PyDict::new(py);
         dict.set_item("images", stats.images)?;
@@ -959,8 +1034,10 @@ impl PyCOCO {
     /// >>> stats = coco.to_voc("voc_output/")
     /// >>> print(stats)
     /// {'images': 5000, 'annotations': 36781, 'crowd_as_difficult': 12, 'skipped_no_bbox': 0}
-    fn to_voc(&self, py: Python<'_>, output_dir: &str) -> PyResult<Py<PyAny>> {
-        let stats = hotcoco_core::convert::coco_to_voc(&self.inner.dataset, Path::new(output_dir))
+    fn to_voc(slf: &Bound<'_, Self>, output_dir: &str) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let inner = Self::synced(slf)?;
+        let stats = hotcoco_core::convert::coco_to_voc(&inner.dataset, Path::new(output_dir))
             .map_err(|e| to_pyerr(e.into()))?;
         let dict = PyDict::new(py);
         dict.set_item("images", stats.images)?;
@@ -1033,10 +1110,11 @@ impl PyCOCO {
     /// >>> stats = coco.to_cvat("annotations.xml")
     /// >>> print(stats)
     /// {'images': 5000, 'boxes': 36781, 'polygons': 0, 'skipped_no_geometry': 0, 'skipped_degenerate': 0}
-    fn to_cvat(&self, py: Python<'_>, output_path: &str) -> PyResult<Py<PyAny>> {
-        let stats =
-            hotcoco_core::convert::coco_to_cvat(&self.inner.dataset, Path::new(output_path))
-                .map_err(|e| to_pyerr(e.into()))?;
+    fn to_cvat(slf: &Bound<'_, Self>, output_path: &str) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let inner = Self::synced(slf)?;
+        let stats = hotcoco_core::convert::coco_to_cvat(&inner.dataset, Path::new(output_path))
+            .map_err(|e| to_pyerr(e.into()))?;
         let dict = PyDict::new(py);
         dict.set_item("images", stats.images)?;
         dict.set_item("boxes", stats.boxes)?;
@@ -1124,8 +1202,10 @@ impl PyCOCO {
     /// >>> stats = coco.to_dota("labelTxt/")
     /// >>> print(stats)
     /// {'images': 458, 'annotations': 18211, 'skipped_no_obb': 0}
-    fn to_dota(&self, py: Python<'_>, output_dir: &str) -> PyResult<Py<PyAny>> {
-        let stats = hotcoco_core::convert::coco_to_dota(&self.inner.dataset, Path::new(output_dir))
+    fn to_dota(slf: &Bound<'_, Self>, output_dir: &str) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let inner = Self::synced(slf)?;
+        let stats = hotcoco_core::convert::coco_to_dota(&inner.dataset, Path::new(output_dir))
             .map_err(|e| to_pyerr(e.into()))?;
         let dict = PyDict::new(py);
         dict.set_item("images", stats.images)?;
@@ -1213,8 +1293,10 @@ impl PyCOCO {
     /// --------
     /// >>> coco = COCO("instances_val2017.json")
     /// >>> stats = coco.to_oid("boxes.csv")
-    fn to_oid(&self, py: Python<'_>, output_csv: &str) -> PyResult<Py<PyAny>> {
-        let stats = hotcoco_core::convert::coco_to_oid(&self.inner.dataset, Path::new(output_csv))
+    fn to_oid(slf: &Bound<'_, Self>, output_csv: &str) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let inner = Self::synced(slf)?;
+        let stats = hotcoco_core::convert::coco_to_oid(&inner.dataset, Path::new(output_csv))
             .map_err(|e| to_pyerr(e.into()))?;
         let dict = PyDict::new(py);
         dict.set_item("images", stats.images)?;
@@ -1316,50 +1398,62 @@ impl PyCOCO {
     /// >>> gt = COCO.from_oid("boxes.csv")
     /// >>> dt = gt.load_res_oid("predictions.csv")
     #[pyo3(signature = (csv_path, class_descriptions=None))]
-    fn load_res_oid(&self, csv_path: &str, class_descriptions: Option<&str>) -> PyResult<PyCOCO> {
+    fn load_res_oid(
+        &mut self,
+        py: Python<'_>,
+        csv_path: &str,
+        class_descriptions: Option<&str>,
+    ) -> PyResult<PyCOCO> {
+        let inner = self.live.get(py)?;
         let anns = hotcoco_core::convert::oid_results_to_anns(
-            &self.inner.dataset,
+            &inner.dataset,
             Path::new(csv_path),
             class_descriptions.map(Path::new),
         )
         .map_err(|e| to_pyerr(e.into()))?;
 
-        self.inner
+        inner
             .load_res_anns(anns)
             .map(PyCOCO::shared)
             .map_err(to_pyerr)
     }
 
-    /// pycocotools builds COCO objects by assignment — `coco = COCO();
-    /// coco.dataset = d; coco.createIndex()` — and torchmetrics' pycocotools
-    /// backend uses exactly that flow, so `dataset` must be writable for the
-    /// drop-in claim to hold. hotcoco indexes eagerly on assignment, which
-    /// makes the follow-up `createIndex()` a no-op.
+    // pycocotools builds COCO objects by assignment — `coco = COCO();
+    // coco.dataset = d; coco.createIndex()` — and torchmetrics' pycocotools
+    // backend uses exactly that flow. `d` becomes the dict `dataset` returns,
+    // so `coco.dataset is d` holds as it does there; `LiveDataset::assign` says
+    // why it is not parsed here. A plain comment: PyO3 shows a setter's doc as
+    // the property's, over the getter's.
     #[setter]
-    fn set_dataset(&mut self, dataset: &Bound<'_, PyDict>) -> PyResult<()> {
-        let inner = hotcoco_core::COCO::from_dataset(py_to_dataset(dataset)?);
-        warn_on_load(dataset.py(), &inner)?;
-        self.inner = Arc::new(inner);
-        Ok(())
+    fn set_dataset(&mut self, dataset: &Bound<'_, PyDict>) {
+        self.live.assign(dataset);
     }
 
-    /// A no-op — see the ``dataset`` setter, which indexes on assignment. Kept
-    /// for pycocotools' ``coco.dataset = d; coco.createIndex()`` sequence.
-    fn create_index(_slf: PyRef<'_, Self>) {}
+    /// Rebuild the index from ``dataset``, as pycocotools does.
+    ///
+    /// Every method reads an edit to ``dataset`` back on its own, so this is
+    /// needed only for an edit made through a reference kept from before the
+    /// last call. Raises ``ValueError`` naming the record and the field for a
+    /// dict that cannot be read.
+    fn create_index(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.live.reindex(py)
+    }
 
     #[pyo3(name = "createIndex")]
-    fn create_index_camel(_slf: PyRef<'_, Self>) {}
+    fn create_index_camel(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.create_index(py)
+    }
 
     /// Edit annotations that are already loaded, matched by ``id``, keeping
     /// the indices current.
     ///
     /// Each dict is merged into the annotation with the same ``id``: the keys
     /// you pass are set, every other field keeps its value, and a key outside
-    /// the COCO schema is a custom key. The targeted counterpart to
-    /// ``coco.dataset = d``, which is still the way to add or remove
-    /// annotations or to drop a key. An evaluator built before the edit keeps
-    /// the annotations it was built with. The API reference for
-    /// ``update_anns`` has the full contract.
+    /// the COCO schema is a custom key. The targeted form of editing
+    /// ``coco.dataset`` in place, which is the way to add or remove
+    /// annotations or to drop a key and costs a read-back of the whole dict.
+    /// An evaluator built before the edit keeps the annotations it was built
+    /// with. The API reference for ``update_anns`` has the full contract.
     ///
     /// Parameters
     /// ----------
@@ -1394,29 +1488,37 @@ impl PyCOCO {
     #[pyo3(signature = (anns=None, *, create=false, ids=None, area=None))]
     fn update_anns(
         &mut self,
+        py: Python<'_>,
         anns: Option<&Bound<'_, PyList>>,
         create: bool,
         ids: Option<&Bound<'_, PyAny>>,
         area: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        let updated = match (anns, ids) {
-            (Some(_), Some(_)) => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    "update_anns: pass either a list of dicts or ids= with columns, not both",
-                ));
-            }
-            (None, None) => {
-                return Err(pyo3::exceptions::PyTypeError::new_err(
-                    "update_anns: pass a list of dicts, or ids= with a column such as area=",
-                ));
-            }
+        match (anns, ids) {
+            (Some(_), Some(_)) => Err(pyo3::exceptions::PyTypeError::new_err(
+                "update_anns: pass either a list of dicts or ids= with columns, not both",
+            )),
+            (None, None) => Err(pyo3::exceptions::PyTypeError::new_err(
+                "update_anns: pass a list of dicts, or ids= with a column such as area=",
+            )),
             (Some(anns), None) => {
                 if area.is_some() {
                     return Err(pyo3::exceptions::PyTypeError::new_err(
                         "update_anns: area= goes with ids=, not with a list of dicts",
                     ));
                 }
-                self.merged_from_dicts(anns, create)?
+                self.live.edit(py, |inner| {
+                    let updated = Self::merged_from_dicts(inner, anns, create)?;
+                    // A shared dataset is copied on its first edit; an empty edit is none.
+                    if updated.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    let ids = updated.iter().map(|ann| ann.id).collect();
+                    Arc::make_mut(inner)
+                        .update_anns(updated)
+                        .map_err(to_pyerr)?;
+                    Ok(ids)
+                })
             }
             (None, Some(ids)) => {
                 if create {
@@ -1425,26 +1527,22 @@ impl PyCOCO {
                     ));
                 }
                 let (ids, area) = area_column(ids, area)?;
-                // A shared dataset is checked before `make_mut` copies it, so
-                // it is not copied just to fail.
-                if Arc::get_mut(&mut self.inner).is_none() {
-                    self.inner.check_ann_ids(&ids).map_err(to_pyerr)?;
-                }
-                if ids.is_empty() {
-                    return Ok(());
-                }
-                return Arc::make_mut(&mut self.inner)
-                    .update_ann_areas(&ids, &area)
-                    .map_err(to_pyerr);
+                self.live.edit(py, |inner| {
+                    // A shared dataset is checked before `make_mut` copies it, so
+                    // it is not copied just to fail.
+                    if Arc::get_mut(inner).is_none() {
+                        inner.check_ann_ids(&ids).map_err(to_pyerr)?;
+                    }
+                    if ids.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    Arc::make_mut(inner)
+                        .update_ann_areas(&ids, &area)
+                        .map_err(to_pyerr)?;
+                    Ok(ids)
+                })
             }
-        };
-        // A shared dataset is copied on its first edit; an empty edit is none.
-        if updated.is_empty() {
-            return Ok(());
         }
-        Arc::make_mut(&mut self.inner)
-            .update_anns(updated)
-            .map_err(to_pyerr)
     }
 
     /// Warnings collected while loading and indexing this dataset.
@@ -1453,74 +1551,52 @@ impl PyCOCO {
     /// property exists for notebooks and servers where stderr is invisible.
     /// An empty list means the load was clean.
     #[getter]
-    fn load_warnings(&self) -> Vec<String> {
-        self.inner.load_warnings().to_vec()
+    fn load_warnings(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
+        let inner = self.live.get(py)?;
+        Ok(inner.load_warnings().to_vec())
     }
 
     /// The dataset as plain dicts: ``{"images": [...], "annotations": [...],
-    /// "categories": [...]}``.
+    /// "categories": [...]}`` — the same dict on every access, as in
+    /// pycocotools, and the one assigned to ``dataset`` if there was one.
     ///
-    /// **Returns a fresh copy on every access.** Mutating it in place —
-    /// ``coco.dataset["annotations"].append(...)`` — changes a temporary and is
-    /// a silent no-op. To edit annotations, pass the changed keys to
-    /// :meth:`update_anns`; for anything else, take the copy, edit it, and
-    /// assign it back (``coco.dataset = d``). Both keep the indices current.
+    /// Edit it in place as pycocotools code does: append an annotation, change
+    /// a field, delete an image. The next call that needs the data —
+    /// ``getAnnIds``, ``COCOeval(...)``, ``save`` — reads the dict back first,
+    /// and ``createIndex()`` reads it back at once, which an edit made through
+    /// a reference kept from before the last call needs. The read-back costs
+    /// one parse of the dict; a bad edit raises there what assigning the dict
+    /// raises. For a field edit by id, :meth:`update_anns` skips the parse.
     #[getter]
-    fn dataset(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let ds = &self.inner.dataset;
-        let dict = PyDict::new(py);
-
-        let images = PyList::new(
-            py,
-            ds.images
-                .iter()
-                .map(|i| image_to_py(py, i))
-                .collect::<PyResult<Vec<_>>>()?,
-        )?;
-        let annotations = PyList::new(
-            py,
-            ds.annotations
-                .iter()
-                .map(|a| annotation_to_py(py, a))
-                .collect::<PyResult<Vec<_>>>()?,
-        )?;
-        let categories = PyList::new(
-            py,
-            ds.categories
-                .iter()
-                .map(|c| category_to_py(py, c))
-                .collect::<PyResult<Vec<_>>>()?,
-        )?;
-
-        dict.set_item("images", images)?;
-        dict.set_item("annotations", annotations)?;
-        dict.set_item("categories", categories)?;
-
-        Ok(dict.into_any().unbind())
+    fn dataset(&mut self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        self.live.dict(py)
     }
 
     #[getter]
-    fn imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn imgs(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
         let dict = PyDict::new(py);
-        for img in &self.inner.dataset.images {
+        for img in &inner.dataset.images {
             dict.set_item(img.id, image_to_py(py, img)?)?;
         }
         Ok(dict.into_any().unbind())
     }
 
     #[getter]
-    fn anns(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn anns(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
         let dict = PyDict::new(py);
-        for ann in &self.inner.dataset.annotations {
+        for ann in &inner.dataset.annotations {
             dict.set_item(ann.id, annotation_to_py(py, ann)?)?;
         }
         Ok(dict.into_any().unbind())
     }
 
     #[getter]
-    fn cats(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+    fn cats(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let inner = self.live.get(py)?;
         let dict = PyDict::new(py);
-        for cat in &self.inner.dataset.categories {
+        for cat in &inner.dataset.categories {
             dict.set_item(cat.id, category_to_py(py, cat)?)?;
         }
         Ok(dict.into_any().unbind())
@@ -1595,7 +1671,7 @@ impl PyCOCO {
     /// one, so a bad value further down the list leaves the dataset
     /// untouched; every unknown id is raised at once, as the core reports them.
     fn merged_from_dicts(
-        &self,
+        inner: &hotcoco_core::COCO,
         anns: &Bound<'_, PyList>,
         create: bool,
     ) -> PyResult<Vec<Annotation>> {
@@ -1609,7 +1685,7 @@ impl PyCOCO {
             };
             let id: u64 =
                 convert::extract_int(&id).map_err(|e| convert::field_error(py, "field 'id'", e))?;
-            let Some(mut ann) = self.inner.get_ann(id).cloned() else {
+            let Some(mut ann) = inner.get_ann(id).cloned() else {
                 return Ok(Err(id));
             };
             merge_ann_dict_checked(&mut ann, dict, create)?;
@@ -2150,8 +2226,8 @@ impl PyCOCOeval {
     #[new]
     #[pyo3(signature = (coco_gt=None, coco_dt=None, iou_type=None, lvis_style=false, oid_style=false, hierarchy=None, **kwargs))]
     fn new(
-        coco_gt: Option<PyRef<'_, PyCOCO>>,
-        coco_dt: Option<PyRef<'_, PyCOCO>>,
+        coco_gt: Option<Bound<'_, PyCOCO>>,
+        coco_dt: Option<Bound<'_, PyCOCO>>,
         iou_type: Option<String>,
         lvis_style: bool,
         oid_style: bool,
@@ -2207,8 +2283,10 @@ impl PyCOCOeval {
         }
 
         let iou = parse_iou_type(&iou_type)?;
-        let gt = Arc::clone(&coco_gt.inner);
-        let dt = Arc::clone(&coco_dt.inner);
+        // Each dataset is read back on its own borrow: `COCOeval(coco, coco)` is
+        // one object twice.
+        let gt = PyCOCO::synced(&coco_gt)?;
+        let dt = PyCOCO::synced(&coco_dt)?;
 
         let inner = if oid_style {
             if iou != hotcoco_core::IouType::Bbox {

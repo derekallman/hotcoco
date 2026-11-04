@@ -161,8 +161,7 @@ def _load_coco(path, *, quiet: bool = False, reraise: bool = False):
     try:
         with _maybe_spinner(f"Loading {dim(os.path.basename(path))}...", quiet), Timer() as t:
             coco = COCO(path)
-        n_imgs = len(coco.dataset.get("images", []))
-        n_anns = len(coco.dataset.get("annotations", []))
+        n_imgs, n_anns = _counts(coco).values()
         if not quiet:
             status(
                 "Loaded",
@@ -185,7 +184,7 @@ def _load_res(coco, path, *, quiet: bool = False, reraise: bool = False):
     try:
         with _maybe_spinner(f"Loading {dim(os.path.basename(path))}...", quiet), Timer() as t:
             dt = coco.load_res(path)
-        n_dets = len(dt.dataset.get("annotations", []))
+        n_dets = _counts(dt)["annotations"]
         if not quiet:
             status("Loaded", f"{dim(os.path.basename(path))} ({n_dets:,} detections)", elapsed=t.elapsed)
         return dt
@@ -197,8 +196,10 @@ def _load_res(coco, path, *, quiet: bool = False, reraise: bool = False):
 
 
 def _counts(coco) -> dict:
-    """Return ``{"images": n, "annotations": n}`` for a loaded COCO dataset."""
-    return {"images": len(coco.dataset["images"]), "annotations": len(coco.dataset["annotations"])}
+    """``{"images": n, "annotations": n}`` for a loaded COCO dataset, counted in
+    Rust: no list of ids and no `dataset` dict is built to count records."""
+    stats = coco.stats()
+    return {"images": stats["image_count"], "annotations": stats["annotation_count"]}
 
 
 def _report_before_after(args, *, verb: str, before: dict, after: dict, elapsed: float | None = None):
@@ -246,8 +247,9 @@ def cmd_merge(args):
     from hotcoco import COCO
 
     cocos = [_load_coco(f, quiet=args.json, reraise=args.json) for f in args.files]
-    n_imgs_total = sum(len(c.dataset["images"]) for c in cocos)
-    n_anns_total = sum(len(c.dataset["annotations"]) for c in cocos)
+    counts = [_counts(c) for c in cocos]
+    n_imgs_total = sum(c["images"] for c in counts)
+    n_anns_total = sum(c["annotations"] for c in counts)
 
     try:
         with Timer() as t:
@@ -259,12 +261,11 @@ def cmd_merge(args):
         sys.exit(1)
 
     merged.save(args.output)
-    n_imgs_out = len(merged.dataset["images"])
-    n_anns_out = len(merged.dataset["annotations"])
+    n_imgs_out, n_anns_out = _counts(merged).values()
 
     if args.json:
         return {
-            "inputs": [{"file": f, **_counts(c)} for f, c in zip(args.files, cocos)],
+            "inputs": [{"file": f, **c} for f, c in zip(args.files, counts)],
             "output": {"file": args.output, "images": n_imgs_out, "annotations": n_anns_out},
         }
 
@@ -275,7 +276,7 @@ def cmd_merge(args):
 
 def cmd_split(args):
     coco = _load_coco(args.annotation_file, quiet=args.json, reraise=args.json)
-    n_imgs = len(coco.dataset["images"])
+    n_imgs = _counts(coco)["images"]
 
     # `is not None`, not truthiness: an explicit --test-frac 0.0 still asks for
     # a (possibly empty) three-way split and must not collapse to two-way.
@@ -293,8 +294,7 @@ def cmd_split(args):
     for name, split in splits:
         out_path = f"{args.output}_{name}.json"
         split.save(out_path)
-        n = len(split.dataset["images"])
-        n_anns = len(split.dataset["annotations"])
+        n, n_anns = _counts(split).values()
         split_results[name] = {"images": n, "annotations": n_anns, "output": out_path}
         if not args.json:
             print(f"  {name}: {n:,} images, {n_anns:,} annotations → {os.path.basename(out_path)}")
@@ -735,8 +735,7 @@ def cmd_convert(args):
             error(f"saving {args.output}: {e}")
             sys.exit(1)
 
-        n_imgs = len(coco.dataset["images"])
-        n_anns = len(coco.dataset["annotations"])
+        n_imgs, n_anns = _counts(coco).values()
 
         if args.json:
             return {
