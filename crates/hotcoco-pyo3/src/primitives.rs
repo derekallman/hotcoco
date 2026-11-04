@@ -19,7 +19,9 @@ use hotcoco_core::metrics::counts::score_order;
 use hotcoco_core::metrics::semantic::{Label, LabelMap, LabelPairOp};
 use hotcoco_core::panoptic::{MatchIds, SegmentInfo, labels_from_ids, match_image};
 use hotcoco_core::params::default_iou_thrs;
-use hotcoco_core::primitives::greedy::{self, GtMasks, coco_match_floor};
+use hotcoco_core::primitives::greedy::{
+    self, GroupOfBoxes, GtMasks, ThreshMatrix, coco_match_floor,
+};
 use hotcoco_core::primitives::panoptic::{Overlaps, Side};
 use hotcoco_core::primitives::{assign, sim};
 
@@ -210,29 +212,51 @@ fn thresholds_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<f64>, bool)> 
     Ok((vec![t], true))
 }
 
-/// `iscrowd` and `gt_ignore` as one flag pair per ground truth, `False` where
-/// an argument is `None`, and how many ground truths there are: `sim`'s
-/// columns, or, when `sim` has no rows and no columns — `[]` for an image
-/// with no detections — the flags' length.
+/// `greedy_match`'s per-ground-truth flag columns — `iscrowd`, `gt_ignore`,
+/// and `group_of` — each read when given and filled with `false` otherwise,
+/// all of one length: `sim`'s column count, or, when `sim` is `[]` and has
+/// none, the length of the first flag column given. The columns given must
+/// agree with each other and with `sim`.
 fn gt_flags_args(
     iscrowd: Option<&Bound<'_, PyAny>>,
     gt_ignore: Option<&Bound<'_, PyAny>>,
+    group_of: Option<&Bound<'_, PyAny>>,
     sim_shape: (usize, usize),
-) -> PyResult<(Vec<bool>, Vec<bool>, usize)> {
+) -> PyResult<GtFlags> {
     let read = |obj: Option<&Bound<'_, PyAny>>, name| obj.map(|o| flag_vec(o, name)).transpose();
-    let (crowd, ignore) = (read(iscrowd, "iscrowd")?, read(gt_ignore, "gt_ignore")?);
-    if let (Some(i), Some(c)) = (&ignore, &crowd) {
-        check_parallel(i.len(), c.len(), "gt_ignore", "iscrowd")?;
+    let given = [
+        ("iscrowd", read(iscrowd, "iscrowd")?),
+        ("gt_ignore", read(gt_ignore, "gt_ignore")?),
+        ("group_of", read(group_of, "group_of")?),
+    ];
+    let mut named = given
+        .iter()
+        .filter_map(|(name, f)| f.as_ref().map(|f| (*name, f)));
+    let first = named.next();
+    for (name, flags) in named {
+        let (first_name, first_flags) = first.expect("a second named flag follows a first");
+        check_parallel(flags.len(), first_flags.len(), name, first_name)?;
     }
-    let g = match (sim_shape, crowd.as_ref().or(ignore.as_ref())) {
-        ((0, 0), Some(flags)) => flags.len(),
+    let g = match (sim_shape, first) {
+        ((0, 0), Some((_, flags))) => flags.len(),
         ((_, g), _) => g,
     };
-    let fill = |flags: Option<Vec<bool>>, name| match flags {
+    let [iscrowd, gt_ignore, group_of] = given.map(|(name, flags)| match flags {
         Some(flags) => check_parallel(flags.len(), g, name, "sim's columns").map(|()| flags),
         None => Ok(vec![false; g]),
-    };
-    Ok((fill(crowd, "iscrowd")?, fill(ignore, "gt_ignore")?, g))
+    });
+    Ok(GtFlags {
+        iscrowd: iscrowd?,
+        gt_ignore: gt_ignore?,
+        group_of: group_of?,
+    })
+}
+
+/// `greedy_match`'s three per-ground-truth flag columns, each of length `g`.
+struct GtFlags {
+    iscrowd: Vec<bool>,
+    gt_ignore: Vec<bool>,
+    group_of: Vec<bool>,
 }
 
 /// A flat `[T * n]` buffer as a `(T, n)` array, or as `(n,)` when the caller
@@ -252,8 +276,8 @@ fn per_threshold<T: numpy::Element>(
 
 #[pyfunction]
 #[pyo3(
-    signature = (sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None, dt_ignore=None),
-    text_signature = "(sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None, dt_ignore=None)"
+    signature = (sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None, dt_ignore=None, group_of=None),
+    text_signature = "(sim, scores, iou_thrs=None, *, gt_ignore=None, iscrowd=None, dt_ignore=None, group_of=None)"
 )]
 #[doc = "COCO's greedy matching of detections to ground truths, pycocotools-exact.
 
@@ -282,6 +306,16 @@ Args:
     dt_ignore: ``(D,)`` flags for detections ignored when nothing matches
         them — outside the area range being scored, say. A detection that
         matches takes its ground truth's flag instead, as in ``COCOeval``.
+    group_of: ``(G,)`` Open Images group-of flags. A group-of box is worth one
+        ground truth: the best-scoring detection inside it is a true positive,
+        every other detection inside it is ignored, and an undetected box is
+        a miss — the Challenge protocol, as ``COCOeval(oid_style=True)``
+        matches it. Inside means intersection over the detection's area, the
+        crowd measure, so compute ``sim`` with these flags as ``iscrowd``. A
+        ground truth flagged here is held out of the matching above and takes
+        detections it left unmatched; one flagged both crowd and group-of is
+        a group-of box; one flagged here and in ``gt_ignore`` is held out of
+        the count too, so the detections inside it are all ignored.
 
 An image with no detections has a ``sim`` of ``(0, G)``. As ``[]`` it has no
 columns to count, so the flags, when given, say how many ground truths there
@@ -295,11 +329,12 @@ Returns:
     - ``dt_matches``: ``int64`` ``(T, D)``, the column each detection matched,
       or ``-1``.
     - ``gt_matches``: ``int64`` ``(T, G)``, the row that matched each ground
-      truth, or ``-1``; for a crowd ground truth, the last one to.
+      truth, or ``-1``; for a crowd ground truth, the last one to, and for a
+      group-of box the one credited with it.
     - ``dt_ignore``: ``bool`` ``(T, D)``, ``evalImgs``' ``dtIgnore``:
-      detections matched to an ignored or crowd ground truth, and unmatched
-      ones flagged in the ``dt_ignore`` argument. These are neither true nor
-      false positives.
+      detections matched to an ignored or crowd ground truth, every detection
+      on a group-of box but its first, and unmatched ones flagged in the
+      ``dt_ignore`` argument. These are neither true nor false positives.
 
     A detection is a true positive where ``dt_matches >= 0`` and not
     ``dt_ignore``, and a false positive where ``dt_matches == -1`` and not
@@ -317,14 +352,15 @@ Example:
     [1, 0]
 "]
 fn greedy_match(
-    py: Python<'_>,
     sim: &Bound<'_, PyAny>,
     scores: &Bound<'_, PyAny>,
     iou_thrs: Option<&Bound<'_, PyAny>>,
     gt_ignore: Option<&Bound<'_, PyAny>>,
     iscrowd: Option<&Bound<'_, PyAny>>,
     dt_ignore: Option<&Bound<'_, PyAny>>,
+    group_of: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
+    let py = sim.py();
     let (flat, d, nc) = f64_matrix_arg(sim, "sim")?;
     check_no_nan(&flat, "sim", "the matching")?;
     let scores = f64_vec(scores, "scores")?;
@@ -332,7 +368,12 @@ fn greedy_match(
     check_no_nan(&scores, "scores", "the matching order")?;
     let (thrs, scalar) = thresholds_arg(iou_thrs)?;
     check_no_nan(&thrs, "iou_thrs", "the matching")?;
-    let (iscrowd, gt_ignore, g) = gt_flags_args(iscrowd, gt_ignore, (d, nc))?;
+    let GtFlags {
+        iscrowd,
+        gt_ignore,
+        group_of,
+    } = gt_flags_args(iscrowd, gt_ignore, group_of, (d, nc))?;
+    let g = gt_ignore.len();
     let dt_seed = match dt_ignore {
         Some(obj) => {
             let flags = flag_vec(obj, "dt_ignore")?;
@@ -341,9 +382,12 @@ fn greedy_match(
         }
         None => vec![false; d],
     };
-    let ignored: Vec<bool> = (gt_ignore.iter().zip(&iscrowd))
-        .map(|(&ignore, &crowd)| ignore || crowd)
+    // A group-of box is ignored for the greedy phases and held out of the
+    // second; its own pass is the one route to it, as in the detection driver.
+    let ignored: Vec<bool> = (0..g)
+        .map(|i| gt_ignore[i] || iscrowd[i] || group_of[i])
         .collect();
+    let any_group_of = group_of.contains(&true);
     let t = thrs.len();
 
     let (dt_matches, gt_matches, dt_ignore) = py.detach(|| {
@@ -363,11 +407,24 @@ fn greedy_match(
         }
         let crowd_ranked: Vec<bool> = gt_order.iter().map(|&gi| iscrowd[gi]).collect();
         let floors: Vec<f64> = thrs.iter().map(|&t| coco_match_floor(t)).collect();
+        // Open Images only: the group-of columns in rank order, their inverse
+        // for the matcher's second phase, and which of them the count keeps.
+        let group_of_ranked: Vec<bool> = gt_order.iter().map(|&gi| group_of[gi]).collect();
+        let not_group_of: Vec<bool> = group_of_ranked.iter().map(|&x| !x).collect();
+        let counted: Vec<bool> = gt_order.iter().map(|&gi| !gt_ignore[gi]).collect();
         let masks = GtMasks {
             rematchable: Some(&crowd_ranked),
-            phase2_eligible: None,
+            phase2_eligible: any_group_of.then_some(not_group_of.as_slice()),
         };
-        let m = greedy::greedy_match_masked(&ranked, d, g, num_not_ignored, masks, &floors);
+        let mut m = greedy::greedy_match_masked(&ranked, d, g, num_not_ignored, masks, &floors);
+        let mut credited = ThreshMatrix::default();
+        if any_group_of {
+            let boxes = GroupOfBoxes {
+                group_of: &group_of_ranked,
+                counted: &counted,
+            };
+            greedy::match_group_of(&ranked, d, g, boxes, &floors, &mut m, &mut credited);
+        }
 
         let mut dt_matches = vec![-1i64; t * d];
         let mut gt_matches = vec![-1i64; t * g];
@@ -375,15 +432,19 @@ fn greedy_match(
         // overwrites it with the ground truth's flag.
         let mut dt_ignore = dt_seed.repeat(t);
         for (ti, row) in m.dt_gt.iter_rows().enumerate() {
-            for (&di, &matched) in dt_order.iter().zip(row) {
+            for (rank, (&di, &matched)) in dt_order.iter().zip(row).enumerate() {
                 let Some(pos) = matched else {
                     continue;
                 };
                 let gi = gt_order[pos];
                 dt_matches[ti * d + di] = gi as i64;
-                // Rank order, so a crowd ground truth keeps the last detection.
-                gt_matches[ti * g + gi] = di as i64;
-                dt_ignore[ti * d + di] = pos >= num_not_ignored;
+                let credited_here = any_group_of && credited[(ti, rank)];
+                dt_ignore[ti * d + di] = pos >= num_not_ignored && !credited_here;
+                // Rank order, so a crowd ground truth keeps the last detection;
+                // a group-of box keeps the one credited with it.
+                if credited_here || !group_of_ranked[pos] {
+                    gt_matches[ti * g + gi] = di as i64;
+                }
             }
         }
         (dt_matches, gt_matches, dt_ignore)

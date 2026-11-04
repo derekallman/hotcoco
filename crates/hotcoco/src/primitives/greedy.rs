@@ -443,9 +443,184 @@ pub(crate) fn greedy_match_into(
     }
 }
 
+/// The two per-GT masks [`match_group_of`] takes, as named fields: both are
+/// `&[bool]` of length `g`, and as adjacent positional parameters nothing
+/// would stop a caller from transposing them, as [`GtMasks`] says of its own.
+#[derive(Debug, Clone, Copy)]
+pub struct GroupOfBoxes<'a> {
+    /// Per-GT: is this ground truth a group-of box?
+    pub group_of: &'a [bool],
+    /// Per-GT: does this ground truth count toward recall? A group-of box the
+    /// area range ignores is taken but never credited.
+    pub counted: &'a [bool],
+}
+
+/// Open Images' group-of pass, run after [`greedy_match_masked`] on the same
+/// inputs with the group-of columns held out of both phases: in the ignored
+/// tail, so phase 1 never sees them, and `phase2_eligible == false`.
+///
+/// The [Challenge protocol](https://storage.googleapis.com/openimages/web/evaluation.html):
+///
+/// > If at least one detection is inside group-of box a single True Positive
+/// > is scored. ... Multiple correct detections inside the same group-of box
+/// > is still count as a single True Positive. Otherwise, the group-of box is
+/// > counted as a single False Negative.
+///
+/// So a group-of box is worth exactly one ground truth. Per threshold, each
+/// detection `out` left unmatched takes the group-of column it overlaps most
+/// at or above the threshold — [`best_above_floor`], the reference's
+/// `argmax` then test, first of a tie. Detections are score-descending, so
+/// the first to take a column is its highest-scoring detection, the one the
+/// reference keeps with `scores_group_of[gt] = max(...)`: it is **credited**
+/// (`credited[(t, di)]`), and the column becomes matched. A later taker is
+/// matched but not credited — ignored, neither true nor false positive — and
+/// a column nobody takes stays unmatched: a miss. This is TensorFlow's
+/// `group_of_weight = 1.0`, the metric FiftyOne implements unconditionally.
+///
+/// "Inside" is IoA — intersection over the *detection's* area — the measure
+/// COCO uses for a crowd region, so the caller computes a group-of column of
+/// `iou_flat` the way it computes a crowd column. The hold-out from the
+/// greedy phases is load-bearing: an IoA column saturates at 1.0 for any
+/// detection inside the region, so a group-of box left in phase 1 would
+/// outbid the real object a detection sits on and turn it into a miss.
+///
+/// `boxes.counted` says whether each ground truth counts toward recall. A
+/// group-of box the area range ignores is still taken, so the detections
+/// inside it are neither true nor false positives, but none is credited: a
+/// true positive on a box the denominator leaves out would inflate the range,
+/// as a detection matched to any other ignored ground truth is ignored under
+/// COCO.
+///
+/// Columns with no group-of flag are never touched; a cell without one is a
+/// reset of `credited` and nothing else, which is the common case.
+///
+/// # Panics
+///
+/// If `iou_flat.len() != d * g`, if either mask in `boxes` is not of length
+/// `g`, or if `out` is not the result of matching these `d` detections at
+/// these `iou_thrs`.
+pub fn match_group_of(
+    iou_flat: &[f64],
+    d: usize,
+    g: usize,
+    boxes: GroupOfBoxes<'_>,
+    iou_thrs: &[f64],
+    out: &mut GreedyMatches,
+    credited: &mut ThreshMatrix<bool>,
+) {
+    let GroupOfBoxes { group_of, counted } = boxes;
+    assert_eq!(
+        iou_flat.len(),
+        d * g,
+        "match_group_of: iou_flat must be d*g row-major ({d}x{g} = {}, got {})",
+        d * g,
+        iou_flat.len()
+    );
+    for (name, mask) in [("group_of", group_of), ("counted", counted)] {
+        assert_eq!(
+            mask.len(),
+            g,
+            "match_group_of: {name} must have one entry per GT (got {}, expected g = {g})",
+            mask.len()
+        );
+    }
+    let t = iou_thrs.len();
+    assert!(
+        out.dt_gt.num_rows() == t && out.dt_gt.row_len() == d && out.gt_matched.row_len() == g,
+        "match_group_of: out must be the greedy result for these detections and thresholds"
+    );
+    credited.reset(t, d, false);
+    if !group_of.contains(&true) {
+        return;
+    }
+    for (ti, &floor) in iou_thrs.iter().enumerate() {
+        let dt_row = out.dt_gt.row_mut(ti);
+        let gt_row = out.gt_matched.row_mut(ti);
+        let credit_row = credited.row_mut(ti);
+        for (di, slot) in dt_row.iter_mut().enumerate() {
+            if slot.is_some() {
+                continue;
+            }
+            let row = &iou_flat[di * g..(di + 1) * g];
+            let Some(gi) = best_above_floor(row, group_of, floor) else {
+                continue;
+            };
+            *slot = Some(gi);
+            // `gt_matched` is the "already credited" flag: the greedy phases
+            // never match a group-of column, so only this pass sets it.
+            credit_row[di] = counted[gi] && !gt_row[gi];
+            gt_row[gi] = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The group-of pass on one cell: two detections inside one group-of box,
+    /// a third on a plain ground truth, a fourth inside a group-of box the
+    /// area range ignores, and a group-of box nobody found. The first
+    /// detection inside the counted box is credited, the second is matched
+    /// but not, the plain match is untouched, the detection in the uncounted
+    /// box is matched and not credited, and the empty box stays unmatched.
+    #[test]
+    fn group_of_pass_credits_the_first_detection_in_each_counted_box() {
+        // Columns: [plain, group-of A, group-of B (nobody), group-of C
+        // (uncounted)]; the group-of columns are ignored, so they sit in the
+        // tail and `num_not_ignored == 1`. Rows score-descending; IoA
+        // saturates at 1.0 inside a region.
+        let iou = [
+            0.0, 1.0, 0.0, 0.0, //
+            0.9, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        let group_of = [false, true, true, true];
+        let counted = [true, true, true, false];
+        let not_group_of = [true, false, false, false];
+        let masks = GtMasks {
+            rematchable: None,
+            phase2_eligible: Some(&not_group_of),
+        };
+        let thrs = [0.5, 0.95];
+        let mut m = greedy_match_masked(&iou, 4, 4, 1, masks, &thrs);
+        assert_eq!(
+            m.dt_gt.row(0),
+            &[None, Some(0), None, None],
+            "greedy phases skip group-of columns"
+        );
+
+        let mut credited = ThreshMatrix::default();
+        let boxes = GroupOfBoxes {
+            group_of: &group_of,
+            counted: &counted,
+        };
+        match_group_of(&iou, 4, 4, boxes, &thrs, &mut m, &mut credited);
+        // IoA inside a region is 1.0, so both thresholds take alike; the plain
+        // match at 0.9 clears only the first.
+        assert_eq!(m.dt_gt.row(0), &[Some(1), Some(0), Some(1), Some(3)]);
+        assert_eq!(m.dt_gt.row(1), &[Some(1), None, Some(1), Some(3)]);
+        assert_eq!(
+            m.gt_matched.row(0),
+            &[true, true, false, true],
+            "box B is a miss"
+        );
+        assert_eq!(m.gt_matched.row(1), &[false, true, false, true]);
+        for t in 0..2 {
+            assert_eq!(credited.row(t), &[true, false, false, false]);
+        }
+
+        // No group-of column: a reset of `credited` and nothing else.
+        let none = GroupOfBoxes {
+            group_of: &[false; 4],
+            counted: &counted,
+        };
+        let before = m.dt_gt.clone();
+        match_group_of(&iou, 4, 4, none, &thrs, &mut m, &mut credited);
+        assert_eq!(m.dt_gt.row(1), before.row(1));
+        assert!(credited.iter_rows().all(|r| r.iter().all(|&c| !c)));
+    }
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 

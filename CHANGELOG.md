@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   provisional: their signatures freeze once the tracking family has exercised
   them.
   - `primitives.greedy_match(sim, scores, iou_thrs=None, *, gt_ignore=None,
-    iscrowd=None, dt_ignore=None)` is COCO's greedy matcher, pycocotools-exact:
+    iscrowd=None, dt_ignore=None, group_of=None)` is COCO's greedy matcher, pycocotools-exact:
     detections in descending score order with ties in row order, the later of
     two equal ground truths, ignored ground truths only when nothing else
     clears the threshold, crowd ground truths absorbing any number of
@@ -84,6 +84,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     argument flags the detections `COCOeval` ignores when nothing matches
     them, such as those outside the area range, so the returned `dt_ignore`
     is `evalImgs`' `dtIgnore` as it stands.
+  - `group_of=` on `greedy_match` applies the Open Images group-of rule as
+    `COCOeval(oid_style=True)` does; `iscrowd` in its place undercounts with no
+    error. Rust: `primitives::greedy::match_group_of`, the pass the driver runs.
+    See [Open Images from the matcher](https://derekallman.github.io/hotcoco/api/primitives/#open-images-from-the-matcher).
   - `primitives.segment_overlaps(gt, pred)` counts the pixels of every
     `(gt_id, pred_id)` pair in two panoptic label maps — panopticapi's
     `gt_pred_map` — and `primitives.match_segments(gt_segments, pred_segments,
@@ -96,7 +100,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `test_parity_panoptic.py` checks against panopticapi, and every match and
     `dt_ignore` flag `greedy_match` returns equals `COCOeval`'s `evalImgs` at
     all ten thresholds and all four area ranges, as do the true positives,
-    false positives, and misses `accumulate()` counts from them.
+    false positives, and misses `accumulate()` counts from them, and the same
+    with `group_of` on every Open Images parity case.
 - **Build your own metric**, a guide page that builds three metrics in Python
   from `primitives` and `metrics`: precision, recall, and F1 at one IoU and
   score threshold from `bbox_iou` and `greedy_match`; a cross-class confusion
@@ -203,6 +208,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Open Images under a custom area range credited group-of boxes the range
+  ignores.** With `params.areaRng` set past the default `all`, the best
+  detection inside such a box was a true positive against a count that left
+  the box out. It is now ignored, as for any other ignored ground truth. The
+  default single range was unaffected.
 - **A bool inside a number field of a dict record is a `ValueError`**, as it
   is from a JSON file, where `true` is not a number: `bbox`, `area`, `score`,
   `keypoints`, `obb`, and a polygon's points of an annotation or a result,

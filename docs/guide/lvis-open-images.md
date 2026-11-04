@@ -121,7 +121,7 @@ Open Images AP also uses **VOC 2010 all-points integration** — the exact area 
 
     The older V2 detection metric ignored group-of boxes entirely — they contributed to neither the numerator nor the denominator (`group_of_weight = 0.0`). Both are real published protocols. hotcoco implements the Challenge metric, so **numbers here don't match a V2-era leaderboard**.
 
-Your annotations need `"is_group_of": true` in the JSON for this to take effect. Standard annotations without this field default to `false`.
+Your annotations need `"is_group_of": true` in the JSON for this to take effect. Standard annotations without this field default to `false`. To apply the rule in a metric of your own, pass the flags to `primitives.greedy_match` as `group_of` — see [Open Images from the matcher](../api/primitives.md#open-images-from-the-matcher).
 
 ### Verification
 

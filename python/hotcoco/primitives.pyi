@@ -61,12 +61,15 @@ def greedy_match(
     gt_ignore: _Flags | None = None,
     iscrowd: _Flags | None = None,
     dt_ignore: _Flags | None = None,
+    group_of: _Flags | None = None,
 ) -> _GreedyMatches:
     """COCO's greedy matching of ``(D, G)`` similarity, detections in descending score order.
 
     ``dt_ignore`` flags the detections ignored when nothing matches them, as
     ``COCOeval`` flags those outside the area range; the returned ``dt_ignore``
-    is ``evalImgs``' ``dtIgnore``.
+    is ``evalImgs``' ``dtIgnore``. ``group_of`` flags Open Images group-of boxes,
+    each worth one ground truth: its best-scoring detection is a true positive
+    and the rest are ignored.
     """
     ...
 

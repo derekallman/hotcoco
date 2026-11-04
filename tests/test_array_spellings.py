@@ -322,6 +322,18 @@ def test_greedy_match_flags_read_the_same_in_every_spelling(dtype, layout):
     assert not same_matches(want, without_seed), "the detection flags must change dt_ignore"
 
 
+@pytest.mark.parametrize("layout", COLUMN_LAYOUTS)
+@pytest.mark.parametrize("dtype", [np.bool_] + INT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_greedy_match_group_of_reads_the_same_in_every_spelling(dtype, layout):
+    group_of = np.roll(FLAGS, 3)
+    want = greedy_reference(group_of=group_of.tolist())
+    got = primitives.greedy_match(SIM, SCORES, THRESHOLDS, group_of=spelled_column(group_of, dtype, layout))
+    assert same_matches(got, want)
+    assert not same_matches(want, greedy_reference()), "the flags must change the matches"
+    as_crowd = greedy_reference(iscrowd=group_of.tolist())
+    assert not same_matches(want, as_crowd), "a group-of box must match differently from a crowd region"
+
+
 def degenerate(shape, dtype, width=5):
     """A zero-size array, or one with a length-one axis, in ``dtype``. The last is a
     one-row view with an odd row stride, which numpy still flags C-contiguous."""

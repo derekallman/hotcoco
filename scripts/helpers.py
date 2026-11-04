@@ -981,11 +981,18 @@ def coco_counts(matched, dt_ignore, gt_ignore) -> tuple[int, int, int]:
 def eval_img_counts(e: dict, t: int = 0, score_thr: float = float("-inf")) -> tuple[int, int, int]:
     """`coco_counts` of one `evalImgs` entry at `iou_thrs[t]`, over its detections
     scoring `score_thr` or more. `dtMatches` holds 0 for "no match", and `dtIgnore`
-    already ignores an unmatched detection outside the entry's area range."""
+    already ignores an unmatched detection outside the entry's area range. The
+    misses come from hotcoco's `gtInDenominator`, which is `not gtIgnore` except
+    under Open Images, where a group-of box is held out of matching yet counts
+    once; a pycocotools entry has only `gtIgnore`."""
     confident = np.array(e["dtScores"], dtype=float) >= score_thr
     matched = np.array(e["dtMatches"][t], dtype=float) > 0
     dt_ignore = np.array(e["dtIgnore"][t], dtype=bool)
-    return coco_counts(matched[confident], dt_ignore[confident], e["gtIgnore"])
+    if "gtInDenominator" in e:
+        gt_ignore = ~np.array(e["gtInDenominator"], dtype=bool)
+    else:
+        gt_ignore = np.array(e["gtIgnore"], dtype=bool)
+    return coco_counts(matched[confident], dt_ignore[confident], gt_ignore)
 
 
 def counts_from_eval_imgs(

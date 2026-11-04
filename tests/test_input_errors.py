@@ -452,6 +452,7 @@ def test_greedy_match_takes_the_ground_truth_count_from_its_flags_when_sim_is_em
     its ground truths' flags, as ``np.zeros((0, G))`` would be."""
     m = primitives.greedy_match([], [], 0.5, iscrowd=[0, 1], gt_ignore=[False, False])
     assert m["gt_matches"].tolist() == [-1, -1] and m["dt_matches"].tolist() == []
+    assert primitives.greedy_match([], [], 0.5, group_of=[1, 0, 0])["gt_matches"].tolist() == [-1, -1, -1]
     with pytest.raises(ValueError, match="gt_ignore and iscrowd must have the same length"):
         primitives.greedy_match([], [], 0.5, iscrowd=[0, 1], gt_ignore=[False])
 
@@ -496,6 +497,8 @@ def test_bad_values_for_the_matchers_are_value_errors():
         (lambda: primitives.greedy_match([[0.5]], [0.9, 0.8]), "scores and sim's rows must have the same length"),
         (lambda: primitives.greedy_match([[0.5]], [0.9], iscrowd=[0, 1]), "iscrowd and sim's columns"),
         (lambda: primitives.greedy_match([[0.5]], [0.9], gt_ignore=[]), "gt_ignore and sim's columns"),
+        (lambda: primitives.greedy_match([[0.5]], [0.9], group_of=[0, 1]), "group_of and sim's columns"),
+        (lambda: primitives.greedy_match([], [], iscrowd=[0], group_of=[0, 1]), "group_of and iscrowd"),
         (lambda: primitives.greedy_match([[0.5]], [0.9], dt_ignore=[0, 1]), "dt_ignore and sim's rows"),
         (lambda: primitives.greedy_match([], [], dt_ignore=[True]), "dt_ignore and sim's rows"),
         (lambda: primitives.greedy_match([[0.5], [0.5, 0.5]], [0.9, 0.8]), "rectangular"),
@@ -531,6 +534,7 @@ def test_an_argument_of_the_wrong_kind_is_a_type_error():
         lambda: primitives.greedy_match("x", []),
         lambda: primitives.greedy_match([[0.5]], [0.9], "0.5"),
         lambda: primitives.greedy_match([[0.5]], [0.9], iscrowd=42),
+        lambda: primitives.greedy_match([[0.5]], [0.9], group_of=42),
         lambda: primitives.greedy_match([[0.5]], [0.9], dt_ignore=42),
     ):
         with pytest.raises(TypeError):

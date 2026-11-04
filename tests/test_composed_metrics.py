@@ -13,6 +13,11 @@ driver reports, exactly — ``==``, not a tolerance.
   ``evalImgs``, at all ten thresholds and all four area ranges, and the true
   positives, false positives, and misses ``accumulate()`` counts from them,
   which ``helpers.eval_img_counts`` reads.
+- **Open Images matching.** The same two calls with ``group_of`` in place of
+  ``iscrowd``, on the cases ``test_parity_oid.py`` checks ``COCOeval`` against
+  the TensorFlow Object Detection API on: every match and ``dtIgnore`` flag of
+  an ``oid_style`` run, group-of boxes credited once, surplus detections
+  absorbed, and undetected boxes missed.
 
 The panoptic cases are the ones ``test_parity_panoptic.py`` checks
 ``PanopticEval`` against panopticapi on; this file checks the primitives
@@ -23,17 +28,20 @@ reads ``COCOeval``'s counts through the same helper.
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 
 import numpy as np
 import pytest
 from helpers import (
+    FIXTURES_DIR,
     coco_counts,
     detection_corpus,
     eval_img_counts,
     hand_panoptic_cases,
     outside_area_range,
     random_panoptic_cases,
+    suppress_output,
 )
 from hotcoco import COCO, COCOeval, metrics, panoptic, primitives
 
@@ -143,14 +151,10 @@ def test_match_segments_takes_panopticapis_own_histogram():
 EVERY_AREA = [0.0, 1e10]
 
 
-def cells(seed):
-    """``COCOeval``'s ``evalImgs`` entries for a corpus, each beside the ground truths
-    and detections of its (image, category), in the order the datasets hold them."""
-    dataset, results = detection_corpus(seed)
-    gt = COCO(dataset)
-    dt = gt.load_res(results)
-    ev = COCOeval(gt, dt, "bbox")
-    ev.evaluate()
+def eval_img_cells(ev):
+    """``ev``'s ``evalImgs`` entries after ``evaluate()``, each beside the ground
+    truths and detections of its (image, category), in the order the datasets hold
+    them."""
 
     def by_cell(coco):
         out = defaultdict(list)
@@ -158,11 +162,40 @@ def cells(seed):
             out[ann["image_id"], ann["category_id"]].append(ann)
         return out
 
-    gt_cells, dt_cells = by_cell(gt), by_cell(dt)
+    gt_cells, dt_cells = by_cell(ev.coco_gt), by_cell(ev.coco_dt)
     for e in ev.eval_imgs:
         if e is not None:
             key = e["image_id"], e["category_id"]
             yield e, gt_cells[key], dt_cells[key]
+
+
+def cells(seed):
+    """The corpus's cells under COCO evaluation."""
+    dataset, results = detection_corpus(seed)
+    gt = COCO(dataset)
+    ev = COCOeval(gt, gt.load_res(results), "bbox")
+    ev.evaluate()
+    return eval_img_cells(ev)
+
+
+def assert_same_matches(m, e, gts, dts):
+    """``greedy_match``'s result ``m`` for a cell, by index, is the ``evalImgs`` entry
+    ``e`` for it, by annotation id, at every threshold."""
+    dt_row = {d["id"]: i for i, d in enumerate(dts)}
+    gt_col = {g["id"]: i for i, g in enumerate(gts)}
+    dt_matches, gt_matches, dt_ignore = (np.atleast_2d(m[k]) for k in ("dt_matches", "gt_matches", "dt_ignore"))
+    # evalImgs lists detections best first; its dtIgnore is greedy_match's, verbatim.
+    ranked = [dt_row[d] for d in e["dtIds"]]
+    want_ignore = np.array(e["dtIgnore"], dtype=bool).reshape(len(e["dtMatches"]), len(ranked))
+    np.testing.assert_array_equal(dt_ignore[:, ranked], want_ignore, err_msg=str(e["image_id"]))
+    for t in range(len(e["dtMatches"])):
+        # evalImgs uses 0 for "no match".
+        for k, d in enumerate(e["dtIds"]):
+            got = dt_matches[t, dt_row[d]]
+            assert e["dtMatches"][t][k] == (gts[got]["id"] if got >= 0 else 0), (e["image_id"], t, d)
+        for k, g in enumerate(e["gtIds"]):
+            got = gt_matches[t, gt_col[g]]
+            assert e["gtMatches"][t][k] == (dts[got]["id"] if got >= 0 else 0), (e["image_id"], t, g)
 
 
 def match_cell(gts, dts, area_range, iou_thrs):
@@ -188,20 +221,8 @@ def test_greedy_match_makes_every_match_cocoeval_makes(seed):
     for e, gts, dts in cells(seed):
         # No thresholds given: greedy_match's default is COCOeval's ten.
         m, gt_ignore = match_cell(gts, dts, e["aRng"], None)
-        dt_row = {d["id"]: i for i, d in enumerate(dts)}
-        gt_col = {g["id"]: i for i, g in enumerate(gts)}
-        # evalImgs lists detections best first; its dtIgnore is greedy_match's, verbatim.
-        ranked = [dt_row[d] for d in e["dtIds"]]
-        want_ignore = np.array(e["dtIgnore"], dtype=bool).reshape(len(e["dtMatches"]), len(ranked))
-        np.testing.assert_array_equal(m["dt_ignore"][:, ranked], want_ignore, err_msg=str(e["image_id"]))
+        assert_same_matches(m, e, gts, dts)
         for t in range(len(e["dtMatches"])):
-            # evalImgs uses 0 for "no match".
-            for k, d in enumerate(e["dtIds"]):
-                got = m["dt_matches"][t, dt_row[d]]
-                assert e["dtMatches"][t][k] == (gts[got]["id"] if got >= 0 else 0), (e["image_id"], t, d)
-            for k, g in enumerate(e["gtIds"]):
-                got = m["gt_matches"][t, gt_col[g]]
-                assert e["gtMatches"][t][k] == (dts[got]["id"] if got >= 0 else 0), (e["image_id"], t, g)
             # What accumulate() counts from the cell, the ground truths it ignores included.
             counts = coco_counts(m["dt_matches"][t] >= 0, m["dt_ignore"][t], gt_ignore)
             assert counts == eval_img_counts(e, t), (e["image_id"], e["category_id"], e["aRng"], t)
@@ -224,4 +245,94 @@ def test_the_comparison_sees_tie_order():
         r, _ = match_cell(gts[::-1], dts, EVERY_AREA, 0.5)
         flipped = np.where(r["dt_matches"] >= 0, len(gts) - 1 - r["dt_matches"], -1)
         differs |= bool(np.any(flipped != m["dt_matches"]))
+    assert differs
+
+
+# ── Open Images matches from bbox_iou + greedy_match(group_of=) ──────────────
+
+OID_CASES = json.loads((FIXTURES_DIR / "oid_tf_expected.json").read_text())["cases"]
+
+
+# Open Images evaluates one range, ``all``; the second run splits the fixture's
+# boxes, so some group-of boxes fall outside the range being scored.
+OID_AREA_RANGES = [[[0, 1e10]], [[0, 1e10], [0, 20_000], [20_000, 1e10]]]
+
+
+def oid_cells():
+    """Every cell of every Open Images parity case under ``oid_style`` evaluation,
+    at its one threshold, 0.5, under the default area range and then a split."""
+    for case in OID_CASES:
+        gt = COCO(
+            {
+                "images": [{"id": 1, "width": 800, "height": 800, "file_name": "a.jpg"}],
+                "annotations": case["annotations"],
+                "categories": case["categories"],
+            }
+        )
+        for ranges in OID_AREA_RANGES:
+            ev = COCOeval(gt, gt.load_res(case["detections"]), "bbox", oid_style=True)
+            ev.params.areaRng = ranges
+            ev.params.areaRngLbl = ["all", "small", "large"][: len(ranges)]
+            with suppress_output():  # the Extension provenance notice, once per run
+                ev.evaluate()
+            yield from eval_img_cells(ev)
+
+
+def match_oid_cell(gts, dts, area_range, flag):
+    """One cell matched the Open Images way, the group-of flags passed as ``flag``.
+    Open Images reads ``is_group_of`` where COCO reads ``iscrowd``, for the IoA
+    columns of ``sim`` and for the matcher alike; the area range flags both sides
+    as under COCO."""
+    group_of = [bool(g.get("is_group_of", False)) for g in gts]
+    sim = primitives.bbox_iou([d["bbox"] for d in dts], [g["bbox"] for g in gts], group_of)
+    return primitives.greedy_match(
+        sim,
+        [d["score"] for d in dts],
+        0.5,
+        gt_ignore=outside_area_range(gts, area_range),
+        dt_ignore=outside_area_range(dts, area_range),
+        **{flag: group_of},
+    )
+
+
+def test_greedy_match_makes_every_match_open_images_makes():
+    credited = absorbed = missed = outside = False
+    for e, gts, dts in oid_cells():
+        m = match_oid_cell(gts, dts, e["aRng"], "group_of")
+        assert_same_matches(m, e, gts, dts)
+        # The cell's true positives, false positives, and misses: a group-of box
+        # counts as one ground truth, found or not, so only the area range ignores.
+        matched = m["dt_matches"] >= 0
+        gt_outside = outside_area_range(gts, e["aRng"])
+        counts = coco_counts(matched, m["dt_ignore"], gt_outside)
+        assert counts == eval_img_counts(e), (e["image_id"], e["category_id"], e["aRng"])
+
+        group_of = np.array([bool(g.get("is_group_of", False)) for g in gts], dtype=bool)
+        on_group = matched & np.isin(m["dt_matches"], np.flatnonzero(group_of))
+        on_outside = matched & np.isin(m["dt_matches"], np.flatnonzero(group_of & gt_outside))
+        credited |= bool(np.any(on_group & ~m["dt_ignore"]))
+        absorbed |= bool(np.any(on_group & m["dt_ignore"] & ~on_outside))
+        missed |= bool(np.any(group_of & ~gt_outside & (m["gt_matches"] < 0)))
+        # A detection inside a group-of box the range leaves out is ignored, never
+        # a true positive against a count that has no box for it.
+        assert not np.any(on_outside & ~m["dt_ignore"]), (e["image_id"], e["aRng"])
+        outside |= bool(np.any(on_outside))
+    # The fixture reaches every clause of the rule.
+    assert credited and absorbed and missed and outside
+
+
+def test_iscrowd_is_not_group_of():
+    """The trap the keyword exists for: the two flags share the IoA measure, so
+    ``iscrowd=group_of`` looks right and is not. A crowd region absorbs every
+    detection as ignored; a group-of box credits the first as a true positive, so the
+    composed count comes out low with no error. The check above tells them apart."""
+    differs = False
+    for e, gts, dts in oid_cells():
+        if not any(g.get("is_group_of") for g in gts):
+            continue
+        m = match_oid_cell(gts, dts, e["aRng"], "iscrowd")
+        try:
+            assert_same_matches(m, e, gts, dts)
+        except AssertionError:
+            differs = True
     assert differs

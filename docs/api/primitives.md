@@ -176,6 +176,7 @@ COCO's greedy matching of detections to ground truths, pycocotools-exact.
         gt_ignore: Sequence[bool] | numpy.ndarray | None = None,
         iscrowd: Sequence[bool] | numpy.ndarray | None = None,
         dt_ignore: Sequence[bool] | numpy.ndarray | None = None,
+        group_of: Sequence[bool] | numpy.ndarray | None = None,
     ) -> dict
     ```
 
@@ -187,6 +188,7 @@ COCO's greedy matching of detections to ground truths, pycocotools-exact.
     | `gt_ignore` | `Sequence[bool] \| numpy.ndarray \| None` | `(G,)` ground truths that can absorb a detection but never count, such as those outside the area range being scored |
     | `iscrowd` | `Sequence[bool] \| numpy.ndarray \| None` | `(G,)` crowd flags, the ones `sim` was computed with |
     | `dt_ignore` | `Sequence[bool] \| numpy.ndarray \| None` | `(D,)` detections ignored when nothing matches them, such as those outside the area range being scored. A detection that matches takes its ground truth's flag instead |
+    | `group_of` | `Sequence[bool] \| numpy.ndarray \| None` | `(G,)` Open Images group-of flags, the ones `sim` was computed with as `iscrowd`. See [Open Images](#open-images-from-the-matcher) |
 
 === "Rust"
 
@@ -201,7 +203,9 @@ COCO's greedy matching of detections to ground truths, pycocotools-exact.
     non-ignored first, thresholds already clamped with `coco_match_floor`. The
     Python function does that ordering for you, with
     `metrics::counts::score_order` and `params::default_iou_thrs` — the
-    ranking and thresholds `COCOeval` uses.
+    ranking and thresholds `COCOeval` uses. `greedy::match_group_of` is the
+    Open Images pass that follows it, on the same inputs plus the group-of
+    flags, and the detection driver runs the same two functions.
 
 At each threshold, detections take turns from the highest score down, tied
 scores in row order as pycocotools' stable sort leaves them. Each takes the
@@ -219,8 +223,8 @@ whatever order those are in:
 | Key | Type | Description |
 |-----|------|-------------|
 | `dt_matches` | `int64`, `(T, D)` | The column each detection matched, or `-1` |
-| `gt_matches` | `int64`, `(T, G)` | The row that matched each ground truth, or `-1`; for a crowd ground truth, the last one to |
-| `dt_ignore` | `bool`, `(T, D)` | `evalImgs`' `dtIgnore`: detections matched to an ignored or crowd ground truth, and unmatched ones the `dt_ignore` argument flags — neither true nor false positives |
+| `gt_matches` | `int64`, `(T, G)` | The row that matched each ground truth, or `-1`; for a crowd ground truth, the last one to, and for a group-of box the one credited with it |
+| `dt_ignore` | `bool`, `(T, D)` | `evalImgs`' `dtIgnore`: detections matched to an ignored or crowd ground truth, every detection on a group-of box but its first, and unmatched ones the `dt_ignore` argument flags — neither true nor false positives |
 
 With a single number for `iou_thrs`, the threshold axis is dropped: `(D,)`,
 `(G,)`, `(D,)`, as `numpy.quantile` does for a scalar `q`. The pycocotools
@@ -244,6 +248,36 @@ ground truth in the range is still a true positive.
 
 The matching is greedy, not optimal. That is the protocol, and the numbers
 depend on it; for an optimal assignment use [`lsap`](#lsap).
+
+#### Open Images from the matcher
+
+Three protocols, three flags: `iscrowd` is COCO's crowd rule, `group_of` is
+Open Images', and `gt_ignore` with `dt_ignore` carry the area range under
+either. A [group-of box](../guide/lvis-open-images.md#group-of-annotations)
+is worth one ground truth: it is held out of the matching above, then each
+detection left unmatched takes the group-of box it overlaps most at or above
+the threshold. The first to take a box, its best-scoring detection, is a true
+positive and `gt_matches` records it; every later one is flagged in
+`dt_ignore`; a box nobody takes is a miss. A ground truth flagged both
+`iscrowd` and `group_of` is a group-of box, and one flagged `group_of` and
+`gt_ignore` is a box the area range leaves out: the detections inside it are
+all ignored, as they are for any other ignored ground truth.
+
+Inside means intersection over the detection's area, the measure
+[`bbox_iou`](#bbox_iou) computes for a crowd column, so the flags go to both
+calls:
+
+```python
+sim = primitives.bbox_iou(dt_boxes, gt_boxes, group_of)
+m = primitives.greedy_match(sim, dt_scores, 0.5, group_of=group_of)
+```
+
+Passing them as `iscrowd` instead looks right and is not: a crowd region
+absorbs every detection as ignored, so the count comes out one true positive
+short per found box, with no error. `tests/test_composed_metrics.py` holds
+this to `COCOeval(oid_style=True)` on every case of the
+[Open Images parity fixture](../benchmarks.md#open-images), and shows the
+`iscrowd` spelling differs.
 
 An image with no detections has a `sim` of `(0, G)`, which [`bbox_iou`](#bbox_iou)
 returns as such. As a list, `[]` has no columns to count, so the flags, when

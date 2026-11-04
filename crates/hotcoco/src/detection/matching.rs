@@ -31,7 +31,7 @@ use rayon::prelude::*;
 use crate::coco::COCO;
 use crate::metrics::counts::descending_score_key;
 use crate::params::Params;
-use crate::primitives::greedy::{GreedyMatches, GtMasks, ThreshMatrix};
+use crate::primitives::greedy::{GreedyMatches, GroupOfBoxes, GtMasks, ThreshMatrix};
 use crate::types::Annotation;
 
 use super::iou::AnnIds;
@@ -125,6 +125,9 @@ pub(super) struct MatchScratch {
     /// Open Images only: the group-of flags inverted.
     phase2_eligible: Vec<bool>,
     greedy: GreedyMatches,
+    /// Open Images only: per threshold and detection, whether the detection
+    /// scored its group-of box — see `primitives::greedy::match_group_of`.
+    credited: ThreshMatrix<bool>,
     outcome: MatchOutcome,
 }
 
@@ -915,6 +918,7 @@ fn match_cell(ctx: &EvalImgContext<'_>, pair: &PairCell<'_>, s: &mut MatchScratc
         iou_flat,
         phase2_eligible,
         greedy,
+        credited,
         outcome,
         ..
     } = s;
@@ -971,95 +975,55 @@ fn match_cell(ctx: &EvalImgContext<'_>, pair: &PairCell<'_>, s: &mut MatchScratc
         greedy,
     );
 
+    // Open Images second pass — group-of boxes, worth one ground truth each.
+    // `primitives::greedy::match_group_of` owns the rule; `is_group_of_sorted`
+    // is the candidate mask, since under OID `ignore` is `is_group_of ||
+    // area_ignore`, so every group-of box is already in the ignored tail that
+    // both greedy phases held it out of, and `in_denominator_sorted` says
+    // which boxes the area range counts. "Inside" is IoA — see `iou.rs`,
+    // where group-of columns are flagged crowd so `sim` selects
+    // intersection-over-detection-area. Group-of is a minority annotation,
+    // so most cells skip the pass and never read `credited`.
+    let has_group_of = is_oid && gt.is_group_of_sorted.contains(&true);
+    if has_group_of {
+        crate::primitives::greedy::match_group_of(
+            iou_flat,
+            d,
+            g,
+            GroupOfBoxes {
+                group_of: &gt.is_group_of_sorted,
+                counted: &gt.in_denominator_sorted,
+            },
+            ctx.match_floors,
+            greedy,
+            credited,
+        );
+    }
+
     // Translate matched indices into annotation ids + ignore flags. Unmatched
     // detections keep the `ignore_unless_matched` flag they were seeded with.
     for t_idx in 0..num_iou_thrs {
         for (di, dt_ann) in dt_anns.iter().enumerate() {
-            if let Some(gi) = greedy.dt_gt[(t_idx, di)] {
-                dt_matches[(t_idx, di)] = gt.id_at(pair, gi);
+            let Some(gi) = greedy.dt_gt[(t_idx, di)] else {
+                continue;
+            };
+            dt_matches[(t_idx, di)] = gt.id_at(pair, gi);
+            dt_matched[(t_idx, di)] = true;
+            // A detection matched to an ignored GT is itself ignored — unless it
+            // is the one that scores a group-of box.
+            let credited_here = has_group_of && credited[(t_idx, di)];
+            dt_ignore[(t_idx, di)] = gt.ignored(gi) && !credited_here;
+            // A crowd GT records the last detection it absorbed; a group-of box
+            // records the one that scored it.
+            let absorbed = has_group_of && gt.is_group_of_sorted[gi] && !credited_here;
+            if !absorbed {
                 gt_matches[(t_idx, gi)] = dt_ann.id;
-                dt_matched[(t_idx, di)] = true;
-                // A detection matched to an ignored GT is itself ignored.
-                dt_ignore[(t_idx, di)] = gt.ignored(gi);
             }
         }
     }
     // The matcher's buffer becomes the outcome's; the outcome's old one is
     // the matcher's to reset next cell.
     std::mem::swap(gt_matched, &mut greedy.gt_matched);
-
-    // Open Images second pass — group-of boxes.
-    //
-    // The protocol (https://storage.googleapis.com/openimages/web/evaluation.html):
-    //
-    //   "If at least one detection is inside group-of box a single True Positive
-    //    is scored. ... Multiple correct detections inside the same group-of box
-    //    is still count as a single True Positive. Otherwise, the group-of box is
-    //    counted as a single False Negative."
-    //
-    // So a group-of box is worth exactly one ground truth: the best-scoring
-    // detection inside it becomes a true positive, every other detection inside it
-    // is ignored (neither TP nor FP), and if nothing is inside it the box is a
-    // miss. This is the Open Images *Challenge* metric, equivalently TensorFlow's
-    // `group_of_weight = 1.0`, and it is what FiftyOne implements unconditionally.
-    //
-    // "Inside" is IoA, not IoU — see the note in `iou.rs` where group-of GT
-    // columns are flagged crowd so `sim` selects intersection-over-detection-area.
-    //
-    // Group-of GTs are excluded from both greedy phases (`phase2_eligible`),
-    // so this is their only matching route. That exclusion is load-bearing: an IoA
-    // column saturates at 1.0 for any detection inside the region, so a group-of
-    // box left in phase 1 would outbid the real object a detection is sitting on
-    // and turn that object into a false negative.
-    //
-    // Detections arrive score-descending, so the first one to claim a given box is
-    // the highest-scoring one — the same choice TF makes with
-    // `scores_group_of[gt_id] = max(scores_group_of[gt_id], scores[i])`.
-    //
-    // `is_group_of_sorted` doubles as the candidate mask: under OID `ignore` is
-    // `is_group_of || area_ignore`, so every group-of box is ignored and therefore
-    // already sorted into the `[num_not_ignored, g)` tail. A separate eligibility
-    // vector would only restate that invariant.
-    //
-    // The guard skips the whole pass for cells with no group-of GT — the common
-    // case, since group-of is a minority annotation — which otherwise costs a full
-    // `d x g` scan per threshold for a guaranteed-empty result.
-    if is_oid && gt.is_group_of_sorted.iter().any(|&x| x) {
-        for (t_idx, &iou_thr) in ctx.match_floors.iter().enumerate() {
-            for di in 0..d {
-                if dt_matched[(t_idx, di)] {
-                    continue;
-                }
-                // Best enclosing group-of box. The reference does
-                // `np.argmax(ioa, axis=1)` then tests the threshold, which is the
-                // same selection and the same first-wins tie-break that
-                // `best_above_floor` owns — see its docs for why the tie matters.
-                let row = &iou_flat[di * g..(di + 1) * g];
-                let Some(gi) = crate::primitives::greedy::best_above_floor(
-                    row,
-                    &gt.is_group_of_sorted,
-                    iou_thr,
-                ) else {
-                    continue;
-                };
-
-                dt_matches[(t_idx, di)] = gt.id_at(pair, gi);
-                dt_matched[(t_idx, di)] = true;
-                // `gt_matched` *is* the "already credited" flag: group-of boxes are
-                // excluded from both greedy phases, so it is false on entry here and
-                // only this loop ever sets it — no separate `credited` vector.
-                if gt_matched[(t_idx, gi)] {
-                    // The box already has its true positive; absorb this one.
-                    dt_ignore[(t_idx, di)] = true;
-                } else {
-                    // First (highest-scoring) detection inside this box scores it.
-                    dt_ignore[(t_idx, di)] = false;
-                    gt_matches[(t_idx, gi)] = dt_anns[di].id;
-                    gt_matched[(t_idx, gi)] = true;
-                }
-            }
-        }
-    }
 }
 
 /// Match one area range of a gathered pair into `s`: the partitioned ground
