@@ -34,7 +34,7 @@ class COCO:
     image_dir: str | None
 
     def __init__(
-        self, annotation_file: str | os.PathLike[str] | dict[str, Any] | None = None, *, image_dir: str | None = None
+        self, annotation_file: str | os.PathLike[str] | dict[str, Any] | None = None, image_dir: str | None = None
     ) -> None: ...
 
     # --- Query ---

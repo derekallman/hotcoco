@@ -100,8 +100,11 @@ Every method that needs the data reads the dict back before it runs, so
 `createIndex()` is needed only after an edit made through a reference kept from
 before the last call. The read-back is one parse of the dict, tens of
 milliseconds for 40k annotations, and a bad edit raises there what assigning the
-dict would. For a field edit by id, [`update_anns`](../api/coco.md#update_anns)
-skips the parse. An evaluator built before an edit keeps the data it was built
+dict would. Only the first call after `coco.dataset` is read parses it, so a
+loop that reads `coco.dataset` and then calls a method parses on every pass;
+read it once before the loop (`images = coco.dataset["images"]`) and the calls
+inside parse nothing. For a field edit by id,
+[`update_anns`](../api/coco.md#update_anns) skips the parse. An evaluator built before an edit keeps the data it was built
 with: hotcoco resolves the datasets when `COCOeval` is constructed, pycocotools
 inside `evaluate()`.
 
@@ -126,7 +129,7 @@ data without copying it; an edit to that object, through `dataset` or
 
 | Behavior | pycocotools | hotcoco |
 |----------|-------------|-----------|
-| Print on load | Prints "loading annotations..." to stdout | No progress output; loader warnings go to stderr and `coco.load_warnings` |
+| Print on load | Prints "loading annotations..." to stdout | No progress output; a loader warning is emitted as a [`DatasetWarning`](../guide/results.md#filtering-the-warnings) and kept in `coco.load_warnings` |
 | `COCO()` with no args | Creates empty instance with print statements | Creates empty instance silently |
 | Annotation IDs | Requires unique positive integers | Also accepts 0-based IDs |
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |

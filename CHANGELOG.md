@@ -9,225 +9,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **`COCOeval.ious`**, pycocotools' attribute: `{(image_id, category_id):
-  (D, G) array or []}` after `evaluate()`, cell for cell; torchmetrics'
-  `extended_summary=True` reads it. Rust: `COCOeval::iou_matrices()`, the public
-  `IouMatrix`, and `POOLED_CAT` for the pooled cell's key under `use_cats = false`.
+- **`primitives.greedy_match`**, COCO's greedy matcher on a `(D, G)` similarity
+  array, pycocotools-exact: its `dt_matches`, `gt_matches`, and `dt_ignore` equal
+  `COCOeval`'s `evalImgs` at every threshold and area range. `group_of=` applies
+  the Open Images rule; `iscrowd` in its place undercounts with no error. See
+  [`greedy_match`](https://derekallman.github.io/hotcoco/api/primitives/#greedy_match).
+- **`primitives.segment_overlaps` and `match_segments`**: panopticapi's
+  `(gt_id, pred_id)` pixel counts for two label maps, and PQ's matching of one
+  image's `segments_info` lists. PQ, SQ, and RQ written from them equal
+  `PanopticEval`'s on every panopticapi parity case. The three matchers are
+  provisional until the tracking family exercises them.
+- **`PanopticEval.eval_imgs`** keeps each image's match records — `image_id` and
+  `match_segments`' four lists — where `evaluate()` kept only per-category counts.
+  Rust: `PanopticEval::eval_imgs()`. See [`eval_imgs`](https://derekallman.github.io/hotcoco/api/panoptic/#eval_imgs).
+- **[Build your own metric](https://derekallman.github.io/hotcoco/guide/custom-metrics/)**,
+  a guide that writes F1 at one IoU, a cross-class confusion matrix, and PQ in
+  Python from `primitives` and `metrics`. A test runs every block on the page and
+  holds each number to the evaluator that owns it.
+- **`metrics.mean_or_missing(total, count)`**: the mean, or `-1.0` when `count` is
+  0 — the one producer of the sentinel `metrics.is_computed` reads, so a composed
+  metric never spells `-1.0` itself.
+- **Warning categories.** Every warning hotcoco emits is one of four
+  `HotcocoWarning` subclasses — `ReferenceDeviationWarning`, `CallOrderWarning`,
+  `ConversionWarning`, and `DatasetWarning` — exported from the top level, so a
+  filter names a kind instead of matching text. `HotcocoWarning` subclasses
+  `UserWarning`. See [Filtering the warnings](https://derekallman.github.io/hotcoco/guide/results/#filtering-the-warnings).
+- **`COCOeval.ious`**, pycocotools' `{(image_id, category_id): (D, G) array or []}`
+  after `evaluate()`, which torchmetrics' `extended_summary=True` reads. Rust:
+  `COCOeval::iou_matrices()`, the public `IouMatrix`, and `POOLED_CAT`, the pooled
+  cell's key under `use_cats = false`.
   See [`ious`](https://derekallman.github.io/hotcoco/api/cocoeval/#ious).
-- **`load_res` warns on corner-pair boxes.** When most bbox detections run past
-  their image read as `[x, y, w, h]` but fit it read as `[x1, y1, x2, y2]`, the
-  loader emits a `DatasetWarning` pointing to the troubleshooting page; the Rust
-  CLI prints it. Silent before, with plausible wrong numbers. See
+- **`load_res` warns on corner-pair boxes**: a `DatasetWarning` when most bbox
+  detections run past their image read as `[x, y, w, h]` but fit it read as
+  `[x1, y1, x2, y2]`. The numbers came out plausible and wrong before. See
   [Bbox format](https://derekallman.github.io/hotcoco/getting-started/troubleshooting/#bbox-format-x1-y1-x2-y2-vs-x-y-w-h).
-- **Dice and boundary IoU in the semantic family.** `SemanticEval` reports
-  `mDice` and per-class `Dice` — mmsegmentation's `mDice`, from the same
-  confusion matrix under the same rules as `mIoU`, checked against it on the
-  frozen fixture — and `mBIoU` with per-class `BIoU`, the Boundary IoU of
-  Cheng et al. (CVPR 2021) applied per class as the paper describes: the
-  pixels of each class within 2% of the image diagonal of a pixel outside it
-  or of the image edge, intersections and unions summed over the split,
-  ignored pixels dropped from both. The band is checked against the authors'
-  `mask_to_boundary` on every class of every fixture map; the fixture also
-  records detectron2's `SemSegEvaluator` boundary number, which erodes the
-  whole label map and depends on how classes are numbered, and the test
-  shows it differs on most cases. `semantic.METRIC_NAMES` is six entries,
-  `mDice` and `mBIoU` appended, so `stats` keeps its first four positions;
-  `metrics.mean_iou` returns `mDice` and `Dice` too; `PanopticEval.report()`
-  carries `mDice` beside `mIoU`. `SemanticEval(boundary_dilation=0.02)` sets
-  the band, `None` leaves boundary IoU out and `mBIoU` reads `-1.0`, and
-  both CLIs take `--no-boundary-iou`. The summary table gains two columns.
-  Rust: `SemanticEval::update` and `update_maps` take the map's height and
-  width, since the band needs the shape; `ClassScores` and `SemanticScores`
-  gain `dice` and `mdice`; `metrics::semantic::boundary` holds the kernel.
-- **`SemanticEval.update_folders` pairs nested layouts.** Three keyword
-  options, `recursive`, `gt_suffix`, and `pred_suffix`: a ground-truth file
-  is one under the folder — at its top, or anywhere below it with
-  `recursive` — whose name ends in the suffix, its key is the name minus the
-  suffix, and its prediction is `key + pred_suffix` wherever it sits in the
-  prediction tree, so Cityscapes' folder per city and several files per
-  frame pair with flat predictions in one call. Two predictions with one key
-  raise `ValueError`. The defaults are the old behavior exactly. Both CLIs
-  take `--recursive`, `--gt-suffix`, and `--pred-suffix`. Rust: the options
-  are a `semantic::FolderPairing`, which `update_folders` now takes.
-- **Warning categories.** Every Python warning hotcoco emits is now one of four
-  subclasses of `HotcocoWarning`, a `UserWarning` subclass, all exported from the
-  top level, so a filter can name its kind instead of matching its text.
-  `summarize()` emits each reference deviation as a `ReferenceDeviationWarning`;
-  a method called before the step it needs, such as `accumulate()` before
-  `evaluate()`, emits a `CallOrderWarning`; `COCO.from_cvat()` skipping
-  shapes emits a `ConversionWarning`; and a dataset that loads with a problem
-  the loader tolerates — duplicate annotation ids, a category without a name,
-  a non-finite number in a file — emits a `DatasetWarning` where `COCO()`,
-  `load_res()`, `from_arrays()`, `merge()`, the `dataset` setter, or a
-  converter built it, with the same text `load_warnings` keeps. The base is
-  never emitted itself, so a
-  filter on `HotcocoWarning` reaches every kind and a filter on one subclass
-  reaches only that one. To silence a deliberate configuration and keep the rest:
-  `warnings.filterwarnings("ignore", category=hotcoco.ReferenceDeviationWarning)`.
-  Filters on `UserWarning` still catch all of them, and message text is unchanged
-  apart from the panoptic prefix under Changed. See
-  [Filtering the warnings](https://derekallman.github.io/hotcoco/guide/results/#filtering-the-warnings).
-
-- **The matchers reach Python, both families at once.** `hotcoco.primitives`
-  binds the two matchers the evaluators run, on arrays you supply, so a metric
-  written from them gets the evaluators' matches. The three functions are
-  provisional: their signatures freeze once the tracking family has exercised
-  them.
-  - `primitives.greedy_match(sim, scores, iou_thrs=None, *, gt_ignore=None,
-    iscrowd=None, dt_ignore=None, group_of=None)` is COCO's greedy matcher, pycocotools-exact:
-    detections in descending score order with ties in row order, the later of
-    two equal ground truths, ignored ground truths only when nothing else
-    clears the threshold, crowd ground truths absorbing any number of
-    detections, and pycocotools' `1 - 1e-10` clamp at a threshold of 1.0. It
-    returns `dt_matches`, `gt_matches`, and `dt_ignore` arrays, `(T, D)` and
-    `(T, G)`, or one axis fewer for a single threshold. The `dt_ignore`
-    argument flags the detections `COCOeval` ignores when nothing matches
-    them, such as those outside the area range, so the returned `dt_ignore`
-    is `evalImgs`' `dtIgnore` as it stands.
-  - `group_of=` on `greedy_match` applies the Open Images group-of rule as
-    `COCOeval(oid_style=True)` does; `iscrowd` in its place undercounts with no
-    error. Rust: `primitives::greedy::match_group_of`, the pass the driver runs.
-    See [Open Images from the matcher](https://derekallman.github.io/hotcoco/api/primitives/#open-images-from-the-matcher).
-  - `primitives.segment_overlaps(gt, pred)` counts the pixels of every
-    `(gt_id, pred_id)` pair in two panoptic label maps — panopticapi's
-    `gt_pred_map` — and `primitives.match_segments(gt_segments, pred_segments,
-    overlaps)` applies PQ's rules to one image's `segments_info` lists,
-    returning `matched` `(gt_id, pred_id, iou)` tuples and `missed`,
-    `false_positives`, and `ignored` ids.
-  - `tests/test_composed_metrics.py` holds the claim to `==`: PQ, SQ, RQ, and
-    every count written in Python from `segment_overlaps`, `match_segments`,
-    and `metrics.panoptic_quality` equal `PanopticEval`'s on every case
-    `test_parity_panoptic.py` checks against panopticapi, and every match and
-    `dt_ignore` flag `greedy_match` returns equals `COCOeval`'s `evalImgs` at
-    all ten thresholds and all four area ranges, as do the true positives,
-    false positives, and misses `accumulate()` counts from them, and the same
-    with `group_of` on every Open Images parity case.
-- **Build your own metric**, a guide page that builds three metrics in Python
-  from `primitives` and `metrics`: precision, recall, and F1 at one IoU and
-  score threshold from `bbox_iou` and `greedy_match`; a cross-class confusion
-  matrix from the same matcher with the category split dropped; and PQ from
-  `segment_overlaps` and `match_segments`. `tests/test_build_your_own_metric.py`
-  runs every code block on the page and holds each number to the family that
-  owns it: the counts to `COCOeval`'s `evalImgs`, the matrix to
-  `COCOeval.confusion_matrix()`, and PQ to `PanopticEval`. See
-  [Build your own metric](https://derekallman.github.io/hotcoco/guide/custom-metrics/).
-- **`PanopticEval.eval_imgs`** keeps each image's match records — `image_id`
-  plus `match_segments`'s four lists — where `evaluate()` used to keep only the
-  per-category counts. In Rust, `PanopticEval::eval_imgs()` returns
-  `&[ImageMatches]`. `tests/test_parity_panoptic.py` holds the records from a
-  `COCO` dataset of masks to the PNG run's on the same pixels, each annotation
-  id read back as the segment id it was painted from.
-- In Rust, `panoptic::match_image` is the per-image step `PanopticEval` runs
-  and `match_segments` calls: panopticapi's checks and areas around the
-  kernel, in one place, with `panoptic::labels_from_ids` labeling segments
-  the way a map painted with ids does and `ImageMatches::from_indices`
-  turning the indices back into ids. `Overlaps::from_counts` builds the
-  overlap histogram from counts taken elsewhere. `params::default_iou_thrs` and
-  `metrics::counts::score_order` are public, so a caller of
-  `greedy_match_masked` can use the thresholds and ranking `COCOeval` does.
-
-- **`metrics.mean_or_missing(total, count)`**, the mean of `count` values
-  summing to `total`, or `-1.0` when `count` is 0 — the one producer of the
-  "not computed" sentinel `metrics.is_computed` reads back, now reachable
-  from Python so a composed metric never spells `-1.0` itself. The
-  build-your-own-metric guide uses it.
+- **Dice and boundary IoU in the semantic family.** `mDice` and per-class `Dice`
+  are mmsegmentation's, in `SemanticEval`, `metrics.mean_iou`, and
+  `PanopticEval.report()`. `mBIoU` and per-class `BIoU` follow Cheng et al.'s
+  paper per class, not detectron2's label-map version; `boundary_dilation=None`
+  or `--no-boundary-iou` turns them off. See [Boundary IoU](https://derekallman.github.io/hotcoco/guide/semantic/#boundary-iou).
+- **`SemanticEval.update_folders` pairs nested layouts**, such as Cityscapes'
+  folder per city, through `recursive`, `gt_suffix`, and `pred_suffix` — the
+  CLIs' `--recursive`, `--gt-suffix`, and `--pred-suffix`; the defaults are the
+  old behavior. Rust: `update_folders` takes a `semantic::FolderPairing`. See
+  [Evaluate saved predictions](https://derekallman.github.io/hotcoco/guide/semantic/#evaluate-saved-predictions).
+- Rust: `panoptic::match_image`, the per-image step `PanopticEval` runs,
+  `panoptic::labels_from_ids`, `ImageMatches::from_indices`,
+  `Overlaps::from_counts`, `primitives::greedy::match_group_of`,
+  `params::default_iou_thrs`, `metrics::counts::score_order`, and
+  `metrics::semantic::boundary`, the boundary IoU kernel, are public.
 
 ### Changed
 
-- **`COCO.dataset` is the dataset, not a copy.** The same dict on every access,
-  the one assigned if there was one; an edit to it is read back before the next
-  call, and `createIndex()` reads it back at once instead of being a no-op, so
-  torchmetrics' bbox+segm `area` switch reaches hotcoco. Rust: `COCO::reindexed`,
-  `ann_position`. See [Migrating](https://derekallman.github.io/hotcoco/getting-started/migration/#the-dataset-is-live-params-containers-are-copies).
-- **`evaluate()` refuses a detection with a NaN score**, the `ValueError`
-  `load_res()` raises, so a results set built from a dataset dict — torchmetrics'
-  path — gets the same check. Rust: `COCO::check_scores`, run by
-  `COCOeval::check_inputs`.
-- **`CocoEvaluator.accumulate()` and `summarize()` emit a `CallOrderWarning`**
-  when there is nothing to evaluate — no `update()` call, or `accumulate()`
-  skipped — where they printed a `Warning:` line to stdout before.
-  **`PanopticEval.summary_lines()` before `evaluate()`, and
-  `SemanticEval.summarize()` and `summary_lines()` before anything is
-  counted, emit one too**; they were silent, returning an empty list or
-  printing a table of dashes.
-- **Rust: `ImageMatches` is `{ image_id, matches: MatchIds }`**, with the four
-  id lists moved into `MatchIds`, which `primitives.match_segments` builds
-  without an image. JSON output is unchanged (`matches` is flattened). A
-  Rust-visible break, named here because those ship in minors while the crate
-  has no outside dependents.
-- **The Rust library no longer prints loader warnings to stderr.** `COCO::warn`
-  only records them for `load_warnings()`; the Python bindings emit them as
-  `DatasetWarning` (under Added) and `hotcoco-cli` prints them after a load,
-  so a terminal shows the same lines as before. A Rust caller that read them
-  off stderr reads `load_warnings()` instead.
-- **`primitives.bbox_iou` and `mask_iou` take `iscrowd=None`** for no crowd
-  region, where the flags were required before; `mask.iou`, pycocotools'
-  spelling, still requires them. Pass the flags whenever a ground truth might
-  be a crowd region: a crowd box scored as plain IoU is a different number.
-- **`primitives::panoptic::match_segments` treats a label listed twice as one
-  segment**, its last entry at its first one's position — panopticapi's dict
-  over `segments_info`. It already matched that way, but listed the
-  overwritten entry as a miss or false positive too. `PanopticEval` resolved
-  repeated ids before calling it, so its numbers do not change.
-- **A panoptic dict passed to `PanopticEval` is read field by field**, as a
-  detection dict is, rather than through `json.dumps`. A numpy scalar id is
-  accepted, as everywhere else in the API, and a bad record is a `ValueError`
-  naming it: `gt: annotations[0]: segments_info[1]: field 'id': ...`. A
-  category's `"isthing": None` reads as no `isthing`, as `null` does in a
-  file, in a `COCO` dict as well, which refused it before.
-- **A tuple of records in a dataset dict is read as the list** `json.dump`
-  writes for it, by `COCO` and `PanopticEval` alike, as pycocotools iterates
-  it. `COCO` refused one with a `ValueError` before.
-- The two errors for a predicted segment that is in one of the label map and
-  `segments_info` but not the other now say "label map" rather than "PNG" or
-  "mask", since `match_segments` raises them too. The error for a matched pair
-  with no union names both segments and both causes: a stated area below the
-  segment's pixels, or the void id 0 listed as a segment.
-- The synthetic panoptic cases moved from `tests/test_parity_panoptic.py` to
-  `scripts/helpers.py` (`PanopticCase`, `hand_panoptic_cases`,
-  `random_panoptic_cases`), shared with `tests/test_composed_metrics.py`, and
-  write their PNG files without importing panopticapi. New hand cases cover a
-  repeated id, ids past 32 bits, the void id 0 listed as a segment, an
-  understated area, and one prediction matching two ground truths, each
-  checked against panopticapi. `tests/test_array_spellings.py` reads label
-  maps through `segment_overlaps` and similarity matrices, scores,
-  thresholds, and flags through `greedy_match` in every dtype and layout.
+Rust-visible breaks ship in minor releases while the crate has no outside
+dependents; each one is named below.
 
+- **`COCO.dataset` is the dataset, not a copy**: the same dict on every access,
+  the one assigned if there was one. An edit is read back before the next call
+  and `createIndex()` reads it back at once, so torchmetrics' bbox+segm `area`
+  switch reaches hotcoco. Rust: `COCO::reindexed`, `ann_position`. See
+  [Migrating](https://derekallman.github.io/hotcoco/getting-started/migration/#the-dataset-is-live-params-containers-are-copies).
+- **`evaluate()` refuses a detection with a NaN score**, the `ValueError`
+  `load_res()` raises, so a results set built from a dict — torchmetrics' path —
+  is checked too. Rust: `COCO::check_scores`, run by `COCOeval::check_inputs`.
+- **A call made before its step emits a `CallOrderWarning`**:
+  `CocoEvaluator.accumulate()` and `summarize()` with nothing to evaluate, which
+  printed to stdout, and `PanopticEval.summary_lines()` before `evaluate()` and
+  `SemanticEval.summarize()` and `summary_lines()` before anything is counted,
+  which were silent.
+- **The Rust library no longer prints loader warnings to stderr.** `COCO::warn`
+  records them for `load_warnings()`; Python emits them as `DatasetWarning`, and
+  `hotcoco-cli` prints them after a load, so a terminal shows the same lines.
+- **`primitives.bbox_iou` and `mask_iou` take `iscrowd=None`** for no crowd
+  region, as does `mask.bbox_iou`, the same object; `mask.iou`, pycocotools'
+  spelling, still requires the flags. Pass them whenever a ground truth might be
+  a crowd region: a crowd box scored as plain IoU is a different number.
+- **`semantic.METRIC_NAMES` appends `mDice` and `mBIoU`**, so `stats` keeps its
+  first four positions. Rust: `SemanticEval::update` and `update_maps` take the
+  map's height and width, which the boundary band needs, and `ClassScores` and
+  `SemanticScores` gain the Dice and boundary IoU fields.
+- **An `int32` label map is read in place**, as `uint8`, `uint16`, `uint64`, and
+  `int64` maps are, by `SemanticEval.update`, `metrics.pixel_confusion`, and
+  `primitives.segment_overlaps`; it is what panopticapi's `rgb2id` returns. Rust:
+  `LabelMap` gains `I32`, so a `match` on it without a wildcard arm breaks.
+- **Rust: `ImageMatches` is `{ image_id, matches: MatchIds }`**, the four id lists
+  moved into `MatchIds`. JSON output is unchanged; `matches` is flattened.
+- **`primitives::panoptic::match_segments` treats a label listed twice as one
+  segment**, its last entry at its first one's position, as panopticapi's dict
+  does; it also listed the overwritten entry as a miss or false positive.
+  `PanopticEval`'s numbers do not change.
+- **A panoptic dict passed to `PanopticEval` is read field by field**, not
+  through `json.dumps`: a numpy scalar id is accepted, a bad record is a
+  `ValueError` naming it, and `"isthing": None` reads as no `isthing`, in a
+  `COCO` dict too, which refused it.
+- **A tuple of records in a dataset dict reads as a list**, as pycocotools
+  iterates it, in `COCO` and `PanopticEval`; `COCO` raised `ValueError` before.
 - **The panoptic `isthing` warning starts with `hotcoco: `**, as every other
-  hotcoco warning does, so a filter on `^hotcoco:` matches it too. `summarize()`
-  and `run()` emit it as ``hotcoco: 1 of 3 categories have no `isthing`; ...``
-  where 1.3 wrote ``1 of 3 categories have no `isthing`; ...``, so a filter
-  anchored at the old start needs the prefix. No other message changed.
-- **An `int32` label map is read in place** by `SemanticEval.update`,
-  `metrics.pixel_confusion`, and `primitives.segment_overlaps`, as `uint8`,
-  `uint16`, `uint64`, and `int64` maps are, rather than copied to `int64`
-  first; `int32` is what panopticapi's `rgb2id` returns. Rust: `LabelMap` has
-  a new variant, `I32`, so a `match` on it without a wildcard arm no longer
-  compiles. Named here because Rust-visible breaks ship in minors while the
-  crate has no outside dependents.
+  warning does, so a filter anchored at its old first words needs the prefix.
+  No other warning text changed.
+- Panoptic errors say "label map" rather than "PNG" or "mask", since
+  `match_segments` raises them too, and the error for a matched pair with no
+  union names both segments and both causes.
+- Tests: the synthetic panoptic cases moved to `scripts/helpers.py`, shared with
+  `tests/test_composed_metrics.py`, with new hand cases checked against
+  panopticapi; `tests/test_array_spellings.py` covers the new primitives; and
+  `tests/test_stubs.py` checks each stubbed callable's parameters, not only its
+  name.
 
 ### Fixed
 
 - **Open Images under a custom area range credited group-of boxes the range
-  ignores.** With `params.areaRng` set past the default `all`, the best
-  detection inside such a box was a true positive against a count that left
-  the box out. It is now ignored, as for any other ignored ground truth. The
-  default single range was unaffected.
-- **A bool inside a number field of a dict record is a `ValueError`**, as it
-  is from a JSON file, where `true` is not a number: `bbox`, `area`, `score`,
-  `keypoints`, `obb`, and a polygon's points of an annotation or a result,
-  and `bbox` of a panoptic segment, read `True` as `1.0` before. A list of
-  numbers must be a sequence — a list, a tuple, a numpy array — not a set, a
-  dict, or a generator, which a file cannot hold either.
-  `tests/test_input_errors.py` holds the dict and file paths to the same
-  answer.
-- **`getAnnIds(areaRng=...)` and `get_ann_ids(area_rng=...)` exclude the
-  range's end points**, as pycocotools' `getAnnIds` does (`lo < area < hi`);
-  they included them before. `filter()` and evaluation's area ranges still
-  include them, as pycocotools' evaluation does.
+  ignores**: the best detection inside one was a true positive against a count
+  that left the box out. It is now ignored. The default single range was
+  unaffected.
+- **A bool inside a number field of a dict record is a `ValueError`**, as `true`
+  is in a JSON file: `bbox`, `area`, `score`, `keypoints`, `obb`, polygon points,
+  and a panoptic segment's `bbox` read `True` as `1.0` before. A list of numbers
+  must be a sequence, not a set, a dict, or a generator.
+- **`getAnnIds(areaRng=...)` and `get_ann_ids(area_rng=...)` exclude the range's
+  end points**, as pycocotools' `getAnnIds` does; `filter()` and evaluation's
+  area ranges still include them, as pycocotools' evaluation does.
 - **`getAnnIds()` and `get_ann_ids()` return ids in pycocotools' order** —
-  dataset order, image by image in `imgIds` order when that is given — where
-  they returned them sorted ascending before.
+  dataset order, image by image in `imgIds` order — where they sorted them.
+- **Type stubs**: `primitives.bbox_iou` and `mask_iou` accept 0/1 `iscrowd`
+  flags, and `COCO(path, image_dir)` takes `image_dir` by position, as the
+  runtime always has; pyright rejected both.
 
 ## [1.3.1] - 2026-10-27
 

@@ -38,16 +38,14 @@ def lsap(
 def bbox_iou(
     dt: npt.NDArray[np.number[Any]] | Sequence[Sequence[float]],
     gt: npt.NDArray[np.number[Any]] | Sequence[Sequence[float]],
-    iscrowd: Sequence[bool] | npt.NDArray[np.bool_] | None = None,
+    iscrowd: _Flags | None = None,
 ) -> npt.NDArray[np.float64]:
     """Pairwise IoU of ``[x, y, w, h]`` boxes, shape ``(D, G)``; ``dt``/``gt`` are ``(N, 4)``.
 
     ``iscrowd`` is one flag per ``gt`` row; ``None`` means no crowd region."""
     ...
 
-def mask_iou(
-    dt: Sequence[_Rle], gt: Sequence[_Rle], iscrowd: Sequence[bool] | npt.NDArray[np.bool_] | None = None
-) -> npt.NDArray[np.float64]:
+def mask_iou(dt: Sequence[_Rle], gt: Sequence[_Rle], iscrowd: _Flags | None = None) -> npt.NDArray[np.float64]:
     """Pairwise IoU of RLE masks, shape ``(D, G)``.
 
     ``iscrowd`` is one flag per ``gt`` mask; ``None`` means no crowd region."""

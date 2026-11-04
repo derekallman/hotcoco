@@ -26,7 +26,7 @@ Load and query COCO-format datasets.
 === "Python"
 
     ```python
-    COCO(annotation_file: str | os.PathLike | dict | None = None, *, image_dir: str | None = None)
+    COCO(annotation_file: str | os.PathLike | dict | None = None, image_dir: str | None = None)
     ```
 
     | Parameter | Type | Default | Description |

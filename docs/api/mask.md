@@ -298,7 +298,7 @@ reference; it has no pycocotools counterpart.
 === "Python"
 
     ```python
-    bbox_iou(dt: numpy.ndarray | list[list[float]], gt: numpy.ndarray | list[list[float]], iscrowd: list[bool]) -> numpy.ndarray
+    bbox_iou(dt: numpy.ndarray | list[list[float]], gt: numpy.ndarray | list[list[float]], iscrowd: list[bool] | None = None) -> numpy.ndarray
     ```
 
     Bounding boxes are `[x, y, width, height]`: an `(N, 4)` array or a list of
@@ -307,7 +307,7 @@ reference; it has no pycocotools counterpart.
     **Returns:** `numpy.ndarray` of shape `(len(dt), len(gt))`, dtype float64.
 
     ```python
-    ious = mask.bbox_iou(dt_boxes, gt_boxes, [False] * len(gt_boxes))
+    ious = mask.bbox_iou(dt_boxes, gt_boxes)  # no crowd regions
     ```
 
 === "Rust"

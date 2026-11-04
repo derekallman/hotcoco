@@ -25,7 +25,7 @@ see `plans/PLAN.md` for the ladder, `plans/POSITIONING.md` for how the docs say 
   `tests/test_live_dataset.py` calls every public method after an edit to prove
   it, and a new method needs a row there.
 - `cargo build --workspace` will fail at link time for hotcoco-pyo3 (expected — cdylib needs Python). Use `cargo check` instead, or build via maturin.
-- **Type stubs:** six hand-written files must track the Python API — `python/hotcoco/{__init__,detection,metrics,primitives,panoptic,semantic}.pyi`. Run `uv run pytest tests/test_stubs.py` for drift, and `uv run pyright` to type-check the shipped package against them. The tests check **names only, never signatures** — review those by hand when changing a signature. For `metrics` they check both directions (stub ⊇ `__all__`, and `__all__` ⊇ the extension module), because a new `#[pyfunction]` that the facade forgets to re-export is otherwise unreachable from Python with the suite green.
+- **Type stubs:** seven hand-written files must track the Python API — `python/hotcoco/{__init__,detection,mask,metrics,primitives,panoptic,semantic}.pyi`. Run `uv run pytest tests/test_stubs.py` for drift, and `uv run pyright` to type-check the shipped package against them. The tests check names and each callable's parameters — names, keyword-only or not, which have defaults — against `inspect.signature`, but **never types**: review those by hand when changing a signature. A deliberate difference goes in `SIGNATURE_EXCEPTIONS` with its reason. For `metrics` they check both directions (stub ⊇ `__all__`, and `__all__` ⊇ the extension module), because a new `#[pyfunction]` that the facade forgets to re-export is otherwise unreachable from Python with the suite green.
 
 ### Input errors
 

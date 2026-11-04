@@ -66,9 +66,11 @@ def iou(dt: _Boxes, gt: _Boxes, iscrowd: Sequence[bool | int] | npt.NDArray[Any]
     dispatches. An array of any numeric dtype is boxes; dt and gt must be the same kind."""
     ...
 
-def bbox_iou(dt: _Boxes, gt: _Boxes, iscrowd: Sequence[bool | int] | npt.NDArray[Any]) -> npt.NDArray[np.float64]:
-    """IoU between dt and gt ``[x, y, w, h]`` boxes, shape ``(D, G)``. The same object as
-    ``hotcoco.primitives.bbox_iou``."""
+def bbox_iou(
+    dt: _Boxes, gt: _Boxes, iscrowd: Sequence[bool | int] | npt.NDArray[Any] | None = None
+) -> npt.NDArray[np.float64]:
+    """IoU between dt and gt ``[x, y, w, h]`` boxes, shape ``(D, G)``; ``None`` means no crowd
+    region. The same object as ``hotcoco.primitives.bbox_iou``."""
     ...
 
 def fr_poly(xy: Sequence[float], h: int, w: int) -> _Rle:

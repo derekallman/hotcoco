@@ -559,3 +559,128 @@ def test_cocoeval_accepts_pycocotools_constructor_keywords():
         hotcoco.COCOeval(cocoGt=gt, cocoDt=dt, iouType="bbox", bogus=1)
     with pytest.raises(TypeError):
         hotcoco.COCOeval(cocoGt=gt, cocoDt=dt)
+
+
+# ---------------------------------------------------------------------------
+# Signatures
+# ---------------------------------------------------------------------------
+
+# Stub file -> the module it describes. `detection.pyi` only re-exports.
+SIGNATURE_STUBS = {
+    "__init__.pyi": "hotcoco",
+    "mask.pyi": "hotcoco.mask",
+    "metrics.pyi": "hotcoco.metrics",
+    "primitives.pyi": "hotcoco.primitives",
+    "panoptic.pyi": "hotcoco.panoptic",
+    "semantic.pyi": "hotcoco.semantic",
+}
+
+# Callables whose stub signature differs from the runtime one on purpose.
+SIGNATURE_EXCEPTIONS = {
+    # pycocotools' camelCase keywords arrive through **kwargs; the stub names them.
+    "hotcoco.COCOeval.__init__"
+}
+
+
+def _stub_signature(fn: ast.FunctionDef) -> list[tuple[str, str, bool]]:
+    a = fn.args
+    pos = a.posonlyargs + a.args
+    has_default = [False] * (len(pos) - len(a.defaults)) + [True] * len(a.defaults)
+    params = [(p.arg, "positional", d) for p, d in zip(pos, has_default)]
+    if a.vararg:
+        params.append(("*" + a.vararg.arg, "var", False))
+    params += [(p.arg, "keyword", d is not None) for p, d in zip(a.kwonlyargs, a.kw_defaults)]
+    if a.kwarg:
+        params.append(("**" + a.kwarg.arg, "varkw", False))
+    return params
+
+
+def _runtime_signature(obj: object) -> list[tuple[str, str, bool]] | None:
+    import inspect
+
+    try:
+        sig = inspect.signature(obj)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    params = []
+    for p in sig.parameters.values():
+        if p.kind is p.VAR_POSITIONAL:
+            params.append(("*" + p.name, "var", False))
+        elif p.kind is p.VAR_KEYWORD:
+            params.append(("**" + p.name, "varkw", False))
+        else:
+            kind = "keyword" if p.kind is p.KEYWORD_ONLY else "positional"
+            params.append((p.name, kind, p.default is not p.empty))
+    return params
+
+
+def _without_receiver(params: list[tuple[str, str, bool]]) -> list[tuple[str, str, bool]]:
+    return params[1:] if params and params[0][0] in ("self", "cls") else params
+
+
+def _signature_pairs(filename: str, module_name: str):
+    """(qualified name, stub signature, runtime signature) for every callable in a stub."""
+    import importlib
+    import inspect
+
+    module = importlib.import_module(module_name)
+    for node in ast.parse((STUB_PATH.parent / filename).read_text()).body:
+        if isinstance(node, ast.FunctionDef):
+            candidates = [(node.name, node, getattr(module, node.name, None))]
+        elif isinstance(node, ast.ClassDef) and hasattr(module, node.name):
+            cls = getattr(module, node.name)
+            candidates = []
+            for item in node.body:
+                if not isinstance(item, ast.FunctionDef):
+                    continue
+                if item.name.startswith("__") and item.name != "__init__":
+                    continue
+                decorators = {ast.unparse(d) for d in item.decorator_list}
+                if "property" in decorators or any(d.endswith((".setter", ".deleter")) for d in decorators):
+                    continue
+                if item.name == "__init__":
+                    runtime = cls
+                else:
+                    static = inspect.getattr_static(cls, item.name, None)
+                    runtime = getattr(cls, item.name) if isinstance(static, (staticmethod, classmethod)) else static
+                candidates.append((f"{node.name}.{item.name}", item, runtime))
+        else:
+            continue
+        for name, fn, runtime in candidates:
+            if "overload" in {ast.unparse(d) for d in fn.decorator_list} or not callable(runtime):
+                continue
+            actual = _runtime_signature(runtime)
+            if actual is not None:
+                yield f"{module_name}.{name}", _without_receiver(_stub_signature(fn)), _without_receiver(actual)
+
+
+def test_stub_signatures_match_runtime():
+    """Every stubbed callable takes the parameters the runtime does: the same names,
+    positional or keyword-only alike, with a default on the same ones.
+
+    The tests above check names only, so a signature could drift with the suite
+    green — `mask.bbox_iou`'s stub kept `iscrowd` required for a release after the
+    function made it optional. Types are pyright's job; this checks the shape.
+    """
+    compared, drifted = 0, []
+    for filename, module_name in SIGNATURE_STUBS.items():
+        for name, stub, runtime in _signature_pairs(filename, module_name):
+            compared += 1
+            if name not in SIGNATURE_EXCEPTIONS and stub != runtime:
+                drifted.append(f"{name}\n    stub:    {stub}\n    runtime: {runtime}")
+    # A runtime that stopped exposing signatures would make this pass vacuously.
+    assert compared > 120, f"only {compared} signatures compared"
+    assert not drifted, "Stub signatures differ from the runtime:\n" + "\n".join(drifted)
+
+
+def test_signature_exceptions_still_differ():
+    """An exception that no longer differs is deleted, so the list stays honest."""
+    pairs = {
+        name: (stub, runtime)
+        for filename, module_name in SIGNATURE_STUBS.items()
+        for name, stub, runtime in _signature_pairs(filename, module_name)
+    }
+    stale = sorted(name for name in SIGNATURE_EXCEPTIONS if name in pairs and pairs[name][0] == pairs[name][1])
+    missing = sorted(SIGNATURE_EXCEPTIONS - pairs.keys())
+    assert not stale, f"no longer differ, delete from SIGNATURE_EXCEPTIONS: {stale}"
+    assert not missing, f"not found, delete from SIGNATURE_EXCEPTIONS: {missing}"
