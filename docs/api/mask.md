@@ -19,7 +19,7 @@ For background on RLE and usage patterns, see the [Mask operations](../guide/mas
 Two conventions hold for every function here, both matching pycocotools:
 
 - **Arrays are Fortran-order** (column-major). Mask arrays are returned
-  Fortran-order; C-order input is accepted and transposed internally.
+  Fortran-order; `encode` reads C-order input in place as well.
 - **Return types are pycocotools' types** — `counts` is `bytes`, batch areas are
   `uint32`, boxes are `float64`.
 
@@ -58,6 +58,10 @@ Encode a binary mask to RLE.
     `bool` masks are accepted as well as `uint8`, which pycocotools does not do:
     torch-side code stores masks as `bool`, so requiring a cast would break the
     drop-in path for no gain. Wider dtypes raise a `TypeError` naming the dtype and the cast to apply.
+
+    A C-order mask is read row by row with no copy, so a torch mask needs no
+    `np.asfortranarray` first. A batch stored `(N, H, W)`, as torch stores one,
+    encodes in one call as `mask.encode(batch.transpose(1, 2, 0))`.
 
 === "Rust"
 

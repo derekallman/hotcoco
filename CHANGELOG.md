@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`mask.encode` reads a C-order mask in place**, row by row, instead of
+  transposing a copy: about 18 µs for a 426×640 val2017 mask where it took
+  about 85 µs (M1). A torch mask needs no `np.asfortranarray`, itself about
+  130 µs, and an `(N, H, W)` batch encodes in one call as
+  `mask.encode(batch.transpose(1, 2, 0))`.
+
 ### Fixed
 
 ## [1.4.0] - 2026-11-04

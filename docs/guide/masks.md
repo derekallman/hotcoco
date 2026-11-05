@@ -46,7 +46,7 @@ An RLE dict looks like:
     decoded3 = mask.decode(rles)
     assert decoded3.shape == (100, 100, 3)
 
-    # C-order arrays also work (auto-transposed internally)
+    # C-order arrays work too, read in place with no copy
     m_c = np.zeros((100, 100), dtype=np.uint8)
     m_c[10:50, 20:80] = 1
     rle = mask.encode(m_c)  # same result

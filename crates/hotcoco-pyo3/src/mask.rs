@@ -114,24 +114,108 @@ fn as_uint8<'py>(mask: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyUntypedArray
     )))
 }
 
-/// Column-major (Fortran-order) bytes of one `(H, W)` view that is not
-/// Fortran-contiguous — [`encode_view`] encodes those from their own buffer.
+/// Column-major (Fortran-order) bytes of one `(H, W)` view whose columns and
+/// rows are both strided — [`encode_view`] reads every other layout in place.
 ///
-/// A C-order mask is the one common case, and gets [`transpose_mask`]'s
-/// blocked transpose: about 45 µs for a 426×640 mask, against about 100 µs
-/// for ndarray's strided copy. Any other layout (a sliced or strided view)
-/// still takes that copy, which is about 3× faster than iterating the
-/// transposed view element by element — the reason this is not
+/// ndarray's strided copy is about 3× faster than iterating the transposed
+/// view element by element — the reason this is not
 /// `t.iter().copied().collect()`.
 fn col_major(view: ArrayView2<'_, u8>) -> Vec<u8> {
-    if let Some(row_major) = view.to_slice() {
-        let (h, w) = view.dim();
-        return transpose_mask(row_major, h, w);
-    }
     let t = view.t();
     let std = t.as_standard_layout();
     std.as_slice()
         .map_or_else(|| std.iter().copied().collect(), <[u8]>::to_vec)
+}
+
+/// The column-major RLE of a mask given as its rows, each a contiguous slice
+/// of the same width — a C-order mask, or a crop of one — read once, top to
+/// bottom, with no transposed copy. The caller checks that the mask has at
+/// most `u32::MAX` pixels, as runs are 32-bit.
+///
+/// Down a column, a run ends exactly where a pixel differs from the one above
+/// it. So each row is binarized and compared with the row above, eight bytes
+/// at a time, and every column where they differ is recorded with the row;
+/// the row above the first is background, so a column whose top pixel is
+/// foreground records row 0. A row that matches the one above is skipped
+/// after one vectorized pass, which is most rows of a typical mask. A
+/// counting sort on the column puts the changes in column-major order, and
+/// the runs are the gaps between them. The one boundary the rows cannot see
+/// is between the bottom of one column and the top of the next: the run in
+/// progress carries over when the two pixels match and ends when they differ.
+///
+/// `mask.encode` of a 426×640 val2017 mask takes about 18 µs this way,
+/// against about 85 µs for an 8×8 blocked transpose to column-major order
+/// and a scan of that, and about 8 µs for a Fortran-order mask read in place.
+fn encode_rows(rows: &[&[u8]]) -> hotcoco_core::Rle {
+    let (h, w) = (rows.len(), rows.first().map_or(0, |row| row.len()));
+    // Both rows are padded to whole words with background that never changes.
+    let padded = w.next_multiple_of(8);
+    let (mut above, mut row01) = (vec![0u8; padded], vec![0u8; padded]);
+    // `(x, y)` where pixel `(x, y)` differs from `(x, y - 1)`, and how many
+    // changes each column has, at `per_column[x + 1]`.
+    let mut changes: Vec<(u32, u32)> = Vec::with_capacity(2 * w);
+    let mut per_column = vec![0usize; w + 1];
+    for (y, row) in rows.iter().enumerate() {
+        let mut differs = 0;
+        for ((bit, &px), &up) in row01.iter_mut().zip(*row).zip(&above) {
+            *bit = u8::from(px != 0);
+            differs |= *bit ^ up;
+        }
+        if differs != 0 {
+            for (i, (now, up)) in row01.chunks_exact(8).zip(above.chunks_exact(8)).enumerate() {
+                let mut d = load_le(now) ^ load_le(up);
+                while d != 0 {
+                    let x = i * 8 + (d.trailing_zeros() / 8) as usize;
+                    changes.push((x as u32, y as u32));
+                    per_column[x + 1] += 1;
+                    d &= d - 1;
+                }
+            }
+        }
+        std::mem::swap(&mut above, &mut row01);
+    }
+
+    // Counting sort on the column, stable, so each column's rows stay in
+    // order. `per_column[x]` starts as column `x`'s first slot in `ys` and,
+    // used as the write cursor, ends as its last slot plus one.
+    for x in 0..w {
+        per_column[x + 1] += per_column[x];
+    }
+    let mut ys = vec![0u32; changes.len()];
+    for &(x, y) in &changes {
+        let slot = &mut per_column[x as usize];
+        ys[*slot] = y;
+        *slot += 1;
+    }
+
+    // Runs alternate background, foreground, ... from background, so a mask
+    // whose first pixel is foreground opens with a 0, as `rmask::encode`'s do.
+    let mut counts = Vec::with_capacity(changes.len() + 2);
+    let (mut last, mut foreground) = (0, false);
+    let mut first = 0;
+    for x in 0..w {
+        let base = x * h;
+        let column = &ys[first..per_column[x]];
+        first = per_column[x];
+        let top = column.first() == Some(&0);
+        if top != foreground {
+            counts.push((base - last) as u32);
+            last = base;
+            foreground = top;
+        }
+        for &y in &column[usize::from(top)..] {
+            let at = base + y as usize;
+            counts.push((at - last) as u32);
+            last = at;
+            foreground = !foreground;
+        }
+    }
+    counts.push((h * w - last) as u32);
+    hotcoco_core::Rle {
+        h: h as u32,
+        w: w as u32,
+        counts,
+    }
 }
 
 /// Write the `rows × cols` byte matrix `src` into `dst` transposed: element
@@ -248,15 +332,27 @@ const DETACH_MIN_BYTES: usize = 16 << 20;
 /// held the GIL for 255 ms in place and about 11 ms with the budget.
 const IN_PLACE_BUDGET: Duration = Duration::from_millis(5);
 
-/// Encode one `(H, W)` view, from its own buffer when it is Fortran-contiguous
-/// — TorchMetrics' call, one `np.asfortranarray` mask at a time — and through
-/// [`col_major`] otherwise.
+/// Encode one `(H, W)` view in place when its columns are contiguous
+/// (Fortran order — TorchMetrics' call, one `np.asfortranarray` mask at a
+/// time) or its rows are (C order — a torch mask as it comes), and through
+/// [`col_major`]'s copy otherwise.
 fn encode_view(view: ArrayView2<'_, u8>) -> hotcoco_core::error::Result<hotcoco_core::Rle> {
     let (h, w) = view.dim();
     // The transpose of a Fortran-order view is standard layout, and its slice
     // is the mask's own buffer: already the column-major bytes `encode` takes.
-    match view.t().to_slice() {
-        Some(col_major) => rmask::encode(col_major, h as u32, w as u32),
+    // ndarray counts every zero-size view as contiguous, so those all end here.
+    if let Some(col_major) = view.t().to_slice() {
+        return rmask::encode(col_major, h as u32, w as u32);
+    }
+    // A mask past `u32::MAX` pixels has no 32-bit runs; `rmask::encode` owns
+    // that error, so such a mask takes the copy below and gets it from there.
+    let rows: Option<Vec<&[u8]>> = if u32::try_from(h * w).is_ok() {
+        view.rows().into_iter().map(|row| row.to_slice()).collect()
+    } else {
+        None
+    };
+    match rows {
+        Some(rows) => Ok(encode_rows(&rows)),
         None => rmask::encode(&col_major(view), h as u32, w as u32),
     }
 }
@@ -285,8 +381,7 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAn
         // `h * w` — slice `i`'s column `x`. With fewer than eight slices there
         // is no 8×8 block along `n`, every byte would take the ragged-edge
         // loop, and slice by slice below is faster: the lone slice of an
-        // `(h, w, 1)` stack is C-contiguous, so it still gets the blocked
-        // transpose.
+        // `(h, w, 1)` stack is C-contiguous, so it is read row by row.
         let mut stack = vec![0; hw * n];
         for x in 0..w {
             transpose_into(&row_major[x * n..], w * n, &mut stack[x * h..], hw, h, n);
@@ -297,6 +392,8 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAn
             encode_slices(&stack, h, w, n)
         }
     } else {
+        // Slice by slice. A torch-style `(N, H, W)` batch passed as
+        // `batch.transpose(1, 2, 0)` lands here, each slice C-order.
         (0..n)
             .map(|i| {
                 let rle = encode_view(view.index_axis(Axis(2), i))?;

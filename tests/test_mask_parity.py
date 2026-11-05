@@ -623,11 +623,15 @@ def test_every_operation_matches_bit_for_bit(case):
 # encode: the word-at-a-time scan, every memory layout, every one-byte dtype
 # ---------------------------------------------------------------------------
 #
-# `encode` finds where each run ends 32 and 8 bytes at a time, reads a
-# Fortran-order mask straight from its buffer, and moves a C-order mask to
-# Fortran order with an 8x8-block transpose. These cases aim at each of those:
-# runs that end on and across word boundaries, sizes that leave a ragged tail
-# or a ragged block edge, and every layout path for 2-D and 3-D input.
+# `encode` finds where each run ends 32 and 8 bytes at a time in a
+# Fortran-order mask, read straight from its buffer. A mask whose rows are
+# contiguous (C order) is read row by row instead, 8 bytes at a time, for the
+# columns where a row differs from the one above. A C-order (H, W, N) stack,
+# whose masks interleave, moves to Fortran order with an 8x8-block transpose.
+# These cases aim at each of those: runs that end on and across word
+# boundaries along a column and along a row, a column whose top pixel
+# continues or ends the run of the column before it, sizes that leave a ragged
+# tail or a ragged block edge, and every layout path for 2-D and 3-D input.
 #
 # The reference is pycocotools on the *binarized* mask: hotcoco treats any
 # nonzero byte as foreground, while pycocotools starts a new run wherever the
@@ -643,7 +647,9 @@ def reference_rle(m: np.ndarray):
 
 def scan_patterns(h: int, w: int, rng: np.random.Generator):
     """Named (H, W) uint8 0/1 masks, built in column-major order — the order
-    the scan reads — so the run boundaries land where they are aimed."""
+    the Fortran-order scan reads — so the run boundaries land where they are
+    aimed. The patterns whose boundaries depend on the order are built in
+    row-major order too, for the row-by-row read, as `rows_<name>`."""
     n = h * w
     index = np.arange(n)
     flat = {
@@ -662,7 +668,27 @@ def scan_patterns(h: int, w: int, rng: np.random.Generator):
     for p in (0.05, 0.5, 0.95):
         flat[f"random_{p}"] = rng.random(n) < p
     for name, f in flat.items():
-        yield name, np.asarray(f, dtype=np.uint8).reshape((h, w), order="F")
+        f = np.asarray(f, dtype=np.uint8)
+        yield name, f.reshape((h, w), order="F")
+        if name.startswith(("alternating", "boundary_runs")):
+            yield f"rows_{name}", f.reshape((h, w), order="C")
+    # Whole rows and columns: a column that opens on foreground after one that
+    # closed on foreground (the run carries over), or on background (it ends);
+    # rows identical below the first (no change past row 0) or each the
+    # inverse of the one above (a change in every column of every row).
+    y, x = np.indices((h, w))
+    whole = {
+        "top_row": y == 0,
+        "bottom_row": y == h - 1,
+        "top_and_bottom_rows": (y == 0) | (y == h - 1),
+        "left_column": x == 0,
+        "right_column": x == w - 1,
+        "vertical_stripes": x % 3 == 0,
+        "horizontal_stripes": y % 2 == 0,
+        "checkerboard": (x + y) % 2 == 0,
+    }
+    for name, m in whole.items():
+        yield name, m.astype(np.uint8)
 
 
 def layouts_2d(m: np.ndarray):
@@ -677,6 +703,10 @@ def layouts_2d(m: np.ndarray):
     tall = np.zeros((h + 3, w), dtype=m.dtype, order="F")
     tall[1 : h + 1] = m
     yield "fortran_rows_sliced", tall[1 : h + 1]
+    # Each row contiguous, rows further apart than the width: a crop.
+    wide = np.zeros((h, w + 5), dtype=m.dtype)
+    wide[:, 2 : w + 2] = m
+    yield "c_order_columns_sliced", wide[:, 2 : w + 2]
 
 
 def read_only(arr: np.ndarray) -> np.ndarray:
@@ -750,6 +780,8 @@ class TestEncodeScan:
             "fortran_int8_minus_one": np.asfortranarray(stack.astype(np.int8) * -1),
             "read_only_fortran_bool": read_only(np.asfortranarray(stack * 2).view(bool)),
             "read_only_c_order_int8": read_only(np.ascontiguousarray(stack.astype(np.int8) * -1)),
+            # A torch-style (N, H, W) batch seen as (H, W, N): each mask C-order.
+            "batch_first": np.ascontiguousarray(stack.transpose(2, 0, 1)).transpose(1, 2, 0),
         }.items():
             got = hm.encode(view)
             assert isinstance(got, list) and len(got) == n
@@ -769,9 +801,13 @@ class TestEncodeScan:
         ref = [norm_rle(r) for r in reference_rle(stack)]
         for layout in (np.asfortranarray, np.ascontiguousarray):
             assert [norm_rle(r) for r in hm.encode(layout(stack))] == ref, layout.__name__
-        # TorchMetrics: an (N, H, W) bool batch, one Fortran-order mask at a time.
-        for i, m in enumerate(np.ascontiguousarray(stack.transpose(2, 0, 1))):
+        # TorchMetrics: an (N, H, W) bool batch, one Fortran-order mask at a
+        # time; the same masks as they come, C order; and the batch in one call.
+        batch = np.ascontiguousarray(stack.transpose(2, 0, 1))
+        for i, m in enumerate(batch):
             assert norm_rle(hm.encode(np.asfortranarray(m))) == ref[i]
+            assert norm_rle(hm.encode(m)) == ref[i]
+        assert [norm_rle(r) for r in hm.encode(batch.transpose(1, 2, 0))] == ref
 
     def test_stack_encoded_without_the_gil_matches_pycocotools(self):
         """Stacks that take long enough are copied out of numpy and the rest encoded with
