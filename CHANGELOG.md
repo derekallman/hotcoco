@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.4.0] - 2026-11-04
+
+### Added
+
 - **`primitives.greedy_match`**, COCO's greedy matcher on a `(D, G)` similarity
   array, pycocotools-exact: its `dt_matches`, `gt_matches`, and `dt_ignore` equal
   `COCOeval`'s `evalImgs` at every threshold and area range. `group_of=` applies
