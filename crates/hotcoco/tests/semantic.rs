@@ -383,6 +383,34 @@ fn merge_refuses_a_different_configuration() {
     );
 }
 
+/// A rule set after `update()` starts the counts over, for every builder:
+/// counts made under other rules do not combine with these, which is why
+/// `merge()` refuses evaluators whose rules differ. `ignore_index` and
+/// `reduce_zero_label` used to keep them, mixing two rule sets in one matrix.
+#[test]
+fn a_rule_set_after_counting_starts_the_counts_over() {
+    // Pixel 255 is ignored under the default rules and out of range without one.
+    let first = (&[255u8, 0][..], &[1u8, 0][..]);
+    let second = (&[0u8, 1][..], &[0u8, 1][..]);
+    type Builder = fn(SemanticEval) -> SemanticEval;
+    let builders: [(&str, Builder); 3] = [
+        ("ignore_index", |ev| ev.ignore_index(Some(7))),
+        ("reduce_zero_label", |ev| ev.reduce_zero_label(true)),
+        ("boundary_dilation", |ev| ev.boundary_dilation(Some(0.05))),
+    ];
+    for (name, builder) in builders {
+        let mut counted = SemanticEval::new(2);
+        counted.update(first.0, first.1, 1, 2).unwrap();
+        let mut late = builder(counted);
+        late.update(second.0, second.1, 1, 2).unwrap();
+
+        let mut fresh = builder(SemanticEval::new(2));
+        fresh.update(second.0, second.1, 1, 2).unwrap();
+        assert_eq!(late, fresh, "{name}");
+        assert_eq!(late.n_images(), 1, "{name}");
+    }
+}
+
 #[test]
 fn a_rejected_pair_counts_nothing() {
     let mut ev = SemanticEval::new(2);

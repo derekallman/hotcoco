@@ -391,35 +391,44 @@ impl SemanticEval {
         }
     }
 
+    /// Set one rule and start the counts over. The builders below are for
+    /// before the first pair: counts made under other rules do not combine
+    /// with these, which is why [`merge`](Self::merge) refuses evaluators
+    /// whose rules differ.
+    fn with_rule(mut self, set: impl FnOnce(&mut LabelRules)) -> Self {
+        set(&mut self.rules);
+        self.tally = Tally::new(self.class_names.len(), self.rules.boundary_dilation);
+        self.n_images = 0;
+        self
+    }
+
     /// Set the boundary IoU band as a share of the image diagonal — the
     /// paper's `0.02` by default — or `None` to leave boundary IoU out,
-    /// which skips the pass and reports its sentinel. A builder, for before
-    /// the first pair: the boundary counts start over.
+    /// which skips the pass and reports its sentinel. A builder: the counts
+    /// start over.
     #[must_use]
-    pub fn boundary_dilation(mut self, ratio: Option<f64>) -> Self {
-        self.rules.boundary_dilation = ratio;
-        self.tally = Tally::new(self.class_names.len(), ratio);
-        self
+    pub fn boundary_dilation(self, ratio: Option<f64>) -> Self {
+        self.with_rule(|rules| rules.boundary_dilation = ratio)
     }
 
     /// Set the ground-truth label that marks a pixel as unlabeled, or `None`
     /// to count every pixel. A value below `num_classes` is allowed and makes
-    /// that class unscorable, as in the references.
+    /// that class unscorable, as in the references. A builder: the counts
+    /// start over.
     #[must_use]
-    pub fn ignore_index(mut self, ignore_index: Option<u64>) -> Self {
-        self.rules.ignore_index = ignore_index;
-        self
+    pub fn ignore_index(self, ignore_index: Option<u64>) -> Self {
+        self.with_rule(|rules| rules.ignore_index = ignore_index)
     }
 
     /// Apply mmseg's `reduce_zero_label`: ground-truth `0` (and `255`, the
     /// value mmseg relabels it to) is unlabeled and every other ground-truth
     /// label shifts down by one, so a file with `num_classes + 1` labels scores
     /// `num_classes` classes. [`ignore_index`](Self::ignore_index) then applies
-    /// to the shifted label, as `IoUMetric` applies it.
+    /// to the shifted label, as `IoUMetric` applies it. A builder: the counts
+    /// start over.
     #[must_use]
-    pub fn reduce_zero_label(mut self, reduce: bool) -> Self {
-        self.rules.reduce_zero_label = reduce;
-        self
+    pub fn reduce_zero_label(self, reduce: bool) -> Self {
+        self.with_rule(|rules| rules.reduce_zero_label = reduce)
     }
 
     /// The class names, by class id.

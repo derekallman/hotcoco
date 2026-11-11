@@ -271,10 +271,19 @@ impl COCOeval {
     ///
     /// Each [`summary_deviations`](Self::summary_deviations) warning goes
     /// to stderr first, then each [`Self::summarize_lines`] line to stdout.
+    /// When the last `accumulate()` does not describe the current run
+    /// ([`check_accumulated`](Self::check_accumulated) fails), it still
+    /// reports it, as pycocotools does, and says so on stderr first.
     pub fn summarize(&mut self) {
         if self.eval.is_none() {
             eprintln!("Please run evaluate() and accumulate() first.");
             return;
+        }
+        if let Err(e) = self.check_accumulated() {
+            eprintln!(
+                "Warning: summarize() reports the last accumulate(), which does not describe \
+                 the current run: {e}."
+            );
         }
         for w in &self.summary_deviations() {
             eprintln!("Warning: {}", w);

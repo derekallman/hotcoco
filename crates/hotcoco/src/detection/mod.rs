@@ -422,7 +422,7 @@ impl COCOeval {
         &self,
         method: &str,
     ) -> crate::error::Result<&AccumulatedEval> {
-        self.accumulation_at(Stage::Accumulated, method)
+        self.accumulation_at(Stage::Accumulated, Some(method))
     }
 
     /// The current run's summary, with the accumulation it summarizes — see
@@ -431,6 +431,36 @@ impl COCOeval {
         &self,
         method: &str,
     ) -> crate::error::Result<(&AccumulatedEval, &[f64])> {
+        self.summary_at(Some(method))
+    }
+
+    /// `Ok` when [`f_scores`](Self::f_scores) answers: the last `accumulate()`
+    /// came after the last `evaluate()`, with `params` unchanged since.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidState`] naming the steps to run, and what retired the
+    /// accumulation on hand — the reason `f_scores()` returns an empty map,
+    /// for a caller to pass on.
+    pub fn check_accumulated(&self) -> crate::error::Result<()> {
+        self.accumulation_at(Stage::Accumulated, None).map(drop)
+    }
+
+    /// `Ok` when [`get_results`](Self::get_results) and
+    /// [`report`](Self::report) answer: [`check_accumulated`](Self::check_accumulated),
+    /// and a `summarize()` after the last `accumulate()`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidState`] naming the steps to run — the reason
+    /// `get_results()` returns an empty map, for a caller to pass on.
+    pub fn check_summarized(&self) -> crate::error::Result<()> {
+        self.summary_at(None).map(drop)
+    }
+
+    /// The summary and its accumulation; `method`, when given, names the
+    /// caller in the error.
+    fn summary_at(&self, method: Option<&str>) -> crate::error::Result<(&AccumulatedEval, &[f64])> {
         let eval = self.accumulation_at(Stage::Summarized, method)?;
         let stats = self
             .stats
@@ -444,15 +474,16 @@ impl COCOeval {
     fn accumulation_at(
         &self,
         stage: Stage,
-        method: &str,
+        method: Option<&str>,
     ) -> crate::error::Result<&AccumulatedEval> {
         let eval = match &self.eval {
             Some(eval) if self.stage >= stage => eval,
             _ => return Err(self.missing_steps(stage, method)),
         };
         if let Some(field) = streaming::params_mismatch(&eval.params, &self.params) {
+            let before = method.map(|m| format!(" before {m}")).unwrap_or_default();
             return Err(Error::InvalidState(format!(
-                "params.{field} changed after accumulate(): call {} again before {method}",
+                "params.{field} changed after accumulate(), so call {} again{before}",
                 Stage::New.steps_to(stage)
             )));
         }
@@ -461,19 +492,20 @@ impl COCOeval {
 
     /// The error naming the steps that take the current run to `stage`, and,
     /// when the output it would read is on hand from a retired run, what
-    /// retired it.
-    fn missing_steps(&self, stage: Stage, method: &str) -> Error {
+    /// retired it. Ends `before {method}`, or `first` with no method.
+    fn missing_steps(&self, stage: Stage, method: Option<&str>) -> Error {
         let steps = self.stage.steps_to(stage);
         let retired_by = match self.stage {
             Stage::Evaluated if self.eval.is_some() => {
-                "evaluate() has run since the last accumulate(): "
+                "evaluate() has run since the last accumulate(), so "
             }
             Stage::Accumulated if self.stats.is_some() => {
-                "accumulate() has run since the last summarize(): "
+                "accumulate() has run since the last summarize(), so "
             }
             _ => "",
         };
-        Error::InvalidState(format!("{retired_by}call {steps} before {method}"))
+        let when = method.map_or_else(|| "first".to_string(), |m| format!("before {m}"));
+        Error::InvalidState(format!("{retired_by}call {steps} {when}"))
     }
 
     /// Move the run to `to`, the stage a step just completed, when it had

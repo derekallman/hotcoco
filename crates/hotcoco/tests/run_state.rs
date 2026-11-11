@@ -181,8 +181,8 @@ fn a_retired_run_names_the_step_that_is_missing() {
     let msg = invalid_state(ev.results(false));
     assert_eq!(
         msg,
-        "evaluate() has run since the last accumulate(): \
-         call accumulate() and summarize() before results()"
+        "evaluate() has run since the last accumulate(), \
+         so call accumulate() and summarize() before results()"
     );
 }
 
@@ -232,6 +232,38 @@ fn summary_warnings_describe_the_summarized_params() {
         ev.summarize_lines()
             .iter()
             .any(|l| l.contains("maxDets=100"))
+    );
+}
+
+/// `check_accumulated()` and `check_summarized()` are why `f_scores()` and
+/// `get_results()` return nothing, for a caller — the Python binding — to
+/// pass on: the same reasons `report()` gives, without a method to name.
+#[test]
+fn the_checks_name_what_the_readers_wait_for() {
+    let reason = |r: hotcoco::error::Result<()>| r.unwrap_err().to_string();
+    let ev = fresh();
+    assert_eq!(
+        reason(ev.check_summarized()),
+        "call evaluate(), accumulate(), and summarize() first"
+    );
+    assert_eq!(
+        reason(ev.check_accumulated()),
+        "call evaluate() and accumulate() first"
+    );
+
+    let mut ev = summarized(&[]);
+    ev.check_summarized().unwrap();
+    ev.evaluate().unwrap();
+    assert_eq!(
+        reason(ev.check_summarized()),
+        "evaluate() has run since the last accumulate(), so call accumulate() and summarize() first"
+    );
+    ev.accumulate();
+    ev.check_accumulated().unwrap();
+    ev.params.max_dets = vec![1, 10, 50];
+    assert_eq!(
+        reason(ev.check_accumulated()),
+        "params.max_dets changed after accumulate(), so call evaluate() and accumulate() again"
     );
 }
 

@@ -2219,6 +2219,17 @@ impl PyCOCOeval {
             .clone_from(&self.inner.params);
         out
     }
+
+    /// Why the last `accumulate()` does not describe the current run, when
+    /// there is one and it does not: core's `check_accumulated()` reason, for
+    /// the warning `summarize()` and `summary_lines()` give before reporting
+    /// it anyway, as pycocotools does.
+    fn retired_reason(&mut self, py: Python<'_>) -> Option<String> {
+        self.inner.accumulated()?;
+        self.with_params(py, |ev| ev.check_accumulated())
+            .err()
+            .map(|e| e.to_string())
+    }
 }
 
 #[pymethods]
@@ -2328,12 +2339,26 @@ impl PyCOCOeval {
         Ok(())
     }
 
+    #[doc = "Compute and print the standard COCO metrics, populating ``stats``.
+
+Emits a ``ReferenceDeviationWarning`` for each way the configuration departs
+from the reference, and a ``CallOrderWarning`` when the last ``accumulate()``
+does not describe the current run (a later ``evaluate()``, or ``params``
+edited since). It still prints that accumulation, as pycocotools does."]
     fn summarize(&mut self, py: Python<'_>) -> PyResult<()> {
         if self.inner.accumulated().is_none() {
             warn::<CallOrderWarning>(
                 py,
                 "summarize() called before accumulate(). \
                  Call evaluate() then accumulate() first.",
+            )?;
+        } else if let Some(reason) = self.retired_reason(py) {
+            warn::<CallOrderWarning>(
+                py,
+                &format!(
+                    "summarize() reports the last accumulate(), which does not describe \
+                     the current run: {reason}."
+                ),
             )?;
         }
 
@@ -2369,6 +2394,14 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
                 py,
                 "summary_lines() called before accumulate(). \
                  Call evaluate() then accumulate() first.",
+            )?;
+        } else if let Some(reason) = self.retired_reason(py) {
+            warn::<CallOrderWarning>(
+                py,
+                &format!(
+                    "summary_lines() reports the last accumulate(), which does not describe \
+                     the current run: {reason}."
+                ),
             )?;
         }
         Ok(self.with_params(py, hotcoco_core::COCOeval::summarize_lines))
@@ -2475,13 +2508,19 @@ per_class : bool
         prefix: Option<&str>,
         per_class: bool,
     ) -> PyResult<Py<PyAny>> {
-        let results = self.with_params(py, |ev| ev.get_results(prefix, per_class));
-        if results.is_empty() {
+        let (results, refused) = self.with_params(py, |ev| {
+            (
+                ev.get_results(prefix, per_class),
+                ev.check_summarized().err(),
+            )
+        });
+        if let Some(reason) = refused {
             warn::<CallOrderWarning>(
                 py,
-                "get_results() called before summarize() on the current run. \
-                 Call evaluate(), accumulate(), and summarize() first, and again \
-                 after changing params. Returning empty dict.",
+                &format!(
+                    "get_results() called before summarize() on the current run: {reason}. \
+                     Returning empty dict."
+                ),
             )?;
         }
         Ok(map_to_dict(py, results)?.into_any().unbind())
@@ -2495,13 +2534,11 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
         // Through Python's `print`, not the core `print_results` — see `print_lines`.
         // Through `with_params`, so a params edit since `accumulate()` retires
         // the summary here as it does in `get_results()`.
-        let lines = self.with_params(py, |ev| ev.print_results_lines());
-        if lines.is_empty() {
-            return warn::<CallOrderWarning>(
-                py,
-                "No results to print. Run evaluate(), accumulate(), and summarize() first, \
-                 and again after changing params.",
-            );
+        let (lines, refused) = self.with_params(py, |ev| {
+            (ev.print_results_lines(), ev.check_summarized().err())
+        });
+        if let Some(reason) = refused {
+            return warn::<CallOrderWarning>(py, &format!("No results to print: {reason}."));
         }
         print_lines(py, &lines)
     }
@@ -2711,13 +2748,15 @@ Examples
 >>> ev.f_scores(beta=2.0)   # recall-weighted"]
     #[pyo3(signature = (beta = 1.0))]
     fn f_scores(&mut self, py: Python<'_>, beta: f64) -> PyResult<Py<PyAny>> {
-        let scores = self.with_params(py, |ev| ev.f_scores(beta));
-        if scores.is_empty() {
+        let (scores, refused) =
+            self.with_params(py, |ev| (ev.f_scores(beta), ev.check_accumulated().err()));
+        if let Some(reason) = refused {
             warn::<CallOrderWarning>(
                 py,
-                "f_scores() called before accumulate() on the current run. \
-                 Call evaluate() then accumulate() first, and again after changing \
-                 params. Returning empty dict.",
+                &format!(
+                    "f_scores() called before accumulate() on the current run: {reason}. \
+                     Returning empty dict."
+                ),
             )?;
         }
         Ok(map_to_dict(py, scores)?.into_any().unbind())
@@ -2852,18 +2891,22 @@ Examples
         if let Some(cached) = &self.eval_cache {
             return Ok(cached.clone_ref(py));
         }
-        let params = match &self.eval_params {
-            Some(p) => p.clone_ref(py),
+        let accumulated = self.inner.accumulated();
+        let params = match (&self.eval_params, accumulated) {
+            (Some(p), _) => p.clone_ref(py),
             // `accumulate()` and `run()` always set `eval_params`; this only
-            // covers a future mutation path that forgets to.
-            None => Py::new(
+            // covers a future mutation path that forgets to, with the params
+            // the accumulation recorded.
+            (None, Some(eval)) => Py::new(
                 py,
                 PyParams {
-                    inner: self.inner.params.clone(),
+                    inner: eval.params.clone(),
                 },
             )?,
+            // Nothing accumulated: `accumulated_eval_to_py` returns `None`.
+            (None, None) => self.params.clone_ref(py),
         };
-        let built = accumulated_eval_to_py(py, self.inner.accumulated(), params)?;
+        let built = accumulated_eval_to_py(py, accumulated, params)?;
         self.eval_cache = Some(built.clone_ref(py));
         Ok(built)
     }

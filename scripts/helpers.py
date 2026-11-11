@@ -10,6 +10,7 @@ import io
 import json
 import os
 import random
+import re
 import sys
 import tempfile
 import types
@@ -101,6 +102,25 @@ COCO_SKELETON = [
     [4, 6],
     [5, 7],
 ]
+
+# ---------------------------------------------------------------------------
+# Rust source, for the tests that hold the bindings to a convention
+# ---------------------------------------------------------------------------
+
+
+def rust_code(text):
+    """Rust source without its comment lines and `#[doc = "..."]` text, so prose
+    about a pattern cannot count as code.
+
+    Whole comment lines only: a `//` inside a string literal must not cut the code
+    after it.
+    """
+    text = re.sub(r'#\[doc\s*=\s*"(?:[^"\\]|\\.)*"\]', "", text)
+    text = re.sub(r'(?s)#\[doc\s*=\s*r(#*)".*?"\1\]', "", text)
+    text = re.sub(r"(?m)^\s*//.*$", "", text)
+    # A trailing comment, told from a `//` in a string by having no quote after it.
+    return re.sub(r'(?m)//[^"\n]*$', "", text)
+
 
 # ---------------------------------------------------------------------------
 # stdout suppression

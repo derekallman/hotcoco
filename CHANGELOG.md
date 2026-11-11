@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Rust: `COCOeval::check_accumulated()` and `check_summarized()`**, the reason
+  `f_scores()` and `get_results()` return an empty map. The Python
+  `CallOrderWarning`s from those two and `print_results()` now carry it.
+
 ### Changed
 
 - **`mask.encode` reads a C-order mask in place**, row by row, instead of
@@ -20,10 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **`results()`, `report()`, and `get_results()` no longer report an earlier run.**
-  After a second `evaluate()` they returned the first run's numbers under the new
-  `params`, and `report()` could mix the first run's AP with the second's per-class
-  AP. They now raise `RuntimeError` (`get_results()` returns `{}` with a
-  `CallOrderWarning`) until `accumulate()` and `summarize()` run again.
+  After a second `evaluate()` they returned the first run's numbers, and `report()`
+  could mix two runs. They now raise `RuntimeError` (`get_results()` returns `{}` with
+  a `CallOrderWarning`) until `accumulate()` and `summarize()` run again. `summarize()`
+  still prints the earlier run, as pycocotools does, and warns.
 - **`params` edited after `accumulate()` no longer move its numbers.** `summarize()`
   reads the axes the accumulation recorded (Rust: `AccumulatedEval::params`) and warns
   about those params (`COCOeval::summary_deviations()`), so reordered IoU thresholds no
@@ -32,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the first run's expanded detections, so turning `expand_dt` off on the same
   evaluator still scored them expanded. Each run now expands the datasets as
   constructed.
+- **Rust: every `SemanticEval` builder starts the counts over.** `ignore_index()` and
+  `reduce_zero_label()` called after `update()` kept the counts made under the old
+  rules, mixing two rule sets in one matrix, and `boundary_dilation()` left
+  `n_images()` stale. Python sets these at construction and was not affected.
 
 ## [1.4.0] - 2026-11-04
 

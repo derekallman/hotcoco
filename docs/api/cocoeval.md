@@ -283,8 +283,10 @@ For worked examples, see [Precision and recall arrays](../guide/results.md#preci
     `summarize()`, under `params` as they stood. A later `evaluate()` or
     `accumulate()`, or a change to `params`, retires it, and these methods wait
     for the steps after it to run again rather than report the earlier run.
-    `f_scores()` reads `accumulate()` the same way. The `stats` and `eval`
-    attributes keep the last values computed, as pycocotools' do.
+    `f_scores()` reads `accumulate()` the same way, and each warning says which
+    steps to run. The `stats` and `eval` attributes keep the last values computed,
+    as pycocotools' do, and `summarize()` and `summary_lines()` still report the
+    last `accumulate()`, with a `CallOrderWarning` when it is not the current run's.
 
     `metric_keys()`, `metric_defs()`, `provenance()`, `is_benchmark_standard()`, and
     `reference_deviations()` read only the configuration and work before `evaluate()`.

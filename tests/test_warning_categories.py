@@ -20,7 +20,7 @@ from collections import Counter
 import hotcoco
 import numpy as np
 import pytest
-from helpers import WORKSPACE
+from helpers import WORKSPACE, rust_code
 from hotcoco import (
     COCO,
     CallOrderWarning,
@@ -85,6 +85,14 @@ def _accumulated(**params):
     return ev
 
 
+def _reevaluated():
+    """Summarized, then evaluated again: the summary no longer describes the run."""
+    ev = _accumulated()
+    ev.summary_lines()
+    ev.evaluate()
+    return ev
+
+
 def _duplicate_ids(_):
     COCO({"images": IMAGES, "annotations": [GT, dict(GT)], "categories": CATS})
 
@@ -123,6 +131,20 @@ SITES = [
     ),
     pytest.param(lambda _: _ev().print_results(), CallOrderWarning, "No results to print", LIB_RS, id="print-results"),
     pytest.param(lambda _: _ev().f_scores(), CallOrderWarning, r"f_scores\(\) called before", LIB_RS, id="f-scores"),
+    pytest.param(
+        lambda _: _reevaluated().summarize(),
+        CallOrderWarning,
+        r"summarize\(\) reports the last accumulate\(\)",
+        LIB_RS,
+        id="summarize-retired",
+    ),
+    pytest.param(
+        lambda _: _reevaluated().summary_lines(),
+        CallOrderWarning,
+        r"summary_lines\(\) reports the last accumulate\(\)",
+        LIB_RS,
+        id="summary-lines-retired",
+    ),
     pytest.param(
         lambda _: _accumulated().get_results(),
         CallOrderWarning,
@@ -222,19 +244,10 @@ RAW_WARNING = re.compile(r"PyErr::warn\w*|PyErr_Warn\w*|\bPy\w*Warning\b|\"warn(
 
 
 def _rust_code(text):
-    """The source without its comment lines and `#[doc = "..."]` text, so prose about
-    warnings cannot count as a call.
-
-    Whole comment lines only: a `//` inside a string literal must not cut the code
-    after it.
-    """
-    text = re.sub(r'#\[doc\s*=\s*"(?:[^"\\]|\\.)*"\]', "", text)
-    text = re.sub(r'(?s)#\[doc\s*=\s*r(#*)".*?"\1\]', "", text)
-    text = re.sub(r"(?m)^\s*//.*$", "", text)
+    """The source without comments or doc text (`helpers.rust_code`), so prose about
+    warnings cannot count as a call."""
     # The base a category is created on names a warning type without raising one.
-    text = re.sub(r"create_exception!\(\s*\w+\s*,\s*\w+\s*,\s*[\w:]+", "", text)
-    # A trailing comment, told from a `//` in a string by having no quote after it.
-    return re.sub(r'(?m)//[^"\n]*$', "", text)
+    return re.sub(r"create_exception!\(\s*\w+\s*,\s*\w+\s*,\s*[\w:]+", "", rust_code(text))
 
 
 def _warn_classes(text):

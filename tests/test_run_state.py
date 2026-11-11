@@ -69,11 +69,13 @@ def test_a_new_evaluate_retires_the_previous_summary():
         ev.results()
     with pytest.raises(RuntimeError, match=r"call accumulate\(\) and summarize\(\) before report\(\)"):
         ev.report()
-    with pytest.warns(CallOrderWarning, match=r"get_results\(\) called before summarize\(\)"):
+    # The warnings carry core's reason, the one `results()` raises with.
+    reason = r"evaluate\(\) has run since the last accumulate\(\), so call accumulate\(\)"
+    with pytest.warns(CallOrderWarning, match=r"get_results\(\) called before summarize\(\).*" + reason):
         assert ev.get_results() == {}
-    with pytest.warns(CallOrderWarning, match=r"f_scores\(\) called before accumulate\(\)"):
+    with pytest.warns(CallOrderWarning, match=r"f_scores\(\) called before accumulate\(\).*" + reason):
         assert ev.f_scores() == {}
-    with pytest.warns(CallOrderWarning, match="No results to print"):
+    with pytest.warns(CallOrderWarning, match="No results to print.*" + reason):
         ev.print_results()
 
     ev.accumulate()
@@ -116,6 +118,34 @@ def test_summarize_warns_about_the_params_it_reports():
         warnings.simplefilter("error", ReferenceDeviationWarning)
         ev.summarize()
     assert "maxDets=100" in out.getvalue()
+
+
+@pytest.mark.parametrize("method", ["summarize", "summary_lines"])
+def test_summarizing_a_retired_accumulation_warns_and_keeps_pycocotools_numbers(method):
+    """After a new ``evaluate()``, ``summarize()`` still reports the last
+    ``accumulate()``, as pycocotools does, and says so."""
+    ev = run()
+    before = list(ev.stats)
+    ev.params.catIds = [1]
+    quiet(ev.evaluate)
+    with pytest.warns(
+        CallOrderWarning,
+        match=rf"{method}\(\) reports the last accumulate\(\), which does not describe the current run: "
+        r"evaluate\(\) has run since the last accumulate\(\)",
+    ):
+        with contextlib.redirect_stdout(io.StringIO()):
+            getattr(ev, method)()
+    assert list(ev.stats) == before
+
+
+def test_summarizing_the_current_run_does_not_warn():
+    ev = fresh()
+    ev.evaluate()
+    ev.accumulate()
+    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):
+        warnings.simplefilter("error", CallOrderWarning)
+        ev.summarize()
+        ev.summary_lines()
 
 
 def test_a_fresh_run_reports_as_before():
