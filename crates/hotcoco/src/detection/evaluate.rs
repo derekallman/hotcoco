@@ -174,7 +174,11 @@ impl COCOeval {
     /// [`coco_gt`](Self::coco_gt) after `evaluate()` sees the expanded dataset,
     /// not the one the evaluator was constructed with; the caller's own handle
     /// to the original is untouched. The expansion deduplicates, so calling
-    /// `evaluate()` again does not expand further. The eval paths must see the
+    /// `evaluate()` again does not expand the ground truth further, and the
+    /// detections expand from the original each time, so `params.expand_dt`
+    /// applies to the run it is set for. [`hierarchy`](Self::hierarchy) is
+    /// read by the first call: the ground truth keeps its expansion, and
+    /// `params.cat_ids` its categories. The eval paths must see the
     /// expanded data through the same handles the analysis surfaces read (TIDE,
     /// diagnostics, category names), which is why the handles are replaced
     /// rather than shadowed by private copies.
@@ -183,6 +187,13 @@ impl COCOeval {
     ///
     /// What [`check_inputs`](Self::check_inputs) reports: inputs that cannot
     /// be evaluated under the current `params`. Nothing is evaluated then.
+    ///
+    /// # A new run
+    ///
+    /// A successful call starts a new run and retires the last
+    /// [`accumulate`](Self::accumulate) and [`summarize`](Self::summarize):
+    /// [`report`](Self::report) and the readers beside it wait for both to run
+    /// again, rather than describe the previous run.
     pub fn evaluate(&mut self) -> crate::error::Result<()> {
         self.check_inputs()?;
         // OID: expand GT (and optionally DT) using hierarchy — this replaces
@@ -193,10 +204,19 @@ impl COCOeval {
                     &self.coco_gt.dataset.categories,
                 )
             });
+            // Expanding an expansion adds nothing, so the ground truth expands in
+            // place. The detections expand from the original kept aside while
+            // they are expanded, so turning `expand_dt` off restores it.
             self.coco_gt = Arc::new(super::expand::expand_annotations(&self.coco_gt, &hierarchy));
+            let dt = self
+                .unexpanded_dt
+                .take()
+                .unwrap_or_else(|| Arc::clone(&self.coco_dt));
             if self.params.expand_dt {
-                self.coco_dt =
-                    Arc::new(super::expand::expand_annotations(&self.coco_dt, &hierarchy));
+                self.coco_dt = Arc::new(super::expand::expand_annotations(&dt, &hierarchy));
+                self.unexpanded_dt = Some(dt);
+            } else {
+                self.coco_dt = dt;
             }
             self.hierarchy = Some(hierarchy);
         }
@@ -285,6 +305,7 @@ impl COCOeval {
         self.eval_imgs = std::sync::OnceLock::new();
         self.default_eval_imgs = std::sync::OnceLock::new();
         self.eval_inputs = Some(inputs);
+        self.advance_to(super::Stage::Evaluated);
         Ok(())
     }
 

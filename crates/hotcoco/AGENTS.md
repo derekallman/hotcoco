@@ -63,7 +63,8 @@ re-derive.
   grid `COCOeval` defaults to, or the two silently disagree about what AP means.
 - **Provenance is a property of the whole configuration**, not of an `iou_type`.
   Anything that can make a run incomparable to a reference belongs in
-  `COCOeval::reference_deviations()` — the single predicate driving both the
-  `summarize()` warnings and `Provenance`. Adding a condition at the `report()` call
-  site instead produces a silent downgrade with no warning, which is the exact failure
-  it was written to prevent.
+  `COCOeval::deviations_for` — the single predicate behind `reference_deviations()`
+  (live `params`, which `Provenance` reads) and `summary_deviations()` (the params
+  `accumulate()` recorded, which the `summarize()` warnings read). Adding a condition
+  at the `report()` call site instead produces a silent downgrade with no warning,
+  which is the exact failure it was written to prevent.

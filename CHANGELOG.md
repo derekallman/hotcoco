@@ -19,6 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`results()`, `report()`, and `get_results()` no longer report an earlier run.**
+  After a second `evaluate()` they returned the first run's numbers under the new
+  `params`, and `report()` could mix the first run's AP with the second's per-class
+  AP. They now raise `RuntimeError` (`get_results()` returns `{}` with a
+  `CallOrderWarning`) until `accumulate()` and `summarize()` run again.
+- **`params` edited after `accumulate()` no longer move its numbers.** `summarize()`
+  reads the axes the accumulation recorded (Rust: `AccumulatedEval::params`) and warns
+  about those params (`COCOeval::summary_deviations()`), so reordered IoU thresholds no
+  longer turn AP50 into AP95. `f_scores()` and the readers above wait for a new run.
+- **Open Images: `expand_dt` applies to the run it is set for.** `evaluate()` kept
+  the first run's expanded detections, so turning `expand_dt` off on the same
+  evaluator still scored them expanded. Each run now expands the datasets as
+  constructed.
+
 ## [1.4.0] - 2026-11-04
 
 ### Added

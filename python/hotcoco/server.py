@@ -450,9 +450,12 @@ def create_app(
             # the accumulated curves and reads the summary stats, so finish the
             # pipeline here, once, on first request. summary_lines() fills the
             # stats like summarize() but without printing into the server log.
-            # `stats` is an empty list until then and a numpy array after, so test
-            # its length; `.eval` would build the full precision/recall dict.
-            if len(coco_eval.stats) == 0:
+            # Ask report(), not `stats`: `stats` keeps a summary that a later
+            # evaluate() or a params edit retired, and report() refuses that one
+            # with a RuntimeError, as build_dashboard's own call would.
+            try:
+                coco_eval.report()
+            except RuntimeError:
                 coco_eval.accumulate()
                 coco_eval.summary_lines()
 

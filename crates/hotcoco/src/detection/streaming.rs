@@ -661,7 +661,7 @@ fn category_key(categories: &COCO) -> Vec<(u64, &str, Option<&str>)> {
 
 /// The first [`Params`] field on which `a` and `b` differ, if any, with
 /// floats compared bit for bit.
-fn params_mismatch(a: &Params, b: &Params) -> Option<&'static str> {
+pub(super) fn params_mismatch(a: &Params, b: &Params) -> Option<&'static str> {
     let (a, b) = (ParamsState::from(a), ParamsState::from(b));
     let ParamsState {
         iou_type,

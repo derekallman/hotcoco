@@ -112,6 +112,9 @@ class TestQuietSummary:
     def test_the_quiet_path_keeps_the_comparability_signal(self, capsys):
         ev = tie_sensitive_eval(20)
         ev.params.max_dets = [1, 10, 50]
+        # Accumulated under the edited caps: summarize() warns about the params
+        # its table was accumulated under, not an edit made after.
+        ev.accumulate()
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             ev.summary_lines()

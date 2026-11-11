@@ -8,6 +8,7 @@ use super::COCOeval;
 use super::EvalMode;
 use super::matching::{CellRef, arena_index};
 use crate::metrics::counts::descending_score_key;
+use crate::params::Params;
 
 /// The key two area ranges are compared on: bit equality of both bounds.
 /// `[0, 1e5**2]` and `[0, 1e10]` are the same range only if they are the same
@@ -421,6 +422,7 @@ pub(super) fn accumulate_impl(
         } else {
             Vec::new()
         },
+        params: params.clone(),
     });
     let cap = params.max_det();
 
@@ -688,10 +690,14 @@ impl COCOeval {
     /// `evaluate()` did not see is left at `-1.0` ("not computed") rather than
     /// filled from another slot's matches. Run `evaluate()` again after changing
     /// `params` to compute it.
+    ///
+    /// Retires the last [`summarize`](Self::summarize): [`report`](Self::report)
+    /// and the readers beside it wait for the next one.
     pub fn accumulate(&mut self) {
         // Scoped so the grouping's borrow of `self` ends before `self.eval` is written.
         let eval = accumulate_impl(&EvalGrouping::build(self), None);
         self.eval = Some(eval);
+        self.advance_to(super::Stage::Accumulated);
     }
 }
 
@@ -759,6 +765,12 @@ pub struct AccumulatedEval {
     /// `params.cat_ids` edited after `accumulate()`, or a `use_cats = false`
     /// run, cannot put one category's precision under another's name.
     pub cat_ids: Vec<u64>,
+    /// The `params` this accumulation laid its axes out under — pycocotools'
+    /// `eval['params']`. Every lookup from a threshold, area label, or
+    /// detection cap to a slot reads it, for the reason
+    /// [`cat_ids`](Self::cat_ids) is recorded: `params` edited after
+    /// `accumulate()` describe other arrays than these.
+    pub params: Params,
 }
 
 impl AccumulatedEval {

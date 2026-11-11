@@ -8,7 +8,6 @@
 
 use std::collections::BTreeMap;
 
-use crate::error::Error;
 use crate::metrics::mean_or_missing;
 use crate::params::{IouType, Params, is_rounded_default};
 use crate::report::{EvalReport, Provenance};
@@ -17,7 +16,7 @@ use super::accumulate::AccumulatedEval;
 use super::catalog::{MetricDef, build_metric_defs};
 use super::results::{EvalParams, EvalResults};
 use super::summarize::{mean_of_valid, per_cat_ap_static, summarize_impl};
-use super::{COCOeval, EvalMode};
+use super::{COCOeval, EvalMode, Stage};
 
 impl COCOeval {
     /// Ways this run's parameters depart from the reference configuration.
@@ -44,10 +43,25 @@ impl COCOeval {
     /// instead downgrades the run silently, with no matching `summarize()`
     /// warning.
     pub fn reference_deviations(&self) -> Vec<String> {
+        self.deviations_for(&self.params)
+    }
+
+    /// The [`reference_deviations`](Self::reference_deviations) of what
+    /// [`summarize`](Self::summarize) reports: the params the last
+    /// `accumulate()` recorded ([`AccumulatedEval::params`]), or `params`
+    /// before anything is accumulated. `summarize()` warns with these, so its
+    /// warnings describe the configuration of the table beneath them, edited
+    /// `params` or not.
+    pub fn summary_deviations(&self) -> Vec<String> {
+        self.deviations_for(self.eval.as_ref().map_or(&self.params, |eval| &eval.params))
+    }
+
+    /// The one body behind both deviation lists, over `params`.
+    fn deviations_for(&self, params: &Params) -> Vec<String> {
         let mut out = Vec::new();
 
         // Incomparable whatever the parameters, so these are checked first.
-        if self.params.iou_type == IouType::Obb {
+        if params.iou_type == IouType::Obb {
             out.push(
                 "oriented-box evaluation has no reference implementation to check against; \
                  these numbers are a hotcoco extension, not leaderboard-comparable."
@@ -80,20 +94,19 @@ impl COCOeval {
             EvalMode::OpenImages => return out, // already flagged above
         }
 
-        let defaults = Params::new(self.params.iou_type);
+        let defaults = Params::new(params.iou_type);
 
         // A default grid rounded through `f32` (what torchmetrics passes) matches
         // pycocotools bit for bit, so it is not a deviation; see `is_rounded_default`.
         // Its allowance is wider than `iou_thr_idx`'s, though, so a grid can be
         // "the default" while AP50 or AP75 cannot find its threshold and prints
         // -1.000; that grid is flagged, since the message says exactly that.
-        let unresolved = self
-            .metric_defs()
+        let unresolved = build_metric_defs(params, self.eval_mode)
             .iter()
             .filter_map(|m| m.iou_thr)
-            .any(|thr| self.params.iou_thr_idx(thr).is_none());
-        let iou_off = unresolved || !is_rounded_default(&self.params.iou_thrs, &defaults.iou_thrs);
-        let rec_off = !is_rounded_default(&self.params.rec_thrs, &defaults.rec_thrs);
+            .any(|thr| params.iou_thr_idx(thr).is_none());
+        let iou_off = unresolved || !is_rounded_default(&params.iou_thrs, &defaults.iou_thrs);
+        let rec_off = !is_rounded_default(&params.rec_thrs, &defaults.rec_thrs);
 
         if iou_off {
             out.push(
@@ -107,7 +120,7 @@ impl COCOeval {
         } else {
             defaults.max_dets.clone()
         };
-        if self.params.max_dets != expected_max_dets {
+        if params.max_dets != expected_max_dets {
             out.push(format!(
                 "max_dets differ from expected ({:?}). AR lines may use unexpected max_dets values.",
                 expected_max_dets
@@ -119,8 +132,7 @@ impl COCOeval {
             .iter()
             .map(|ar| ar.label.as_str())
             .collect();
-        if !self
-            .params
+        if !params
             .area_ranges
             .iter()
             .map(|ar| ar.label.as_str())
@@ -136,8 +148,7 @@ impl COCOeval {
         // deliberately preserves the existing labels, so redefining "small" as
         // [0, 100] passes the label check above while measuring a different
         // object-size bucket — the one path a Python caller actually takes.
-        if !self
-            .params
+        if !params
             .area_ranges
             .iter()
             .map(|ar| ar.range)
@@ -162,7 +173,7 @@ impl COCOeval {
         }
 
         // Class-agnostic pooling is a different question than the leaderboard asks.
-        if !self.params.use_cats {
+        if !params.use_cats {
             out.push(
                 "use_cats is false, so detections are pooled across categories. This is \
                  not the per-category AP any COCO or LVIS leaderboard reports."
@@ -171,8 +182,7 @@ impl COCOeval {
         }
 
         // Custom sigmas redefine OKS, and OKS is the similarity keypoint AP is built on.
-        if self.params.iou_type == IouType::Keypoints
-            && self.params.kpt_oks_sigmas != defaults.kpt_oks_sigmas
+        if params.iou_type == IouType::Keypoints && params.kpt_oks_sigmas != defaults.kpt_oks_sigmas
         {
             out.push(
                 "kpt_oks_sigmas differ from the COCO defaults, which redefines OKS. \
@@ -203,18 +213,21 @@ impl COCOeval {
     ///
     /// Computes stats (setting `self.stats`) and returns each formatted line.
     /// Prints nothing — not the lines, and not the
-    /// [`reference_deviations`](Self::reference_deviations) warnings either;
+    /// [`summary_deviations`](Self::summary_deviations) warnings either;
     /// [`summarize`](Self::summarize) owns those.
+    ///
+    /// Reads the last [`accumulate`](Self::accumulate)'s arrays under the
+    /// params it recorded ([`AccumulatedEval::params`]), so `params` edited
+    /// since then neither relabel nor reshuffle its numbers.
     pub fn summarize_lines(&mut self) -> Vec<String> {
         let eval = match &self.eval {
             Some(e) => e,
             None => return Vec::new(),
         };
 
-        let metrics = self.metric_defs();
+        let metrics = build_metric_defs(&eval.params, self.eval_mode);
         let stats = summarize_impl(
             eval,
-            &self.params,
             self.eval_mode,
             &self.coco_gt.dataset.categories,
             &metrics,
@@ -250,19 +263,20 @@ impl COCOeval {
         }
 
         self.stats = Some(stats);
+        self.advance_to(Stage::Summarized);
         lines
     }
 
     /// Print the standard COCO evaluation summary.
     ///
-    /// Each [`reference_deviations`](Self::reference_deviations) warning goes
+    /// Each [`summary_deviations`](Self::summary_deviations) warning goes
     /// to stderr first, then each [`Self::summarize_lines`] line to stdout.
     pub fn summarize(&mut self) {
         if self.eval.is_none() {
             eprintln!("Please run evaluate() and accumulate() first.");
             return;
         }
-        for w in &self.reference_deviations() {
+        for w in &self.summary_deviations() {
             eprintln!("Warning: {}", w);
         }
         for line in self.summarize_lines() {
@@ -286,6 +300,11 @@ impl COCOeval {
     /// [`metric_keys`](Self::metric_keys) and [`stats`](Self::stats) use — so
     /// `metric_defs()[i]` describes `stats()[i]`, and a renderer can label a
     /// value from its definition instead of parsing its name.
+    ///
+    /// Built from `params` as they stand. After `params` are edited past the
+    /// last `accumulate()`, `stats()` follow the params it recorded
+    /// ([`AccumulatedEval::params`]) instead, and [`report`](Self::report)
+    /// refuses until the run is redone.
     ///
     /// The list depends on `params` (it resolves the max-detection axis) and on
     /// `eval_mode`, so it is a method rather than a constant: COCO bbox/segm has
@@ -315,7 +334,7 @@ impl COCOeval {
     /// category record to name them, are dropped. A `use_cats = false` run has
     /// no per-class entries: its one K slot is the pool, not the first category.
     fn per_class_ap_named(&self, eval: &AccumulatedEval) -> Vec<(String, f64)> {
-        per_cat_ap_static(eval, &self.params, self.eval_mode)
+        per_cat_ap_static(eval, self.eval_mode)
             .into_iter()
             .filter(|&(_, ap)| ap >= 0.0)
             .filter_map(|(cat_id, ap)| self.coco_gt.get_cat(cat_id).map(|c| (c.name.clone(), ap)))
@@ -325,7 +344,8 @@ impl COCOeval {
     /// Return summary metrics as a `BTreeMap<metric_name, value>`.
     ///
     /// Must be called after [`summarize`](COCOeval::summarize). Returns an empty map
-    /// if `summarize` has not been run.
+    /// if `summarize` has not run since the last `evaluate()` and `accumulate()`,
+    /// or `params` changed after them — the summary would describe another run.
     ///
     /// # Arguments
     ///
@@ -347,9 +367,8 @@ impl COCOeval {
     /// For keypoints: `AP`, `AP50`, `AP75`, `APm`, `APl`,
     /// `AR`, `AR50`, `AR75`, `ARm`, `ARl`.
     pub fn get_results(&self, prefix: Option<&str>, per_class: bool) -> BTreeMap<String, f64> {
-        let stats = match &self.stats {
-            Some(s) => s,
-            None => return BTreeMap::new(),
+        let Ok((eval, stats)) = self.current_summary("get_results()") else {
+            return BTreeMap::new();
         };
 
         let keys = self.metric_keys();
@@ -368,10 +387,8 @@ impl COCOeval {
             .collect();
 
         if per_class {
-            if let Some(eval) = &self.eval {
-                for (name, ap) in self.per_class_ap_named(eval) {
-                    results.insert(make_key(&format!("AP/{name}")), ap);
-                }
+            for (name, ap) in self.per_class_ap_named(eval) {
+                results.insert(make_key(&format!("AP/{name}")), ap);
             }
         }
 
@@ -389,27 +406,28 @@ impl COCOeval {
     /// - `beta < 1.0`  → weights precision more heavily
     /// - `beta > 1.0`  → weights recall more heavily
     ///
-    /// Returns an empty map if `accumulate()` has not been run.
+    /// Returns an empty map if `accumulate()` has not run since the last
+    /// `evaluate()`, or `params` changed after it.
     ///
     /// Keys are `F1`, `F1_50`, `F1_75` (or `F2`, `F0.5`, `F0.5_50`, … for other
     /// betas — integer betas print undecorated, fractional ones with minimal
     /// digits). The separator is not decorative: `F1` + `50` reads as an
     /// unrelated metric named `F150`.
     pub fn f_scores(&self, beta: f64) -> BTreeMap<String, f64> {
-        let eval = match &self.eval {
-            Some(e) => e,
-            None => return BTreeMap::new(),
+        let Ok(eval) = self.current_accumulation("f_scores()") else {
+            return BTreeMap::new();
         };
+        let params = &eval.params;
 
-        let a_idx = self.params.all_area_idx();
+        let a_idx = params.all_area_idx();
         // `max_det_idx`, not `shape.m - 1`: the F-scores are the AP/AP50/AP75
         // rows in another metric, so they must read the same M slot those do.
-        let m_idx = self.params.max_det_idx();
+        let m_idx = params.max_det_idx();
 
         // `Params::iou_thr_idx` owns this lookup, tolerance included: `F1_50`
         // names the 0.50 slice or nothing, exactly as `AP50` does.
-        let t50 = self.params.iou_thr_idx(0.5);
-        let t75 = self.params.iou_thr_idx(0.75);
+        let t50 = params.iou_thr_idx(0.5);
+        let t75 = params.iou_thr_idx(0.75);
 
         // Single pass: compute max-F-beta per (t_idx, k_idx), accumulate into
         // three (sum, count) buckets — overall, then the two single-threshold ones.
@@ -424,7 +442,7 @@ impl COCOeval {
                     .collect();
 
                 if let Some(max_f) =
-                    crate::metrics::counts::max_f_beta(&precisions, &self.params.rec_thrs, beta)
+                    crate::metrics::counts::max_f_beta(&precisions, &params.rec_thrs, beta)
                 {
                     let in_bucket = [true, Some(t_idx) == t50, Some(t_idx) == t75];
                     for (bucket, hit) in buckets.iter_mut().zip(in_bucket) {
@@ -456,14 +474,17 @@ impl COCOeval {
 
     /// The [`print_results`](Self::print_results) lines, without printing.
     ///
-    /// Empty if [`summarize`](COCOeval::summarize) has not been run. Bindings
+    /// Empty when [`get_results`](Self::get_results) is: until
+    /// [`summarize`](COCOeval::summarize) has run on the current run. Bindings
     /// whose stdout is not fd 1 (Python's `sys.stdout`, a notebook cell) print
     /// these themselves.
     pub fn print_results_lines(&self) -> Vec<String> {
         // Zipped straight against `stats`, which `metric_keys()` is parallel to.
         // Round-tripping through a map would need an `unwrap_or(-1.0)` default
         // that is indistinguishable from a real `-1.000`.
-        let stats = self.stats.as_deref().unwrap_or(&[]);
+        let Ok((_, stats)) = self.current_summary("print_results()") else {
+            return Vec::new();
+        };
         self.metric_keys()
             .iter()
             .zip(stats)
@@ -478,7 +499,10 @@ impl COCOeval {
     pub fn print_results(&self) {
         let lines = self.print_results_lines();
         if lines.is_empty() {
-            eprintln!("No results to print. Run evaluate(), accumulate(), and summarize() first.");
+            eprintln!(
+                "No results to print. Run evaluate(), accumulate(), and summarize() first, \
+                 and again after changing params."
+            );
             return;
         }
         for line in lines {
@@ -488,8 +512,12 @@ impl COCOeval {
 
     /// Build a serializable [`EvalResults`] from the current evaluation state.
     ///
-    /// Must be called after [`summarize`](COCOeval::summarize). Returns an error
-    /// if `summarize` has not been run.
+    /// Must be called after [`summarize`](COCOeval::summarize).
+    ///
+    /// # Errors
+    ///
+    /// [`report`](Self::report)'s: an [`Error::InvalidState`](crate::Error::InvalidState) until the current
+    /// run is summarized.
     ///
     /// # Arguments
     ///
@@ -500,22 +528,15 @@ impl COCOeval {
         // metric. `params` is taken from the typed `Params` rather than from the
         // report's opaque `serde_json::Value`, which keeps the serialized shape
         // of `EvalResults` byte-stable for anyone parsing saved result files.
-        let report = self.report()?;
+        let report = self.report_for("results()")?;
 
-        // `None` (not an empty map) when `accumulate()` has not run — an empty
-        // map would claim "no classes scored" where the truth is "per-class data
-        // was never computed".
-        let per_class_map = if per_class {
-            self.eval.as_ref().map(|_| {
-                report
-                    .per_class
-                    .iter()
-                    .filter_map(|(name, m)| m.get("AP").map(|&ap| (name.clone(), ap)))
-                    .collect()
-            })
-        } else {
-            None
-        };
+        let per_class_map = per_class.then(|| {
+            report
+                .per_class
+                .iter()
+                .filter_map(|(name, m)| m.get("AP").map(|&ap| (name.clone(), ap)))
+                .collect()
+        });
 
         Ok(EvalResults {
             hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -531,6 +552,14 @@ impl COCOeval {
     /// Requires [`summarize`](COCOeval::summarize) to have been called. This is
     /// the shape every metric family reports in, so a renderer that can draw a
     /// detection report can draw a panoptic or tracking one unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidState`](crate::Error::InvalidState) until the current run is summarized: before
+    /// `evaluate()`, `accumulate()`, and `summarize()` have run in turn, after
+    /// a later `evaluate()` or `accumulate()` retires the summary, and after
+    /// `params` change. A report of a retired summary would describe one run
+    /// under another's configuration.
     ///
     /// # Provenance
     ///
@@ -554,13 +583,13 @@ impl COCOeval {
     /// [`accumulated`](COCOeval::accumulated) rather than being copied in here
     /// (on COCO it is ~1M floats).
     pub fn report(&self) -> crate::error::Result<EvalReport> {
-        let stats = self.stats.as_ref().ok_or_else(|| {
-            Error::InvalidState(
-                "summarize() must be called before report(). \
-                 Run evaluate(), accumulate(), and summarize() first."
-                    .into(),
-            )
-        })?;
+        self.report_for("report()")
+    }
+
+    /// [`report`](Self::report), with `method` naming the caller in the
+    /// error, since [`results`](Self::results) is built from it.
+    fn report_for(&self, method: &str) -> crate::error::Result<EvalReport> {
+        let (eval, stats) = self.current_summary(method)?;
 
         let provenance = self.provenance();
 
@@ -568,10 +597,6 @@ impl COCOeval {
         let mut report = EvalReport::new("detection", provenance)
             .with_metrics(keys.iter().copied().zip(stats.iter().copied()))
             .with_params(serde_json::to_value(EvalParams::from_eval(self))?);
-
-        let Some(eval) = &self.eval else {
-            return Ok(report);
-        };
 
         // Per-class AP. Categories with no valid precision anywhere report -1.0
         // and are omitted rather than recorded as a real score.
@@ -593,12 +618,13 @@ impl COCOeval {
 
         // Aggregate PR curves: mean precision over categories at each recall
         // threshold, for each IoU threshold.
-        let a_idx = self.params.all_area_idx();
+        let params = &eval.params;
+        let a_idx = params.all_area_idx();
         // The curve a chart draws must be the curve the headline AP was averaged
         // from, so it reads the same M slot — `max_det_idx`, not the last one.
-        let m_idx = self.params.max_det_idx();
+        let m_idx = params.max_det_idx();
         let mut scratch = Vec::with_capacity(eval.shape.k);
-        for (t_idx, &thr) in self.params.iou_thrs.iter().enumerate() {
+        for (t_idx, &thr) in params.iou_thrs.iter().enumerate() {
             // One scratch buffer for the inner means: this runs T×R times
             // (10×101 on COCO), so a throwaway Vec per recall threshold would be
             // ~1000 heap allocations per `report()` call.
@@ -612,7 +638,7 @@ impl COCOeval {
                 .collect();
             report = report.with_curve(format!("pr@{thr:.2}"), curve);
         }
-        report = report.with_curve("rec_thrs", self.params.rec_thrs.clone());
+        report = report.with_curve("rec_thrs", params.rec_thrs.clone());
 
         Ok(report)
     }

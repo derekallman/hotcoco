@@ -7,8 +7,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 
-use crate::params::Params;
-
 use super::EvalMode;
 use super::accumulate::{AccumulatedEval, EvalGrouping, accumulate_impl};
 use super::catalog::MetricDef;
@@ -75,13 +73,7 @@ pub(super) fn accumulate_and_summarize(
 ) -> (AccumulatedEval, Vec<f64>) {
     let ev = grouping.eval();
     let acc = accumulate_impl(grouping, img_filter);
-    let stats = summarize_impl(
-        &acc,
-        &ev.params,
-        ev.eval_mode,
-        &ev.coco_gt.dataset.categories,
-        metrics,
-    );
+    let stats = summarize_impl(&acc, ev.eval_mode, &ev.coco_gt.dataset.categories, metrics);
     (acc, stats)
 }
 
@@ -117,21 +109,18 @@ fn ap_samples<'a>(
 }
 
 /// Per-category mean AP — over every IoU and recall threshold, at area `"all"`
-/// and the M slot holding the detection cap ([`Params::max_det_idx`], not the
+/// and the M slot holding the detection cap ([`Params::max_det_idx`](crate::Params::max_det_idx), not the
 /// last slot) — paired with its category id; `-1.0` for a category with no
 /// valid precision.
 ///
 /// Ids come from the K axis this accumulation used
 /// ([`AccumulatedEval::cat_ids`]), paired here so no caller can zip the values
 /// against another list. A `use_cats = false` run yields nothing: its one K slot
-/// is the pool, not a category.
-pub(super) fn per_cat_ap_static(
-    eval: &AccumulatedEval,
-    params: &Params,
-    eval_mode: EvalMode,
-) -> Vec<(u64, f64)> {
-    let a_idx = params.all_area_idx();
-    let m_idx = params.max_det_idx();
+/// is the pool, not a category. The slots resolve against the accumulation's
+/// own [`params`](AccumulatedEval::params), never a caller's.
+pub(super) fn per_cat_ap_static(eval: &AccumulatedEval, eval_mode: EvalMode) -> Vec<(u64, f64)> {
+    let a_idx = eval.params.all_area_idx();
+    let m_idx = eval.params.max_det_idx();
     let mut scratch = Vec::new();
     eval.cat_ids
         .iter()
@@ -154,9 +143,12 @@ pub(super) fn per_cat_ap_static(
 /// `params.cat_ids`). Only an LVIS run builds the buckets; no other catalog has
 /// a frequency-group metric, and this runs 2·n times inside a bootstrapped
 /// `compare()`.
+///
+/// Every area label, detection cap, and IoU threshold resolves against the
+/// accumulation's own [`params`](AccumulatedEval::params): `params` edited
+/// after `accumulate()` describe a different layout.
 pub(super) fn summarize_impl(
     eval: &AccumulatedEval,
-    params: &Params,
     eval_mode: EvalMode,
     categories: &[crate::types::Category],
     metrics: &[MetricDef],
@@ -172,6 +164,7 @@ pub(super) fn summarize_impl(
     };
     // `k_indices` is every category, or for an LVIS frequency-group AP, the
     // categories in that bucket.
+    let params = &eval.params;
     let summarize_stat = |m: &MetricDef, k_indices: &[usize], scratch: &mut Vec<f64>| {
         // A missing area label or max-det setting degrades to the `-1.0` "not
         // computed" sentinel, like the missing-IoU-threshold branch below.

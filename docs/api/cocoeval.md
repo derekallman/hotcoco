@@ -277,7 +277,14 @@ For worked examples, see [Precision and recall arrays](../guide/results.md#preci
     `get_results()`, `print_results()`, `summary_lines()`, `report()`, `results()`, and
     `save_results()` read the summary, so call them after `summarize()` (or `run()`).
     `report()`, `results()`, and `save_results()` raise `RuntimeError` otherwise;
-    `get_results()` returns an empty dict.
+    `get_results()` and `print_results()` return nothing and emit a `CallOrderWarning`.
+
+    A summary describes one run: the last `evaluate()`, then `accumulate()` and
+    `summarize()`, under `params` as they stood. A later `evaluate()` or
+    `accumulate()`, or a change to `params`, retires it, and these methods wait
+    for the steps after it to run again rather than report the earlier run.
+    `f_scores()` reads `accumulate()` the same way. The `stats` and `eval`
+    attributes keep the last values computed, as pycocotools' do.
 
     `metric_keys()`, `metric_defs()`, `provenance()`, `is_benchmark_standard()`, and
     `reference_deviations()` read only the configuration and work before `evaluate()`.
@@ -314,7 +321,7 @@ summarize() -> None
 
 Compute and print the standard COCO metrics. Populates `stats`.
 
-The table goes through Python's `sys.stdout`, so `contextlib.redirect_stdout` captures or silences it, and it shows in a notebook cell. To skip printing altogether, call [`summary_lines`](#summary_lines) instead. A library that embeds hotcoco and wants neither the table nor the non-default-parameter warnings should use it, and read what the warnings would have said from [`reference_deviations`](#reference_deviations).
+The table goes through Python's `sys.stdout`, so `contextlib.redirect_stdout` captures or silences it, and it shows in a notebook cell. To skip printing altogether, call [`summary_lines`](#summary_lines) instead. A library that embeds hotcoco and wants neither the table nor the non-default-parameter warnings should use it, and read what the warnings would have said from [`reference_deviations`](#reference_deviations). The two agree unless `params` were edited after `accumulate()`: the warnings describe the params the table was accumulated under.
 
 !!! warning "Non-default parameters"
     `summarize()` uses a fixed display format that assumes default `iou_thrs`, `max_dets`, and `area_rng_lbl`. If you've changed any of these, a [`ReferenceDeviationWarning`](../guide/results.md#filtering-the-warnings) is emitted (catchable with `warnings.catch_warnings`, visible in Jupyter) and some metrics might show `-1.000` (for example, AP50 when `iou_thrs` doesn't include 0.50). The `stats` array always has 12 entries (10 for keypoints) regardless of your parameters. `-1.000` always means "not computed for this configuration" — an unknown area label or max-dets value degrades to `-1.0` rather than silently substituting the `"all"` slice.
@@ -771,7 +778,7 @@ For each (IoU threshold, category), finds the confidence operating point that ma
 
 Key names reflect `beta`, formatted with no trailing zeros: `"F0.5"`, `"F0.5_50"`, `"F0.5_75"` for `beta=0.5`; `"F2"`, `"F2_50"`, `"F2_75"` for `beta=2.0`.
 
-Returns an empty dict if `accumulate()` has not been called.
+Returns an empty dict, with a `CallOrderWarning`, until `accumulate()` has run since the last `evaluate()` with `params` unchanged since.
 
 ```python
 ev.run()

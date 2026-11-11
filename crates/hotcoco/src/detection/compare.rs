@@ -142,14 +142,7 @@ pub fn compare(
             eval_a.params.max_dets, eval_b.params.max_dets
         )));
     }
-    let area_ranges_match = eval_a.params.area_ranges.len() == eval_b.params.area_ranges.len()
-        && eval_a
-            .params
-            .area_ranges
-            .iter()
-            .zip(&eval_b.params.area_ranges)
-            .all(|(a, b)| a.label == b.label && a.range == b.range);
-    if !area_ranges_match {
+    if eval_a.params.area_ranges != eval_b.params.area_ranges {
         return Err(Error::InvalidInput(
             "area_ranges mismatch: per-size metrics would measure different \
                     object-size buckets on each side, so both evaluators must use the same \
@@ -241,9 +234,7 @@ pub fn compare(
     // from each accumulation's K axis, so a pooled (`use_cats = false`) side
     // contributes none.
     let by_cat = |ev: &COCOeval, acc: &_| -> HashMap<u64, f64> {
-        per_cat_ap_static(acc, &ev.params, ev.eval_mode)
-            .into_iter()
-            .collect()
+        per_cat_ap_static(acc, ev.eval_mode).into_iter().collect()
     };
     let per_cat_a = by_cat(eval_a, &acc_a);
     let per_cat_b = by_cat(eval_b, &acc_b);

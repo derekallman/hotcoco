@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Used in [`Params::area_ranges`] to keep labels and ranges in sync.
 /// Standard COCO labels are `"all"`, `"small"`, `"medium"`, `"large"`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AreaRange {
     pub label: String,
     pub range: [f64; 2],

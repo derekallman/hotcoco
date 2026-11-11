@@ -391,10 +391,11 @@ def test_explore_missing_browse_deps_exits_1(tmp_path, monkeypatch, capsys):
 # ---------------------------------------------------------------------------
 
 
-def _eval_app(tmp_path, summarized=False):
+def _eval_app(tmp_path, summarized=False, then=None):
     """An app over an evaluator built the way browse() and `coco explore` build it: evaluate() only.
 
-    With ``summarized``, the caller also ran accumulate() and summarize() before browsing.
+    With ``summarized``, the caller also ran accumulate() and summarize() before browsing,
+    and ``then`` is called on the evaluator after that.
     """
     from hotcoco import COCOeval
     from hotcoco.server import create_app
@@ -407,6 +408,8 @@ def _eval_app(tmp_path, summarized=False):
     if summarized:
         ev.accumulate()
         ev.summarize()
+    if then is not None:
+        then(ev)
     return create_app(coco, dt_coco=dt, coco_eval=ev)
 
 
@@ -419,6 +422,21 @@ def test_dashboard_on_evaluate_only_eval(tmp_path):
     # Second request is served from the cache and must not re-accumulate into an error.
     status, _, _ = _asgi_get(app, "/dashboard")
     assert status == 200
+
+
+def _edit_max_dets(ev):
+    ev.params.maxDets = [1, 10, 50]
+
+
+@pytest.mark.parametrize("then", [lambda ev: ev.evaluate(), _edit_max_dets], ids=["evaluated-again", "params-edited"])
+def test_dashboard_finishes_a_run_whose_summary_was_retired(tmp_path, capsys, then):
+    """A summary is no longer the current run's after another evaluate() or a params
+    edit, though ``stats`` still holds it; the dashboard finishes the current run."""
+    pytest.importorskip("plotly")
+    app = _eval_app(tmp_path, summarized=True, then=then)
+    capsys.readouterr()
+    status, _, body = _asgi_get(app, "/dashboard")
+    assert status == 200, body[:300]
 
 
 class _SlowAccumulate:

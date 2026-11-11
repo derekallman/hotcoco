@@ -124,6 +124,13 @@ SITES = [
     pytest.param(lambda _: _ev().print_results(), CallOrderWarning, "No results to print", LIB_RS, id="print-results"),
     pytest.param(lambda _: _ev().f_scores(), CallOrderWarning, r"f_scores\(\) called before", LIB_RS, id="f-scores"),
     pytest.param(
+        lambda _: _accumulated().get_results(),
+        CallOrderWarning,
+        r"get_results\(\) called before summarize\(\)",
+        LIB_RS,
+        id="get-results",
+    ),
+    pytest.param(
         lambda _: _accumulated(maxDets=[1, 10, 500]).summarize(),
         ReferenceDeviationWarning,
         "^hotcoco: max_dets differ from expected",

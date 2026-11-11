@@ -87,6 +87,49 @@ fn not_evaluated_at(thr: f64) -> Error {
     ))
 }
 
+/// How far the current run has got. [`evaluate`](COCOeval::evaluate) starts a
+/// run and each later step moves it on.
+///
+/// A step's output — `eval` from `accumulate()`, `stats` from `summarize()` —
+/// stays in place when a new run starts, as pycocotools' `E.eval` and
+/// `E.stats` do, so its presence does not say which run it describes. This
+/// does. [`COCOeval::current_accumulation`] and
+/// [`COCOeval::current_summary`] are the checks against it, and the policy on
+/// which readers check lives there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Stage {
+    /// `evaluate()` has not run.
+    New,
+    Evaluated,
+    Accumulated,
+    Summarized,
+}
+
+/// Each step, beside the stage it moves a run to.
+const STEPS: [(Stage, &str); 3] = [
+    (Stage::Evaluated, "evaluate()"),
+    (Stage::Accumulated, "accumulate()"),
+    (Stage::Summarized, "summarize()"),
+];
+
+impl Stage {
+    /// The steps that take a run from `self` (exclusive) to `to`, joined for a
+    /// message: `"accumulate() and summarize()"`.
+    fn steps_to(self, to: Stage) -> String {
+        let names: Vec<&str> = STEPS
+            .iter()
+            .filter(|&&(s, _)| s > self && s <= to)
+            .map(|&(_, name)| name)
+            .collect();
+        match names.as_slice() {
+            [] => String::new(),
+            [one] => (*one).to_string(),
+            [a, b] => format!("{a} and {b}"),
+            [init @ .., last] => format!("{}, and {last}", init.join(", ")),
+        }
+    }
+}
+
 /// COCO evaluation engine.
 ///
 /// Computes AP and AR metrics for bbox, segmentation, and keypoint predictions.
@@ -142,6 +185,11 @@ pub struct COCOeval {
     segm_rles: Option<iou::SegmRles>,
     pub(crate) eval: Option<AccumulatedEval>,
     pub(crate) stats: Option<Vec<f64>>,
+    /// Which run `eval` and `stats` describe — see [`Stage`].
+    stage: Stage,
+    /// Open Images: the detections as constructed, while `coco_dt` holds their
+    /// expansion — see [`evaluate`](Self::evaluate).
+    unexpanded_dt: Option<Arc<COCO>>,
     /// Evaluation mode (COCO, LVIS, or OpenImages).
     pub eval_mode: EvalMode,
     /// Open Images: category hierarchy for GT/DT expansion.
@@ -218,6 +266,8 @@ impl COCOeval {
             segm_rles: None,
             eval: None,
             stats: None,
+            stage: Stage::New,
+            unexpanded_dt: None,
             eval_mode,
             hierarchy,
         }
@@ -253,6 +303,7 @@ impl COCOeval {
         ev.cells = cells;
         ev.eval_inputs = Some(inputs);
         ev.eval_imgs = std::sync::OnceLock::from(Vec::new());
+        ev.advance_to(Stage::Evaluated);
         ev
     }
 
@@ -348,7 +399,100 @@ impl COCOeval {
         Ok((snapped, row))
     }
 
+    /// The last `accumulate()`'s output, when it is the current run's: when
+    /// the last `evaluate()` came before it and `params` are as it recorded
+    /// them. Otherwise an [`Error::InvalidState`] for `method` naming the
+    /// steps to run.
+    ///
+    /// With [`current_summary`](Self::current_summary), the one check hotcoco's
+    /// own readers of `eval` and `stats` make — [`f_scores`](Self::f_scores)
+    /// here; [`report`](Self::report), [`results`](Self::results),
+    /// [`get_results`](Self::get_results), and
+    /// [`print_results_lines`](Self::print_results_lines) there. The last two
+    /// share lvis-api's names but not its answer for a retired run, which is
+    /// the last summary whatever ran since. The pycocotools surfaces,
+    /// [`stats`](Self::stats), [`accumulated`](Self::accumulated), and
+    /// [`summarize`](Self::summarize), skip the check and keep pycocotools'
+    /// answer, whatever a step last left behind.
+    //
+    // Whether the drop-in surfaces should refuse a retired run too, and whether
+    // `get_results()`/`print_results()` should go back to lvis-api's answer, is
+    // open: `tests/test_run_state.py` pins pycocotools keeping a stale `E.stats`.
+    pub(in crate::detection) fn current_accumulation(
+        &self,
+        method: &str,
+    ) -> crate::error::Result<&AccumulatedEval> {
+        self.accumulation_at(Stage::Accumulated, method)
+    }
+
+    /// The current run's summary, with the accumulation it summarizes — see
+    /// [`current_accumulation`](Self::current_accumulation).
+    pub(in crate::detection) fn current_summary(
+        &self,
+        method: &str,
+    ) -> crate::error::Result<(&AccumulatedEval, &[f64])> {
+        let eval = self.accumulation_at(Stage::Summarized, method)?;
+        let stats = self
+            .stats
+            .as_deref()
+            .ok_or_else(|| self.missing_steps(Stage::Summarized, method))?;
+        Ok((eval, stats))
+    }
+
+    /// The accumulation, once the current run has reached `stage` with
+    /// `params` unchanged since `accumulate()`.
+    fn accumulation_at(
+        &self,
+        stage: Stage,
+        method: &str,
+    ) -> crate::error::Result<&AccumulatedEval> {
+        let eval = match &self.eval {
+            Some(eval) if self.stage >= stage => eval,
+            _ => return Err(self.missing_steps(stage, method)),
+        };
+        if let Some(field) = streaming::params_mismatch(&eval.params, &self.params) {
+            return Err(Error::InvalidState(format!(
+                "params.{field} changed after accumulate(): call {} again before {method}",
+                Stage::New.steps_to(stage)
+            )));
+        }
+        Ok(eval)
+    }
+
+    /// The error naming the steps that take the current run to `stage`, and,
+    /// when the output it would read is on hand from a retired run, what
+    /// retired it.
+    fn missing_steps(&self, stage: Stage, method: &str) -> Error {
+        let steps = self.stage.steps_to(stage);
+        let retired_by = match self.stage {
+            Stage::Evaluated if self.eval.is_some() => {
+                "evaluate() has run since the last accumulate(): "
+            }
+            Stage::Accumulated if self.stats.is_some() => {
+                "accumulate() has run since the last summarize(): "
+            }
+            _ => "",
+        };
+        Error::InvalidState(format!("{retired_by}call {steps} before {method}"))
+    }
+
+    /// Move the run to `to`, the stage a step just completed, when it had
+    /// reached the stage before: accumulating nothing evaluated, or summarizing
+    /// a retired accumulation, does not bring a run forward.
+    fn advance_to(&mut self, to: Stage) {
+        let needs = match to {
+            Stage::New | Stage::Evaluated => Stage::New,
+            Stage::Accumulated => Stage::Evaluated,
+            Stage::Summarized => Stage::Accumulated,
+        };
+        if self.stage >= needs {
+            self.stage = to;
+        }
+    }
+
     /// Accumulated precision/recall curves (set after `accumulate()`).
+    ///
+    /// pycocotools' `E.eval`, kept when a later `evaluate()` starts a new run.
     //
     // The pyo3 binding caches the dict built from this value and invalidates
     // it in `evaluate()`/`accumulate()`/`run()`. A new mutation path that
@@ -358,6 +502,9 @@ impl COCOeval {
     }
 
     /// Summary statistics (set after `summarize()`).
+    ///
+    /// pycocotools' `E.stats`, kept when a later step starts over;
+    /// [`report`](Self::report) refuses a summary the current run has retired.
     pub fn stats(&self) -> Option<&[f64]> {
         self.stats.as_deref()
     }

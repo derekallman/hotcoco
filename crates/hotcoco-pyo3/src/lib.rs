@@ -2341,9 +2341,10 @@ impl PyCOCOeval {
         // `summarize()`'s `eprintln!` — fd 2 bypasses `sys.stderr`, so that copy
         // is invisible in a Jupyter cell and uncatchable by
         // `warnings.catch_warnings`. Emitting here makes filters, -W flags, and
-        // pytest.warns all work. Synced via `with_params` so a post-`evaluate()`
-        // params mutation still reaches the comparability check.
-        let deviations = self.with_params(py, |ev| ev.reference_deviations());
+        // pytest.warns all work. `summary_deviations`, not `reference_deviations`:
+        // the warnings describe the params the table below was accumulated under,
+        // which a params edit after `accumulate()` does not move.
+        let deviations = self.with_params(py, |ev| ev.summary_deviations());
         for w in &deviations {
             warn::<ReferenceDeviationWarning>(py, w)?;
         }
@@ -2456,8 +2457,9 @@ list of dict
 
     #[doc = "Return summary metrics as a dict.
 
-Must be called after ``summarize()`` (or ``run()``). Returns an empty dict
-if ``summarize`` has not been run.
+Must be called after ``summarize()`` (or ``run()``). Returns an empty dict,
+with a ``CallOrderWarning``, until ``summarize()`` has run since the last
+``evaluate()`` and ``accumulate()`` with ``params`` unchanged since.
 
 Parameters
 ----------
@@ -2474,6 +2476,14 @@ per_class : bool
         per_class: bool,
     ) -> PyResult<Py<PyAny>> {
         let results = self.with_params(py, |ev| ev.get_results(prefix, per_class));
+        if results.is_empty() {
+            warn::<CallOrderWarning>(
+                py,
+                "get_results() called before summarize() on the current run. \
+                 Call evaluate(), accumulate(), and summarize() first, and again \
+                 after changing params. Returning empty dict.",
+            )?;
+        }
         Ok(map_to_dict(py, results)?.into_any().unbind())
     }
 
@@ -2481,13 +2491,16 @@ per_class : bool
 
 For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
 ``summarize()`` (or ``run()``)."]
-    fn print_results(&self, py: Python<'_>) -> PyResult<()> {
+    fn print_results(&mut self, py: Python<'_>) -> PyResult<()> {
         // Through Python's `print`, not the core `print_results` — see `print_lines`.
-        let lines = self.inner.print_results_lines();
+        // Through `with_params`, so a params edit since `accumulate()` retires
+        // the summary here as it does in `get_results()`.
+        let lines = self.with_params(py, |ev| ev.print_results_lines());
         if lines.is_empty() {
             return warn::<CallOrderWarning>(
                 py,
-                "No results to print. Run evaluate(), accumulate(), and summarize() first.",
+                "No results to print. Run evaluate(), accumulate(), and summarize() first, \
+                 and again after changing params.",
             );
         }
         print_lines(py, &lines)
@@ -2497,7 +2510,10 @@ For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
 
 Must be called after ``summarize()`` (or ``run()``). This is the shape every
 hotcoco metric family reports in, so code that renders a detection report will
-render a panoptic or tracking one unchanged.
+render a panoptic or tracking one unchanged. Raises ``RuntimeError`` until the
+current run is summarized: a later ``evaluate()`` or ``accumulate()``, or a
+change to ``params``, retires the last summary, and the error names the steps
+to run again.
 
 Returns a dict with:
 
@@ -2611,7 +2627,8 @@ Examples
 
     #[doc = "Return evaluation results as a dict.
 
-Must be called after ``summarize()`` (or ``run()``). Returns a dict with:
+Must be called after ``summarize()`` (or ``run()``), and raises ``RuntimeError``
+when ``report()`` does. Returns a dict with:
 
 - ``hotcoco_version``: hotcoco version string that produced these results.
 - ``params``: evaluation parameters (iou_type, iou_thresholds, area_ranges, max_dets)
@@ -2681,7 +2698,8 @@ dict[str, float]
     For ``beta=1.0``: ``{\"F1\": ..., \"F1_50\": ..., \"F1_75\": ...}``.
     For other beta values: ``{\"F<beta>\": ..., \"F<beta>_50\": ..., \"F<beta>_75\": ...}``
     — for example ``F0.5``, ``F0.5_50``, ``F0.5_75``.
-    Returns an empty dict if ``accumulate()`` has not been run.
+    Returns an empty dict, with a ``CallOrderWarning``, until ``accumulate()``
+    has run since the last ``evaluate()`` with ``params`` unchanged since.
 
 Examples
 --------
@@ -2693,14 +2711,15 @@ Examples
 >>> ev.f_scores(beta=2.0)   # recall-weighted"]
     #[pyo3(signature = (beta = 1.0))]
     fn f_scores(&mut self, py: Python<'_>, beta: f64) -> PyResult<Py<PyAny>> {
-        if self.inner.accumulated().is_none() {
+        let scores = self.with_params(py, |ev| ev.f_scores(beta));
+        if scores.is_empty() {
             warn::<CallOrderWarning>(
                 py,
-                "f_scores() called before accumulate(). \
-                 Call evaluate() then accumulate() first. Returning empty dict.",
+                "f_scores() called before accumulate() on the current run. \
+                 Call evaluate() then accumulate() first, and again after changing \
+                 params. Returning empty dict.",
             )?;
         }
-        let scores = self.with_params(py, |ev| ev.f_scores(beta));
         Ok(map_to_dict(py, scores)?.into_any().unbind())
     }
 
