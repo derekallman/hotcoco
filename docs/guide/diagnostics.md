@@ -6,6 +6,8 @@ AP tells you how good a model is; this page is about finding out *why* it isn't 
     Everything on this page except `confusion_matrix()` needs `evaluate()` first, and
     `f_scores()` also needs `accumulate()`. `confusion_matrix()` runs its own matching
     pass and works on a freshly constructed `COCOeval`.
+    TIDE, calibration, and the per-image diagnostics describe the run `evaluate()`
+    made: `params` edited afterwards apply to the next `evaluate()`.
 
 ## Confusion matrix
 

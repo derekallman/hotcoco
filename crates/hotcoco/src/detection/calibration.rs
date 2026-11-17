@@ -73,9 +73,18 @@ impl COCOeval {
         n_bins: usize,
         iou_threshold: f64,
     ) -> crate::error::Result<CalibrationResult> {
+        self.needs_datasets("calibration()")?;
         if !self.evaluated() {
             return Err(crate::error::Error::InvalidState(
                 "calibration() requires evaluate() to be called first".into(),
+            ));
+        }
+
+        if n_bins == 0 {
+            // No bin holds no detection, and the error over none is 0.0:
+            // a perfect score for an argument that asked for nothing.
+            return Err(crate::error::Error::InvalidInput(
+                "n_bins must be at least 1".into(),
             ));
         }
 
@@ -117,15 +126,20 @@ impl COCOeval {
             // Resolved once per image rather than once per detection — the entry
             // is the same for every detection in an eval_img, and on COCO val that
             // is ~500K hash lookups collapsed to ~20K.
-            let cat = per_cat.entry(eval_img.category_id).or_default();
+            // A pooled (`use_cats` off) cell belongs to no category: it counts
+            // toward the whole, and `per_category` stays empty.
+            let mut cat = (eval_img.category_id != super::POOLED_CAT)
+                .then(|| per_cat.entry(eval_img.category_id).or_default());
 
             for d in 0..n {
                 if ignored[d] {
                     continue;
                 }
                 let (score, correct) = (eval_img.dt_scores[d], matched[d]);
-                cat.0.push(score);
-                cat.1.push(correct);
+                if let Some(cat) = cat.as_mut() {
+                    cat.0.push(score);
+                    cat.1.push(correct);
+                }
                 all.0.push(score);
                 all.1.push(correct);
             }

@@ -82,6 +82,17 @@ class CocoDetection:
         return f"{self.__class__.__name__}(root={self.root!r}, num_images={len(self)})"
 
 
+def _first_seen(results, seen):
+    """The detections of images not in ``seen``, whose ids join it.
+
+    One call's detections for an image are kept together; the image's
+    detections from a later call are the repeat.
+    """
+    fresh = {r["image_id"] for r in results} - seen
+    seen |= fresh
+    return [r for r in results if r["image_id"] in fresh]
+
+
 class CocoEvaluator:
     """Distributed COCO evaluator for PyTorch training loops.
 
@@ -117,6 +128,10 @@ class CocoEvaluator:
         self.iou_types = iou_types
         self.coco_eval = {}
         self.results = defaultdict(list)
+        # Image ids already counted, per iou_type: a `DistributedSampler` pads
+        # the last batch with repeats, and counting an image's detections
+        # twice turns half of them into false positives.
+        self._seen = defaultdict(set)
 
         for iou_type in iou_types:
             self.coco_eval[iou_type] = None
@@ -138,7 +153,7 @@ class CocoEvaluator:
         """
         for iou_type in self.iou_types:
             results = _prepare_for_coco(predictions, iou_type)
-            self.results[iou_type].extend(results)
+            self.results[iou_type].extend(_first_seen(results, self._seen[iou_type]))
 
     def synchronize_between_processes(self):
         """Gather results across all distributed processes.
@@ -162,10 +177,14 @@ class CocoEvaluator:
             # device itself under NCCL (torchvision's CocoEvaluator does the same).
             gathered: list[list] = [[] for _ in range(world_size)]
             dist.all_gather_object(gathered, self.results[iou_type])
+            # An image more than one rank evaluated counts once, the first
+            # rank's, as torchvision's merge keeps the first of each image id.
+            seen: set = set()
             all_results = []
             for rank_results in gathered:
-                all_results.extend(rank_results)
+                all_results.extend(_first_seen(rank_results, seen))
             self.results[iou_type] = all_results
+            self._seen[iou_type] = seen
 
     def accumulate(self):
         """Create COCOeval objects and run evaluate + accumulate."""
@@ -177,7 +196,9 @@ class CocoEvaluator:
                     CallOrderWarning,
                     stacklevel=2,
                 )
-                continue
+                # Still evaluated, as torchvision evaluates an empty `COCO()`:
+                # a first epoch that predicts nothing reads
+                # `coco_eval["bbox"].stats` like any other.
 
             coco_dt = self.coco_gt.load_res(results)
             coco_eval = COCOeval(self.coco_gt, coco_dt, iou_type)

@@ -15,6 +15,7 @@ index does for an appended record.
 import contextlib
 import copy
 import json
+import pickle
 import warnings
 
 import numpy as np
@@ -411,6 +412,17 @@ READS = {
     "load_warnings": lambda c, p: c.load_warnings,
 }
 
+# Reads `dir(COCO)` does not list: the index maps `__getattr__` serves, and
+# pickling and copying, which go through `__reduce__`.
+UNLISTED_READS = {
+    "imgToAnns": lambda c, p: c.imgToAnns,
+    "catToImgs": lambda c, p: c.catToImgs,
+    "img_ann_map": lambda c, p: c.img_ann_map,
+    "cat_img_map": lambda c, p: c.cat_img_map,
+    "pickle.dumps": lambda c, p: pickle.dumps(c),
+    "copy.deepcopy": lambda c, p: copy.deepcopy(c),
+}
+
 NOT_A_READ = {
     "dataset": "hands the dict out again; a dict already out is the truth",
     "image_dir": "a path on the wrapper, not data",
@@ -430,12 +442,121 @@ def test_every_public_name_has_a_row():
     assert public == set(READS) | set(NOT_A_READ)
 
 
-@pytest.mark.parametrize("name", sorted(READS))
+@pytest.mark.parametrize("name", sorted(READS | UNLISTED_READS))
 def test_every_method_reads_the_edit_back(name, tmp_path):
     coco = COCO(dataset())
     coco.dataset["annotations"][1]["id"] = 1
     with warnings.catch_warnings(record=True) as seen:
         warnings.simplefilter("always")
         with contextlib.suppress(Exception):  # what the call does with the data is its own test
-            READS[name](coco, tmp_path)
+            (READS | UNLISTED_READS)[name](coco, tmp_path)
     assert any("duplicate" in str(w.message) for w in seen), f"{name} ran on stale data"
+
+
+def three_annotations():
+    return COCO(
+        {
+            "images": [{"id": 1, "width": 9, "height": 9}],
+            "categories": [{"id": 1, "name": "a"}],
+            "annotations": [
+                {"id": i, "image_id": 1, "category_id": 1, "bbox": [0, 0, 5, 5], "area": 25.0, "iscrowd": 0}
+                for i in (1, 2, 3)
+            ],
+        }
+    )
+
+
+def test_update_anns_clear_survives_the_dict_in_hand():
+    """A cleared field stayed in a dict already handed out, and the next
+    read-back parsed it back in."""
+    coco = three_annotations()
+    held = coco.dataset
+    coco.update_anns([{"id": 1, "area": None}])
+    assert "area" not in held["annotations"][0]
+    assert coco.dataset is held
+    assert coco.loadAnns(1)[0].get("area") is None
+
+
+def test_update_anns_finds_its_dict_in_a_reordered_list():
+    """A list reordered through a kept reference is not read back, so the
+    record's position named another annotation's dict: id 3's was overwritten
+    with id 1."""
+    coco = three_annotations()
+    anns = coco.dataset["annotations"]
+    coco.getAnnIds()
+    anns.reverse()
+    coco.update_anns(ids=[1], area=[99.0])
+    assert [(a["id"], a["area"]) for a in anns] == [(3, 25.0), (2, 25.0), (1, 99.0)]
+
+
+def test_update_anns_skips_a_dict_removed_from_the_list():
+    """...and one deleted through it raised ``IndexError`` after the edit had
+    been applied."""
+    coco = three_annotations()
+    anns = coco.dataset["annotations"]
+    coco.getAnnIds()
+    del anns[0]
+    coco.update_anns(ids=[3], area=[99.0])
+    assert [(a["id"], a["area"]) for a in anns] == [(2, 25.0), (3, 99.0)]
+
+
+def test_reading_dataset_keeps_info_and_licenses(tmp_path):
+    """The read-back after a ``coco.dataset`` access rebuilt the data without
+    them: a read, with no edit, and ``save()`` wrote ``info: null`` and no
+    licenses."""
+    path = tmp_path / "in.json"
+    info = {"year": 2026, "version": "1", "description": "d", "contributor": "c", "url": "u", "date_created": "x"}
+    licenses = [{"id": 4, "name": "CC", "url": "https://example.com"}]
+    path.write_text(
+        json.dumps(
+            {
+                "info": info,
+                "licenses": licenses,
+                "images": [{"id": 1, "width": 9, "height": 9, "license": 4}],
+                "annotations": [],
+                "categories": [{"id": 1, "name": "a"}],
+            }
+        )
+    )
+    coco = COCO(str(path))
+    assert coco.dataset["info"] == info
+    assert coco.dataset["licenses"] == licenses
+    out = tmp_path / "out.json"
+    coco.save(str(out))
+    saved = json.loads(out.read_text())
+    assert saved["info"] == info
+    assert saved["licenses"] == licenses
+    # An `info` block in a shape of the caller's own is kept in the dict and
+    # is not an error.
+    coco.dataset["info"] = "anything"
+    assert coco.getImgIds() == [1]
+
+
+@pytest.mark.parametrize("name", ["imgToAnns", "catToImgs", "img_ann_map", "cat_img_map"])
+def test_an_index_map_is_built_once_and_rebuilt_after_an_edit(name):
+    """Detectron2's loader reads `coco.imgToAnns[img_id]` once per image, so a
+    map rebuilt on every read made loading quadratic. The same object comes
+    back until the data changes, as pycocotools' attribute does."""
+    coco = three_annotations()
+    first = getattr(coco, name)
+    assert getattr(coco, name) is first
+    coco.get_ann_ids()  # a read changes nothing
+    assert getattr(coco, name) is first
+
+    # An edit through the dict, read back by the next call.
+    coco.dataset["annotations"].pop()
+    after_dict_edit = getattr(coco, name)
+    assert after_dict_edit is not first
+    assert len(after_dict_edit[1]) == 2 and len(first[1]) == 3
+    assert getattr(coco, name) is after_dict_edit
+
+    # An edit through a method.
+    coco.update_anns([{"id": 1, "category_id": 1, "area": 4.0}])
+    after_method_edit = getattr(coco, name)
+    assert after_method_edit is not after_dict_edit
+    if "ann" in name.lower():
+        assert after_method_edit[1][0]["area"] == 4.0
+
+    # `createIndex()` is how pycocotools rebuilds them.
+    coco.createIndex()
+    assert getattr(coco, name) is not after_method_edit

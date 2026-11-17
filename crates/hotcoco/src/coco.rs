@@ -1173,7 +1173,7 @@ impl COCO {
 
     /// Whether [`cap_detections_per_image`](Self::cap_detections_per_image)
     /// produced this set, so LVIS evaluation must not cap it again.
-    pub(crate) fn is_per_image_capped(&self) -> bool {
+    pub fn is_per_image_capped(&self) -> bool {
         self.per_image_capped
     }
 
@@ -1562,7 +1562,9 @@ impl COCO {
         let total = self.dataset.images.len();
         let count = match (n, frac) {
             (Some(n), _) => n.min(total),
-            (None, Some(f)) => ((total as f64 * f) as usize).min(total),
+            // Truncated, past the float error in the product: `0.29 * 100` is
+            // 28.999…, which is 29 images, not 28.
+            (None, Some(f)) => ((total as f64 * f + 1e-9) as usize).min(total),
             (None, None) => total,
         };
 

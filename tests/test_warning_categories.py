@@ -78,6 +78,13 @@ def _ev(**params):
     return ev
 
 
+def _accumulate_past_evaluate(_):
+    ev = _ev(iouThrs=[0.5])
+    ev.evaluate()
+    ev.params.iouThrs = [0.5, 0.6]
+    ev.accumulate()
+
+
 def _accumulated(**params):
     ev = _ev(**params)
     ev.evaluate()
@@ -120,6 +127,13 @@ SITES = [
     pytest.param(_cvat_import, ConversionWarning, "skipped 1 unsupported", LIB_RS, id="cvat-skipped-shapes"),
     pytest.param(
         lambda _: _ev().accumulate(), CallOrderWarning, r"accumulate\(\) called before", LIB_RS, id="accumulate"
+    ),
+    pytest.param(
+        _accumulate_past_evaluate,
+        CallOrderWarning,
+        r"accumulate\(\) was asked for params\.iou_thrs 0\.6, which evaluate\(\) did not run",
+        LIB_RS,
+        id="accumulate-unevaluated-params",
     ),
     pytest.param(lambda _: _ev().summarize(), CallOrderWarning, r"summarize\(\) called before", LIB_RS, id="summarize"),
     pytest.param(

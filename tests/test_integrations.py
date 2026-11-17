@@ -118,6 +118,34 @@ class TestCocoEvaluator:
             ev.accumulate()
         assert capsys.readouterr().out == ""
 
+    def test_an_image_updated_twice_counts_once(self, coco_gt):
+        """A ``DistributedSampler`` pads with repeats; their detections were
+        appended again, half of them false positives."""
+        img_ids = sorted(coco_gt.get_img_ids())[:2]
+
+        def batch(ids):
+            return {
+                i: {
+                    "boxes": FakeTensor(np.array([[10.0, 10.0, 50.0, 50.0]])),
+                    "scores": FakeTensor([0.9]),
+                    "labels": FakeTensor([1]),
+                }
+                for i in ids
+            }
+
+        ev = CocoEvaluator(coco_gt, ["bbox"])
+        ev.update(batch(img_ids))
+        ev.update(batch(img_ids[:1]))
+        assert [r["image_id"] for r in ev.results["bbox"]] == img_ids
+
+    def test_empty_results_still_leave_an_evaluator(self, coco_gt):
+        """``coco_eval["bbox"]`` stayed ``None``, and a first epoch that
+        predicted nothing failed on ``.stats``."""
+        ev = CocoEvaluator(coco_gt, ["bbox"])
+        with pytest.warns(CallOrderWarning, match="no results"):
+            ev.accumulate()
+        assert ev.coco_eval["bbox"] is not None
+
     def test_bbox_eval_from_dicts(self, coco_gt):
         """Full pipeline using pre-computed detection dicts (no torch needed)."""
         ev = CocoEvaluator(coco_gt, ["bbox"])

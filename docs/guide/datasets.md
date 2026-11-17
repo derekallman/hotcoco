@@ -205,8 +205,8 @@ coco2 = COCO.from_yolo("labels/val2017/", images_dir="images/val2017/")
 coco2.save("reconstructed.json")
 ```
 
-Bbox values round-trip within floating-point precision (under 0.0001 px for
-typical image sizes). YOLO coordinates are normalized to the image size, so both
+Bbox values round-trip to the six decimals YOLO labels are written with: within
+0.001 px at typical image sizes. YOLO coordinates are normalized to the image size, so both
 directions need real dimensions — `images_dir` is how the import gets them. What
 [`from_yolo`](../api/coco.md#from_yolo) accepts in `data.yaml` and how it names
 images is in the API reference.
@@ -252,7 +252,8 @@ COCO→DOTA→COCO round-trip at ≤0.1 px per coordinate. An imported dataset
 evaluates under either `iou_type`, because [`from_dota`](../api/coco.md#from_dota)
 fills in the axis-aligned envelope as well.
 
-Categories are discovered from the label files and sorted. Pass
+Categories are numbered in the order the label files first use them, reading
+the files in name order. Pass
 `categories=[...]` to fix the numbering instead — two splits of one dataset
 otherwise disagree on IDs whenever a class is missing from one of them.
 

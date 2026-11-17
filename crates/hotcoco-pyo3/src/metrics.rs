@@ -222,8 +222,9 @@ Args:
 Returns:
     numpy.ndarray: ``(num_classes + 1, num_classes + 1)`` array of uint64.
     Rows are ground truth, columns are predictions. The last row holds false
-    positives, the last column false negatives. Class indices outside
-    ``range(num_classes)`` are dropped rather than raising.
+    positives, the last column false negatives. A class index outside
+    ``range(num_classes)`` reads as ``None`` on its side rather than raising,
+    so its in-range partner still counts, as a miss or a false positive.
 
 Example:
     >>> from hotcoco import metrics
@@ -238,8 +239,11 @@ fn confusion_matrix(
     num_classes: usize,
 ) -> PyResult<Py<PyAny>> {
     check_parallel(gt.len(), dt.len(), "gt", "dt")?;
+    // One past `num_classes` for the background row and column.
+    let side = num_classes.saturating_add(1);
+    crate::convert::square_cells(side, format_args!("num_classes={num_classes}"))?;
     let flat = rconf::confusion_matrix(&gt, &dt, num_classes);
-    confusion_counts_to_py(py, flat, num_classes + 1)
+    confusion_counts_to_py(py, flat, side)
 }
 
 #[pyfunction]
@@ -316,6 +320,7 @@ fn pixel_confusion(
 ) -> PyResult<Py<PyAny>> {
     let (g, p) = label_pair_or_lists(gt, pred)?;
     let (gt, pred) = (g.map(), p.map());
+    crate::convert::square_cells(num_classes, format_args!("num_classes={num_classes}"))?;
     let mut m = PixelConfusion::new(num_classes);
     py.detach(|| m.update_maps(&gt, &pred, ignore_index))
         .map_err(to_pyerr)?;
@@ -349,6 +354,17 @@ fn mean_iou(py: Python<'_>, confusion: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>>
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "confusion must be square, got {rows}×{cols}"
         )));
+    }
+    // Every score divides sums of these cells, and the sums are `u64` too:
+    // past that they wrap, and the answer is `-1.0` or a wrong ratio.
+    if counts
+        .iter()
+        .try_fold(0u64, |sum, &c| sum.checked_add(c))
+        .is_none()
+    {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "confusion counts more pixels than 2**64 - 1",
+        ));
     }
     let m = PixelConfusion::from_counts(rows, counts).map_err(to_pyerr)?;
     let s = m.scores();

@@ -41,7 +41,7 @@ pub struct DotaStats {
 /// that is not in the dataset.
 pub fn coco_to_dota(dataset: &Dataset, output_dir: &Path) -> Result<DotaStats, ConvertError> {
     super::check_unique_stems(dataset)?;
-    fs::create_dir_all(output_dir)?;
+    fs::create_dir_all(output_dir).map_err(super::io_at(output_dir))?;
 
     let cat_map = crate::types::cat_id_to_name(dataset);
 
@@ -51,7 +51,7 @@ pub fn coco_to_dota(dataset: &Dataset, output_dir: &Path) -> Result<DotaStats, C
     for img in &dataset.images {
         let stem = file_stem(&img.file_name);
         let path = output_dir.join(format!("{stem}.txt"));
-        let mut file = fs::File::create(&path)?;
+        let mut file = fs::File::create(&path).map_err(super::io_at(&path))?;
 
         if let Some(anns) = grouped.get(&img.id) {
             for ann in anns {
@@ -146,7 +146,8 @@ pub fn dota_to_coco(
     let mut ann_id: u64 = 1;
 
     // Collect and sort label files for deterministic output
-    let mut entries: Vec<_> = fs::read_dir(label_dir)?
+    let mut entries: Vec<_> = fs::read_dir(label_dir)
+        .map_err(super::io_at(label_dir))?
         .filter_map(std::result::Result::ok)
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "txt"))
         .collect();
@@ -168,12 +169,12 @@ pub fn dota_to_coco(
             ..Default::default()
         });
 
-        let file = fs::File::open(&path)?;
+        let file = fs::File::open(&path).map_err(super::io_at(&path))?;
         let reader = BufReader::new(file);
 
         for (line_idx, line) in reader.lines().enumerate() {
             let line_no = line_idx + 1;
-            let line = line?;
+            let line = line.map_err(super::io_at(&path))?;
             let line = line.trim();
             // DOTA files may begin with metadata lines; `#` comments are ours.
             if line.is_empty()

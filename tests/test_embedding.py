@@ -64,8 +64,8 @@ class TestFloat32Grids:
         p = Params()
         p.iouThrs = IOU_F32
         p.recThrs = REC_F32
-        assert p.iouThrs == IOU_F32
-        assert p.recThrs == REC_F32
+        assert p.iouThrs.tolist() == IOU_F32
+        assert p.recThrs.tolist() == REC_F32
 
     @pytest.mark.parametrize("n_gt", [20, 25, 50, 100])
     def test_float32_grids_change_the_numbers(self, n_gt):

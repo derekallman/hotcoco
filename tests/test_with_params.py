@@ -26,6 +26,7 @@ PARAMS_FREE = {
     "stats": "the last summary, kept as pycocotools keeps E.stats",
     "evaluated": "whether evaluate() has run",
     "eval_imgs": "rebuilt from the inputs evaluate() snapshotted",
+    "eval_imgs_grid": "eval_imgs laid out over the ids evaluate() resolved",
     "iou_matrices": "read from the params evaluate() resolved",
     "coco_gt": "a dataset, which params do not change",
     "coco_dt": "a dataset, which params do not change",

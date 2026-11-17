@@ -114,6 +114,47 @@ pub enum ConvertError {
     },
 }
 
+/// Append what an entity reference stands for — `&amp;`, `&#233;` — to the
+/// text being collected.
+///
+/// quick-xml hands element text over in pieces, split at each reference:
+/// `salt &amp; pepper` is `Text("salt ")`, `GeneralRef("amp")`,
+/// `Text(" pepper")`. A reader that keeps one `Text` event keeps ` pepper`,
+/// which is how a category named `salt & pepper` came back from its own
+/// export as `pepper`.
+pub(crate) fn push_entity(
+    out: &mut String,
+    entity: &quick_xml::events::BytesRef<'_>,
+) -> Result<(), ConvertError> {
+    let invalid =
+        |e: &dyn std::fmt::Display| ConvertError::XmlError(format!("invalid entity: {e}"));
+    if let Some(ch) = entity.resolve_char_ref().map_err(|e| invalid(&e))? {
+        out.push(ch);
+        return Ok(());
+    }
+    let name = entity.decode().map_err(|e| invalid(&e))?;
+    let text = quick_xml::escape::resolve_predefined_entity(&name)
+        .ok_or_else(|| ConvertError::XmlError(format!("unknown entity `&{name};`")))?;
+    out.push_str(text);
+    Ok(())
+}
+
+/// An attribute's value with its entity references resolved: `R&amp;D.jpg`
+/// in the file is the name `R&D.jpg`.
+pub(crate) fn attr_text(
+    attr: &quick_xml::events::attributes::Attribute<'_>,
+) -> Result<String, ConvertError> {
+    attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|e| ConvertError::XmlError(format!("invalid attribute value: {e}")))
+}
+
+/// The error for a file that ends with an element still open: a truncated
+/// file is malformed, not a shorter dataset.
+pub(crate) fn unclosed_at_eof() -> ConvertError {
+    ConvertError::XmlError("the file ends inside an element that is never closed".into())
+}
+
 impl From<quick_xml::Error> for ConvertError {
     fn from(e: quick_xml::Error) -> Self {
         ConvertError::XmlError(e.to_string())
@@ -134,9 +175,24 @@ impl ConvertError {
             ConvertError::XmlError(msg) => {
                 ConvertError::XmlError(format!("{}: {msg}", path.display()))
             }
+            // A filesystem error keeps its kind, so Python still raises
+            // `FileNotFoundError`, and gains the path it was missing. Bytes
+            // that are not UTF-8 are bad content, not a filesystem problem.
+            ConvertError::Io(e) if e.kind() == io::ErrorKind::InvalidData => {
+                ConvertError::ParseError(format!("{}: {e}", path.display()))
+            }
+            ConvertError::Io(e) => {
+                ConvertError::Io(io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+            }
             other => other,
         }
     }
+}
+
+/// `map_err` for a bare filesystem call: the error with `path` attached, as
+/// [`ConvertError::with_path`] attaches it.
+pub(crate) fn io_at(path: &Path) -> impl Fn(io::Error) -> ConvertError + '_ {
+    move |e| ConvertError::Io(e).with_path(path)
 }
 
 /// A parse error carrying its file.

@@ -156,12 +156,13 @@ struct Row {
 
 /// Parse every data row of an Open Images CSV.
 fn read_rows(csv_path: &Path) -> Result<Vec<Row>, ConvertError> {
-    let file = fs::File::open(csv_path)?;
+    let file = fs::File::open(csv_path).map_err(super::io_at(csv_path))?;
     let mut lines = BufReader::new(file).lines();
 
     let header = lines
         .next()
-        .transpose()?
+        .transpose()
+        .map_err(super::io_at(csv_path))?
         .ok_or_else(|| parse_err(csv_path, "Open Images CSV is empty"))?;
     let cols = Columns::from_header(&header).map_err(|e| e.with_path(csv_path))?;
     let min_fields = cols.max_index() + 1;
@@ -170,7 +171,7 @@ fn read_rows(csv_path: &Path) -> Result<Vec<Row>, ConvertError> {
     for (n, line) in lines.enumerate() {
         // Header is line 1, so data line `n` is file line `n + 2`.
         let line_no = n + 2;
-        let line = line?;
+        let line = line.map_err(super::io_at(csv_path))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -221,11 +222,11 @@ fn read_rows(csv_path: &Path) -> Result<Vec<Row>, ConvertError> {
 /// The file is headerless: each line is `/m/0cmf2,Beer`. A header row, if
 /// present, is recognized by its first field not starting with `/` and skipped.
 pub fn read_class_descriptions(path: &Path) -> Result<HashMap<String, String>, ConvertError> {
-    let file = fs::File::open(path)?;
+    let file = fs::File::open(path).map_err(super::io_at(path))?;
     let mut map = HashMap::new();
 
     for (line_idx, line) in BufReader::new(file).lines().enumerate() {
-        let line = line?;
+        let line = line.map_err(super::io_at(path))?;
         if line.trim().is_empty() {
             continue;
         }
@@ -476,7 +477,7 @@ pub fn coco_to_oid(dataset: &Dataset, output_csv: &Path) -> Result<OidStats, Con
     super::check_unique_stems(dataset)?;
     if let Some(parent) = output_csv.parent() {
         if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(super::io_at(parent))?;
         }
     }
 
@@ -484,7 +485,7 @@ pub fn coco_to_oid(dataset: &Dataset, output_csv: &Path) -> Result<OidStats, Con
     let grouped = anns_by_image(dataset);
     let scored = dataset.annotations.iter().any(|a| a.score.is_some());
 
-    let mut file = fs::File::create(output_csv)?;
+    let mut file = fs::File::create(output_csv).map_err(super::io_at(output_csv))?;
     if scored {
         writeln!(
             file,

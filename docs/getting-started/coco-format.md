@@ -83,6 +83,12 @@ by_weather = ev.slice_by(lambda img: img["weather"])
   score in a file passed to `load_res()`: it raises `ValueError` naming the
   line, as a `NaN` score in a list of dicts does, rather than loading a
   detection with no score.
+- **`info` and `licenses` never fail a load.** Nothing evaluates them, so any
+  content is read: a year written as `"2017"` or `2017.0` becomes `2017`, a
+  text field written as a number becomes its text, and a field of any other
+  shape reads as absent. `info` keeps its six standard fields (`year`,
+  `version`, `description`, `contributor`, `url`, `date_created`) and a license
+  its `id`, `name`, and `url`; other keys there are not written back by `save()`.
 - **`load_warnings`.** Anything the loader tolerated but flagged — duplicate
   annotation ids, sanitized non-finite values, orphaned result ids — is collected
   on [`coco.load_warnings`](../api/coco.md#load_warnings) and emitted as a

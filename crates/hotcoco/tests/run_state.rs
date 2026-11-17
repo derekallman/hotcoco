@@ -417,3 +417,258 @@ fn open_images_expand_dt_applies_to_the_run_it_is_set_for() {
         "the ground truth expands once per run, not once per call"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The analyses of evaluate()'s cells describe the run evaluate() made
+// ---------------------------------------------------------------------------
+
+/// What TIDE, calibration, and the per-image diagnostics say about a run.
+fn analyses(ev: &COCOeval) -> (f64, u64, u64, usize, usize) {
+    let tide = ev.tide_errors(0.75, 0.1).unwrap();
+    let calibration = ev.calibration(10, 0.75).unwrap();
+    let diagnostics = ev.image_diagnostics(0.75, 0.5).unwrap();
+    (
+        tide.ap_base,
+        tide.counts["Loc"],
+        tide.counts["Miss"],
+        calibration.num_detections,
+        diagnostics.images.len(),
+    )
+}
+
+/// `params` edited after `evaluate()`: TIDE used to score the new `cat_ids`
+/// against misses counted over the old ones, and a new `max_dets` emptied all
+/// three analyses, calibration reporting a perfect `ece` of 0.0 over no
+/// detections. They read `evaluate()`'s cells, so they answer for its params,
+/// as `eval_imgs()` does.
+#[test]
+fn analyses_answer_for_the_params_evaluate_saw() {
+    let mut ev = fresh();
+    ev.evaluate().unwrap();
+    let as_evaluated = analyses(&ev);
+    assert_eq!(as_evaluated, (0.5, 10, 0, 20, 10), "the fixture");
+
+    ev.params.cat_ids = vec![1];
+    assert_eq!(analyses(&ev), as_evaluated, "cat_ids edited");
+    ev.params.img_ids = vec![1, 2];
+    assert_eq!(analyses(&ev), as_evaluated, "img_ids edited");
+    ev.params.max_dets = vec![1, 2, 3];
+    assert_eq!(analyses(&ev), as_evaluated, "max_dets edited");
+    ev.params.area_ranges.reverse();
+    assert_eq!(analyses(&ev), as_evaluated, "area_ranges edited");
+
+    ev.evaluate().unwrap();
+    assert_ne!(analyses(&ev), as_evaluated, "a new evaluate() is a new run");
+}
+
+/// With `use_cats` off there is one pooled cell per image and no category to
+/// tell `Cls` from `Loc` by: TIDE used to return an `ap_base` of 0.0 and zero
+/// for every delta, and calibration listed the pooled cell as a category.
+#[test]
+fn pooled_runs_have_no_per_category_analysis() {
+    let mut ev = fresh();
+    ev.params.use_cats = false;
+    ev.evaluate().unwrap();
+    match ev.tide_errors(0.5, 0.1) {
+        Err(Error::InvalidInput(msg)) => assert!(msg.contains("use_cats"), "{msg}"),
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+    let calibration = ev.calibration(10, 0.5).unwrap();
+    assert_eq!(calibration.num_detections, 20);
+    assert!(calibration.per_category.is_empty());
+}
+
+/// `img_ids` narrowed between `evaluate()` and `accumulate()`: `accumulate()`
+/// used to ignore the edit and report every evaluated image under `params`
+/// that named two. It resolves the image axis by value, as it does the
+/// category, area, and threshold axes.
+#[test]
+fn accumulate_reads_img_ids_edited_after_evaluate() {
+    // Image 1 is detected exactly, image 2 not at all.
+    let b = [10.0, 10.0, 30.0, 30.0];
+    let gt = COCO::from_dataset(Dataset {
+        images: (1..=2).map(image).collect(),
+        annotations: vec![gt_box(1, 1, 1, b), gt_box(2, 2, 1, b)],
+        categories: vec![cat(1)],
+        ..Default::default()
+    });
+    let dt = gt.load_res_anns(vec![det_box(1, 1, b, 0.9)]).unwrap();
+    let ap_over = |evaluated: &[u64], accumulated: &[u64]| {
+        let mut ev = COCOeval::new(gt.clone(), dt.clone(), IouType::Bbox);
+        ev.params.img_ids = evaluated.to_vec();
+        ev.evaluate().unwrap();
+        ev.params.img_ids = accumulated.to_vec();
+        ev.accumulate();
+        ev.summarize_lines();
+        ap(&ev)
+    };
+    let (both, first) = (ap_over(&[1, 2], &[1, 2]), ap_over(&[1], &[1]));
+    assert!(
+        (both - first).abs() > 0.1,
+        "the fixture must tell them apart"
+    );
+
+    assert_eq!(ap_over(&[1, 2], &[1]), first);
+    assert_eq!(ap_over(&[1, 2], &[2, 1]), both, "order is not a change");
+    // An image `evaluate()` never visited has no cells to add.
+    assert_eq!(ap_over(&[1], &[1, 2]), first);
+}
+
+/// The evaluator `finalize()` returns holds match results and no datasets.
+/// `evaluate()` on it used to match the empty datasets and replace the
+/// streamed run with a row of `-1.0`, and the analyses that rebuild per-image
+/// records answered over no cells — a calibration error of 0.0.
+#[test]
+fn a_finalized_stream_cannot_be_evaluated_again() {
+    let (gt, dt) = two_category_pair();
+    let mut se = StreamingEval::new(
+        Params::new(IouType::Bbox),
+        hotcoco::EvalMode::Coco,
+        gt.dataset.categories.clone(),
+    )
+    .unwrap();
+    se.update(
+        gt.dataset.images.clone(),
+        gt.dataset.annotations.clone(),
+        dt.dataset.annotations.clone(),
+    )
+    .unwrap();
+    let mut ev = se.finalize();
+    ev.accumulate();
+    ev.summarize_lines();
+    let streamed = ap(&ev);
+
+    for msg in [
+        invalid_state(ev.evaluate()),
+        invalid_state(ev.run()),
+        invalid_state(ev.tide_errors(0.5, 0.1)),
+        invalid_state(ev.calibration(10, 0.5)),
+        invalid_state(ev.image_diagnostics(0.5, 0.5)),
+    ] {
+        assert!(msg.contains("StreamingEval"), "{msg}");
+    }
+    assert_eq!(ap(&ev), streamed, "the streamed run is still the run");
+}
+
+/// `eval_imgs_grid` is pycocotools' `evalImgs` layout: category by area range
+/// by image over the ids `evaluate()` resolved, with a hole wherever an image
+/// has nothing of the category. `eval_imgs` holds the same records, no holes.
+#[test]
+fn the_eval_imgs_grid_is_categories_by_areas_by_images() {
+    let mut ev = fresh();
+    assert!(ev.eval_imgs_grid().is_empty(), "nothing before evaluate()");
+    // A category no image has: a whole K slot of holes.
+    ev.params.cat_ids = vec![3, 1, 2];
+    ev.evaluate().unwrap();
+
+    let img_ids: Vec<u64> = (1..=10).collect();
+    let cat_ids = [1, 2, 3];
+    let (k, a, i) = (cat_ids.len(), ev.params.area_ranges.len(), img_ids.len());
+
+    let grid = ev.eval_imgs_grid();
+    assert_eq!(grid.len(), k * a * i);
+    for (slot, entry) in grid.iter().enumerate() {
+        let Some(record) = entry else { continue };
+        let (ki, ai, ii) = (slot / (a * i), slot / i % a, slot % i);
+        assert_eq!(record.category_id, cat_ids[ki]);
+        assert_eq!(record.image_id, img_ids[ii]);
+        assert_eq!(record.area_rng, ev.params.area_ranges[ai].range);
+    }
+    let filled = grid.iter().flatten().count();
+    assert_eq!(filled, ev.eval_imgs().iter().flatten().count());
+    assert!(
+        filled > 0 && filled < grid.len(),
+        "the fixture needs both a record and a hole"
+    );
+
+    // Laid out over the run's ids, whatever `params` says afterwards.
+    ev.params.img_ids.clear();
+    ev.params.cat_ids.reverse();
+    assert_eq!(ev.eval_imgs_grid().len(), k * a * i);
+}
+
+/// `accumulate()` leaves a slot `evaluate()` never matched at `-1`, which is
+/// quiet; `unevaluated_params` is what names it.
+#[test]
+fn unevaluated_params_names_each_axis_evaluate_did_not_run() {
+    let mut ev = fresh();
+    assert_eq!(
+        ev.unevaluated_params(),
+        Vec::<String>::new(),
+        "nothing before evaluate()"
+    );
+    ev.params.iou_thrs = vec![0.5, 0.75];
+    ev.params.max_dets = vec![1, 10];
+    ev.evaluate().unwrap();
+    assert_eq!(ev.unevaluated_params(), Vec::<String>::new());
+
+    // Narrowing or reordering asks for nothing new.
+    ev.params.iou_thrs = vec![0.75];
+    ev.params.max_dets = vec![1];
+    ev.params.area_ranges.reverse();
+    let evaluated_imgs = ev.params.img_ids.clone();
+    ev.params.img_ids.truncate(1);
+    assert_eq!(ev.unevaluated_params(), Vec::<String>::new());
+
+    ev.params.iou_thrs = vec![0.75, 0.6];
+    assert_eq!(ev.unevaluated_params(), ["iou_thrs 0.6"]);
+    ev.params.iou_thrs = vec![0.75];
+
+    ev.params.max_dets = vec![1, 100];
+    assert_eq!(
+        ev.unevaluated_params(),
+        ["max_dets 100 (evaluate() kept 10 per image)"]
+    );
+    ev.params.max_dets = vec![1];
+
+    ev.params.area_ranges[0].range = [0.0, 7.0];
+    assert_eq!(ev.unevaluated_params(), ["area_ranges [0, 7]"]);
+    ev.params.area_ranges[0].range = [7.0, 9.0];
+    ev.params.cat_ids.push(99);
+    ev.params.img_ids = evaluated_imgs;
+    ev.params.img_ids.push(77);
+    assert_eq!(
+        ev.unevaluated_params(),
+        ["area_ranges [7, 9]", "cat_ids 99", "img_ids 77"]
+    );
+
+    ev.params.use_cats = false;
+    assert!(
+        ev.unevaluated_params()
+            .contains(&"use_cats false".to_string())
+    );
+}
+
+#[test]
+fn replay_describes_only_the_current_run() {
+    let mut ev = fresh();
+    let new = ev.replay().expect("a dataset-backed evaluator replays");
+    assert!(new.evaluated.is_none() && new.accumulated.is_none() && !new.summarized);
+
+    ev.params.max_dets = vec![1, 10, 100];
+    ev.evaluate().unwrap();
+    ev.params.img_ids.truncate(1);
+    ev.accumulate();
+    ev.summarize_lines();
+    let done = ev.replay().unwrap();
+    assert!(done.summarized);
+    assert!(done.evaluated.unwrap().img_ids.len() > 1);
+    assert_eq!(done.accumulated.unwrap().img_ids.len(), 1);
+
+    // A new evaluate() retires the accumulation and summary still on hand.
+    ev.evaluate().unwrap();
+    let rerun = ev.replay().unwrap();
+    assert!(rerun.evaluated.is_some() && rerun.accumulated.is_none() && !rerun.summarized);
+
+    // Repeating the steps on the replayed datasets gives the same summary.
+    let original = summarized(&[]);
+    let r = original.replay().unwrap();
+    let mut twin = COCOeval::new(r.coco_gt, r.coco_dt, IouType::Bbox);
+    twin.params = r.evaluated.unwrap();
+    twin.evaluate().unwrap();
+    twin.params = r.accumulated.unwrap();
+    twin.accumulate();
+    twin.summarize_lines();
+    assert!(original.stats().is_some());
+    assert_eq!(twin.stats(), original.stats());
+}

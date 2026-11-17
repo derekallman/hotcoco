@@ -62,13 +62,12 @@ After calling `evaluate()`, the `eval_imgs` field contains per-image, per-catego
     ev = COCOeval(coco_gt, coco_dt, "bbox")
     ev.evaluate()
 
-    # eval_imgs is a list — some entries can be None
+    # One record per image, category, and area range that has anything in it
     for e in ev.eval_imgs:
-        if e is not None:
-            print(f"Image {e['image_id']}, Cat {e['category_id']}")
-            print(f"  DT matches: {e['dtMatches']}")
-            print(f"  GT matches: {e['gtMatches']}")
-            print(f"  DT scores:  {e['dtScores']}")
+        print(f"Image {e['image_id']}, Cat {e['category_id']}")
+        print(f"  DT matches: {e['dtMatches']}")
+        print(f"  GT matches: {e['gtMatches']}")
+        print(f"  DT scores:  {e['dtScores']}")
     ```
 
 === "Rust"
@@ -85,7 +84,7 @@ After calling `evaluate()`, the `eval_imgs` field contains per-image, per-catego
     }
     ```
 
-The keys match pycocotools' `evalImgs`; the full list is in the [`eval_imgs` API reference](../api/cocoeval.md#eval_imgs).
+The keys match pycocotools' `evalImgs`; the full list is in the [`eval_imgs` API reference](../api/cocoeval.md#eval_imgs). The camelCase `evalImgs` attribute holds the same records in pycocotools' layout, a `K * A * I` list with `None` in the empty slots, for code that reshapes it.
 
 `evaluate()` does not build these records up front. It keeps only what
 `accumulate()` reads, about 20 bytes per detection, and materializes the full
@@ -386,7 +385,7 @@ categories, each a subclass of `HotcocoWarning`:
 | Category | Emitted when |
 |---|---|
 | `ReferenceDeviationWarning` | `summarize()`, or `run()` through it, finds a configuration that `reference_deviations()` lists, once per entry. Semantic evaluation lists none today |
-| `CallOrderWarning` | A method is called before the step it needs, such as `accumulate()` before `evaluate()`. It goes ahead with nothing to work on: what it returns or prints is empty, and a metric computed from it later reads `-1.000` |
+| `CallOrderWarning` | A method is called before the step it needs, such as `accumulate()` before `evaluate()`. It goes ahead with nothing to work on: what it returns or prints is empty, and a metric computed from it later reads `-1.000`. Also `accumulate()` asked for `params` that `evaluate()` did not run |
 | `ConversionWarning` | A format converter imports part of its input, such as `COCO.from_cvat()` skipping shapes COCO cannot express |
 | `DatasetWarning` | A dataset loads with a problem the loader tolerated: duplicate annotation ids, a category without a name, a non-finite number in a file. The text stays on [`load_warnings`](../api/coco.md#load_warnings) |
 

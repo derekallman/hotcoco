@@ -75,6 +75,9 @@ fn evaluator_for(classes: &Bound<'_, PyAny>) -> PyResult<SemanticEval> {
     if !is_bool(classes)
         && let Ok(n) = classes.extract::<usize>()
     {
+        // One past `n`: the matrix keeps a column for predictions that name
+        // no class.
+        crate::convert::square_cells(n.saturating_add(1), format_args!("classes={n}"))?;
         return Ok(SemanticEval::new(n));
     }
     if let Ok(names) = classes.extract::<Vec<String>>()
@@ -187,8 +190,18 @@ pair it rejects. Nothing is counted then."]
     #[doc = "Add another evaluator's counts into this one — the shards of a
 distributed run. Raises ``ValueError`` if it was built with different classes
 or options, ``boundary_dilation`` included."]
-    fn merge(&mut self, other: &PySemanticEval) -> PyResult<()> {
-        self.inner.merge(&other.inner).map_err(to_pyerr)
+    fn merge(slf: &Bound<'_, Self>, other: &Bound<'_, PySemanticEval>) -> PyResult<()> {
+        // Borrowing one object both ways is a `RuntimeError` from the cell,
+        // which names neither the argument nor what is wrong with it.
+        if slf.is(other) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "an evaluator cannot merge with itself; merge takes the other shards",
+            ));
+        }
+        slf.borrow_mut()
+            .inner
+            .merge(&other.borrow().inner)
+            .map_err(to_pyerr)
     }
 
     #[doc = "The confusion matrix behind every number but boundary IoU, as a

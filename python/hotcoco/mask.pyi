@@ -20,48 +20,68 @@ _Boxes = npt.NDArray[Any] | Sequence[Sequence[float]] | Sequence[npt.NDArray[Any
 
 _MaskDtype = np.dtype[np.uint8] | np.dtype[np.int8] | np.dtype[np.bool_]
 
+# Where pycocotools names an argument differently, its keyword is accepted
+# too: ``bimask=`` for ``mask``, ``rleObjs=`` for ``rle`` and ``rles``,
+# ``pyiscrowd=`` for ``iscrowd``, ``pyobj=`` for ``seg``. Pass one or the other.
+
 @overload
-def encode(mask: np.ndarray[tuple[int, int], _MaskDtype]) -> _Rle:
+def encode(
+    mask: np.ndarray[tuple[int, int], _MaskDtype] = ..., *, bimask: np.ndarray[tuple[int, int], _MaskDtype] = ...
+) -> _Rle:
     """Encode a 2-D ``(H, W)`` binary mask to a single RLE dict."""
     ...
 
 @overload
-def encode(mask: np.ndarray[tuple[int, int, int], _MaskDtype]) -> list[_Rle]:
+def encode(
+    mask: np.ndarray[tuple[int, int, int], _MaskDtype] = ...,
+    *,
+    bimask: np.ndarray[tuple[int, int, int], _MaskDtype] = ...,
+) -> list[_Rle]:
     """Encode a 3-D ``(H, W, N)`` mask stack to a list of N RLE dicts."""
     ...
 
 @overload
-def decode(rle: _Rle) -> np.ndarray[tuple[int, int], np.dtype[np.uint8]]:
+def decode(rle: _Rle = ..., *, rleObjs: _Rle = ...) -> np.ndarray[tuple[int, int], np.dtype[np.uint8]]:
     """Decode a single RLE dict to a 2-D ``(H, W)`` Fortran-order mask."""
     ...
 
 @overload
-def decode(rle: list[_Rle]) -> np.ndarray[tuple[int, int, int], np.dtype[np.uint8]]:
+def decode(rle: list[_Rle] = ..., *, rleObjs: list[_Rle] = ...) -> np.ndarray[tuple[int, int, int], np.dtype[np.uint8]]:
     """Decode a list of N RLE dicts to a 3-D ``(H, W, N)`` Fortran-order stack."""
     ...
 
 @overload
-def area(rle: _Rle) -> int: ...
+def area(rle: _Rle = ..., *, rleObjs: _Rle = ...) -> int: ...
 @overload
-def area(rle: list[_Rle]) -> npt.NDArray[np.uint32]: ...
-def to_bbox(rle: _Rle | list[_Rle]) -> npt.NDArray[np.float64]:
+def area(rle: list[_Rle] = ..., *, rleObjs: list[_Rle] = ...) -> npt.NDArray[np.uint32]: ...
+def to_bbox(rle: _Rle | list[_Rle] = ..., *, rleObjs: _Rle | list[_Rle] = ...) -> npt.NDArray[np.float64]:
     """Bounding box(es) ``[x, y, w, h]``: shape ``(4,)`` for a dict, ``(N, 4)`` for a list."""
     ...
 
-def toBbox(rle: _Rle | list[_Rle]) -> npt.NDArray[np.float64]: ...
-def merge(rles: _Rle | list[_Rle], intersect: int | bool = False) -> _Rle:
+def toBbox(rle: _Rle | list[_Rle] = ..., *, rleObjs: _Rle | list[_Rle] = ...) -> npt.NDArray[np.float64]: ...
+def merge(rles: _Rle | list[_Rle] = ..., intersect: int | bool = False, *, rleObjs: _Rle | list[_Rle] = ...) -> _Rle:
     """Merge RLE masks via union (default) or intersection."""
     ...
 
 @overload
 def iou(
-    dt: _Rle | Sequence[_Rle], gt: _Rle | Sequence[_Rle], iscrowd: Sequence[bool | int] | npt.NDArray[Any]
+    dt: _Rle | Sequence[_Rle],
+    gt: _Rle | Sequence[_Rle],
+    iscrowd: Sequence[bool | int] | npt.NDArray[Any] = ...,
+    *,
+    pyiscrowd: Sequence[bool | int] | npt.NDArray[Any] = ...,
 ) -> npt.NDArray[np.float64]:
     """IoU between dt and gt RLE masks, shape ``(D, G)``. Crowd GTs use IoA."""
     ...
 
 @overload
-def iou(dt: _Boxes, gt: _Boxes, iscrowd: Sequence[bool | int] | npt.NDArray[Any]) -> npt.NDArray[np.float64]:
+def iou(
+    dt: _Boxes,
+    gt: _Boxes,
+    iscrowd: Sequence[bool | int] | npt.NDArray[Any] = ...,
+    *,
+    pyiscrowd: Sequence[bool | int] | npt.NDArray[Any] = ...,
+) -> npt.NDArray[np.float64]:
     """IoU between dt and gt ``[x, y, w, h]`` boxes, shape ``(D, G)`` — as ``pycocotools.mask.iou``
     dispatches. An array of any numeric dtype is boxes; dt and gt must be the same kind."""
     ...
@@ -84,19 +104,31 @@ def fr_bbox(bb: Sequence[float], h: int, w: int) -> _Rle:
 
 def frBbox(bb: Sequence[float], h: int, w: int) -> _Rle: ...
 @overload
-def frPyObjects(seg: _Rle, h: int, w: int) -> _Rle:
+def frPyObjects(seg: _Rle = ..., h: int = ..., w: int = ..., *, pyobj: _Rle = ...) -> _Rle:
     """A single RLE dict in gives a single RLE dict out — as pycocotools does."""
     ...
 
 @overload
-def frPyObjects(seg: Sequence[Sequence[float]] | list[_Rle] | npt.NDArray[Any], h: int, w: int) -> list[_Rle]:
+def frPyObjects(
+    seg: Sequence[Sequence[float]] | list[_Rle] | npt.NDArray[Any] = ...,
+    h: int = ...,
+    w: int = ...,
+    *,
+    pyobj: Sequence[Sequence[float]] | list[_Rle] | npt.NDArray[Any] = ...,
+) -> list[_Rle]:
     """Boxes/polygons/RLE dicts in a list give a list of RLE dicts."""
     ...
 
 @overload
-def fr_py_objects(seg: _Rle, h: int, w: int) -> _Rle: ...
+def fr_py_objects(seg: _Rle = ..., h: int = ..., w: int = ..., *, pyobj: _Rle = ...) -> _Rle: ...
 @overload
-def fr_py_objects(seg: Sequence[Sequence[float]] | list[_Rle] | npt.NDArray[Any], h: int, w: int) -> list[_Rle]: ...
+def fr_py_objects(
+    seg: Sequence[Sequence[float]] | list[_Rle] | npt.NDArray[Any] = ...,
+    h: int = ...,
+    w: int = ...,
+    *,
+    pyobj: Sequence[Sequence[float]] | list[_Rle] | npt.NDArray[Any] = ...,
+) -> list[_Rle]: ...
 def rle_to_string(rle: _Rle) -> str:
     """Encode RLE to the compact LEB128 string format."""
     ...

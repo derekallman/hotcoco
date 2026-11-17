@@ -308,27 +308,45 @@ impl COCOeval {
     /// before it — in particular, Miss can only be narrowed once *every* category
     /// has been classified, since a dog detection can cover a cat ground truth.
     pub fn tide_errors(&self, pos_thr: f64, bg_thr: f64) -> crate::error::Result<TideErrors> {
-        if !self.evaluated() {
+        self.needs_datasets("tide_errors()")?;
+        let Some(inputs) = self.eval_inputs.as_ref() else {
             return Err(crate::error::Error::InvalidState(
                 "tide_errors() requires evaluate() to be called first".into(),
+            ));
+        };
+        // The cells below are the run `evaluate()` made, so its categories and
+        // images are the ones to score: `params` edited since describe the
+        // next run. Reading them here paired the new `cat_ids` with misses
+        // counted over the old ones.
+        let evaluated = &inputs.params;
+        if !evaluated.use_cats {
+            // One pooled cell per image: no category to tell `Cls` from `Loc`
+            // by, and no per-category AP to difference.
+            return Err(crate::error::Error::InvalidInput(
+                "tide_errors() classifies errors per category, and the last evaluate() ran \
+                 with use_cats off; evaluate with use_cats on"
+                    .into(),
             ));
         }
 
         // `pos_thr` is an analysis threshold, not a metric name, so it snaps to
         // the nearest grid point rather than requiring an exact match; `t_idx`
         // is that point's evaluate-time row.
-        let (_, t_idx) = self.snapped_iou_row(pos_thr)?;
+        // The snapped value replaces the argument from here on: classifying
+        // false positives at 0.5 beside matches made at 0.6 mixed two
+        // thresholds, under a result that reported 0.5.
+        let (pos_thr, t_idx) = self.snapped_iou_row(pos_thr)?;
 
         // Filtered once; the classification and Miss passes walk the same cells.
         // `default_cells` owns the (area = "all", default max_det) predicate.
         let cells: Vec<&EvalImg> = self.default_cells().collect();
 
-        let cross_iou_map = self.cross_category_ious();
+        let cross_iou_map = self.cross_category_ious(evaluated);
         let mut classified =
             self.classify_detections(&cells, &cross_iou_map, t_idx, pos_thr, bg_thr);
         let covered_gts = resolve_fixes(&mut classified.cat_data);
         let misses = count_misses(&cells, &covered_gts, t_idx);
-        let per_cat = self.category_deltas(&classified.cat_data, &misses);
+        let per_cat = self.category_deltas(&evaluated.cat_ids, &classified.cat_data, &misses);
 
         Ok(assemble(
             &per_cat,
@@ -344,9 +362,9 @@ impl COCOeval {
     ///
     /// Whole-run work, not per-image: `cat_slots` is built once here rather than
     /// inside the fan-out, per `cross_category_pairs`'s ordering note.
-    fn cross_category_ious(&self) -> CrossIouMap {
-        let cat_slots = Self::cat_slots(&self.params.cat_ids);
-        let iou_type = self.params.iou_type;
+    fn cross_category_ious(&self, evaluated: &crate::Params) -> CrossIouMap {
+        let cat_slots = Self::cat_slots(&evaluated.cat_ids);
+        let iou_type = evaluated.iou_type;
         let coco_gt = &self.coco_gt;
         let coco_dt = &self.coco_dt;
         // `tide_errors` requires `evaluate()` first (checked by its caller), so on
@@ -354,7 +372,7 @@ impl COCOeval {
         // re-rasterizing every polygon.
         let segm_rles = self.segm_rles.as_ref();
 
-        self.params
+        evaluated
             .img_ids
             .par_iter()
             .map(|&img_id| {
@@ -588,14 +606,13 @@ impl COCOeval {
     /// reordering.
     fn category_deltas(
         &self,
+        cat_ids: &[u64],
         cat_data: &HashMap<u64, CatData>,
         misses: &MissCounts,
     ) -> Vec<CatDeltas> {
         let rec_thrs = &self.params.rec_thrs;
 
-        let per_cat: Vec<Option<CatDeltas>> = self
-            .params
-            .cat_ids
+        let per_cat: Vec<Option<CatDeltas>> = cat_ids
             .par_iter()
             .map(|&cat_id| {
                 let data = match cat_data.get(&cat_id) {

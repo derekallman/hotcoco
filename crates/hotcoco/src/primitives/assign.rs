@@ -115,18 +115,17 @@ impl<'a> Solver<'a> {
         (sink, min_val)
     }
 
-    fn solve(&mut self) {
+    /// `false` when some row has no augmenting path: the matrix is infeasible,
+    /// which for this solver means non-finite entries. Without the check the
+    /// shortest-path scan never improves on `INFINITY`, no sink is found, and
+    /// the augmentation below would index `path[usize::MAX]`.
+    #[must_use]
+    fn solve(&mut self) -> bool {
         for cur_row in 0..self.nr {
             let (sink, min_val) = self.augmenting_path(cur_row);
-            // A real assert, not `debug_assert`: with a NaN/infinite cost the
-            // shortest-path scan never improves on `INFINITY`, no sink is found,
-            // and the augmentation below would index `path[usize::MAX]` — an
-            // out-of-bounds panic with no explanation in release builds. scipy
-            // raises `ValueError` here; this says the same thing.
-            assert!(
-                sink != NONE,
-                "lsap: cost matrix is infeasible — it likely contains NaN or infinite entries"
-            );
+            if sink == NONE {
+                return false;
+            }
 
             // Update dual variables along the scanned sets.
             self.u[cur_row] += min_val;
@@ -152,6 +151,7 @@ impl<'a> Solver<'a> {
                 }
             }
         }
+        true
     }
 }
 
@@ -169,10 +169,33 @@ impl<'a> Solver<'a> {
 ///
 /// If `cost.len() != nr * nc`, or if the matrix is infeasible (which for this
 /// solver means non-finite entries). Both are asserted rather than left to
-/// produce a downstream index panic.
+/// produce a downstream index panic. [`try_lsap`] returns the second as an
+/// error instead.
 pub fn lsap(cost: &[f64], nr: usize, nc: usize, maximize: bool) -> (Vec<usize>, Vec<usize>) {
+    match try_lsap(cost, nr, nc, maximize) {
+        Some(assignment) => assignment,
+        None => {
+            panic!("lsap: cost matrix is infeasible — it likely contains NaN or infinite entries")
+        }
+    }
+}
+
+/// [`lsap`] for costs that may not be finite: `None` for an infeasible
+/// matrix — no complete assignment of finite total cost — which is a
+/// `ValueError` from scipy and a panic from `lsap`. A matrix with some
+/// infinite entries is still solved when a finite assignment exists.
+///
+/// # Panics
+///
+/// If `cost.len() != nr * nc`.
+pub fn try_lsap(
+    cost: &[f64],
+    nr: usize,
+    nc: usize,
+    maximize: bool,
+) -> Option<(Vec<usize>, Vec<usize>)> {
     if nr == 0 || nc == 0 {
-        return (Vec::new(), Vec::new());
+        return Some((Vec::new(), Vec::new()));
     }
     assert_eq!(
         cost.len(),
@@ -204,7 +227,9 @@ pub fn lsap(cost: &[f64], nr: usize, nc: usize, maximize: bool) -> (Vec<usize>, 
     let c: &[f64] = owned.as_deref().unwrap_or(cost);
 
     let mut solver = Solver::new(c, rn, cn);
-    solver.solve();
+    if !solver.solve() {
+        return None;
+    }
     let col4row = solver.col4row;
 
     let mut row_ind = Vec::with_capacity(rn);
@@ -224,7 +249,7 @@ pub fn lsap(cost: &[f64], nr: usize, nc: usize, maximize: bool) -> (Vec<usize>, 
             col_ind.push(c4r);
         }
     }
-    (row_ind, col_ind)
+    Some((row_ind, col_ind))
 }
 
 #[cfg(test)]
@@ -395,6 +420,26 @@ mod tests {
         // with no clue as to the cause. A single NaN is *not* enough — any finite
         // entry in the row still yields a reachable column.
         lsap(&[1.0, 2.0, f64::NAN, f64::NAN], 2, 2, false);
+    }
+
+    /// `try_lsap` reports the same matrices as `None`, either direction, and
+    /// still solves one whose infinite entries leave a finite assignment.
+    #[test]
+    fn try_lsap_returns_none_for_an_infeasible_matrix() {
+        let inf = f64::INFINITY;
+        for (cost, maximize) in [
+            ([inf, inf, inf, inf], false),
+            ([-inf, 1.0, 1.0, 2.0], false),
+            ([inf, 1.0, 1.0, 2.0], true),
+        ] {
+            assert_eq!(
+                try_lsap(&cost, 2, 2, maximize),
+                None,
+                "{cost:?} maximize={maximize}"
+            );
+        }
+        let solved = try_lsap(&[inf, 1.0, 1.0, inf], 2, 2, false);
+        assert_eq!(solved, Some((vec![0, 1], vec![1, 0])));
     }
 
     #[test]

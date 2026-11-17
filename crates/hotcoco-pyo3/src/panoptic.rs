@@ -29,8 +29,10 @@ fn is_panoptic_shaped(dict: &Bound<'_, PyDict>) -> PyResult<bool> {
     let Some(anns) = record_list(&anns) else {
         return Ok(false);
     };
+    // No annotation to tell by. Panoptic, as the same content is from a file:
+    // either reading has no segments, and only this one takes a folder.
     if anns.is_empty() {
-        return Ok(false);
+        return Ok(true);
     }
     let first = anns.get_item(0)?;
     let Ok(first) = first.cast::<PyDict>() else {

@@ -40,20 +40,22 @@ class COCO:
     # --- Query ---
     def get_ann_ids(
         self,
-        img_ids: int | Iterable[int] = ...,
-        cat_ids: int | Iterable[int] = ...,
+        img_ids: int | Iterable[int] | None = ...,
+        cat_ids: int | Iterable[int] | None = ...,
         area_rng: Sequence[float] | None = None,
         iscrowd: bool | None = None,
     ) -> list[int]: ...
     def get_cat_ids(
-        self, cat_nms: str | list[str] = ..., sup_nms: str | list[str] = ..., cat_ids: int | Iterable[int] = ...
+        self, cat_nms: str | list[str] = ..., sup_nms: str | list[str] = ..., cat_ids: int | Iterable[int] | None = ...
     ) -> list[int]: ...
-    def get_img_ids(self, img_ids: int | Iterable[int] = ..., cat_ids: int | Iterable[int] = ...) -> list[int]: ...
+    def get_img_ids(
+        self, img_ids: int | Iterable[int] | None = ..., cat_ids: int | Iterable[int] | None = ...
+    ) -> list[int]: ...
 
     # --- Load ---
-    def load_anns(self, ids: int | Iterable[int]) -> list[dict[str, Any]]: ...
-    def load_cats(self, ids: int | Iterable[int]) -> list[dict[str, Any]]: ...
-    def load_imgs(self, ids: int | Iterable[int]) -> list[dict[str, Any]]: ...
+    def load_anns(self, ids: int | Iterable[int] | None = None) -> list[dict[str, Any]]: ...
+    def load_cats(self, ids: int | Iterable[int] | None = None) -> list[dict[str, Any]]: ...
+    def load_imgs(self, ids: int | Iterable[int] | None = None) -> list[dict[str, Any]]: ...
     def load_res(
         self,
         res: str | list[dict[str, Any]] | npt.NDArray[Any],
@@ -85,6 +87,14 @@ class COCO:
     def anns(self) -> dict[int, dict[str, Any]]: ...
     @property
     def cats(self) -> dict[int, dict[str, Any]]: ...
+
+    # pycocotools' and lvis-api's index maps, each a ``defaultdict(list)``
+    # built on the first read and kept until the dataset changes. Plain
+    # attributes so that a subclass may assign them, as MMDetection's wrapper does.
+    imgToAnns: dict[int, list[dict[str, Any]]]
+    catToImgs: dict[int, list[int]]
+    img_ann_map: dict[int, list[dict[str, Any]]]
+    cat_img_map: dict[int, list[int]]
 
     # --- Utilities ---
     def create_index(self) -> None: ...
@@ -259,6 +269,11 @@ class COCOeval:
     def stats(self) -> npt.NDArray[np.float64] | list[float]:
         """``[]`` before ``summarize()``; numpy float64 array after (pycocotools semantics)."""
         ...
+    @stats.setter
+    def stats(self, value: Any) -> None:
+        """For a subclass whose ``summarize()`` computes its own values. Kept until the next
+        ``evaluate()``, ``accumulate()``, or ``summarize()``."""
+        ...
     @property
     def coco_gt(self) -> COCO:
         """A new object sharing the evaluator's data — assignments never reach the evaluator."""
@@ -268,7 +283,11 @@ class COCOeval:
         """A new object sharing the evaluator's data — assignments never reach the evaluator."""
         ...
     @property
-    def eval_imgs(self) -> list[dict[str, Any] | None]: ...
+    def eval_imgs(self) -> list[dict[str, Any]]:
+        """Per-image match records: one per image, category and area range that has
+        a ground truth or a detection."""
+        ...
+
     @property
     def ious(self) -> dict[tuple[int, int], npt.NDArray[np.float64] | list[Any]]:
         """pycocotools' ``ious``: ``{(image_id, category_id): (D, G) array or []}``; ``{}`` before ``evaluate()``."""
@@ -284,7 +303,10 @@ class COCOeval:
     @property
     def cocoDt(self) -> COCO: ...
     @property
-    def evalImgs(self) -> list[dict[str, Any] | None]: ...
+    def evalImgs(self) -> list[dict[str, Any] | None]:
+        """pycocotools' layout of ``eval_imgs``: ``K * A * I`` entries, category by area
+        range by image, ``None`` where an image has nothing of the category."""
+        ...
 
 # ---------------------------------------------------------------------------
 # StreamingEval
@@ -307,7 +329,7 @@ class StreamingEval:
     def __init__(
         self,
         categories: list[dict[str, Any]],
-        iou_type: str = "bbox",
+        iou_type: str | None = None,
         lvis_style: bool = False,
         params: Params | None = None,
     ) -> None: ...
@@ -363,8 +385,8 @@ class Params:
     iouType: str
     imgIds: list[int]
     catIds: list[int]
-    iouThrs: list[float]
-    recThrs: list[float]
+    iouThrs: npt.NDArray[np.float64]
+    recThrs: npt.NDArray[np.float64]
     maxDets: list[int]
     areaRng: list[list[float]]
     areaRngLbl: list[str]

@@ -118,6 +118,38 @@ last call. Raises what assigning `dataset` raises for the same dict:
 
 ---
 
+### `imgToAnns` and `catToImgs`
+
+The index maps pycocotools builds beside `anns`, each a `defaultdict(list)`.
+lvis-api's names for them, `img_ann_map` and `cat_img_map`, read the same maps.
+
+| Attribute | Maps | To |
+|---|---|---|
+| `imgToAnns` | image id | that image's annotation dicts, in dataset order; `[]` for an image with none |
+| `catToImgs` | category id | the image id of each of its annotations, so an image appears once per annotation |
+
+Each map is built on its first read and is the same object on every read
+after, so `coco.imgToAnns[img_id]` in a loop costs one build. An edit to
+[`dataset`](#dataset), `update_anns`, or `createIndex()` drops both, and the next
+read builds new ones from the dataset as it stands. The annotation dicts are
+the map's own copies, about as much memory again as `dataset["annotations"]`,
+held until the dataset changes.
+
+---
+
+### Copying, pickling, and subclassing
+
+`copy.deepcopy(coco)` and `pickle` give an independent `COCO` holding the same
+dataset, custom keys and [`image_dir`](#image_dir) included. [`Params`](params.md)
+copies and pickles too, and so does `COCOeval`; see
+[Copying and pickling](cocoeval.md#copying-and-pickling) for what its copy holds.
+
+`COCO` and `COCOeval` can be subclassed, and a subclass `__init__` may call
+`super().__init__(...)` with the constructor's arguments. Methods that return a
+new dataset, such as `load_res` and `filter`, return a plain `COCO`.
+
+---
+
 ### `load_warnings`
 
 The problems the loader tolerated, each also emitted as a
@@ -137,7 +169,9 @@ for w in coco.load_warnings:
 
 The query and load methods take an id-list argument the way pycocotools does: a
 single `int`, or any iterable of ints — a list, tuple, `set`, `dict.keys()`
-view, or numpy array.
+view, or numpy array. The snake_case methods, which are also lvis-api's names,
+take `None` as lvis-api does: no filter for `get_ann_ids`, `get_cat_ids`, and
+`get_img_ids`, and every record for `load_anns`, `load_cats`, and `load_imgs`.
 
 ### `get_ann_ids`
 
@@ -275,7 +309,7 @@ Load annotations by their IDs.
 === "Python"
 
     ```python
-    load_anns(ids: int | Iterable[int]) -> list[dict]
+    load_anns(ids: int | Iterable[int] | None = None) -> list[dict]
     ```
 
     Returns annotation dicts with keys like `id`, `image_id`, `category_id`, `bbox`, `area`, `segmentation`, `iscrowd`.
@@ -1282,8 +1316,8 @@ Load a DOTA label directory as a COCO dataset with oriented boxes.
 
     Each annotation gets both an `obb` and its axis-aligned `bbox` envelope.
     `images_dir` only fills `width`/`height` on the image records (they stay `0`
-    without it). Without `categories`, category names are discovered from the
-    label files and sorted.
+    without it). Without `categories`, category names are numbered in the
+    order the label files first use them, reading the files in name order.
 
     ```python
     coco = COCO.from_dota("labelTxt/", images_dir="images/")

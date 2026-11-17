@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 /// Top-level COCO dataset structure.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Dataset {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_info")]
     pub info: Option<Info>,
     #[serde(default)]
     pub images: Vec<Image>,
@@ -16,25 +16,118 @@ pub struct Dataset {
     pub annotations: Vec<Annotation>,
     #[serde(default)]
     pub categories: Vec<Category>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient_licenses")]
     pub licenses: Vec<License>,
 }
 
 /// Dataset metadata: version, description, date, and the rest of the `info` block.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// Nothing evaluates this block and pycocotools reads any shape there, so no
+/// content fails a load. Each field is read when it can be (a year as an
+/// integer, a whole float, or digits in a string; text as a string or a
+/// number) and is `None` otherwise. Keys outside these six are not kept.
+#[derive(Debug, Clone, Serialize)]
 pub struct Info {
-    #[serde(default)]
     pub year: Option<u32>,
-    #[serde(default)]
     pub version: Option<String>,
-    #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
     pub contributor: Option<String>,
-    #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
     pub date_created: Option<String>,
+}
+
+/// A whole number written as a JSON integer, a whole float, or a string of
+/// digits, the three spellings exporters use for a year or a license id.
+fn lenient_uint<T: TryFrom<u64>>(value: Option<&serde_json::Value>) -> Option<T> {
+    use serde_json::Value;
+    let n = match value? {
+        Value::Number(n) => n.as_u64().or_else(|| n.as_f64().and_then(id_from_f64))?,
+        Value::String(s) => s.trim().parse().ok()?,
+        _ => return None,
+    };
+    T::try_from(n).ok()
+}
+
+/// A string, or the text of a number or bool (`"version": 1.0`).
+fn lenient_string(value: Option<&serde_json::Value>) -> Option<String> {
+    use serde_json::Value;
+    match value? {
+        Value::String(s) => Some(s.clone()),
+        v @ (Value::Number(_) | Value::Bool(_)) => Some(v.to_string()),
+        _ => None,
+    }
+}
+
+/// The `info` value of a dataset file, read without ever failing the load.
+///
+/// An object gives an [`Info`] holding each field it can read: a year as an
+/// integer, a whole float, or digits in a string, and a text field as a string
+/// or a number. A field of any other shape reads as absent, and so does an
+/// `info` that is not an object. Keys outside the six are not kept.
+#[derive(Default)]
+pub(crate) struct InfoBlock(pub(crate) Option<Info>);
+
+impl<'de> Deserialize<'de> for InfoBlock {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Self(value.as_object().map(|map| Info {
+            year: lenient_uint(map.get("year")),
+            version: lenient_string(map.get("version")),
+            description: lenient_string(map.get("description")),
+            contributor: lenient_string(map.get("contributor")),
+            url: lenient_string(map.get("url")),
+            date_created: lenient_string(map.get("date_created")),
+        })))
+    }
+}
+
+/// The `licenses` value of a dataset file, read as leniently as
+/// [`InfoBlock`]: each object in the list gives a [`License`], with id 0 when
+/// it has none that reads; anything else, the list itself included, is
+/// skipped.
+#[derive(Default)]
+pub(crate) struct LicensesBlock(pub(crate) Vec<License>);
+
+impl<'de> Deserialize<'de> for LicensesBlock {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let entries = value.as_array().map(Vec::as_slice).unwrap_or_default();
+        Ok(Self(
+            entries
+                .iter()
+                .filter_map(serde_json::Value::as_object)
+                .map(|map| License {
+                    id: lenient_uint(map.get("id")).unwrap_or_default(),
+                    name: lenient_string(map.get("name")),
+                    url: lenient_string(map.get("url")),
+                })
+                .collect(),
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for Info {
+    /// Never fails on the value's shape; every field is `None` when the
+    /// value is not an object.
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let blank = || Info {
+            year: None,
+            version: None,
+            description: None,
+            contributor: None,
+            url: None,
+            date_created: None,
+        };
+        InfoBlock::deserialize(deserializer).map(|block| block.0.unwrap_or_else(blank))
+    }
+}
+
+pub(crate) fn lenient_info<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Info>, D::Error> {
+    InfoBlock::deserialize(d).map(|block| block.0)
+}
+
+pub(crate) fn lenient_licenses<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<License>, D::Error> {
+    LicensesBlock::deserialize(d).map(|block| block.0)
 }
 
 /// A single image in the dataset.

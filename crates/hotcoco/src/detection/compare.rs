@@ -183,7 +183,16 @@ pub fn compare(
             )));
         }
     }
-    if opts.confidence <= 0.0 || opts.confidence >= 1.0 {
+    // The bootstrap sizes its buffers by the sample count up front.
+    if u32::try_from(opts.n_bootstrap).is_err() {
+        return Err(Error::InvalidInput(format!(
+            "n_bootstrap must be at most {}, got {}",
+            u32::MAX,
+            opts.n_bootstrap
+        )));
+    }
+    // Written so that NaN, which is on neither side of a bound, fails too.
+    if !(opts.confidence > 0.0 && opts.confidence < 1.0) {
         return Err(Error::InvalidInput(format!(
             "confidence must be in (0, 1), got {}",
             opts.confidence

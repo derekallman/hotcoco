@@ -230,6 +230,7 @@ impl COCOeval {
         iou_thr: f64,
         score_thr: f64,
     ) -> crate::error::Result<ImageDiagnostics> {
+        self.needs_datasets("image_diagnostics()")?;
         if !self.evaluated() {
             return Err(crate::error::Error::InvalidState(
                 "image_diagnostics() requires evaluate() to be called first".into(),

@@ -41,7 +41,7 @@ use rayon::prelude::*;
 use serde::de::{DeserializeOwned, IgnoredAny};
 
 use crate::error::Error;
-use crate::types::{Annotation, Dataset};
+use crate::types::{Annotation, Dataset, InfoBlock, LicensesBlock};
 
 /// What the loader did about non-finite float tokens in a file.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -287,7 +287,7 @@ fn stream_results(src: &mut Source) -> io::Result<Option<Vec<Annotation>>> {
 /// the end is deliberate: a field added to [`Dataset`] fails to compile here
 /// instead of being silently dropped.
 fn stream_dataset(src: &mut Source) -> io::Result<Option<Dataset>> {
-    let (mut info, mut licenses) = Default::default();
+    let (mut info, mut licenses) = (InfoBlock::default(), LicensesBlock::default());
     let (mut images, mut annotations, mut categories) = (Vec::new(), Vec::new(), Vec::new());
     let mut pos = src.skip_ws(0)?;
     if src.byte(pos)? != Some(b'{') {
@@ -325,11 +325,11 @@ fn stream_dataset(src: &mut Source) -> io::Result<Option<Dataset>> {
     }
     let end = src.skip_ws(pos + 1)?;
     Ok((end == src.buf.len()).then_some(Dataset {
-        info,
+        info: info.0,
         images,
         annotations,
         categories,
-        licenses,
+        licenses: licenses.0,
     }))
 }
 
@@ -469,6 +469,13 @@ fn append<T>(out: &mut Vec<T>, runs: Vec<Vec<T>>, beyond: u64, consumed: usize) 
 
 /// The serial parse of a whole dataset file.
 fn dataset_whole(bytes: &[u8]) -> serde_json::Result<Dataset> {
+    // The derive also reads a struct from an array, field by field, and
+    // `info`, the first field, takes any value: `[1]` would be a dataset.
+    if bytes.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'[') {
+        return Err(serde::de::Error::custom(
+            "expected a dataset object, found an array",
+        ));
+    }
     let mut dataset: Dataset = serde_json::from_slice(bytes)?;
     dataset.annotations.shrink_to_fit();
     Ok(dataset)
@@ -1175,6 +1182,7 @@ mod tests {
             br#"{"annotations": null}"#,
             br#"{"annotations": nul}"#,
             br"[1]",
+            br" [null]",
         ] {
             assert!(
                 dataset(bytes).is_none(),

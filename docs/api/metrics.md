@@ -252,8 +252,10 @@ those records is the caller's job, and it is the only family-specific step.
 Counts are integers, so accumulating per-image and summing gives the same answer
 as one whole-dataset call. That is what lets you parallelize and reduce.
 
-Class indices outside `range(num_classes)` are dropped rather than raising, so a
-stray label can't take down an evaluation run.
+A class index outside `range(num_classes)` reads as `None` on its side rather
+than raising, so a stray label can't take down an evaluation run. Its in-range
+partner still counts: `confusion_matrix([5], [0], 2)` records a false positive
+for class 0.
 
 ### `panoptic_quality`
 

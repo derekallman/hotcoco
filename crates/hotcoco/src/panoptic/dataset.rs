@@ -67,9 +67,17 @@ pub struct PanopticAnnotation {
 /// A COCO panoptic JSON file, plus where its PNG files live.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct PanopticDataset {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::types::lenient_info"
+    )]
     pub info: Option<Info>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::types::lenient_licenses"
+    )]
     pub licenses: Vec<License>,
     #[serde(default)]
     pub images: Vec<Image>,

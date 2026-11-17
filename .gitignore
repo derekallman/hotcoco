@@ -75,6 +75,7 @@ pytestdebug.log
 # Virtual environments
 .env
 .venv
+.venv-frameworks/
 env/
 venv/
 ENV/

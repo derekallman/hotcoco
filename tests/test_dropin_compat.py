@@ -20,6 +20,7 @@ from hotcoco import mask as hm
 pycocotools = pytest.importorskip("pycocotools")
 from pycocotools import mask as pm  # noqa: E402
 from pycocotools.coco import COCO as PCOCO  # noqa: E402
+from pycocotools.cocoeval import COCOeval as PCOCOeval  # noqa: E402
 
 
 def dataset():
@@ -367,3 +368,171 @@ class TestPrimitivesStayStrict:
 
     def test_mask_bbox_iou_is_the_primitive(self):
         assert hotcoco.mask.bbox_iou is primitives.bbox_iou
+
+
+# ---------------------------------------------------------------------------
+# evalImgs is pycocotools' K * A * I list
+# ---------------------------------------------------------------------------
+
+
+def _eval_imgs_dataset():
+    """Three images, two categories; image 3 is empty and image 2 has no dog,
+    so the list has holes in more than one row."""
+    gt = {
+        "images": [{"id": i, "width": 100, "height": 100} for i in (3, 1, 2)],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 30, 30], "area": 900, "iscrowd": 0},
+            {"id": 2, "image_id": 1, "category_id": 2, "bbox": [50, 50, 20, 20], "area": 400, "iscrowd": 0},
+            {"id": 3, "image_id": 2, "category_id": 1, "bbox": [5, 5, 40, 40], "area": 1600, "iscrowd": 0},
+        ],
+        "categories": [{"id": 2, "name": "dog"}, {"id": 1, "name": "person"}],
+    }
+    dt = [
+        {"image_id": 1, "category_id": 1, "bbox": [10, 10, 30, 30], "score": 0.9},
+        {"image_id": 2, "category_id": 2, "bbox": [50, 50, 20, 20], "score": 0.8},
+    ]
+    return gt, dt
+
+
+@pytest.mark.parametrize("use_cats", [1, 0])
+def test_eval_imgs_has_pycocotools_layout(tmp_path, use_cats):
+    """torchvision reshapes `evalImgs` to (K, A, I); the holes have to be where
+    pycocotools leaves them."""
+    gt, dt = _eval_imgs_dataset()
+    path = tmp_path / "gt.json"
+    path.write_text(json.dumps(gt))
+    lists = []
+    for coco_cls, eval_cls in ((COCO, COCOeval), (PCOCO, PCOCOeval)):
+        with contextlib.redirect_stdout(io.StringIO()):
+            coco = coco_cls(str(path))
+            ev = eval_cls(coco, coco.loadRes([dict(d) for d in dt]), "bbox")
+            ev.params.useCats = use_cats
+            ev.evaluate()
+        lists.append(ev.evalImgs)
+    ours, theirs = lists
+    assert len(ours) == len(theirs) == (2 if use_cats else 1) * 4 * 3
+    assert [e is None for e in ours] == [e is None for e in theirs]
+    assert any(e is None for e in ours) and any(e is not None for e in ours)
+    for mine, ref in zip(ours, theirs):
+        if ref is None:
+            continue
+        assert mine["image_id"] == ref["image_id"]
+        assert mine["category_id"] == ref["category_id"]  # -1 with `useCats` off
+        assert list(mine["aRng"]) == list(ref["aRng"])
+        assert list(mine["dtIds"]) == list(ref["dtIds"]) and list(mine["gtIds"]) == list(ref["gtIds"])
+    grid = np.asarray(ours).reshape(-1, 4, 3)
+    assert grid.shape[0] == (2 if use_cats else 1)
+
+
+def test_eval_imgs_snake_case_leaves_the_holes_out():
+    gt, dt = _eval_imgs_dataset()
+    coco = COCO(gt)
+    ev = COCOeval(coco, coco.loadRes(dt), "bbox")
+    assert ev.evalImgs == [] and ev.eval_imgs == []
+    ev.evaluate()
+    assert None not in ev.eval_imgs
+
+    def by_slot(records):
+        return sorted(records, key=lambda e: (e["category_id"], e["aRng"], e["image_id"]))
+
+    assert by_slot(ev.eval_imgs) == by_slot(e for e in ev.evalImgs if e is not None)
+
+
+# ---------------------------------------------------------------------------
+# pycocotools.mask keyword names
+# ---------------------------------------------------------------------------
+
+
+def _same(a, b):
+    if isinstance(a, (list, tuple)):
+        return len(a) == len(b) and all(_same(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
+    return np.array_equal(np.asarray(a), np.asarray(b))
+
+
+def _mask_keyword_calls(m):
+    bimask = np.asfortranarray(np.pad(np.ones((4, 6), np.uint8), 3))
+    rle = m.encode(bimask)
+    return {
+        "encode": lambda: m.encode(bimask=bimask),
+        "decode": lambda: m.decode(rleObjs=rle),
+        "decode-list": lambda: m.decode(rleObjs=[rle, rle]),
+        "area": lambda: m.area(rleObjs=rle),
+        "toBbox": lambda: m.toBbox(rleObjs=[rle]),
+        "merge": lambda: m.merge(rleObjs=[rle, rle], intersect=1),
+        "iou": lambda: m.iou(dt=[rle], gt=[rle, rle], pyiscrowd=[0, 1]),
+        "frPyObjects": lambda: m.frPyObjects(pyobj=[[1.0, 1.0, 8.0, 1.0, 8.0, 8.0]], h=10, w=12),
+    }
+
+
+@pytest.mark.parametrize("name", list(_mask_keyword_calls(pm)))
+def test_mask_functions_take_pycocotools_keyword_names(name):
+    assert _same(_mask_keyword_calls(hm)[name](), _mask_keyword_calls(pm)[name]())
+
+
+def test_mask_functions_refuse_both_names_for_one_argument():
+    rle = hm.encode(np.ones((3, 3), np.uint8))
+    with pytest.raises(TypeError, match="got both 'rle' and 'rleObjs'"):
+        hm.decode(rle, rleObjs=rle)
+    with pytest.raises(TypeError, match="got both 'iscrowd' and 'pyiscrowd'"):
+        hm.iou([rle], [rle], [0], pyiscrowd=[0])
+    with pytest.raises(TypeError, match="missing 1 required argument: 'h'"):
+        hm.frPyObjects(pyobj=rle)
+
+
+# ---------------------------------------------------------------------------
+# `info` and `licenses`: nothing evaluates them, and pycocotools reads any shape
+# ---------------------------------------------------------------------------
+
+_BLANK_INFO = dict.fromkeys(("year", "version", "description", "contributor", "url", "date_created"))
+
+INFO_BLOCKS = [
+    # Roboflow's exports write the year and version as strings.
+    ({"year": "2017", "version": "1"}, {"year": 2017, "version": "1"}),
+    ({"version": 1.0, "year": 2017.0}, {"year": 2017, "version": "1.0"}),
+    ({"year": "unknown", "description": ["a"], "url": None}, {}),
+    ({"year": -1, "contributor": True, "date_created": 20200101}, {"contributor": "true", "date_created": "20200101"}),
+    ({"custom": {"a": 1}, "description": "kept"}, {"description": "kept"}),
+    # Not an object: there is no info block.
+    ("not a dict", None),
+    ([1, 2], None),
+    (7, None),
+]
+LICENSE_BLOCKS = [
+    ([{"id": "3", "name": 5, "url": None}, "junk", {"name": "no id"}], [(3, "5", None), (0, "no id", None)]),
+    ({"id": 1}, []),
+    ("none", []),
+]
+
+
+def _saved_blocks(source, tmp_path):
+    out = tmp_path / "out.json"
+    hotcoco.COCO(source).save(str(out))
+    saved = json.loads(out.read_text())
+    return saved.get("info"), saved.get("licenses", [])
+
+
+def _with_blocks(tmp_path, **blocks):
+    dataset = {"images": [{"id": 1, "width": 10, "height": 10}], "annotations": [], "categories": [], **blocks}
+    path = tmp_path / "in.json"
+    path.write_text(json.dumps(dataset))
+    return str(path), dataset
+
+
+@pytest.mark.parametrize(("info", "kept"), INFO_BLOCKS, ids=[repr(i)[:30] for i, _ in INFO_BLOCKS])
+def test_any_info_block_loads_the_same_from_a_file_and_a_dict(info, kept, tmp_path):
+    path, dataset = _with_blocks(tmp_path, info=info)
+    pycocotools.coco.COCO(path)  # the reference reads it
+    from_file, _ = _saved_blocks(path, tmp_path)
+    from_dict, _ = _saved_blocks(dataset, tmp_path)
+    assert from_file == from_dict == (None if kept is None else {**_BLANK_INFO, **kept})
+
+
+@pytest.mark.parametrize(("licenses", "kept"), LICENSE_BLOCKS, ids=[repr(b)[:30] for b, _ in LICENSE_BLOCKS])
+def test_any_licenses_block_loads_the_same_from_a_file_and_a_dict(licenses, kept, tmp_path):
+    path, dataset = _with_blocks(tmp_path, licenses=licenses)
+    pycocotools.coco.COCO(path)
+    _, from_file = _saved_blocks(path, tmp_path)
+    _, from_dict = _saved_blocks(dataset, tmp_path)
+    assert from_file == from_dict == [{"id": i, "name": n, "url": u} for i, n, u in kept]

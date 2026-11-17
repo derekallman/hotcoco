@@ -864,24 +864,54 @@ impl<'py> RleDict<'py> {
         let missing = |key: &str| {
             pyo3::exceptions::PyValueError::new_err(format!("RLE dict missing '{key}'"))
         };
-        let (h, w) = if let Some(size) = dict.get_item(pyo3::intern!(py, "size"))? {
-            let [h, w]: [u32; 2] = size.extract()?;
+        // A number that is no size or run — negative, past 32 bits — is a bad
+        // value, not the wrong kind of object: `ValueError`, as the same dict
+        // gets as an annotation's `segmentation`.
+        let out_of_range = |key: &'static str| {
+            move |e: PyErr| {
+                if e.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "RLE '{key}' holds a number outside 0..=2**32 - 1"
+                    ))
+                } else {
+                    e
+                }
+            }
+        };
+        let (h, w): (u32, u32) = if let Some(size) = dict.get_item(pyo3::intern!(py, "size"))? {
+            let [h, w]: [u32; 2] = size.extract().map_err(out_of_range("size"))?;
             (h, w)
         } else if let Some(h) = dict.get_item(pyo3::intern!(py, "h"))? {
             let w = dict
                 .get_item(pyo3::intern!(py, "w"))?
                 .ok_or_else(|| missing("w"))?;
-            (h.extract()?, w.extract()?)
+            (
+                h.extract().map_err(out_of_range("h"))?,
+                w.extract().map_err(out_of_range("w"))?,
+            )
         } else {
             return Err(missing("size"));
         };
+        // Run counts are 32-bit, so no RLE describes more pixels than that,
+        // and `decode` would allocate them all before finding out.
+        if u64::from(h) * u64::from(w) > u64::from(u32::MAX) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "RLE size {h}x{w} is more than 2**32 - 1 pixels"
+            )));
+        }
         let counts = dict
             .get_item(pyo3::intern!(py, "counts"))?
             .ok_or_else(|| missing("counts"))?;
         let counts = if is_compressed(&counts)? {
             Counts::Compressed(counts)
         } else {
-            Counts::Runs(counts.extract().map_err(|_| counts_type_error(&counts))?)
+            Counts::Runs(counts.extract::<Vec<u32>>().map_err(|e: PyErr| {
+                if e.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) {
+                    out_of_range("counts")(e)
+                } else {
+                    counts_type_error(&counts)
+                }
+            })?)
         };
         Ok(RleDict { h, w, counts })
     }
@@ -1170,13 +1200,41 @@ pub fn py_to_dataset(dict: &Bound<'_, PyDict>) -> PyResult<Dataset> {
     let annotations = extract_dict_list(dict, "annotations", py_to_record)?;
     let categories = extract_dict_list(dict, "categories", py_to_category)?;
 
+    // `info` and `licenses` ride along, so reading `coco.dataset` and saving
+    // writes the ones the file had. They go through `Dataset`'s own
+    // deserializer, the one a JSON file's blocks go through, so the same
+    // content reads the same from either: nothing evaluates them, pycocotools
+    // accepts any shape there, and no content is an error.
+    let mut blocks = serde_json::Map::new();
+    for key in ["info", "licenses"] {
+        if let Some(value) = dict
+            .get_item(key)?
+            .and_then(|v| to_json(&v, MAX_JSON_DEPTH))
+        {
+            blocks.insert(key.to_string(), value);
+        }
+    }
+    let blocks: Dataset = serde_json::from_value(blocks.into())
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
     Ok(Dataset {
-        info: None,
+        info: blocks.info,
         images,
         annotations,
         categories,
-        licenses: vec![],
+        licenses: blocks.licenses,
     })
+}
+
+/// A serializable block of the dataset — `info`, `licenses` — as the Python
+/// object `json.load` gives for it.
+pub(crate) fn block_to_py<'py>(
+    py: Python<'py>,
+    block: &impl serde::Serialize,
+) -> PyResult<Bound<'py, PyAny>> {
+    let value = serde_json::to_value(block)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    json_to_py(py, &value)
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,7 +1411,35 @@ pub(crate) fn label_pair_or_lists<'py>(
     pred: &Bound<'py, PyAny>,
 ) -> PyResult<(LabelArray<'py>, LabelArray<'py>)> {
     let asarray = gt.py().import("numpy")?.getattr("asarray")?;
-    label_pair(&asarray.call1((gt,))?, &asarray.call1((pred,))?)
+    // `numpy.asarray([])` is `float64`, which a label map is not: an empty
+    // list is an empty label map, as an empty integer array is.
+    let as_labels = |obj: &Bound<'py, PyAny>| -> PyResult<Bound<'py, PyAny>> {
+        let arr = asarray.call1((obj,))?;
+        if !obj.is_instance_of::<numpy::PyUntypedArray>()
+            && arr.getattr("size")?.extract::<usize>()? == 0
+        {
+            return arr.call_method1("astype", ("int64",));
+        }
+        Ok(arr)
+    };
+    label_pair(&as_labels(gt)?, &as_labels(pred)?)
+}
+
+/// The cell count of a `side × side` count matrix, or a `ValueError` when it
+/// is more than an array can hold: `side * side` wraps in release builds, and
+/// the matrix then built is too small for the first count written to it.
+pub(crate) fn square_cells(side: usize, classes: impl std::fmt::Display) -> PyResult<usize> {
+    side.checked_mul(side)
+        .filter(|cells| {
+            cells
+                .checked_mul(8)
+                .is_some_and(|bytes| isize::try_from(bytes).is_ok())
+        })
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{classes} is too many classes for a confusion matrix"
+            ))
+        })
 }
 
 /// A flat `(side, side)` block of confusion counts as a numpy `uint64` array.
@@ -1716,8 +1802,24 @@ impl FromPyObject<'_, '_> for IdList {
                 type_name(&obj)
             ))
         };
+        // An int that is no id — negative, past 64 bits — is a bad value in
+        // a list of the right kind, and the message for the wrong kind ("got
+        // list") would be false of it.
+        let py = obj.py();
+        let not_an_id = |e: PyErr| {
+            if e.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) {
+                pyo3::exceptions::PyValueError::new_err("an id is an integer from 0 to 2**64 - 1")
+            } else {
+                not_ids()
+            }
+        };
+        if obj.is_instance_of::<PyInt>() {
+            return Err(not_an_id(
+                obj.extract::<u64>().err().unwrap_or_else(not_ids),
+            ));
+        }
         let iter = obj.try_iter().map_err(|_| not_ids())?;
-        iter.map(|item| item?.extract::<u64>().map_err(|_| not_ids()))
+        iter.map(|item| item?.extract::<u64>().map_err(not_an_id))
             .collect::<PyResult<_>>()
             .map(IdList)
     }

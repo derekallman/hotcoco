@@ -407,6 +407,11 @@ def create_app(
             thumbnail_cache.move_to_end(cache_key)
             return Response(content=thumbnail_cache[cache_key], media_type="image/png")
 
+        # As `/detail` answers for an id the dataset does not have; the
+        # renderer indexes the image record and would make this a 500.
+        if not coco.load_imgs([image_id]):
+            return Response(status_code=404, content="Not found")
+
         img = _browse.render_thumbnail(
             coco, image_id, resolved_dir, cat_colors=cat_colors, dt_coco=dt_coco, score_thr=min_score
         )

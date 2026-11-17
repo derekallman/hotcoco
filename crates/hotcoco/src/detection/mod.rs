@@ -64,6 +64,22 @@ use crate::params::{IouType, Params};
 /// `ious` dict spells it `-1`, as pycocotools does.
 pub const POOLED_CAT: u64 = u64::MAX;
 
+/// The ids of `now` absent from `then`, as text, the first few of them.
+fn ids_not_in(now: &[u64], then: &[u64]) -> Vec<String> {
+    const SHOWN: usize = 5;
+    let then: std::collections::HashSet<u64> = then.iter().copied().collect();
+    let missing: Vec<u64> = now
+        .iter()
+        .copied()
+        .filter(|id| !then.contains(id))
+        .collect();
+    let mut out: Vec<String> = missing.iter().take(SHOWN).map(u64::to_string).collect();
+    if missing.len() > SHOWN {
+        out.push(format!("and {} more", missing.len() - SHOWN));
+    }
+    out
+}
+
 /// `ids` sorted and without repeats: the shape every id list evaluation walks
 /// has, and the one `np.unique` gives pycocotools'.
 pub(in crate::detection) fn sorted_unique(mut ids: Vec<u64>) -> Vec<u64> {
@@ -85,6 +101,26 @@ fn not_evaluated_at(thr: f64) -> Error {
         "IoU threshold {thr} was not in params.iou_thrs when evaluate() ran; \
          call evaluate() again after changing iou_thrs"
     ))
+}
+
+/// The inputs of an evaluator's current run, from [`COCOeval::replay`]: build
+/// an evaluator on the datasets in the same mode, then run each step under
+/// the `params` recorded for it.
+#[derive(Clone)]
+pub struct Replay {
+    /// The ground truth as the evaluator was built on it. Open Images: before
+    /// hierarchy expansion.
+    pub coco_gt: Arc<COCO>,
+    /// The detections as the evaluator was built on them. LVIS: already cut
+    /// to the per-image cap, and marked so.
+    pub coco_dt: Arc<COCO>,
+    /// `params` as `evaluate()` resolved them; `None` if it has not run.
+    pub evaluated: Option<Params>,
+    /// `params` as `accumulate()` read them; `None` if it has not run on the
+    /// current evaluation.
+    pub accumulated: Option<Params>,
+    /// Whether `summarize()` has run on that accumulation.
+    pub summarized: bool,
 }
 
 /// How far the current run has got. [`evaluate`](COCOeval::evaluate) starts a
@@ -190,6 +226,13 @@ pub struct COCOeval {
     /// Open Images: the detections as constructed, while `coco_dt` holds their
     /// expansion — see [`evaluate`](Self::evaluate).
     unexpanded_dt: Option<Arc<COCO>>,
+    /// Open Images: the ground truth as constructed, kept when `evaluate()`
+    /// replaces `coco_gt` with its expansion. `confusion_matrix()` reads it,
+    /// so the matrix is the same before and after `evaluate()`.
+    unexpanded_gt: Option<Arc<COCO>>,
+    /// Built by [`StreamingEval::finalize`]: the cells came from elsewhere and
+    /// the datasets are empty — see [`needs_datasets`](Self::needs_datasets).
+    streamed: bool,
     /// Evaluation mode (COCO, LVIS, or OpenImages).
     pub eval_mode: EvalMode,
     /// Open Images: category hierarchy for GT/DT expansion.
@@ -268,6 +311,8 @@ impl COCOeval {
             stats: None,
             stage: Stage::New,
             unexpanded_dt: None,
+            unexpanded_gt: None,
+            streamed: false,
             eval_mode,
             hierarchy,
         }
@@ -301,6 +346,7 @@ impl COCOeval {
             None,
         );
         ev.cells = cells;
+        ev.streamed = true;
         ev.eval_inputs = Some(inputs);
         ev.eval_imgs = std::sync::OnceLock::from(Vec::new());
         ev.advance_to(Stage::Evaluated);
@@ -356,6 +402,97 @@ impl COCOeval {
                 self.evaluate_pairs_full(inputs, &every_range)
             }),
         }
+    }
+
+    /// pycocotools' `evalImgs`, slot for slot: one entry per category, area
+    /// range and image of the last [`evaluate`](Self::evaluate), nested in
+    /// that order, so slot `(k * A + a) * I + i` is category `k` under area
+    /// range `a` on image `i`. Categories and images are that run's ids,
+    /// sorted and unique as `np.unique` leaves pycocotools'; with `use_cats`
+    /// off there is one pooled category. A slot is `None` where the image has
+    /// neither a ground truth nor a detection of the category.
+    ///
+    /// [`eval_imgs`](Self::eval_imgs) holds the same records without the
+    /// empty slots, which is what to iterate: this layout is for code that
+    /// reshapes the list to `(K, A, I)`, and on a dataset with many
+    /// categories nearly all of it is `None`. Empty wherever `eval_imgs` is.
+    pub fn eval_imgs_grid(&self) -> Vec<Option<&EvalImg>> {
+        let Some(inputs) = self.eval_inputs.as_ref() else {
+            return Vec::new();
+        };
+        // A finalized stream has no records to lay out; a run that matched
+        // nothing has a grid of holes, as pycocotools' does.
+        if self.streamed {
+            return Vec::new();
+        }
+        let records = self.eval_imgs();
+        let params = &inputs.params;
+        let img_ids = sorted_unique(params.img_ids.clone());
+        let cat_ids = if params.use_cats {
+            sorted_unique(params.cat_ids.clone())
+        } else {
+            vec![POOLED_CAT]
+        };
+        let slots = |ids: &[u64]| -> HashMap<u64, usize> {
+            ids.iter().enumerate().map(|(i, &id)| (id, i)).collect()
+        };
+        let (img_slot, cat_slot) = (slots(&img_ids), slots(&cat_ids));
+        let (a, i) = (params.area_ranges.len(), img_ids.len());
+        let mut grid = vec![None; cat_ids.len() * a * i];
+        for (pair, (img_id, cat_id)) in inputs.sparse_pairs.iter().enumerate() {
+            let (Some(&img), Some(&k)) = (img_slot.get(img_id), cat_slot.get(cat_id)) else {
+                continue;
+            };
+            for area in 0..a {
+                grid[(k * a + area) * i + img] =
+                    records.get(pair * a + area).and_then(Option::as_ref);
+            }
+        }
+        grid
+    }
+
+    /// The check of every method that reads the datasets: an evaluator
+    /// [`StreamingEval::finalize`] built has none. `evaluate()` there would
+    /// match two empty datasets and replace the streamed run with nothing,
+    /// and an analysis that rebuilds per-image records would answer over no
+    /// cells.
+    pub(in crate::detection) fn needs_datasets(&self, method: &str) -> crate::error::Result<()> {
+        if self.streamed {
+            return Err(Error::InvalidState(format!(
+                "{method} reads the datasets, and the evaluator StreamingEval's finalize() \
+                 returns holds match results only; build a COCOeval for it"
+            )));
+        }
+        Ok(())
+    }
+
+    /// What a copy of this evaluator needs to repeat the current run, or
+    /// `None` for an evaluator [`StreamingEval::finalize`] built, which has no
+    /// datasets to repeat it on.
+    ///
+    /// Only the current run is described: an accumulation or summary that a
+    /// later `evaluate()` retired is left out.
+    pub fn replay(&self) -> Option<Replay> {
+        if self.streamed {
+            return None;
+        }
+        let evaluated = self
+            .eval_inputs
+            .as_ref()
+            .filter(|_| self.stage >= Stage::Evaluated)
+            .map(|inputs| inputs.params.clone());
+        let accumulated = self
+            .eval
+            .as_ref()
+            .filter(|_| self.stage >= Stage::Accumulated)
+            .map(|eval| eval.params.clone());
+        Some(Replay {
+            coco_gt: Arc::clone(self.unexpanded_gt.as_ref().unwrap_or(&self.coco_gt)),
+            coco_dt: Arc::clone(self.unexpanded_dt.as_ref().unwrap_or(&self.coco_dt)),
+            evaluated,
+            accumulated,
+            summarized: self.stage == Stage::Summarized && self.stats.is_some(),
+        })
     }
 
     /// Whether [`evaluate`](Self::evaluate) has run.
@@ -434,6 +571,67 @@ impl COCOeval {
         self.summary_at(Some(method))
     }
 
+    /// What `params` asks [`accumulate`](Self::accumulate) for that the last
+    /// [`evaluate`](Self::evaluate) never matched, one entry per field:
+    /// IoU thresholds, area ranges, category or image ids it did not run, a
+    /// `use_cats` switched since, a detection cap above the one it cut at.
+    /// Empty when the two agree, and before `evaluate()`.
+    ///
+    /// `accumulate()` resolves each axis by value, so these slots are not
+    /// misread: they keep the `-1.0` "not computed" fill and drop out of every
+    /// mean, and a larger cap reads the detections the old cap kept. That is
+    /// quiet in the numbers, which is why a caller passes this on as a warning.
+    pub fn unevaluated_params(&self) -> Vec<String> {
+        let Some(inputs) = self.eval_inputs.as_ref() else {
+            return Vec::new();
+        };
+        let (now, then) = (&self.params, &inputs.params);
+        let mut out = Vec::new();
+        let mut note = |field: &str, missing: Vec<String>| {
+            if !missing.is_empty() {
+                out.push(format!("{field} {}", missing.join(", ")));
+            }
+        };
+        note(
+            "iou_thrs",
+            now.iou_thrs
+                .iter()
+                .filter(|&&thr| then.iou_thr_idx(thr).is_none())
+                .map(f64::to_string)
+                .collect(),
+        );
+        note(
+            "area_ranges",
+            now.area_ranges
+                .iter()
+                .filter(|ar| {
+                    !then
+                        .area_ranges
+                        .iter()
+                        .any(|old| old.range.map(f64::to_bits) == ar.range.map(f64::to_bits))
+                })
+                .map(|ar| format!("[{}, {}]", ar.range[0], ar.range[1]))
+                .collect(),
+        );
+        if now.use_cats != then.use_cats {
+            note("use_cats", vec![now.use_cats.to_string()]);
+        } else if now.use_cats {
+            note("cat_ids", ids_not_in(&now.cat_ids, &then.cat_ids));
+        }
+        note("img_ids", ids_not_in(&now.img_ids, &then.img_ids));
+        if now.max_det() > then.max_det() {
+            note(
+                "max_dets",
+                vec![format!(
+                    "{} (evaluate() kept {} per image)",
+                    now.max_det(),
+                    then.max_det()
+                )],
+            );
+        }
+        out
+    }
+
     /// `Ok` when [`f_scores`](Self::f_scores) answers: the last `accumulate()`
     /// came after the last `evaluate()`, with `params` unchanged since.
     ///
@@ -486,6 +684,16 @@ impl COCOeval {
                 "params.{field} changed after accumulate(), so call {} again{before}",
                 Stage::New.steps_to(stage)
             )));
+        }
+        // Every reader behind this gate indexes the area and max-detection
+        // axes, and an empty axis has no slot: `summarize()` prints its row of
+        // `-1.0` without one, and these would index past the end.
+        for (len, field) in [(eval.shape.a, "area_ranges"), (eval.shape.m, "max_dets")] {
+            if len == 0 {
+                return Err(Error::InvalidInput(format!(
+                    "params.{field} is empty, so the accumulation has nothing to read"
+                )));
+            }
         }
         Ok(eval)
     }
@@ -641,24 +849,28 @@ impl COCOeval {
     /// — but it is what keeps a future second cap per cell from making these
     /// analyses double-count every detection.
     ///
-    /// Both legs come from `params`, so an evaluator re-configured after
-    /// `evaluate()` yields nothing rather than a partial mixture.
+    /// Both legs come from the params `evaluate()` resolved, as the cells do:
+    /// `max_dets` or `area_ranges` edited since describe the next run, and an
+    /// analysis of this one must not come back empty for them.
     pub(in crate::detection) fn default_cells(&self) -> impl Iterator<Item = &EvalImg> {
-        let area_rng = self.params.all_area_range();
-        let max_det = self.params.max_det();
         // The full set if something already built it; otherwise only the
         // `"all"` range, which is all these analyses read.
-        let cells: &[Option<EvalImg>] = match (&self.eval_inputs, self.eval_imgs.get()) {
+        // A run with no area range matched nothing in any: no cells.
+        let inputs = self
+            .eval_inputs
+            .as_ref()
+            .filter(|inputs| !inputs.params.area_ranges.is_empty());
+        let cells: &[Option<EvalImg>] = match (inputs, self.eval_imgs.get()) {
             (None, _) => &[],
             (Some(_), Some(all)) => all,
             (Some(inputs), None) => self
                 .default_eval_imgs
                 .get_or_init(|| self.evaluate_pairs_full(inputs, &[inputs.params.all_area_idx()])),
         };
-        cells
-            .iter()
-            .flatten()
-            .filter(move |e| e.area_rng == area_rng && e.max_det == max_det)
+        let scope = inputs.map(|i| (i.params.all_area_range(), i.params.max_det()));
+        cells.iter().flatten().filter(move |e| {
+            scope.is_some_and(|(area_rng, max_det)| e.area_rng == area_rng && e.max_det == max_det)
+        })
     }
 
     /// The image and category ids this evaluation covers, without mutating anything.

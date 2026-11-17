@@ -7,12 +7,12 @@ from hotcoco import init_as_pycocotools
 init_as_pycocotools()
 ```
 
-This patches `sys.modules` so that `pycocotools`, `pycocotools.coco`, `pycocotools.cocoeval`, and `pycocotools.mask` all resolve to their hotcoco equivalents. Call it before any import that pulls in pycocotools — the top of your entry point script is the best place. Everything downstream works unchanged.
+This patches `sys.modules` so that `pycocotools`, `pycocotools.coco`, `pycocotools.cocoeval`, and `pycocotools.mask` all resolve to their hotcoco equivalents. Call it before any import that pulls in pycocotools — the top of your entry point script is the best place.
 
 | Framework | Uses | `init_as_pycocotools()` |
 |-----------|------|------------------------|
-| Detectron2 | pycocotools | Yes |
-| MMDetection | pycocotools (default) | Yes (default path) |
+| Detectron2 | pycocotools | Yes, with `use_fast_impl=False` — see [Detectron2](#detectron2) |
+| MMDetection | pycocotools (default) | Yes (default path) — see [MMDetection](#mmdetection-mmdetection3) |
 | RF-DETR | hotcoco with `eval_backend="hotcoco"` (1.11+) | Not needed — see [RF-DETR](#rf-detr) |
 | Ultralytics YOLO | Internal (custom) | No — see [Ultralytics YOLO](#ultralytics-yolo) |
 
@@ -20,7 +20,10 @@ This patches `sys.modules` so that `pycocotools`, `pycocotools.coco`, `pycocotoo
 
 ## Detectron2
 
-Detectron2's `COCOEvaluator` imports from `pycocotools` directly:
+Detectron2's `COCOEvaluator` imports from `pycocotools` directly. Pass
+`use_fast_impl=False` when you build it: the default swaps in Detectron2's own
+C++ evaluator, a `COCOeval` subclass that calls pycocotools internals
+(`_prepare`, `computeIoU`) hotcoco does not have.
 
 ```python
 from hotcoco import init_as_pycocotools
@@ -46,7 +49,7 @@ init_as_pycocotools()
 from detectron2.evaluation import COCOEvaluator, inference_on_dataset
 from detectron2.data import build_detection_test_loader
 
-evaluator = COCOEvaluator("coco_2017_val", output_dir="./output")
+evaluator = COCOEvaluator("coco_2017_val", output_dir="./output", use_fast_impl=False)
 val_loader = build_detection_test_loader(cfg, "coco_2017_val")
 print(inference_on_dataset(model, val_loader, evaluator))
 ```
@@ -65,6 +68,10 @@ init_as_pycocotools()
 from mmengine.runner import Runner
 # ... rest of training script unchanged
 ```
+
+`CocoMetric`'s defaults run on hotcoco. Two of its options do not:
+`use_mp_eval=True`, whose multiprocess evaluator overrides pycocotools
+internals, and `sort_categories=True`, which assigns to `COCO.cats`.
 
 !!! note
     MMDetection has an optional `use_faster_coco_eval=True` flag on `CocoMetric`. If your config sets this, the patch won't take effect for that metric — remove the flag or leave it unset to use the default pycocotools path.
@@ -131,4 +138,33 @@ init_as_lvis()
 from lvis import LVIS, LVISEval, LVISResults
 ```
 
+MMDetection's `LVISMetric` runs on hotcoco; `LVISFixedAPMetric` does not,
+because it sets `params.max_dets` to an int and reads `results` as a dict.
+
+`LVISMetric(metric="proposal")` reports different `AR@300` values on hotcoco.
+MMDetection sets `params.useCats = 0` and `params.maxDets` for it, which are
+pycocotools' names: lvis-api ignores both and scores per category at 300
+detections, and hotcoco applies them. The `bbox` and `segm` metrics match.
+
 See [LVIS Evaluation](lvis-open-images.md#lvis-evaluation) for the full LVIS workflow.
+
+## How these are checked
+
+Neither Detectron2 nor MMDetection is installed in hotcoco's test
+environment. `tests/test_framework_shims.py` repeats the calls each one makes
+on pycocotools and lvis-api, read from their source, and runs them against
+hotcoco. A call a framework makes that the file does not list is unchecked;
+open an issue if you hit one.
+
+`just parity-frameworks` runs the frameworks' own evaluators, with hotcoco and
+with the reference, on 500 val2017 images, and fails unless both return the
+same values. It needs a local `data/` directory and its own environment, so it
+is run by hand before a release, not in CI. It covers:
+
+| Framework | Evaluator | Compared |
+|---|---|---|
+| Detectron2 (commit `247691a`) | `COCOEvaluator(use_fast_impl=False)` | bbox, segm, keypoints, and a custom `max_dets_per_image` |
+| Detectron2 | `LVISEvaluator` | bbox, segm |
+| Detectron2 | `load_coco_json`, `load_lvis_json` | every record returned, on all 5,000 images |
+| MMDetection 3.3.0 | `CocoMetric` | bbox, segm, proposal, and `classwise=True` |
+| MMDetection 3.3.0 | `LVISMetric` | bbox, segm, and `classwise=True` |

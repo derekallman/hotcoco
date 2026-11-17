@@ -524,3 +524,177 @@ fn exporters_reject_unknown_category_ids() {
         "oid: {err}"
     );
 }
+
+// ── 1.4.1 hunt: XML text, truncated files, paths in I/O errors ──────────────
+
+/// Names that need escaping in XML. quick-xml hands text over in pieces split
+/// at each entity reference, and the readers kept the last piece: `salt &
+/// pepper` came back from its own export as a new category `pepper`, with the
+/// annotations moved onto it.
+fn awkward_names() -> Dataset {
+    one_image_dataset(
+        "R&D \"x\".jpg",
+        &["salt & pepper", "a<b"],
+        &[(1, [10.0, 20.0, 30.0, 40.0]), (2, [50.0, 60.0, 30.0, 40.0])],
+    )
+}
+
+fn names_and_labels(ds: &Dataset) -> (String, Vec<String>, Vec<u64>) {
+    (
+        ds.images[0].file_name.clone(),
+        ds.categories.iter().map(|c| c.name.clone()).collect(),
+        ds.annotations.iter().map(|a| a.category_id).collect(),
+    )
+}
+
+#[test]
+fn voc_round_trips_names_that_need_escaping() {
+    let dataset = awkward_names();
+    let dir = tempfile::tempdir().expect("tempdir");
+    coco_to_voc(&dataset, dir.path()).expect("coco_to_voc");
+    let recovered = voc_to_coco(dir.path()).expect("voc_to_coco");
+    assert_eq!(names_and_labels(&recovered), names_and_labels(&dataset));
+}
+
+#[test]
+fn cvat_round_trips_names_that_need_escaping() {
+    let dataset = awkward_names();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("annotations.xml");
+    hotcoco::convert::coco_to_cvat(&dataset, &path).expect("coco_to_cvat");
+    let (recovered, _) = cvat_to_coco(&path).expect("cvat_to_coco");
+    assert_eq!(names_and_labels(&recovered), names_and_labels(&dataset));
+}
+
+/// A character reference and CDATA are text too.
+#[test]
+fn voc_reads_character_references_and_cdata() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xml = r"<annotation>
+  <filename>a.jpg</filename>
+  <size><width>640</width><height>480</height></size>
+  <object><name>ros&#233;</name><bndbox><xmin>1</xmin><ymin>1</ymin><xmax>9</xmax><ymax>9</ymax></bndbox></object>
+  <object><name><![CDATA[a&b]]></name><bndbox><xmin>1</xmin><ymin>1</ymin><xmax>9</xmax><ymax>9</ymax></bndbox></object>
+</annotation>";
+    std::fs::write(dir.path().join("a.xml"), xml).expect("write xml");
+    let recovered = voc_to_coco(dir.path()).expect("voc_to_coco");
+    let names: Vec<&str> = recovered
+        .categories
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(names, ["a&b", "rosé"]);
+}
+
+/// A file cut short used to import as a smaller dataset: one object where the
+/// file held two, one image where it held two.
+#[test]
+fn truncated_xml_is_an_error_not_a_smaller_dataset() {
+    let dataset = one_image_dataset(
+        "a.jpg",
+        &["thing"],
+        &[(1, [10.0, 20.0, 30.0, 40.0]), (1, [50.0, 60.0, 30.0, 40.0])],
+    );
+    let cut_after = |path: &std::path::Path, marker: &str, nth: usize| {
+        let text = std::fs::read_to_string(path).expect("read");
+        let at = text.match_indices(marker).nth(nth).expect("marker").0 + marker.len();
+        std::fs::write(path, &text[..at]).expect("write");
+    };
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    coco_to_voc(&dataset, dir.path()).expect("coco_to_voc");
+    let voc_xml = dir.path().join("Annotations").join("a.xml");
+    cut_after(&voc_xml, "</object>", 0);
+    let err = voc_to_coco(dir.path()).expect_err("truncated VOC");
+    assert!(
+        err.to_string().contains("a.xml") && err.to_string().contains("never closed"),
+        "{err}"
+    );
+
+    let mut two_images = dataset.clone();
+    two_images.images.push(Image {
+        id: 2,
+        file_name: "b.jpg".into(),
+        width: 640,
+        height: 480,
+        ..Default::default()
+    });
+    let cvat = dir.path().join("annotations.xml");
+    hotcoco::convert::coco_to_cvat(&two_images, &cvat).expect("coco_to_cvat");
+    cut_after(&cvat, "</image>", 0);
+    let err = cvat_to_coco(&cvat).expect_err("truncated CVAT");
+    assert!(err.to_string().contains("never closed"), "{err}");
+}
+
+/// A file that is not CVAT XML used to import as an empty dataset, so
+/// `coco convert --from cvat` on a COCO JSON reported success.
+#[test]
+fn a_file_that_is_not_cvat_xml_is_an_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("x.xml");
+    for content in [
+        "",
+        "hello",
+        "{\"images\": []}",
+        "<annotation><filename>a</filename></annotation>",
+    ] {
+        std::fs::write(&path, content).expect("write");
+        let err = cvat_to_coco(&path).expect_err(content);
+        assert!(
+            err.to_string().contains("x.xml") && err.to_string().contains("annotations"),
+            "{content:?}: {err}"
+        );
+    }
+}
+
+/// A box narrower than a pixel rounded to `xmax = xmin - 1`, which the
+/// importer rejects as inverted: one such box made the export unreadable.
+#[test]
+fn voc_exports_a_sub_pixel_box_it_can_read_back() {
+    let dataset = one_image_dataset(
+        "a.jpg",
+        &["thing"],
+        &[(1, [10.0, 10.0, 0.0, 0.0]), (1, [10.0, 10.0, 0.4, 0.4])],
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    coco_to_voc(&dataset, dir.path()).expect("coco_to_voc");
+    let recovered = voc_to_coco(dir.path()).expect("voc_to_coco");
+    assert_eq!(recovered.annotations.len(), 2);
+}
+
+/// A missing input is `NotFound` with the path in the message; the bare
+/// "No such file or directory (os error 2)" named nothing.
+#[test]
+fn a_missing_input_names_its_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let nope = dir.path().join("nope");
+    let dims = HashMap::new();
+    let errors = [
+        voc_to_coco(&nope).expect_err("voc"),
+        cvat_to_coco(&nope).expect_err("cvat"),
+        dota_to_coco(&nope, None, &dims).expect_err("dota"),
+        hotcoco::convert::oid_to_coco(&nope, None, &dims).expect_err("oid"),
+    ];
+    for err in errors {
+        match &err {
+            ConvertError::Io(e) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{err}");
+                assert!(e.to_string().contains("nope"), "{err}");
+            }
+            other => panic!("expected Io, got {other:?}"),
+        }
+    }
+}
+
+/// Bytes that are not UTF-8 are bad content: a parse error naming the file,
+/// where it was a bare I/O error, "stream did not contain valid UTF-8".
+#[test]
+fn a_label_file_that_is_not_utf8_is_a_parse_error_naming_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("bad.txt"), b"\xff\xfe 1 2 3").expect("write");
+    let err = dota_to_coco(dir.path(), None, &HashMap::new()).expect_err("dota");
+    assert!(
+        matches!(err, ConvertError::ParseError(_)) && err.to_string().contains("bad.txt"),
+        "{err:?}"
+    );
+}

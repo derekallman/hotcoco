@@ -13,8 +13,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `f_scores()` and `get_results()` return an empty map. The Python
   `CallOrderWarning`s from those two and `print_results()` now carry it.
 
+- **`COCOeval` copies and pickles** by storing its datasets and the `params`
+  of each step, then repeating the run on the copy: on val2017 bbox, 31 MB
+  and about 0.3 s each way. The evaluator `StreamingEval.finalize()` returns
+  has no datasets and raises `TypeError`.
+- **`COCO` and `Params` copy and pickle.** `copy.deepcopy(coco_gt)`, which
+  torchvision's evaluator runs, raised `TypeError`. A copy is independent and
+  keeps custom keys, `image_dir`, and an `LVISResults` cap.
+- **`COCO` and `COCOeval` can be subclassed**, and `COCO` has pycocotools'
+  `imgToAnns` and `catToImgs` (lvis-api's `img_ann_map`, `cat_img_map`).
+  Importing Detectron2's or MMDetection's evaluation modules under
+  `init_as_pycocotools()` raised `TypeError` at their `COCOeval` subclasses.
+- **`init_as_pycocotools()` provides `maskUtils`** in `pycocotools.coco` and
+  `pycocotools.cocoeval`, which `detectron2.evaluation` imports, and
+  `COCOeval.stats` can be assigned, which Detectron2's `max_dets_per_image`
+  summary does.
+- **`mask` functions take pycocotools' keyword names**: `encode(bimask=)`,
+  `decode(rleObjs=)`, `iou(dt, gt, pyiscrowd=)`, `frPyObjects(pyobj=)`.
+- **lvis-api's `None` id arguments**: `get_ann_ids(img_ids=None)` means no
+  filter, and `load_anns()`, `load_cats()`, `load_imgs()` with `None` or no
+  argument load every record.
+- **Rust: `COCOeval::eval_imgs_grid()`, `unevaluated_params()`, `replay()`,
+  `Hierarchy::parent_map()`**, and
+  `COCO::is_per_image_capped()` is now public.
+
 ### Changed
 
+- **`params.iouThrs` and `params.recThrs` return numpy arrays**, as in
+  pycocotools, so `np.where(0.5 == params.iouThrs)` works. They returned
+  lists; `iou_thrs` and `rec_thrs` still do.
+- **`accumulate()` warns when `params` names something `evaluate()` did not
+  run**: a new IoU threshold, area range, category, or image, a switched
+  `useCats`, or a larger `maxDets`. Those results were, and are, `-1`, which
+  silently dropped them from every mean. A `CallOrderWarning` now says so.
 - **`mask.encode` reads a C-order mask in place**, row by row, instead of
   transposing a copy: about 18 µs for a 426×640 val2017 mask where it took
   about 85 µs (M1). A torch mask needs no `np.asfortranarray`, itself about
@@ -23,6 +54,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`evalImgs` is pycocotools' `K * A * I` list**, with `None` where an image has
+  nothing of a category, as the docs said. It held only the non-empty records,
+  so `np.asarray(ev.evalImgs).reshape(K, A, I)` failed. `eval_imgs` keeps the
+  compact list. See [`eval_imgs`](https://derekallman.github.io/hotcoco/api/cocoeval/#eval_imgs).
+- **LVIS evaluation reads `ignore` and not `iscrowd`, as lvis-api does.** It did
+  the reverse, so ground truth flagged either way scored differently from
+  lvis-api. LVIS v1 files carry neither key, so their numbers do not move. See
+  [Ignored ground truth](https://derekallman.github.io/hotcoco/guide/lvis-open-images/#ignored-ground-truth).
+- **The framework guide claimed more than was tested.** Detectron2 needs
+  `use_fast_impl=False`; MMDetection's `use_mp_eval`, `sort_categories`, and
+  `LVISFixedAPMetric` are not supported. `tests/test_framework_shims.py` runs
+  each framework's calls, and `just parity-frameworks` their real evaluators.
 - **`results()`, `report()`, and `get_results()` no longer report an earlier run.**
   After a second `evaluate()` they returned the first run's numbers, and `report()`
   could mix two runs. They now raise `RuntimeError` (`get_results()` returns `{}` with
@@ -36,6 +79,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the first run's expanded detections, so turning `expand_dt` off on the same
   evaluator still scored them expanded. Each run now expands the datasets as
   constructed.
+- **TIDE, calibration, and `image_diagnostics()` describe the run `evaluate()` made.**
+  With `params` edited afterwards, `tide_errors()` scored the new `catIds` against
+  misses counted over the old, and a new `maxDets` emptied all three: calibration
+  reported an `ece` of 0.0 over no detections. With `useCats` off, `tide_errors()`
+  returned zeros; it now raises `ValueError`.
+- **`accumulate()` reads `imgIds` edited after `evaluate()`.** It ignored the edit and
+  reported every evaluated image under `params` naming a few. It now covers the
+  images listed, as it already did for categories, area ranges, and thresholds.
+- **`StreamingEval`: `iou_type` beside `params` is no longer dropped.**
+  `StreamingEval(cats, iou_type="segm", params=Params())` ran bbox. A type that
+  disagrees with `params` raises `ValueError`; `iou_type` now defaults to `None`,
+  the type `params` names, or `"bbox"`.
+- **`evaluate()` and `run()` on a finalized `StreamingEval` evaluator raise
+  `RuntimeError`.** They matched its empty datasets and replaced the streamed AP
+  with `-1.0`, silently. `tide_errors()`, `calibration()`, and
+  `image_diagnostics()` raise there too, where they answered over no cells.
+- **`update_anns` keeps the dict in hand the dataset.** A field cleared with `None`
+  stayed in a `dataset` dict already handed out and came back on the next call. After
+  the annotation list was reordered or shortened through a kept reference, the edit
+  overwrote another annotation's dict or raised `IndexError`.
+- **Arguments no matrix can hold raise `ValueError`.** `primitives.lsap` panicked on
+  infinite costs with no finite assignment (Rust: `assign::try_lsap` returns `None`);
+  `metrics.confusion_matrix`, `pixel_confusion`, and `SemanticEval` panicked on a
+  class count whose square overflows; `metrics.mean_iou` returned `-1.0` for counts
+  summing past 2⁶⁴. `SemanticEval.merge(self)` raised a borrow error.
+- **RLE dicts: a size or run out of range is a `ValueError`** in every `mask`
+  function, where it was `OverflowError` or a `TypeError`, and `mask.decode` of a
+  size past 2³² − 1 pixels no longer aborts the interpreter.
+- **An empty list is an empty label map** for `primitives.segment_overlaps` and
+  `metrics.pixel_confusion`, which raised `TypeError`. A panoptic dict with no
+  annotations reads as panoptic, as the same file does, so `gt_folder` is accepted.
+- **`split()` and `sample()` reject a fraction outside 0 to 1** with `ValueError`.
+  `val_frac=-1`, NaN, and `val_frac + test_frac` above 1 were clamped silently. An
+  id argument that is negative or past 2⁶⁴ − 1 is a `ValueError` too, where
+  `getAnnIds(imgIds=[-1])` said a list of ints was not one.
+- **`Hierarchy.from_parent_map` no longer takes cubic time in chain depth**: an
+  8,000-deep chain builds in about a second where it took ten.
+- **A file whose `info` or `licenses` block has an unexpected type now loads.**
+  `"year": "2017"` or `"version": 1.0` raised `ValueError`; pycocotools reads
+  any content there. Readable fields are kept (the year as an integer, a
+  numeric version as text), the rest read as absent, and a dict loads the
+  same as a file. Keys outside the six `info` fields are still not kept.
+- **Reading `coco.dataset` no longer drops `info` and `licenses`.** After any access
+  to the dict, `save()`, `filter()`, `sample()`, and `merge()` wrote `info: null` and
+  no licenses. The dict now carries both keys when the file has them.
+- **`from_voc` and `from_cvat` read escaped text whole.** A category named
+  `salt & pepper` came back from its own export as a new category `pepper`, with
+  its annotations moved onto it, and `R&D.jpg` lost its name. Character references
+  and CDATA are read too.
+- **Truncated XML is an error.** A VOC or CVAT file cut short imported as a smaller
+  dataset, and `from_cvat` read a file that is not CVAT XML (a COCO JSON, an empty
+  file) as an empty one, so `coco convert --from cvat` reported success.
+- **Converter I/O errors name the path**, and a label file that is not UTF-8 is a
+  `ValueError` naming it, where both were the bare OS message. `to_voc` writes a
+  box narrower than a pixel as one pixel; `from_voc` rejected its own export.
+- **Open Images: `confusion_matrix()` is the same after `evaluate()`.** It matched
+  against the hierarchy-expanded datasets and reported a perfect detection as a
+  miss plus a parent-category confusion.
+- **`tide_errors()` classifies at the threshold it matched at.** With `pos_thr`
+  outside `iouThrs`, matches came from the nearest threshold and false positives
+  from the value passed, which the result also reported.
+- **Bad analysis arguments raise `ValueError` where they panicked or answered:**
+  empty `maxDets` or `areaRng` in `report()` and `results()`; `compare()` with a
+  NaN `confidence`; `f_scores()` with a `beta` that is not positive;
+  `calibration(n_bins=0)`, which reported an `ece` of 0.0.
+- **`CocoEvaluator` counts an image once.** One passed to `update()` twice, or
+  evaluated on two ranks by a padding `DistributedSampler`, had its detections
+  counted twice. `coco_eval[iou_type]` is an evaluator, not `None`, when no batch
+  predicted anything.
+- **`sample(frac=)` no longer loses an image to float error**: `frac=0.29` of 100
+  images is 29, not 28. Browse: `/thumbnail/{id}` for an unknown id is a 404.
 - **Rust: every `SemanticEval` builder starts the counts over.** `ignore_index()` and
   `reduce_zero_label()` called after `update()` kept the counts made under the old
   rules, mixing two rule sets in one matrix, and `boundary_dilation()` left

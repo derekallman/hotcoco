@@ -51,7 +51,7 @@ pub struct VocStats {
 pub fn coco_to_voc(dataset: &Dataset, output_dir: &Path) -> Result<VocStats, ConvertError> {
     super::check_unique_stems(dataset)?;
     let ann_dir = output_dir.join("Annotations");
-    fs::create_dir_all(&ann_dir)?;
+    fs::create_dir_all(&ann_dir).map_err(super::io_at(&ann_dir))?;
 
     let cat_name = crate::types::cat_id_to_name(dataset);
 
@@ -66,7 +66,7 @@ pub fn coco_to_voc(dataset: &Dataset, output_dir: &Path) -> Result<VocStats, Con
         let stem = super::file_stem(&img.file_name);
 
         let xml_path = ann_dir.join(format!("{stem}.xml"));
-        let file = fs::File::create(&xml_path)?;
+        let file = fs::File::create(&xml_path).map_err(super::io_at(&xml_path))?;
         let buf = BufWriter::new(file);
         let mut writer = Writer::new_with_indent(buf, b' ', 2);
 
@@ -105,8 +105,12 @@ pub fn coco_to_voc(dataset: &Dataset, output_dir: &Path) -> Result<VocStats, Con
                 let [x, y, w, h] = bbox;
                 let xmin = (x + 1.0).round() as i64;
                 let ymin = (y + 1.0).round() as i64;
-                let xmax = (x + w).round() as i64;
-                let ymax = (y + h).round() as i64;
+                // VOC corners are inclusive, so the smallest box it can hold
+                // is one pixel: a box narrower than that rounds to `xmax` one
+                // short of `xmin`, which the importer rejects as inverted, and
+                // one such box made the whole export unreadable.
+                let xmax = ((x + w).round() as i64).max(xmin);
+                let ymax = ((y + h).round() as i64).max(ymin);
 
                 writer.write_event(Event::Start(BytesStart::new("object")))?;
                 write_text_element(&mut writer, "name", name)?;
@@ -184,7 +188,8 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
         }
     };
 
-    let mut xml_files: Vec<std::path::PathBuf> = fs::read_dir(&ann_dir)?
+    let mut xml_files: Vec<std::path::PathBuf> = fs::read_dir(&ann_dir)
+        .map_err(super::io_at(&ann_dir))?
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             if path.extension().and_then(|e| e.to_str()) == Some("xml") {
@@ -205,7 +210,7 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
     let mut category_seen: HashSet<String> = HashSet::new();
 
     for xml_path in &xml_files {
-        let file = fs::File::open(xml_path)?;
+        let file = fs::File::open(xml_path).map_err(super::io_at(xml_path))?;
         let parsed = parse_voc_xml(BufReader::new(file)).map_err(|e| e.with_path(xml_path))?;
         for obj in &parsed.objects {
             if category_seen.insert(obj.name.clone()) {
@@ -218,7 +223,7 @@ pub fn voc_to_coco(voc_dir: &Path) -> Result<Dataset, ConvertError> {
     // Load labels.txt for canonical ordering, or sort alphabetically
     let labels_path = voc_dir.join("labels.txt");
     if labels_path.exists() {
-        let file = fs::File::open(&labels_path)?;
+        let file = fs::File::open(&labels_path).map_err(super::io_at(&labels_path))?;
         let reader = BufReader::new(file);
         let labels: Vec<String> = reader
             .lines()
@@ -433,7 +438,10 @@ enum Section {
 /// Parse a single VOC XML annotation file from a reader.
 fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, ConvertError> {
     let mut xml = Reader::from_reader(reader);
-    xml.config_mut().trim_text(true);
+    // Not trimmed by the reader: it trims each piece of a text split at an
+    // entity reference, and `salt &amp; pepper` loses its spaces. The whole
+    // text is trimmed once collected.
+    xml.config_mut().trim_text(false);
 
     let mut fields = VocFields::default();
     let mut objects: Vec<ParsedVocObject> = Vec::new();
@@ -446,10 +454,33 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
     // The object currently being filled; `None` outside any `<object>`.
     let mut object: Option<PartialVocObject> = None;
 
+    // The text of the element being read, collected across the pieces
+    // quick-xml splits it into at entity references and CDATA — see
+    // `push_entity` — and routed once, when a tag ends it.
+    let mut text = String::new();
+    // Elements open at this point; nonzero at the end of the file means it
+    // was cut short.
+    let mut open: usize = 0;
+
     let mut buf = Vec::new();
     loop {
-        match xml.read_event_into(&mut buf) {
+        let event = xml.read_event_into(&mut buf);
+        if matches!(event, Ok(Event::Start(_) | Event::End(_) | Event::Eof)) {
+            let collected = std::mem::take(&mut text);
+            if !collected.trim().is_empty() {
+                route_text(
+                    section,
+                    &current_tag,
+                    collected.trim(),
+                    &mut fields,
+                    object.as_mut(),
+                )
+                .map_err(|err| at_byte(err, xml.buffer_position()))?;
+            }
+        }
+        match event {
             Ok(Event::Start(ref e)) => {
+                open += 1;
                 let name = e.name();
                 let tag = name.as_ref();
                 match tag {
@@ -476,6 +507,7 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
                 current_tag = tag.to_vec();
             }
             Ok(Event::End(ref e)) => {
+                open = open.saturating_sub(1);
                 let name = e.name();
                 match name.as_ref() {
                     b"part" => {
@@ -503,18 +535,21 @@ fn parse_voc_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedVocImage, Conve
                 current_tag.clear();
             }
             Ok(Event::Text(ref e)) => {
-                let text = e
-                    .decode()
-                    .map_err(|err| ConvertError::XmlError(format!("invalid XML text: {err}")))?;
-                route_text(
-                    section,
-                    &current_tag,
-                    text.trim(),
-                    &mut fields,
-                    object.as_mut(),
-                )
-                .map_err(|err| at_byte(err, xml.buffer_position()))?;
+                text.push_str(
+                    &e.decode().map_err(|err| {
+                        ConvertError::XmlError(format!("invalid XML text: {err}"))
+                    })?,
+                );
             }
+            Ok(Event::CData(ref e)) => {
+                text.push_str(
+                    &e.decode().map_err(|err| {
+                        ConvertError::XmlError(format!("invalid XML text: {err}"))
+                    })?,
+                );
+            }
+            Ok(Event::GeneralRef(ref e)) => super::push_entity(&mut text, e)?,
+            Ok(Event::Eof) if open > 0 => return Err(super::unclosed_at_eof()),
             Ok(Event::Eof) => break,
             Err(e) => {
                 return Err(ConvertError::XmlError(format!(

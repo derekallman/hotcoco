@@ -521,3 +521,19 @@ def test_non_dict_annotation_is_a_value_error():
 def test_streaming_eval_is_exported_from_both_namespaces():
     assert hotcoco.StreamingEval is StreamingEval
     assert hotcoco.detection.StreamingEval is StreamingEval
+
+
+def test_iou_type_must_agree_with_params():
+    """``iou_type="segm"`` beside a default ``Params()`` ran bbox and reported
+    it as the evaluator's result; ``params`` alone names the type."""
+    with pytest.raises(ValueError, match="iou_type"):
+        StreamingEval(categories(), iou_type="segm", params=hotcoco.Params())
+    with pytest.raises(ValueError, match="iou_type"):
+        StreamingEval(categories(), iou_type="bbox", params=hotcoco.Params("segm"))
+    for kwargs, expected in [
+        ({"params": hotcoco.Params("segm")}, "segm"),
+        ({"iou_type": "segm", "params": hotcoco.Params("segm")}, "segm"),
+        ({"iou_type": "keypoints"}, "keypoints"),
+        ({}, "bbox"),
+    ]:
+        assert StreamingEval(categories(), **kwargs).finalize().params.iou_type == expected

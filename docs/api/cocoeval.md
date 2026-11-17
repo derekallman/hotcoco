@@ -131,6 +131,31 @@ See [Params](params.md) for every configurable field and an example of changing 
 
 ---
 
+### Copying and pickling
+
+`copy.deepcopy(ev)` and `pickle` give an independent evaluator at the same
+step, with the same results. The copy stores the two datasets and the `params`
+each step ran under, not the match results, and repeats `evaluate()`,
+`accumulate()`, and `summarize()` as far as the original had got, without
+printing or warning again.
+
+| | Stored | Restoring |
+|---|---|---|
+| A `COCOeval` copy | The datasets: 31 MB for val2017 bbox, 44 MB for segm | Reads the datasets, then repeats the run: about 0.35 s for bbox, 0.57 s for segm (M1) |
+| The match records instead | About 42 MB more, and about 0.9 s to write | No run to repeat |
+
+Three limits follow from repeating the run:
+
+- The evaluator [`StreamingEval.finalize()`](#streamingeval) returns holds
+  match results and no datasets, so copying or pickling it raises `TypeError`.
+  Pickle the `StreamingEval` before finalizing.
+- An accumulation or summary that a later `evaluate()` retired is not carried
+  over; the copy has the current run only.
+- A subclass keeps its class and instance attributes, but its `__init__` is
+  not called again.
+
+---
+
 ### `stats`
 
 === "Python"
@@ -139,7 +164,7 @@ See [Params](params.md) for every configurable field and an example of changing 
     stats: np.ndarray | list[float]
     ```
 
-    The 12 summary metrics (10 for keypoints) as a `float64` numpy array, populated after `summarize()`. An empty list before `summarize()` is called — both states match pycocotools.
+    The 12 summary metrics (10 for keypoints) as a `float64` numpy array, populated after `summarize()`. An empty list before `summarize()` is called — both states match pycocotools. It can be assigned, for a subclass whose `summarize()` computes its own values; the next `evaluate()`, `accumulate()`, or `summarize()` replaces an assigned value.
 
     ```python
     ev.summarize()
@@ -165,18 +190,30 @@ See [Params](params.md) for every configurable field and an example of changing 
 
 ### `eval_imgs`
 
-Per-image, per-category, per-area-range evaluation results, populated after `evaluate()`. Entries are `None` where an image has neither ground truth nor detections for that category, as in pycocotools.
+Per-image, per-category, per-area-range evaluation results, populated after `evaluate()`. There are two layouts of the same records:
+
+| Attribute | Layout |
+|---|---|
+| `eval_imgs` | One record per image, category, and area range that has a ground truth or a detection. The one to iterate |
+| `evalImgs` | pycocotools' list: `K * A * I` entries, category by area range by image, `None` where an image has nothing of the category, so `np.asarray(ev.evalImgs).reshape(K, A, I)` works |
+
+On a dataset with many categories nearly all of `evalImgs` is `None`: Objects365
+has 29 million slots for about 800 thousand records. Read it when code written
+for pycocotools needs the layout, and `eval_imgs` otherwise. In Rust,
+`eval_imgs_grid()` returns the pycocotools layout.
 
 === "Python"
 
     ```python
-    eval_imgs: list[dict | None]
+    eval_imgs: list[dict]
+    evalImgs: list[dict | None]
     ```
 
 === "Rust"
 
     ```rust
     fn eval_imgs(&self) -> &[Option<EvalImg>]
+    fn eval_imgs_grid(&self) -> Vec<Option<&EvalImg>>
     ```
 
 Each entry is a dict whose keys match pycocotools' `evalImgs` — `image_id` and
@@ -312,6 +349,18 @@ accumulate() -> None
 Accumulate per-image results into precision/recall curves using interpolated precision at 101 recall thresholds.
 
 Populates `eval`.
+
+`params` edited since `evaluate()` are read by value: `accumulate()` covers the
+categories, images, area ranges, and IoU thresholds they list now, out of what
+`evaluate()` matched, and anything it never matched stays `-1`. pycocotools
+reads edited `imgIds` and `catIds` by position instead, and reports other
+images and categories than the ones named.
+
+When `params` asks for something `evaluate()` did not run, `accumulate()` emits
+a [`CallOrderWarning`](../guide/results.md#filtering-the-warnings) naming it:
+a new IoU threshold, area range, category, or image, a switched `useCats`, or
+a `maxDets` above the cap `evaluate()` cut each image at. Call `evaluate()`
+again to compute them. In Rust, `unevaluated_params()` returns the same list.
 
 ---
 
@@ -653,7 +702,7 @@ This method is **standalone** — no `evaluate()` call is needed first.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `iou_thr` | `float` | `0.5` | IoU threshold for a DT↔GT match |
-| `max_det` | `int \| None` | last `params.max_dets` value | Max detections per image by score |
+| `max_det` | `int \| None` | largest `params.max_dets` value | Max detections per image by score |
 | `min_score` | `float \| None` | `None` | Discard detections below this confidence before `max_det` truncation |
 
 **Returns** a dict with:
@@ -687,7 +736,9 @@ tide_errors(
 
 Decompose detection errors into six TIDE error types ([Bolya et al., ECCV 2020](https://arxiv.org/abs/2008.08115)) and compute ΔAP — the AP gain from eliminating each error type.
 
-Requires `evaluate()` to have been called first.
+Requires `evaluate()` to have been called first, and describes that run:
+`params` edited afterwards apply to the next `evaluate()`. Raises `ValueError`
+after a run with `use_cats` off, which has no categories to classify by.
 
 **Parameters:**
 
@@ -933,7 +984,7 @@ built for, see
     ```python
     StreamingEval(
         categories: list[dict],
-        iou_type: str = "bbox",
+        iou_type: str | None = None,
         lvis_style: bool = False,
         params: Params | None = None,
     )
@@ -942,7 +993,7 @@ built for, see
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
     | `categories` | `list[dict]` | — | Every category the run will see, as COCO category dicts. A category with no annotations keeps a `-1.0` slot instead of vanishing from the per-class results. The list cannot grow later: `update()` raises `KeyError` for an annotation in a category that is not on it. |
-    | `iou_type` | `str` | `"bbox"` | `"bbox"`, `"segm"`, `"keypoints"`, or `"obb"` |
+    | `iou_type` | <code>str &#124; None</code> | `None` | `"bbox"`, `"segm"`, `"keypoints"`, or `"obb"`. `None` takes the type `params` was built for, or `"bbox"` without `params`. Raises `ValueError` if it names a different type than `params`. |
     | `lvis_style` | `bool` | `False` | LVIS federated evaluation; sets `max_dets` to `[300]` when `params` is not given |
     | `params` | <code>Params &#124; None</code> | `None` | Evaluation parameters, frozen for the run. `img_ids`, when set, skips images outside it; `cat_ids`, when empty, is filled from `categories`. |
 
@@ -1089,10 +1140,12 @@ Assemble every image seen so far into a `COCOeval`. Consumes the
 The returned evaluator holds the per-cell match results and the category list,
 not the annotations, which is what keeps `finalize()` cheap. It supports
 `accumulate()`, `summarize()`, `report()`, `results()`, `get_results()`,
-`slice_by()`, and `compare()`. Its `eval_imgs` is empty, and the analyses
-that rebuild full per-image records from the datasets — `confusion_matrix()`,
-`tide_errors()`, `calibration()`, `f_scores()`, and `image_diagnostics()` —
-see no cells. Build a batch `COCOeval` for those.
+`f_scores()`, `slice_by()`, and `compare()`. Its `eval_imgs` is empty. The
+methods that read the datasets raise `RuntimeError`: `evaluate()` and `run()`,
+which would otherwise replace the streamed run with an evaluation of nothing,
+and `tide_errors()`, `calibration()`, and `image_diagnostics()`.
+`confusion_matrix()` returns an empty matrix. Build a batch `COCOeval` for
+those.
 
 ---
 

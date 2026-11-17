@@ -77,16 +77,21 @@ impl Hierarchy {
 
         // Precompute ancestors for every node
         let mut ancestors_map: HashMap<u64, Vec<u64>> = HashMap::new();
+        // One set for every walk, cleared between them: a `contains` scan of
+        // the growing list made a chain of depth d cost d³ over all its nodes,
+        // ten seconds at 8,000 deep.
+        let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
         for &id in &all_ids {
             let mut ancestors = vec![id];
+            seen.clear();
+            seen.insert(id);
             let mut current = id;
             while let Some(&parent) = parent_map.get(&current) {
                 // A cyclic parent map (possible via mutually-referencing
                 // `supercategory` names or a hand-built map) would loop
                 // forever; stop at the first repeat, so cycle members list
-                // each other once and the walk terminates. Chains are short,
-                // so the linear scan beats a per-walk set allocation.
-                if ancestors.contains(&parent) {
+                // each other once and the walk terminates.
+                if !seen.insert(parent) {
                     break;
                 }
                 ancestors.push(parent);
@@ -199,6 +204,12 @@ impl Hierarchy {
         self.children_map
             .get(&cat_id)
             .map_or(&[], std::vec::Vec::as_slice)
+    }
+
+    /// Every child → parent edge: what [`from_parent_map`](Self::from_parent_map)
+    /// rebuilds the hierarchy from, [`virtual_names`](Self::virtual_names) aside.
+    pub fn parent_map(&self) -> &HashMap<u64, u64> {
+        &self.parent_map
     }
 
     /// Returns the parent of `cat_id`, or `None` if it is a root.

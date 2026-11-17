@@ -168,8 +168,9 @@ Returns:
     ``len(row_ind) == min(n_rows, n_cols)``.
 
 Raises:
-    ValueError: If ``cost`` is ragged or holds a NaN — an unsolvable matrix is
-        an error rather than an arbitrary assignment.
+    ValueError: If ``cost`` is ragged, holds a NaN, or has infinite entries
+        that leave no finite assignment — an unsolvable matrix is an error
+        rather than an arbitrary assignment.
 
 Example:
     >>> from hotcoco import primitives
@@ -181,7 +182,13 @@ fn lsap(py: Python<'_>, cost: &Bound<'_, PyAny>, maximize: bool) -> PyResult<Py<
     let (flat, nr, nc) = f64_matrix_arg(cost, "cost")?;
     check_no_nan(&flat, "cost", "the assignment")?;
 
-    let (rows, cols) = assign::lsap(&flat, nr, nc, maximize);
+    // `try_lsap`: an infinite entry can leave no finite assignment, and that
+    // is the caller's matrix, not a bug to panic over.
+    let (rows, cols) = assign::try_lsap(&flat, nr, nc, maximize).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(
+            "cost has no assignment of finite total cost: its infinite entries block every one",
+        )
+    })?;
     // `usize` implements `numpy::Element`, so these go straight out — remapping to
     // u64 first would allocate two more Vecs per call, and this is the primitive a
     // tracking loop calls once per frame.

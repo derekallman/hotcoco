@@ -105,10 +105,11 @@ impl SegmRles {
 /// for any detection smaller than the group box — the normal case — and it was
 /// wrong in all three places at once, because there were three places.
 fn uses_ioa(ann: &crate::types::Annotation, eval_mode: EvalMode) -> bool {
-    if eval_mode == EvalMode::OpenImages {
-        ann.is_group_of.unwrap_or(false)
-    } else {
-        ann.iscrowd
+    match eval_mode {
+        EvalMode::OpenImages => ann.is_group_of.unwrap_or(false),
+        // lvis-api passes `iscrowd = 0` for every ground truth.
+        EvalMode::Lvis => false,
+        EvalMode::Coco => ann.iscrowd,
     }
 }
 

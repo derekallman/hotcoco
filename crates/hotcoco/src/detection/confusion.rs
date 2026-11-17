@@ -243,11 +243,20 @@ impl COCOeval {
         let eff_max_det = max_det.unwrap_or_else(|| self.params.max_det());
         let iou_type = self.params.iou_type;
 
-        let coco_gt = &self.coco_gt;
-        let coco_dt = &self.coco_dt;
+        // The datasets as constructed. An Open Images `evaluate()` replaces
+        // the handles with hierarchy-expanded copies, and matching against
+        // those reported a perfect detection as its parent category's box
+        // predicted as the child, with the child's own box missed.
+        let coco_gt = self.unexpanded_gt.as_ref().unwrap_or(&self.coco_gt);
+        let coco_dt = self.unexpanded_dt.as_ref().unwrap_or(&self.coco_dt);
         // Populated iff the last `evaluate()` was a segm run; per-id fallback
-        // inside `cross_category_iou` covers the standalone-call case.
-        let segm_rles = self.segm_rles.as_ref();
+        // inside `cross_category_iou` covers the standalone-call case. Keyed
+        // by the ids of the datasets `evaluate()` matched, so not used beside
+        // the unexpanded ones.
+        let segm_rles = self
+            .segm_rles
+            .as_ref()
+            .filter(|_| self.unexpanded_gt.is_none());
 
         // Per-worker accumulation is **sparse**: an image touches at most `d + g`
         // of the `(K+1)²` cells, so each split collects that many `(row, col)`

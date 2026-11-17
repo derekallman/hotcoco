@@ -134,6 +134,34 @@ gen-semantic-fixtures: build
 parity-tide: build
     uv run python scripts/parity_tide.py
 
+# Verify Detectron2's and MMDetection's own evaluators give the same numbers on
+# hotcoco as on pycocotools and lvis-api (needs data/; first run builds the env)
+parity-frameworks *cases: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -x .venv-frameworks/bin/python ] || just setup-frameworks
+    .venv-frameworks/bin/python scripts/parity_frameworks.py {{cases}}
+
+# Build .venv-frameworks for `just parity-frameworks`: Detectron2 and
+# MMDetection in their own environment, so neither's pins reach the project's.
+# It reads torch, numpy, pycocotools, lvis, and hotcoco from .venv through a
+# .pth file instead of installing a second torch (about 2 GB). Detectron2 is
+# pinned to the commit last compared; it compiles, which takes a minute.
+setup-frameworks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf .venv-frameworks
+    uv venv .venv-frameworks --python .venv/bin/python -q
+    site=$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')
+    printf '%s\n%s\n' "$site" "$PWD/python" > "$(.venv-frameworks/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/project.pth"
+    export VIRTUAL_ENV="$PWD/.venv-frameworks"
+    uv pip install -q --no-deps mmengine mmcv-lite==2.1.0 mmdet==3.3.0
+    uv pip install -q addict yapf termcolor rich pyyaml terminaltables shapely scipy six tqdm matplotlib \
+        opencv-python-headless setuptools wheel fvcore iopath yacs omegaconf hydra-core tabulate cloudpickle
+    uv pip install -q --no-deps --no-build-isolation \
+        "git+https://github.com/facebookresearch/detectron2.git@247691a1c292654867deb35cabb27f18d75a1363"
+    .venv-frameworks/bin/python -c 'import torch, hotcoco, mmdet, detectron2; print("frameworks env ready: mmdet", mmdet.__version__, "detectron2", detectron2.__version__)'
+
 # Fuzz oriented-box IoU against shapely
 fuzz-obb: build
     uv run pytest tests/fuzz_obb.py -v -x --tb=short

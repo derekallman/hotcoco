@@ -683,3 +683,156 @@ def test_a_whole_float_is_an_id_in_an_lvis_list(tmp_path):
     path.write_text(json.dumps(dataset))
     for coco in (COCO(dataset), COCO(str(path))):
         assert coco.loadImgs(1)[0]["neg_category_ids"] == [1]
+
+
+def test_an_argument_no_matrix_can_hold_is_a_value_error():
+    """These used to panic, or wrap and answer: a class count whose square
+    overflows, counts that sum past 64 bits, costs with no finite assignment."""
+    from hotcoco import metrics
+
+    inf = math.inf
+    for cost, maximize in [([[inf, inf], [inf, inf]], False), ([[-inf, 1], [1, 2]], False), ([[inf, 1], [1, 2]], True)]:
+        with pytest.raises(ValueError, match="finite"):
+            primitives.lsap(cost, maximize=maximize)
+    rows, cols = primitives.lsap([[inf, 1], [1, inf]])
+    assert (rows.tolist(), cols.tolist()) == ([0, 1], [1, 0])
+
+    for too_many in (2**32, 2**64 - 1):
+        with pytest.raises(ValueError, match="too many classes"):
+            metrics.confusion_matrix([0], [0], too_many)
+        with pytest.raises(ValueError, match="too many classes"):
+            metrics.pixel_confusion([0], [0], too_many)
+        with pytest.raises(ValueError, match="too many classes"):
+            semantic.SemanticEval(too_many)
+    with pytest.raises(ValueError, match="more pixels"):
+        metrics.mean_iou(np.full((2, 2), 2**62, dtype=np.uint64))
+
+    ev = semantic.SemanticEval(3)
+    with pytest.raises(ValueError, match="itself"):
+        ev.merge(ev)
+
+
+def test_an_empty_list_is_an_empty_label_map():
+    """``numpy.asarray([])`` is float64, so the list spelling failed only when
+    empty: "a label map holds integer class ids"."""
+    from hotcoco import metrics
+
+    assert primitives.segment_overlaps([], []) == {}
+    assert metrics.pixel_confusion([], [], 2).tolist() == [[0, 0], [0, 0]]
+    with pytest.raises(TypeError, match="integer"):
+        metrics.pixel_confusion([[0.5]], [[0.5]], 2)
+    with pytest.raises(TypeError, match="integer"):
+        metrics.pixel_confusion(np.zeros((0, 2)), np.zeros((0, 2)), 2)
+
+
+def test_a_panoptic_dict_with_no_annotations_is_still_panoptic():
+    """With no annotation to carry ``segments_info`` the dict read as
+    detection-style, and a folder beside it was refused."""
+    empty = {
+        "images": [{"id": 1, "height": 4, "width": 4, "file_name": "a.png"}],
+        "annotations": [],
+        "categories": [{"id": 1, "name": "a", "isthing": 1}],
+    }
+    ev = panoptic.PanopticEval(empty, empty, gt_folder="g", pred_folder="p")
+    ev.evaluate()
+    assert ev.eval_imgs == []
+    ev = panoptic.PanopticEval(empty, empty)
+    ev.evaluate()
+    assert ev.eval_imgs == []
+
+
+@pytest.mark.parametrize(
+    "rle, match",
+    [
+        ({"size": [-5, 4], "counts": b"63204"}, "size"),
+        ({"size": [2**32, 4], "counts": b"63204"}, "size"),
+        ({"size": [5, 4], "counts": [6, -3, 2]}, "counts"),
+        ({"size": [5, 4], "counts": [2**32]}, "counts"),
+        ({"size": [2**31, 2**31], "counts": b"63204"}, "pixels"),
+    ],
+)
+def test_an_rle_number_out_of_range_is_a_value_error(rle, match):
+    """Each was ``OverflowError`` or a ``TypeError`` saying a list of ints is
+    not a list of ints, and the last aborted the interpreter in ``decode``."""
+    for read in (mask.decode, mask.area, mask.toBbox, lambda r: mask.merge([r]), lambda r: mask.iou([r], [r], [0])):
+        with pytest.raises(ValueError, match=match):
+            read(rle)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda c: c.split(val_frac=-1),
+        lambda c: c.split(val_frac=math.nan),
+        lambda c: c.split(val_frac=0.9, test_frac=0.9),
+        lambda c: c.split(test_frac=1.5),
+        lambda c: c.sample(frac=2),
+        lambda c: c.sample(frac=math.nan),
+    ],
+)
+def test_a_fraction_outside_zero_to_one_is_a_value_error(call):
+    """Each was clamped without a word: ``val_frac=-1`` an empty validation
+    set, ``0.9 + 0.9`` a test set of a tenth, ``frac=nan`` an empty sample."""
+    coco = COCO(
+        {"images": [{"id": i, "width": 9, "height": 9} for i in range(1, 11)], "annotations": [], "categories": CATS}
+    )
+    with pytest.raises(ValueError, match="frac"):
+        call(coco)
+    train, val, test = coco.split(val_frac=0.5, test_frac=0.5)
+    assert [len(x.dataset["images"]) for x in (train, val, test)] == [0, 5, 5]
+    assert len(coco.sample(frac=1.0).dataset["images"]) == 10
+
+
+@pytest.mark.parametrize("ids", [-1, [-1], [1, 2**70], {-1}])
+def test_an_int_that_is_no_id_is_a_value_error(ids):
+    """It was ``TypeError: expected an int or an iterable of ints, got list``
+    for a list of ints."""
+    coco = COCO({"images": IMAGES, "annotations": [GT], "categories": CATS})
+    for lookup in (coco.getAnnIds, coco.loadAnns, coco.getImgIds, coco.loadImgs):
+        with pytest.raises(ValueError, match="an id is an integer"):
+            lookup(ids)
+    with pytest.raises(TypeError, match="iterable of ints"):
+        coco.loadAnns(["a"])
+
+
+def test_an_analysis_argument_that_is_no_number_is_a_value_error():
+    """NaN slipped past each range check: ``compare`` panicked on it,
+    ``f_scores`` returned a key ``FNaN``, and ``calibration(n_bins=0)`` an
+    ``ece`` of 0.0."""
+    gt = COCO({"images": IMAGES, "annotations": [GT], "categories": CATS})
+    ev = COCOeval(gt, gt.loadRes([DT]), "bbox")
+    ev.params.maxDets = [1, 10, 100]
+    import contextlib
+    import io
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        ev.run()
+    with pytest.raises(ValueError, match="confidence"):
+        hotcoco.compare(ev, ev, n_bootstrap=10, confidence=math.nan)
+    with pytest.raises(ValueError, match="n_bootstrap"):
+        hotcoco.compare(ev, ev, n_bootstrap=2**63)
+    for beta in (math.nan, 0, -1, math.inf):
+        with pytest.raises(ValueError, match="beta"):
+            ev.f_scores(beta)
+    with pytest.raises(ValueError, match="n_bins"):
+        ev.calibration(n_bins=0)
+    with pytest.raises(ValueError, match="iou_thr"):
+        ev.confusion_matrix(iou_thr=math.nan)
+
+
+def test_a_converter_names_the_file_it_could_not_read(tmp_path):
+    """The message was the bare OS error, and a file that is not CVAT XML —
+    a COCO JSON, an empty file — imported as an empty dataset."""
+    nope = tmp_path / "nope"
+    for read in (COCO.from_voc, COCO.from_cvat, COCO.from_dota, COCO.from_oid):
+        with pytest.raises(FileNotFoundError, match="nope"):
+            read(str(nope))
+    not_cvat = tmp_path / "x.xml"
+    for content in ("", "hello", '{"images": []}'):
+        not_cvat.write_text(content)
+        with pytest.raises(ValueError, match="x.xml"):
+            COCO.from_cvat(str(not_cvat))
+    (tmp_path / "labels").mkdir()
+    (tmp_path / "labels" / "bad.txt").write_bytes(b"\xff\xfe 1 2 3")
+    with pytest.raises(ValueError, match="bad.txt"):
+        COCO.from_dota(str(tmp_path / "labels"))

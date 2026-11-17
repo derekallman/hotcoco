@@ -239,7 +239,7 @@ use convert::{
 /// `sample`, and `load_res`.
 // Wrappers over one `Arc` cannot observe each other: `COCO` is plain data
 // with no interior mutability, and an edit replaces this wrapper's `Arc`.
-#[pyclass(name = "COCO", subclass)]
+#[pyclass(name = "COCO", module = "hotcoco", subclass)]
 pub(crate) struct PyCOCO {
     /// The data and the dict `dataset` hands out — see `live.rs`. Read it
     /// through `live.get(py)`, which reads an edit to the dict back first.
@@ -248,6 +248,14 @@ pub(crate) struct PyCOCO {
     /// Set at construction time or assign directly: ``coco.image_dir = "/data/images"``.
     #[pyo3(get, set)]
     image_dir: Option<String>,
+}
+
+/// An empty `collections.defaultdict(list)`, the type of pycocotools' and
+/// lvis-api's index maps.
+fn default_list_dict(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    py.import("collections")?
+        .getattr("defaultdict")?
+        .call1((py.get_type::<PyList>(),))
 }
 
 /// Constructors, kept out of `#[pymethods]` so they stay Rust-only.
@@ -373,47 +381,59 @@ impl PyCOCO {
         Ok(coco)
     }
 
-    #[pyo3(signature = (img_ids=IdList::default(), cat_ids=IdList::default(), area_rng=None, iscrowd=None))]
+    // The snake_case names are lvis-api's too, whose id arguments default to
+    // `None` for "no filter" (`get_ann_ids(img_ids=..., cat_ids=None)` is how
+    // its own `_prepare` calls it), so `None` reads as the empty list here.
+    #[pyo3(signature = (img_ids=Some(IdList::default()), cat_ids=Some(IdList::default()), area_rng=None, iscrowd=None))]
     fn get_ann_ids(
         &mut self,
         py: Python<'_>,
-        img_ids: IdList,
-        cat_ids: IdList,
+        img_ids: Option<IdList>,
+        cat_ids: Option<IdList>,
         area_rng: Option<[f64; 2]>,
         iscrowd: Option<bool>,
     ) -> PyResult<Vec<u64>> {
+        let (img_ids, cat_ids) = (img_ids.unwrap_or_default(), cat_ids.unwrap_or_default());
         let inner = self.live.get(py)?;
         Ok(inner.get_ann_ids(&img_ids.0, &cat_ids.0, area_rng, iscrowd))
     }
 
-    #[pyo3(signature = (cat_nms=NameList::default(), sup_nms=NameList::default(), cat_ids=IdList::default()))]
+    #[pyo3(signature = (cat_nms=NameList::default(), sup_nms=NameList::default(), cat_ids=Some(IdList::default())))]
     fn get_cat_ids(
         &mut self,
         py: Python<'_>,
         cat_nms: NameList,
         sup_nms: NameList,
-        cat_ids: IdList,
+        cat_ids: Option<IdList>,
     ) -> PyResult<Vec<u64>> {
+        let cat_ids = cat_ids.unwrap_or_default();
         let inner = self.live.get(py)?;
         let cat_nms_ref: Vec<&str> = cat_nms.0.iter().map(String::as_str).collect();
         let sup_nms_ref: Vec<&str> = sup_nms.0.iter().map(String::as_str).collect();
         Ok(inner.get_cat_ids(&cat_nms_ref, &sup_nms_ref, &cat_ids.0))
     }
 
-    #[pyo3(signature = (img_ids=IdList::default(), cat_ids=IdList::default()))]
+    #[pyo3(signature = (img_ids=Some(IdList::default()), cat_ids=Some(IdList::default())))]
     fn get_img_ids(
         &mut self,
         py: Python<'_>,
-        img_ids: IdList,
-        cat_ids: IdList,
+        img_ids: Option<IdList>,
+        cat_ids: Option<IdList>,
     ) -> PyResult<Vec<u64>> {
+        let (img_ids, cat_ids) = (img_ids.unwrap_or_default(), cat_ids.unwrap_or_default());
         let inner = self.live.get(py)?;
         Ok(inner.get_img_ids(&img_ids.0, &cat_ids.0))
     }
 
-    fn load_anns(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+    /// The annotations with these ids, in the order given. ``None`` or no
+    /// argument loads every annotation, as lvis-api's ``load_anns`` does.
+    #[pyo3(signature = (ids=None))]
+    fn load_anns(&mut self, py: Python<'_>, ids: Option<IdList>) -> PyResult<Py<PyAny>> {
         let inner = self.live.get(py)?;
-        let anns = inner.load_anns(&ids.0);
+        let anns = match &ids {
+            Some(ids) => inner.load_anns(&ids.0),
+            None => inner.dataset.annotations.iter().collect(),
+        };
         let list = PyList::new(
             py,
             anns.iter()
@@ -423,9 +443,14 @@ impl PyCOCO {
         Ok(list.into_any().unbind())
     }
 
-    fn load_cats(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+    /// The categories with these ids; ``None`` or no argument loads them all.
+    #[pyo3(signature = (ids=None))]
+    fn load_cats(&mut self, py: Python<'_>, ids: Option<IdList>) -> PyResult<Py<PyAny>> {
         let inner = self.live.get(py)?;
-        let cats = inner.load_cats(&ids.0);
+        let cats = match &ids {
+            Some(ids) => inner.load_cats(&ids.0),
+            None => inner.dataset.categories.iter().collect(),
+        };
         let list = PyList::new(
             py,
             cats.iter()
@@ -435,9 +460,14 @@ impl PyCOCO {
         Ok(list.into_any().unbind())
     }
 
-    fn load_imgs(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
+    /// The images with these ids; ``None`` or no argument loads them all.
+    #[pyo3(signature = (ids=None))]
+    fn load_imgs(&mut self, py: Python<'_>, ids: Option<IdList>) -> PyResult<Py<PyAny>> {
         let inner = self.live.get(py)?;
-        let imgs = inner.load_imgs(&ids.0);
+        let imgs = match &ids {
+            Some(ids) => inner.load_imgs(&ids.0),
+            None => inner.dataset.images.iter().collect(),
+        };
         let list = PyList::new(
             py,
             imgs.iter()
@@ -779,6 +809,15 @@ impl PyCOCO {
         test_frac: Option<f64>,
         seed: u64,
     ) -> PyResult<Py<PyAny>> {
+        fraction("val_frac", val_frac)?;
+        if let Some(test_frac) = test_frac {
+            fraction("test_frac", test_frac)?;
+            if val_frac + test_frac > 1.0 {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "val_frac + test_frac must be at most 1, got {val_frac} + {test_frac}"
+                )));
+            }
+        }
         let inner = self.live.get(py)?;
         let (train_ds, val_ds, test_ds) = inner.split(val_frac, test_frac, seed);
         let train_py = Py::new(py, self.derived_from(train_ds))?;
@@ -805,6 +844,9 @@ impl PyCOCO {
         frac: Option<f64>,
         seed: u64,
     ) -> PyResult<PyCOCO> {
+        if let Some(frac) = frac {
+            fraction("frac", frac)?;
+        }
         let inner = self.live.get(py)?;
         let result = inner.sample(n, frac, seed);
         Ok(self.derived_from(result))
@@ -837,8 +879,8 @@ impl PyCOCO {
         // `areaRng=[]` for no filter, `iscrowd=0`/`1` for the flag.
         self.get_ann_ids(
             py,
-            imgIds,
-            catIds,
+            Some(imgIds),
+            Some(catIds),
             areaRng.and_then(|r| r.0),
             iscrowd.map(|f| f.0),
         )
@@ -854,7 +896,7 @@ impl PyCOCO {
         supNms: NameList,
         catIds: IdList,
     ) -> PyResult<Vec<u64>> {
-        self.get_cat_ids(py, catNms, supNms, catIds)
+        self.get_cat_ids(py, catNms, supNms, Some(catIds))
     }
 
     #[allow(non_snake_case)]
@@ -866,22 +908,22 @@ impl PyCOCO {
         imgIds: IdList,
         catIds: IdList,
     ) -> PyResult<Vec<u64>> {
-        self.get_img_ids(py, imgIds, catIds)
+        self.get_img_ids(py, Some(imgIds), Some(catIds))
     }
 
     #[pyo3(name = "loadAnns")]
     fn load_anns_camel(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
-        self.load_anns(py, ids)
+        self.load_anns(py, Some(ids))
     }
 
     #[pyo3(name = "loadCats")]
     fn load_cats_camel(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
-        self.load_cats(py, ids)
+        self.load_cats(py, Some(ids))
     }
 
     #[pyo3(name = "loadImgs")]
     fn load_imgs_camel(&mut self, py: Python<'_>, ids: IdList) -> PyResult<Py<PyAny>> {
-        self.load_imgs(py, ids)
+        self.load_imgs(py, Some(ids))
     }
 
     #[pyo3(name = "loadRes", signature = (res, *, segmentation=None))]
@@ -1592,6 +1634,117 @@ impl PyCOCO {
         Ok(dict.into_any().unbind())
     }
 
+    /// The index maps pycocotools and lvis-api build beside ``anns``:
+    ///
+    /// - ``imgToAnns`` (lvis-api: ``img_ann_map``): image id to that image's
+    ///   annotation dicts, in dataset order. Every image has an entry, so one
+    ///   with no annotations reads as ``[]``.
+    /// - ``catToImgs`` (lvis-api: ``cat_img_map``): category id to the image
+    ///   id of each of its annotations, in dataset order, so an image appears
+    ///   once per annotation.
+    ///
+    /// Both are a ``defaultdict(list)``, built on the first read and kept
+    /// until the dataset changes: an edit to ``dataset``, ``update_anns``, or
+    /// ``createIndex()`` drops them, and the next read builds new ones.
+    ///
+    /// They are looked up here, after ordinary attribute lookup fails, and not
+    /// declared as properties, because MMDetection's ``COCO`` subclass assigns
+    /// ``self.img_ann_map = self.imgToAnns`` and a read-only property would
+    /// refuse that.
+    fn __getattr__(&mut self, py: Python<'_>, name: &str) -> PyResult<Py<PyAny>> {
+        let which = match name {
+            "imgToAnns" | "img_ann_map" => live::IndexMap::ImageToAnns,
+            "catToImgs" | "cat_img_map" => live::IndexMap::CategoryToImages,
+            _ => {
+                return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+                    "'COCO' object has no attribute '{name}'"
+                )));
+            }
+        };
+        self.live.index_map(py, which, |inner| {
+            let map = default_list_dict(py)?;
+            match which {
+                live::IndexMap::ImageToAnns => {
+                    for img in &inner.dataset.images {
+                        map.set_item(img.id, PyList::empty(py))?;
+                    }
+                    for ann in &inner.dataset.annotations {
+                        map.get_item(ann.image_id)?
+                            .call_method1("append", (annotation_to_py(py, ann)?,))?;
+                    }
+                }
+                live::IndexMap::CategoryToImages => {
+                    for ann in &inner.dataset.annotations {
+                        map.get_item(ann.category_id)?
+                            .call_method1("append", (ann.image_id,))?;
+                    }
+                }
+            }
+            Ok(map.unbind())
+        })
+    }
+
+    /// Takes and ignores the constructor's arguments, which ``__new__`` has
+    /// already read: a subclass that overrides ``__init__`` and calls
+    /// ``super().__init__(annotation_file=...)``, as MMDetection's wrapper
+    /// does, would otherwise reach ``object.__init__``, which refuses them.
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn __init__(
+        _slf: &Bound<'_, Self>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) {
+    }
+
+    /// Pickle and ``copy.deepcopy``: an empty object of the same class, then
+    /// the dataset as a plain dict, read back the way ``COCO(dict)`` reads it.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let (dataset, capped, image_dir) = {
+            let mut this = slf.borrow_mut();
+            let inner = this.live.get(py)?;
+            (
+                live::dataset_to_py(py, &inner.dataset)?,
+                inner.is_per_image_capped(),
+                this.image_dir.clone(),
+            )
+        };
+        // What a Python subclass stored on the instance; the base class has
+        // no `__dict__`.
+        let attrs = slf.getattr("__dict__").ok();
+        let newobj = py.import("copyreg")?.getattr("__newobj__")?;
+        Ok((
+            newobj,
+            (slf.get_type(),),
+            (dataset, capped, image_dir, attrs),
+        )
+            .into_pyobject(py)?
+            .into_any())
+    }
+
+    fn __setstate__(slf: &Bound<'_, Self>, state: &Bound<'_, PyAny>) -> PyResult<()> {
+        type State<'py> = (
+            Bound<'py, PyDict>,
+            bool,
+            Option<String>,
+            Option<Bound<'py, PyDict>>,
+        );
+        let (dataset, capped, image_dir, attrs): State<'_> = state.extract()?;
+        let mut inner = Arc::new(hotcoco_core::COCO::from_dataset(py_to_dataset(&dataset)?));
+        if capped {
+            inner = inner.cap_detections_per_image_shared(None);
+        }
+        {
+            let mut this = slf.borrow_mut();
+            this.live = live::LiveDataset::new(inner);
+            this.image_dir = image_dir;
+        }
+        if let Some(attrs) = attrs {
+            slf.getattr("__dict__")?.call_method1("update", (attrs,))?;
+        }
+        Ok(())
+    }
+
     #[getter]
     fn cats(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let inner = self.live.get(py)?;
@@ -1809,7 +1962,7 @@ temporary list and is a silent no-op. Assign the whole attribute instead —
 ``p.max_dets = [1, 10, 100, 200]`` — the same way for every list-valued field
 and its camelCase alias (``p.maxDets``, ``p.iouThrs``, ...). ``ev.params``
 itself is a live object: assigning to its attributes configures the run."]
-#[pyclass(name = "Params", from_py_object)]
+#[pyclass(name = "Params", module = "hotcoco", from_py_object)]
 #[derive(Clone)]
 struct PyParams {
     inner: hotcoco_core::Params,
@@ -1824,6 +1977,66 @@ impl PyParams {
         Ok(PyParams {
             inner: hotcoco_core::Params::new(iou),
         })
+    }
+
+    /// Pickle and ``copy.deepcopy``, which torchvision's and Detectron2's
+    /// evaluators run on ``params``: a default object for the same
+    /// ``iou_type``, then every field.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let this = slf.borrow();
+        let p = &this.inner;
+        let state = PyDict::new(py);
+        state.set_item("img_ids", &p.img_ids)?;
+        state.set_item("cat_ids", &p.cat_ids)?;
+        state.set_item("iou_thrs", &p.iou_thrs)?;
+        state.set_item("rec_thrs", &p.rec_thrs)?;
+        state.set_item("max_dets", &p.max_dets)?;
+        let ranges: Vec<(&str, [f64; 2])> = p
+            .area_ranges
+            .iter()
+            .map(|ar| (ar.label.as_str(), ar.range))
+            .collect();
+        state.set_item("area_ranges", ranges)?;
+        state.set_item("use_cats", p.use_cats)?;
+        state.set_item("kpt_oks_sigmas", &p.kpt_oks_sigmas)?;
+        state.set_item("expand_dt", p.expand_dt)?;
+        Ok((slf.get_type(), (p.iou_type.to_string(),), state)
+            .into_pyobject(py)?
+            .into_any())
+    }
+
+    fn __setstate__(&mut self, state: &Bound<'_, PyDict>) -> PyResult<()> {
+        /// A field of the pickled state; a pickle from a build without the
+        /// field leaves the default.
+        fn field<'py, T: FromPyObjectOwned<'py>>(
+            state: &Bound<'py, PyDict>,
+            key: &str,
+            slot: &mut T,
+        ) -> PyResult<()> {
+            if let Some(value) = state.get_item(key)? {
+                *slot = value.extract().map_err(Into::into)?;
+            }
+            Ok(())
+        }
+        let p = &mut self.inner;
+        field(state, "img_ids", &mut p.img_ids)?;
+        field(state, "cat_ids", &mut p.cat_ids)?;
+        field(state, "iou_thrs", &mut p.iou_thrs)?;
+        field(state, "rec_thrs", &mut p.rec_thrs)?;
+        field(state, "max_dets", &mut p.max_dets)?;
+        field(state, "use_cats", &mut p.use_cats)?;
+        field(state, "kpt_oks_sigmas", &mut p.kpt_oks_sigmas)?;
+        field(state, "expand_dt", &mut p.expand_dt)?;
+        let mut ranges: Vec<(String, [f64; 2])> = Vec::new();
+        if state.contains("area_ranges")? {
+            field(state, "area_ranges", &mut ranges)?;
+            p.area_ranges = ranges
+                .into_iter()
+                .map(|(label, range)| hotcoco_core::AreaRange { label, range })
+                .collect();
+        }
+        Ok(())
     }
 
     #[getter]
@@ -1973,17 +2186,21 @@ impl PyParams {
     fn set_cat_ids_camel(&mut self, val: Vec<u64>) {
         self.set_cat_ids(val);
     }
+    /// pycocotools' name and type: a numpy ``float64`` array, so
+    /// ``np.where(0.5 == params.iouThrs)`` works. ``iou_thrs`` is the list.
     #[getter(iouThrs)]
-    fn iou_thrs_camel(&self) -> Vec<f64> {
-        self.iou_thrs()
+    fn iou_thrs_camel<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
+        numpy::PyArray1::from_slice(py, &self.inner.iou_thrs)
     }
     #[setter(iouThrs)]
     fn set_iou_thrs_camel(&mut self, val: Vec<f64>) {
         self.set_iou_thrs(val);
     }
+    /// pycocotools' name and type: a numpy ``float64`` array. ``rec_thrs`` is
+    /// the list.
     #[getter(recThrs)]
-    fn rec_thrs_camel(&self) -> Vec<f64> {
-        self.rec_thrs()
+    fn rec_thrs_camel<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
+        numpy::PyArray1::from_slice(py, &self.inner.rec_thrs)
     }
     #[setter(recThrs)]
     fn set_rec_thrs_camel(&mut self, val: Vec<f64>) {
@@ -2021,6 +2238,18 @@ impl PyParams {
     fn set_use_cats_camel(&mut self, val: &Bound<'_, PyAny>) -> PyResult<()> {
         self.set_use_cats(val)
     }
+}
+
+/// A fraction-of-the-images argument: in `[0, 1]`, which NaN is not. Out of
+/// range it is an error and never clamped: clamping makes `val_frac=-1` an
+/// empty validation set and `val_frac=0.9, test_frac=0.9` a test set of a tenth.
+fn fraction(name: &str, value: f64) -> PyResult<()> {
+    if (0.0..=1.0).contains(&value) {
+        return Ok(());
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "{name} must be between 0 and 1, got {value}"
+    )))
 }
 
 fn parse_iou_type(s: &str) -> PyResult<hotcoco_core::IouType> {
@@ -2157,7 +2386,7 @@ Open Images workflow::
     ev.run()
     results = ev.results(per_class=True)  # dict with AP + per-class AP
 "]
-#[pyclass(name = "COCOeval")]
+#[pyclass(name = "COCOeval", module = "hotcoco", subclass)]
 struct PyCOCOeval {
     inner: hotcoco_core::COCOeval,
     /// The `params` object handed to Python, held so every access returns the
@@ -2176,6 +2405,11 @@ struct PyCOCOeval {
     /// `eval['params']` holds, by reference, the way pycocotools stores
     /// `self.params` into `self.eval`.
     eval_params: Option<Py<PyParams>>,
+    /// A value assigned to `stats`, which pycocotools keeps as a plain
+    /// attribute: Detectron2's `COCOevalMaxDets.summarize` computes its own
+    /// summary and stores it there. Dropped by the next `evaluate()`,
+    /// `accumulate()`, or `summarize()`, whose results replace it.
+    assigned_stats: Option<Py<PyAny>>,
 }
 
 impl PyCOCOeval {
@@ -2192,6 +2426,7 @@ impl PyCOCOeval {
             inner,
             params,
             eval_cache: None,
+            assigned_stats: None,
             eval_params: None,
         })
     }
@@ -2322,7 +2557,20 @@ impl PyCOCOeval {
         self.with_params(py, |ev| py.detach(|| ev.evaluate()))
             .map_err(to_pyerr)?;
         self.eval_cache = None;
+        self.assigned_stats = None;
         Ok(())
+    }
+
+    /// Takes and ignores the constructor's arguments, as ``COCO.__init__``
+    /// does, so a subclass may override ``__init__`` and call up to it.
+    /// Detectron2 and MMDetection both define ``COCOeval`` subclasses when
+    /// their evaluation modules are imported.
+    #[pyo3(signature = (*_args, **_kwargs))]
+    fn __init__(
+        _slf: &Bound<'_, Self>,
+        _args: &Bound<'_, PyTuple>,
+        _kwargs: Option<&Bound<'_, PyDict>>,
+    ) {
     }
 
     fn accumulate(&mut self, py: Python<'_>) -> PyResult<()> {
@@ -2333,8 +2581,25 @@ impl PyCOCOeval {
                  Call evaluate() first or the results will be empty.",
             )?;
         }
-        self.with_params(py, |ev| py.detach(|| ev.accumulate()));
+        let unevaluated = self.with_params(py, |ev| {
+            py.detach(|| {
+                ev.accumulate();
+                ev.unevaluated_params()
+            })
+        });
+        if !unevaluated.is_empty() {
+            warn::<CallOrderWarning>(
+                py,
+                &format!(
+                    "accumulate() was asked for params.{}, which evaluate() did not run. \
+                     Those results are -1, and a larger max_dets reads the detections \
+                     evaluate() kept. Call evaluate() again to compute them.",
+                    unevaluated.join("; params.")
+                ),
+            )?;
+        }
         self.eval_cache = None;
+        self.assigned_stats = None;
         self.eval_params = Some(self.params.clone_ref(py));
         Ok(())
     }
@@ -2346,6 +2611,7 @@ from the reference, and a ``CallOrderWarning`` when the last ``accumulate()``
 does not describe the current run (a later ``evaluate()``, or ``params``
 edited since). It still prints that accumulation, as pycocotools does."]
     fn summarize(&mut self, py: Python<'_>) -> PyResult<()> {
+        self.assigned_stats = None;
         if self.inner.accumulated().is_none() {
             warn::<CallOrderWarning>(
                 py,
@@ -2389,6 +2655,7 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
 ...     print(line)
 "]
     fn summary_lines(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.assigned_stats = None;
         if self.inner.accumulated().is_none() {
             warn::<CallOrderWarning>(
                 py,
@@ -2411,12 +2678,15 @@ Use this instead of ``summarize()`` when you need to capture or restyle the outp
 
 Equivalent to calling the three methods in sequence. Primarily used with
 LVIS pipelines (Detectron2, MMDetection) that expect a single ``run()`` call."]
-    fn run(&mut self, py: Python<'_>) -> PyResult<()> {
+    fn run(slf: &Bound<'_, Self>) -> PyResult<()> {
         // The binding's own three steps, not the core `run()`, which prints
-        // with `println!` — see `print_lines`.
-        self.evaluate(py)?;
-        self.accumulate(py)?;
-        self.summarize(py)
+        // with `println!` — see `print_lines`. Looked up on the object, so a
+        // subclass's override of a step runs, as it does under lvis-api's
+        // `run()`.
+        slf.call_method0("evaluate")?;
+        slf.call_method0("accumulate")?;
+        slf.call_method0("summarize")?;
+        Ok(())
     }
 
     #[getter]
@@ -2748,6 +3018,13 @@ Examples
 >>> ev.f_scores(beta=2.0)   # recall-weighted"]
     #[pyo3(signature = (beta = 1.0))]
     fn f_scores(&mut self, py: Python<'_>, beta: f64) -> PyResult<Py<PyAny>> {
+        // NaN, zero, a negative, and infinity would each come back as a
+        // score under a key like `FNaN` or `F-1`.
+        if !(beta.is_finite() && beta > 0.0) {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "beta must be a positive number, got {beta}"
+            )));
+        }
         let (scores, refused) =
             self.with_params(py, |ev| (ev.f_scores(beta), ev.check_accumulated().err()));
         if let Some(reason) = refused {
@@ -2792,6 +3069,130 @@ Examples
         self.coco_dt()
     }
 
+    /// Pickle and ``copy.deepcopy``: the datasets and the ``params`` each step
+    /// ran under, not the match results. Restoring builds an evaluator on the
+    /// datasets and repeats the steps the current run had reached, which is
+    /// faster and smaller than storing the per-image records.
+    fn __reduce__<'py>(slf: &Bound<'py, Self>) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        let this = slf.borrow();
+        let replay = this.inner.replay().ok_or_else(|| {
+            pyo3::exceptions::PyTypeError::new_err(
+                "cannot pickle or copy the evaluator StreamingEval's finalize() returns: \
+                 it holds match results and no datasets to repeat the run on",
+            )
+        })?;
+        let params_obj = |p: hotcoco_core::Params| Py::new(py, PyParams { inner: p });
+        let state = PyDict::new(py);
+        state.set_item(
+            "mode",
+            match this.inner.eval_mode {
+                hotcoco_core::EvalMode::Coco => "coco",
+                hotcoco_core::EvalMode::Lvis => "lvis",
+                hotcoco_core::EvalMode::OpenImages => "oid",
+            },
+        )?;
+        if let Some(h) = &this.inner.hierarchy {
+            state.set_item("hierarchy", (h.parent_map(), &h.virtual_names))?;
+        }
+        if let Some(p) = replay.evaluated {
+            state.set_item("evaluated", params_obj(p)?)?;
+        }
+        if let Some(p) = replay.accumulated {
+            state.set_item("accumulated", params_obj(p)?)?;
+        }
+        state.set_item("summarized", replay.summarized)?;
+        state.set_item("params", this.params.clone_ref(py))?;
+        if let Some(stats) = &this.assigned_stats {
+            state.set_item("stats", stats.clone_ref(py))?;
+        }
+        // What a Python subclass stored on the instance; the base class has
+        // no `__dict__`.
+        if let Ok(attrs) = slf.getattr("__dict__") {
+            state.set_item("attrs", attrs)?;
+        }
+        let iou_type = this.params.borrow(py).inner.iou_type.to_string();
+        let newobj = py.import("copyreg")?.getattr("__newobj__")?;
+        Ok((
+            newobj,
+            (
+                slf.get_type(),
+                PyCOCO::shared(replay.coco_gt),
+                PyCOCO::shared(replay.coco_dt),
+                iou_type,
+            ),
+            state,
+        )
+            .into_pyobject(py)?
+            .into_any())
+    }
+
+    fn __setstate__(slf: &Bound<'_, Self>, state: &Bound<'_, PyDict>) -> PyResult<()> {
+        type Edges = (HashMap<u64, u64>, HashMap<u64, String>);
+        let py = slf.py();
+        let params_at = |key: &str| -> PyResult<Option<hotcoco_core::Params>> {
+            match state.get_item(key)? {
+                Some(p) => Ok(Some(p.cast::<PyParams>()?.borrow().inner.clone())),
+                None => Ok(None),
+            }
+        };
+        {
+            let mut this = slf.borrow_mut();
+            let this = &mut *this;
+            // `__new__` built a COCO-mode evaluator on the datasets; the mode
+            // is state, so rebuild in it.
+            let gt = Arc::clone(this.inner.coco_gt());
+            let dt = Arc::clone(this.inner.coco_dt());
+            let iou = this.inner.params.iou_type;
+            let mode: String = match state.get_item("mode")? {
+                Some(mode) => mode.extract()?,
+                None => "coco".to_string(),
+            };
+            match mode.as_str() {
+                "lvis" => this.inner = hotcoco_core::COCOeval::new_lvis(gt, dt, iou),
+                "oid" => {
+                    let hierarchy = match state.get_item("hierarchy")? {
+                        Some(edges) => {
+                            let (parents, names): Edges = edges.extract()?;
+                            let mut h = hotcoco_core::Hierarchy::from_parent_map(parents);
+                            h.virtual_names = names;
+                            Some(h)
+                        }
+                        None => None,
+                    };
+                    this.inner = hotcoco_core::COCOeval::new_oid(gt, dt, hierarchy);
+                }
+                _ => {}
+            }
+            // The core steps, not the binding's: a copy prints no summary and
+            // repeats no warning the original already gave.
+            let inner = &mut this.inner;
+            if let Some(p) = params_at("evaluated")? {
+                inner.params = p;
+                py.detach(|| inner.evaluate()).map_err(to_pyerr)?;
+            }
+            let accumulated = params_at("accumulated")?;
+            if let Some(p) = accumulated.clone() {
+                inner.params = p;
+                py.detach(|| inner.accumulate());
+                if matches!(state.get_item("summarized")?, Some(s) if s.is_truthy()?) {
+                    inner.summarize_lines();
+                }
+            }
+            if let Some(current) = params_at("params")? {
+                inner.params.clone_from(&current);
+                this.params.borrow_mut(py).inner = current;
+            }
+            this.eval_cache = None;
+            this.eval_params = accumulated.map(|_| this.params.clone_ref(py));
+            this.assigned_stats = state.get_item("stats")?.map(Bound::unbind);
+        }
+        if let Some(attrs) = state.get_item("attrs")? {
+            slf.getattr("__dict__")?.call_method1("update", (attrs,))?;
+        }
+        Ok(())
+    }
+
     /// The evaluation parameters — the **same live object** on every access.
     ///
     /// Assigning to its attributes (``ev.params.imgIds = [...]``) configures
@@ -2829,22 +3230,43 @@ Examples
     ///
     /// An empty list before ``summarize()`` has run, then a numpy ``float64``
     /// array (12 values for bbox/segm, 10 for keypoints, 13 for LVIS).
+    ///
+    /// Assignable, as the attribute is in pycocotools, for a subclass whose
+    /// ``summarize()`` computes its own values. An assigned value is what
+    /// ``stats`` returns until the next ``evaluate()``, ``accumulate()``, or
+    /// ``summarize()``; ``results()`` never reads it.
     #[getter]
     fn stats(&self, py: Python<'_>) -> Py<PyAny> {
+        if let Some(assigned) = &self.assigned_stats {
+            return assigned.clone_ref(py);
+        }
         match self.inner.stats() {
             Some(s) => numpy::PyArray1::from_slice(py, s).into_any().unbind(),
             None => PyList::empty(py).into_any().unbind(),
         }
     }
-
-    #[getter]
-    fn eval_imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        eval_imgs_to_py(py, self.inner.eval_imgs())
+    #[setter]
+    fn set_stats(&mut self, value: Py<PyAny>) {
+        self.assigned_stats = Some(value);
     }
 
+    /// The per-image match records of the last ``evaluate()``: one dict per
+    /// image, category and area range that has a ground truth or a detection.
+    /// ``evalImgs`` holds the same dicts in pycocotools' layout.
+    #[getter]
+    fn eval_imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        eval_imgs_to_py(py, self.inner.eval_imgs().iter().map(Option::as_ref))
+    }
+
+    /// pycocotools' ``evalImgs``: a list of ``K * A * I`` entries, category by
+    /// area range by image, ``None`` where an image has neither a ground
+    /// truth nor a detection of the category, so
+    /// ``np.asarray(ev.evalImgs).reshape(K, A, I)`` works as it does there.
+    /// Nearly all of it is ``None`` on a dataset with many categories;
+    /// iterate ``eval_imgs`` instead, which leaves the empty slots out.
     #[getter(evalImgs)]
     fn eval_imgs_camel(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.eval_imgs(py)
+        eval_imgs_to_py(py, self.inner.eval_imgs_grid().into_iter())
     }
 
     /// pycocotools' ``ious``: ``{(image_id, category_id): matrix}`` for every
@@ -2960,6 +3382,12 @@ Example
         max_det: Option<usize>,
         min_score: Option<f64>,
     ) -> PyResult<Py<PyAny>> {
+        // No IoU is at or above NaN, so every pair read as unmatched.
+        if iou_thr.is_nan() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "iou_thr must be a number, got nan",
+            ));
+        }
         let cm = self.with_params(py, |ev| {
             py.detach(|| ev.confusion_matrix(iou_thr, max_det, min_score))
         });
@@ -3345,14 +3773,29 @@ fn spent() -> PyErr {
 #[pymethods]
 impl PyStreamingEval {
     #[new]
-    #[pyo3(signature = (categories, iou_type="bbox", lvis_style=false, params=None))]
+    #[pyo3(signature = (categories, iou_type=None, lvis_style=false, params=None))]
     fn new(
         categories: &Bound<'_, PyList>,
-        iou_type: &str,
+        iou_type: Option<&str>,
         lvis_style: bool,
         params: Option<&PyParams>,
     ) -> PyResult<Self> {
-        let iou = parse_iou_type(iou_type)?;
+        // `params` carries an IoU type of its own, and it is the one the run
+        // uses. An `iou_type` that names another is a conflict, not a value
+        // to drop: box AP would come back from `iou_type="segm"`.
+        let iou = match (iou_type.map(parse_iou_type).transpose()?, params) {
+            (Some(iou), Some(p)) if iou != p.inner.iou_type => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "iou_type={:?} but params is for {:?}; build it as Params({:?})",
+                    iou_type.unwrap_or_default(),
+                    p.inner.iou_type.to_string(),
+                    iou_type.unwrap_or_default(),
+                )));
+            }
+            (Some(iou), _) => iou,
+            (None, Some(p)) => p.inner.iou_type,
+            (None, None) => hotcoco_core::params::IouType::Bbox,
+        };
         let categories = dict_list(categories, "categories", py_to_category)?;
 
         let eval_mode = if lvis_style {
@@ -3519,14 +3962,13 @@ raises ``RuntimeError``."]
 // EvalImg / AccumulatedEval → Python converters
 // ---------------------------------------------------------------------------
 
-fn eval_imgs_to_py(
+fn eval_imgs_to_py<'a>(
     py: Python<'_>,
-    eval_imgs: &[Option<hotcoco_core::EvalImg>],
+    eval_imgs: impl Iterator<Item = Option<&'a hotcoco_core::EvalImg>>,
 ) -> PyResult<Py<PyAny>> {
     let list = PyList::new(
         py,
         eval_imgs
-            .iter()
             .map(|opt| match opt {
                 None => Ok(py.None()),
                 Some(e) => eval_img_to_py(py, e),
@@ -3546,7 +3988,13 @@ fn matrix_rows<T>(m: &hotcoco_core::ThreshMatrix<T>) -> Vec<&[T]> {
 fn eval_img_to_py(py: Python<'_>, e: &hotcoco_core::EvalImg) -> PyResult<Py<PyAny>> {
     let dict = PyDict::new(py);
     dict.set_item("image_id", e.image_id)?;
-    dict.set_item("category_id", e.category_id)?;
+    // The pooled category of a `useCats`-off run is `-1`, as in pycocotools'
+    // records and in `ious`.
+    if e.category_id == hotcoco_core::POOLED_CAT {
+        dict.set_item("category_id", -1)?;
+    } else {
+        dict.set_item("category_id", e.category_id)?;
+    }
     dict.set_item("aRng", e.area_rng.to_vec())?;
     dict.set_item("maxDet", e.max_det)?;
     dict.set_item("dtIds", e.dt_ids.clone())?;
@@ -3635,6 +4083,9 @@ fn init_as_pycocotools(py: Python<'_>) -> PyResult<()> {
     modules.set_item("pycocotools.mask", &mask_mod)?;
     hotcoco.setattr("coco", &hotcoco)?;
     hotcoco.setattr("cocoeval", &hotcoco)?;
+    // `pycocotools.coco` and `pycocotools.cocoeval` both do `from . import mask
+    // as maskUtils`, and Detectron2 imports the name from `cocoeval`.
+    hotcoco.setattr("maskUtils", &mask_mod)?;
     Ok(())
 }
 

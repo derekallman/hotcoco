@@ -48,7 +48,7 @@ pub struct YoloStats {
 /// that is not in the dataset.
 pub fn coco_to_yolo(dataset: &Dataset, output_dir: &Path) -> Result<YoloStats, ConvertError> {
     super::check_unique_stems(dataset)?;
-    fs::create_dir_all(output_dir)?;
+    fs::create_dir_all(output_dir).map_err(super::io_at(output_dir))?;
 
     let mut sorted_cats: Vec<&Category> = dataset.categories.iter().collect();
     sorted_cats.sort_by_key(|c| c.id);
@@ -76,7 +76,7 @@ pub fn coco_to_yolo(dataset: &Dataset, output_dir: &Path) -> Result<YoloStats, C
         let stem = super::file_stem(&img.file_name);
 
         let txt_path = output_dir.join(format!("{stem}.txt"));
-        let mut file = fs::File::create(&txt_path)?;
+        let mut file = fs::File::create(&txt_path).map_err(super::io_at(&txt_path))?;
 
         let w = img.width as f64;
         let h = img.height as f64;
@@ -116,7 +116,7 @@ pub fn coco_to_yolo(dataset: &Dataset, output_dir: &Path) -> Result<YoloStats, C
 
     // Write data.yaml (hand-rolled; no serde_yaml dep needed for this two-field format)
     let yaml_path = output_dir.join("data.yaml");
-    let mut yaml_file = fs::File::create(&yaml_path)?;
+    let mut yaml_file = fs::File::create(&yaml_path).map_err(super::io_at(&yaml_path))?;
     writeln!(yaml_file, "nc: {}", sorted_cats.len())?;
     let names_csv: Vec<Cow<'_, str>> = sorted_cats
         .iter()
@@ -157,7 +157,7 @@ pub fn yolo_to_coco(
     if !yaml_path.exists() {
         return Err(ConvertError::MissingDataYaml);
     }
-    let yaml_content = fs::read_to_string(&yaml_path)?;
+    let yaml_content = fs::read_to_string(&yaml_path).map_err(super::io_at(&yaml_path))?;
     let names = parse_data_yaml(&yaml_path, &yaml_content)?;
 
     let categories: Vec<Category> = names
@@ -173,7 +173,8 @@ pub fn yolo_to_coco(
     // Collect and sort .txt files for deterministic ordering. The extension is
     // compared as bytes so a non-UTF-8 name is caught by `utf8_stem` below
     // rather than silently filtered out here.
-    let mut txt_files: Vec<PathBuf> = fs::read_dir(yolo_dir)?
+    let mut txt_files: Vec<PathBuf> = fs::read_dir(yolo_dir)
+        .map_err(super::io_at(yolo_dir))?
         .filter_map(|entry| {
             let path = entry.ok()?.path();
             if path.extension() == Some(OsStr::new("txt")) {
@@ -204,7 +205,7 @@ pub fn yolo_to_coco(
             ..Default::default()
         });
 
-        let content = fs::read_to_string(txt_path)?;
+        let content = fs::read_to_string(txt_path).map_err(super::io_at(txt_path))?;
         let w = f64::from(width);
         let h = f64::from(height);
 

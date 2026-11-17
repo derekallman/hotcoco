@@ -482,7 +482,67 @@ def _build_over_300_per_image():
     return make_lvis_gt(images, gt_anns, categories), dts
 
 
+def _build_flagged_ground_truth(flags):
+    """One flagged ground truth with three detections on it, among plain ones.
+
+    The three detections are what separates the rules. A COCO crowd region
+    absorbs all three; an lvis-api `ignore` ground truth takes one match and
+    leaves the other two as false positives; an unflagged one is a true
+    positive and two false positives. lvis-api reads `ignore` and never
+    `iscrowd`, so each flag has to move the numbers exactly as it does there.
+    """
+
+    def build():
+        images = [
+            {"id": i, "width": 200, "height": 200, "neg_category_ids": [], "not_exhaustive_category_ids": []}
+            for i in (1, 2, 3)
+        ]
+        categories = [
+            {"id": 1, "name": "a", "frequency": "f", "image_count": 3, "instance_count": 4},
+            {"id": 2, "name": "b", "frequency": "c", "image_count": 1, "instance_count": 1},
+        ]
+
+        def gt(ann_id, img, cat, box, **extra):
+            return {
+                "id": ann_id,
+                "image_id": img,
+                "category_id": cat,
+                "bbox": box,
+                "area": box[2] * box[3],
+                "segmentation": [],
+                **extra,
+            }
+
+        gt_anns = [
+            gt(1, 1, 1, bbox(10, 10, 40, 40)),
+            gt(2, 1, 1, bbox(100, 100, 60, 60), **flags),
+            gt(3, 2, 1, bbox(20, 20, 50, 50)),
+            gt(4, 3, 1, bbox(30, 30, 40, 40)),
+            gt(5, 3, 2, bbox(120, 20, 40, 40)),
+        ]
+
+        def det(img, cat, box, score):
+            return {"image_id": img, "category_id": cat, "bbox": box, "score": score, "segmentation": []}
+
+        dts = [
+            det(1, 1, bbox(10, 10, 40, 40), 0.95),
+            det(1, 1, bbox(100, 100, 60, 60), 0.90),
+            det(1, 1, bbox(102, 102, 58, 58), 0.85),
+            det(1, 1, bbox(110, 110, 30, 30), 0.80),  # inside the flagged box: high IoA, low IoU
+            det(2, 1, bbox(22, 22, 50, 50), 0.75),
+            det(3, 1, bbox(90, 90, 40, 40), 0.70),
+            det(3, 2, bbox(120, 20, 40, 40), 0.65),
+        ]
+        return make_lvis_gt(images, gt_anns, categories), dts
+
+    return build
+
+
 SCENARIOS = [
+    ("gt_ignore", _build_flagged_ground_truth({"ignore": 1})),
+    ("gt_ignore_zero", _build_flagged_ground_truth({"ignore": 0})),
+    ("gt_iscrowd", _build_flagged_ground_truth({"iscrowd": 1})),
+    ("gt_ignore_and_iscrowd", _build_flagged_ground_truth({"ignore": 1, "iscrowd": 1})),
     ("basic", _build_basic),
     ("three_freq", _build_three_freq),
     ("edge_cases", _build_edge_cases),
@@ -514,3 +574,19 @@ def test_lvis_results_cap_is_not_reapplied(max_dets):
         got = run_hotcoco(gt_path, dts, max_dets=max_dets)
     assert ref["APr"] == pytest.approx(1.0), "the scenario must exercise the cap"
     assert_matches_lvis_api(f"max_dets={max_dets}", ref, got)
+
+
+def test_the_ground_truth_flags_move_the_lvis_numbers():
+    """The four flag scenarios agreeing with lvis-api proves nothing if the
+    flags do nothing: `ignore` has to change the result and `iscrowd` must not."""
+
+    def ap(flags):
+        gt_data, dts = _build_flagged_ground_truth(flags)()
+        with written_json(gt_data, quiet=True) as (gt_path,):
+            return run_hotcoco(gt_path, dts)["AP"]
+
+    plain = ap({})
+    assert ap({"iscrowd": 1}) == plain
+    assert ap({"ignore": 0}) == plain
+    assert ap({"ignore": 1}) != plain
+    assert ap({"ignore": 1, "iscrowd": 1}) == ap({"ignore": 1})

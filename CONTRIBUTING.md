@@ -103,7 +103,7 @@ just parity
 
 Tolerance: 1e-12 for every iou_type — sized to floating-point noise and nothing else; the measured worst case is recorded in [Metric parity](docs/benchmarks.md#metric-parity).
 
-TIDE has its own real-data gate, `just parity-tide`. Every other reference comparison needs no `data/` and runs as part of `just test`; the list is under [Tests](#tests).
+TIDE has its own real-data gate, `just parity-tide`, and the framework shims have `just parity-frameworks`. Every other reference comparison needs no `data/` and runs as part of `just test`; the list is under [Tests](#tests).
 
 ### After changing Python bindings
 
@@ -187,9 +187,11 @@ scripts regenerate them. What each reference comparison checks:
 | `scripts/fuzz_torchmetrics.py` | torchmetrics' `MeanAveragePrecision` on its pycocotools backend, with hotcoco swapped in the way RF-DETR runs it (`just fuzz-torchmetrics`) |
 
 Oriented-box *evaluation* has no reference protocol, so `report()` marks it
-`Provenance::Extension`. Three checks need the gitignored `data/`: `just parity`
-(pycocotools on COCO val2017), `just parity-tide` (tidecv), and `just parity-panoptic`
-(panopticapi on COCO panoptic val2017; `just download-panoptic` fetches the 35 MB it needs).
+`Provenance::Extension`. Four checks need the gitignored `data/`: `just parity`
+(pycocotools on COCO val2017), `just parity-tide` (tidecv), `just parity-panoptic`
+(panopticapi on COCO panoptic val2017; `just download-panoptic` fetches the 35 MB it needs),
+and `just parity-frameworks` (Detectron2's and MMDetection's own evaluators on hotcoco
+versus on pycocotools and lvis-api; the first run builds `.venv-frameworks`, about 350 MB).
 
 ## Submitting a pull request
 

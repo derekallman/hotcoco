@@ -424,6 +424,7 @@ uv run python scripts/bench.py --phases     # load/eval phase breakdown
 uv run python scripts/bench.py --scale 10   # 10x stress test
 just parity                                 # metric parity vs pycocotools
 just parity-tide                            # TIDE vs tidecv
+just parity-frameworks                      # Detectron2 and MMDetection evaluators, hotcoco vs pycocotools and lvis-api
 just download-panoptic                      # 35 MB — panoptic val2017 + perturbed predictions
 just parity-panoptic                        # PQ/SQ/RQ vs panopticapi
 uv run pytest tests/test_mask_parity.py     # hotcoco.mask vs pycocotools.mask, bit for bit

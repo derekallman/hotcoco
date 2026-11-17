@@ -104,6 +104,12 @@ def test_top_level_exports_covered():
     assert not missing, f"Public names missing from stubs: {sorted(missing)}"
 
 
+# pycocotools' and lvis-api's index maps on `COCO` are looked up in
+# `__getattr__`, not declared as properties, so that a subclass may assign them
+# (MMDetection's wrapper does: `self.img_ann_map = self.imgToAnns`).
+FALLBACK_ATTRIBUTES = {"COCO": {"imgToAnns", "catToImgs", "img_ann_map", "cat_img_map"}}
+
+
 @pytest.mark.parametrize("name", ["COCO", "COCOeval", "Params", "Hierarchy"])
 def test_members_covered(name):
     """Each stubbed top-level object and its stub must list the same members.
@@ -127,6 +133,11 @@ def test_members_covered(name):
     # `_public_names` drops underscore-prefixed names, so compare like with like —
     # otherwise every stubbed `__init__` reads as a phantom.
     phantom = {m for m in stub_members if not m.startswith("_")} - runtime_members
+    # Served by `__getattr__` and so absent from `dir()`; each must still read.
+    fallback = FALLBACK_ATTRIBUTES.get(name, set())
+    unreadable = sorted(m for m in fallback if not hasattr(getattr(hotcoco, name)(), m))
+    assert not unreadable, f"{name} fallback attributes that do not read: {unreadable}"
+    phantom -= fallback
     assert not phantom, f"{name} members stubbed but not defined: {sorted(phantom)}"
 
 

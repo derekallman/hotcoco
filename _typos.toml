@@ -24,6 +24,8 @@ locale = "en-us"
 coco = "coco"
 hotcoco = "hotcoco"
 pycocotools = "pycocotools"
+# pycocotools' own keyword for the mask argument of `mask.encode`.
+bimask = "bimask"
 pyo = "pyo"
 maturin = "maturin"
 cdylib = "cdylib"

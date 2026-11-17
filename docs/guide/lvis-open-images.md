@@ -60,6 +60,24 @@ Small, medium, and large are the COCO area ranges — see [`area_rng`](../api/pa
 
 `get_results()` returns all 13 metrics as a dict for programmatic access.
 
+### Ignored ground truth
+
+Each protocol has its own flag for a ground truth that should not count
+against a detector, and they are three rules, not three names for one. Each
+mode reads the flag its reference reads, and no other:
+
+| Mode | Flag | A detection on it | More detections on it |
+|---|---|---|---|
+| COCO | `iscrowd` | Ignored; matched by intersection over the detection's area | Ignored too: a crowd region absorbs any number |
+| LVIS | `ignore` | Ignored; matched by plain IoU | False positives: it takes one match, as any instance does |
+| Open Images | `IsGroupOf` | A true positive | Ignored; see [Group-of annotations](#group-of-annotations) |
+
+So `iscrowd` does nothing under `LVISeval`, as lvis-api never reads it, and
+`ignore` does nothing under `COCOeval`, as pycocotools overwrites it with
+`iscrowd`. The released LVIS v1 annotations carry neither key. To evaluate
+COCO-format ground truth with crowd regions under the LVIS protocol, decide
+what a crowd should mean there and set `ignore` yourself.
+
 ## Open Images evaluation
 
 [Open Images](https://storage.googleapis.com/openimages/web/index.html) uses a different evaluation protocol from COCO: a single AP@IoU=0.5, a category hierarchy for annotation expansion, and `is_group_of` annotations in place of `iscrowd`. hotcoco supports all three.

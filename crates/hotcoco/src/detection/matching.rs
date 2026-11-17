@@ -23,6 +23,7 @@
 //! Naming note: `matching`, not `match` — the latter is a reserved word and
 //! `mod match;` does not compile without `r#` escaping.
 
+use super::EvalMode;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -792,16 +793,11 @@ fn gather_pair<'a>(
 /// Decide which of the pair's ground truths this area range ignores, and
 /// partition them non-ignored-first into `gt`.
 ///
-/// Ignore rules are mode-dependent: Open Images ignores group-of boxes and does
-/// not care about `iscrowd`; COCO/LVIS ignore crowds, and keypoint evaluation
-/// additionally ignores annotations with no labeled keypoints.
-fn partition_gt(
-    gt: &mut GtView,
-    pair: &PairCell<'_>,
-    area_rng: [f64; 2],
-    is_kp: bool,
-    is_oid: bool,
-) {
+/// Ignore rules are mode-dependent, each mode reading the flag its reference
+/// reads and no other: COCO ignores `iscrowd` regions, and for keypoints
+/// annotations with no labeled keypoints; LVIS ignores annotations flagged
+/// `ignore`; Open Images holds group-of boxes out for its own pass.
+fn partition_gt(gt: &mut GtView, pair: &PairCell<'_>, area_rng: [f64; 2], rule: GtRule) {
     let anns = pair.gt_anns.as_slice();
     let GtView {
         flags,
@@ -814,10 +810,7 @@ fn partition_gt(
     } = gt;
 
     flags.clear();
-    flags.extend(
-        anns.iter()
-            .map(|ann| gt_flags(ann, area_rng, is_kp, is_oid)),
-    );
+    flags.extend(anns.iter().map(|ann| gt_flags(ann, area_rng, rule)));
 
     // Stable partition on the ignore flag: non-ignored first, load order kept
     // within each side. Tie order is observable through `evalImgs`.
@@ -830,9 +823,12 @@ fn partition_gt(
     in_denominator_sorted.extend(order.iter().map(|&i| flags[i].1));
     *num_in_denominator = in_denominator_sorted.iter().filter(|&&x| x).count();
     iscrowd_sorted.clear();
-    iscrowd_sorted.extend(order.iter().map(|&i| anns[i].iscrowd));
+    // Only COCO has crowd regions; lvis-api never reads `iscrowd`.
+    if rule.mode == EvalMode::Coco {
+        iscrowd_sorted.extend(order.iter().map(|&i| anns[i].iscrowd));
+    }
     is_group_of_sorted.clear();
-    if is_oid {
+    if rule.mode == EvalMode::OpenImages {
         is_group_of_sorted.extend(order.iter().map(|&i| anns[i].is_group_of.unwrap_or(false)));
     }
 }
@@ -845,20 +841,62 @@ fn partition_gt(
 /// and "counted" at once, which Open Images group-of boxes need: they are
 /// held out of matching (the second pass in `match_cell` absorbs them) yet
 /// still count as one ground truth. See `EvalImg::gt_in_denominator`.
-fn gt_flags(ann: &Annotation, area_rng: [f64; 2], is_kp: bool, is_oid: bool) -> (bool, bool) {
+fn gt_flags(ann: &Annotation, area_rng: [f64; 2], rule: GtRule) -> (bool, bool) {
     let a = ann.area.unwrap_or(0.0);
     let area_ignore = a < area_rng[0] || a > area_rng[1];
-    if is_oid {
-        (
+    match rule.mode {
+        EvalMode::OpenImages => (
             ann.is_group_of.unwrap_or(false) || area_ignore,
             !area_ignore,
-        )
-    } else {
-        let mut ignore = ann.iscrowd || area_ignore;
-        if is_kp {
-            ignore = ignore || ann.num_visible_keypoints() == 0;
+        ),
+        EvalMode::Lvis => {
+            let ignore = lvis_ignore(ann) || area_ignore;
+            (ignore, !ignore)
         }
-        (ignore, !ignore)
+        EvalMode::Coco => {
+            let mut ignore = ann.iscrowd || area_ignore;
+            if rule.is_kp {
+                ignore = ignore || ann.num_visible_keypoints() == 0;
+            }
+            (ignore, !ignore)
+        }
+    }
+}
+
+/// The ground-truth ignore rule of one `evaluate()`: the protocol, and
+/// whether the run is keypoints, which adds COCO's no-labeled-keypoints rule.
+///
+/// Each protocol reads one flag, and they are three rules, not three names
+/// for one:
+///
+/// | Mode | Flag | A detection on it | More detections on it |
+/// |---|---|---|---|
+/// | COCO | `iscrowd` | ignored, matched by IoA | ignored too: a region absorbs any number |
+/// | LVIS | `ignore` | ignored, matched by IoU | false positives: one match, as any instance |
+/// | Open Images | `IsGroupOf` | a true positive, matched by IoA | ignored |
+///
+/// pycocotools reads a ground truth's `ignore` and then overwrites it with
+/// `iscrowd`; lvis-api reads `ignore` and passes `iscrowd = 0` for every
+/// ground truth. So a flag from another protocol's vocabulary is inert here,
+/// as it is in the reference.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GtRule {
+    pub(super) mode: EvalMode,
+    pub(super) is_kp: bool,
+}
+
+/// lvis-api's `if g["ignore"]`: the annotation's `ignore` key, by Python
+/// truthiness. `ignore` is not a COCO schema field, so it rides in `extra`;
+/// real LVIS files do not carry it and this is one lookup in an empty map.
+pub(super) fn lvis_ignore(ann: &Annotation) -> bool {
+    use serde_json::Value;
+    match ann.extra.get("ignore") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_f64().is_some_and(|x| x != 0.0),
+        Some(Value::String(s)) => !s.is_empty(),
+        Some(Value::Array(a)) => !a.is_empty(),
+        Some(Value::Object(o)) => !o.is_empty(),
     }
 }
 
@@ -968,7 +1006,8 @@ fn match_cell(ctx: &EvalImgContext<'_>, pair: &PairCell<'_>, s: &mut MatchScratc
         g,
         gt.num_not_ignored,
         GtMasks {
-            rematchable: (!is_oid).then_some(gt.iscrowd_sorted.as_slice()),
+            rematchable: (ctx.gt_rule.mode == EvalMode::Coco)
+                .then_some(gt.iscrowd_sorted.as_slice()),
             phase2_eligible: is_oid.then_some(phase2_eligible.as_slice()),
         },
         ctx.match_floors,
@@ -1041,7 +1080,7 @@ fn match_area(
     not_exhaustive_cat: bool,
     s: &mut MatchScratch,
 ) {
-    partition_gt(&mut s.gt, pair, area_rng, ctx.is_kp, ctx.is_oid);
+    partition_gt(&mut s.gt, pair, area_rng, ctx.gt_rule);
     area_filter_dt(
         &mut s.dt_ignore_unless_matched,
         pair,
@@ -1089,7 +1128,7 @@ pub(super) fn push_pair_lean<'a>(
             let num_gt = pair
                 .gt_anns
                 .iter()
-                .filter(|ann| gt_flags(ann, ar.range, ctx.is_kp, ctx.is_oid).1)
+                .filter(|ann| gt_flags(ann, ar.range, ctx.gt_rule).1)
                 .count();
             let ignored =
                 |d: usize| ignored_unless_matched(pair.dt_anns[d], ar.range, not_exhaustive_cat);
@@ -1272,10 +1311,10 @@ pub(super) struct EvalImgContext<'a> {
     pub(super) coco_dt: &'a COCO,
     pub(super) params: &'a Params,
     pub(super) ious: &'a HashMap<(u64, u64), IouMatrix>,
-    /// `params.iou_type` is keypoints, and the evaluator runs Open Images:
-    /// resolved once, since the ground-truth ignore rule reads both per pair.
-    pub(super) is_kp: bool,
+    /// Whether the evaluator runs Open Images, and the ground-truth ignore
+    /// rule: resolved once, since both are read per pair.
     pub(super) is_oid: bool,
+    pub(super) gt_rule: GtRule,
     /// `params.iou_thrs` with pycocotools' match floor applied
     /// ([`crate::primitives::greedy::coco_match_floor`]). Resolved once per
     /// `evaluate()` rather than per image-category pair: this is read inside a

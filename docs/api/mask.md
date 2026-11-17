@@ -23,6 +23,11 @@ Two conventions hold for every function here, both matching pycocotools:
 - **Return types are pycocotools' types** — `counts` is `bytes`, batch areas are
   `uint32`, boxes are `float64`.
 
+Where `pycocotools.mask` names an argument differently, its keyword works
+too: `bimask=` for `mask`, `rleObjs=` for `rle` and `rles`, `pyiscrowd=` for
+`iscrowd`, and `pyobj=` for `seg`. Pass one name or the other; both is a
+`TypeError`.
+
 The functions that have a camelCase name in `pycocotools.mask` are available
 under both spellings; everything else has one. camelCase aliases: see the
 [alias table](../getting-started/migration.md#method-naming).

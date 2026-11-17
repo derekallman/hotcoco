@@ -34,6 +34,39 @@ pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
     dst
 }
 
+/// One argument under either of its two names: hotcoco's, which is also the
+/// positional slot, or the keyword `pycocotools.mask` gives it
+/// (`decode(rleObjs=...)`). Both spellings reach the same code, so a script
+/// written against pycocotools' signatures runs unchanged.
+///
+/// Having two names makes both optional to Python, so an argument left out
+/// arrives here as `None`, the same as one passed as `None`: it goes on to
+/// the reader, whose error says what the argument must be.
+fn either_name<'py>(
+    py: Python<'py>,
+    func: &str,
+    (ours, value): (&str, Option<&Bound<'py, PyAny>>),
+    (theirs, alias): (&str, Option<&Bound<'py, PyAny>>),
+) -> PyResult<Bound<'py, PyAny>> {
+    match (value, alias) {
+        (Some(_), Some(_)) => Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "{func}() got both '{ours}' and '{theirs}', which name the same argument"
+        ))),
+        (Some(v), None) | (None, Some(v)) => Ok(v.clone()),
+        (None, None) => Ok(py.None().into_bound(py)),
+    }
+}
+
+/// A required `h` or `w` that sits after an argument with two names, and so
+/// has to be declared optional.
+fn required_dim(func: &str, name: &str, value: Option<u32>) -> PyResult<u32> {
+    value.ok_or_else(|| {
+        pyo3::exceptions::PyTypeError::new_err(format!(
+            "{func}() missing 1 required argument: '{name}'"
+        ))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // encode
 // ---------------------------------------------------------------------------
@@ -53,8 +86,13 @@ pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
 /// dict or list[dict]
 ///     ``{"size": [H, W], "counts": b"..."}`` matching pycocotools.
 #[pyfunction]
-#[pyo3(text_signature = "(mask)")]
-pub fn encode(py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (mask=None, *, bimask=None))]
+pub fn encode(
+    py: Python<'_>,
+    mask: Option<&Bound<'_, PyAny>>,
+    bimask: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let mask = &either_name(py, "encode", ("mask", mask), ("bimask", bimask))?;
     let mask = as_uint8(mask)?;
     match mask.ndim() {
         2 => encode_2d(py, mask.cast()?),
@@ -470,8 +508,16 @@ fn encode_slice(block: &[u8], h: usize, w: usize) -> hotcoco_core::error::Result
 /// -------
 /// numpy.ndarray
 #[pyfunction]
-#[pyo3(text_signature = "(rle)")]
-pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (rle=None, *, rleObjs=None))]
+// `rleObjs` is pycocotools' keyword, and PyO3 exposes Rust parameter names as
+// Python keywords; see the camelCase aliases in lib.rs for the lint's scope.
+#[allow(non_snake_case)]
+pub fn decode(
+    py: Python<'_>,
+    rle: Option<&Bound<'_, PyAny>>,
+    rleObjs: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let rle = &either_name(py, "decode", ("rle", rle), ("rleObjs", rleObjs))?;
     if let Ok(dict) = rle.cast::<PyDict>() {
         // Single RLE → (H, W) Fortran-order
         let r = py_to_rle(dict)?;
@@ -526,8 +572,16 @@ pub fn decode(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 ///     Single RLE dict → scalar uint64.
 ///     List of RLE dicts → numpy uint32 array, matching pycocotools.
 #[pyfunction]
-#[pyo3(text_signature = "(rle)")]
-pub fn area(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (rle=None, *, rleObjs=None))]
+// `rleObjs` is pycocotools' keyword, and PyO3 exposes Rust parameter names as
+// Python keywords; see the camelCase aliases in lib.rs for the lint's scope.
+#[allow(non_snake_case)]
+pub fn area(
+    py: Python<'_>,
+    rle: Option<&Bound<'_, PyAny>>,
+    rleObjs: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let rle = &either_name(py, "area", ("rle", rle), ("rleObjs", rleObjs))?;
     if let Ok(dict) = rle.cast::<PyDict>() {
         let a = RleDict::read(dict)?.view()?.area().map_err(to_pyerr)?;
         return Ok(a.into_pyobject(py)?.into_any().unbind());
@@ -577,8 +631,16 @@ fn each_rle<T>(
 ///     Single RLE dict → numpy float64(4,).
 ///     List of RLE dicts → numpy float64(N, 4).
 #[pyfunction]
-#[pyo3(text_signature = "(rle)")]
-pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (rle=None, *, rleObjs=None))]
+// `rleObjs` is pycocotools' keyword, and PyO3 exposes Rust parameter names as
+// Python keywords; see the camelCase aliases in lib.rs for the lint's scope.
+#[allow(non_snake_case)]
+pub fn to_bbox(
+    py: Python<'_>,
+    rle: Option<&Bound<'_, PyAny>>,
+    rleObjs: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let rle = &either_name(py, "to_bbox", ("rle", rle), ("rleObjs", rleObjs))?;
     if let Ok(dict) = rle.cast::<PyDict>() {
         let bbox = RleDict::read(dict)?.view()?.to_bbox().map_err(to_pyerr)?;
         return Ok(PyArray1::from_vec(py, bbox.to_vec()).into_any().unbind());
@@ -590,9 +652,17 @@ pub fn to_bbox(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
 
 /// Alias for `to_bbox` matching pycocotools naming.
 #[pyfunction]
-#[pyo3(name = "toBbox")]
-pub fn to_bbox_camel(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    to_bbox(py, rle)
+#[pyo3(name = "toBbox", signature = (rle=None, *, rleObjs=None))]
+// `rleObjs` is pycocotools' keyword, and PyO3 exposes Rust parameter names as
+// Python keywords; see the camelCase aliases in lib.rs for the lint's scope.
+#[allow(non_snake_case)]
+pub fn to_bbox_camel(
+    py: Python<'_>,
+    rle: Option<&Bound<'_, PyAny>>,
+    rleObjs: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let rle = &either_name(py, "toBbox", ("rle", rle), ("rleObjs", rleObjs))?;
+    to_bbox(py, Some(rle), None)
 }
 
 // ---------------------------------------------------------------------------
@@ -600,8 +670,17 @@ pub fn to_bbox_camel(py: Python<'_>, rle: &Bound<'_, PyAny>) -> PyResult<Py<PyAn
 // ---------------------------------------------------------------------------
 
 #[pyfunction]
-#[pyo3(signature = (rles, intersect = Flag(false)))]
-pub fn merge(py: Python<'_>, rles: &Bound<'_, PyAny>, intersect: Flag) -> PyResult<Py<PyAny>> {
+#[pyo3(signature = (rles=None, intersect=Flag(false), *, rleObjs=None))]
+// `rleObjs` is pycocotools' keyword, and PyO3 exposes Rust parameter names as
+// Python keywords; see the camelCase aliases in lib.rs for the lint's scope.
+#[allow(non_snake_case)]
+pub fn merge(
+    py: Python<'_>,
+    rles: Option<&Bound<'_, PyAny>>,
+    intersect: Flag,
+    rleObjs: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Py<PyAny>> {
+    let rles = &either_name(py, "merge", ("rles", rles), ("rleObjs", rleObjs))?;
     let rle_vec = extract_rle_list(rles)?;
     let result = rmask::merge(&rle_vec, intersect.0).map_err(to_pyerr)?;
     rle_to_coco_py(py, &result)
@@ -674,13 +753,15 @@ fn classify_iou_input(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<Option<Iou
 /// The dispatch is pycocotools' and lives only here — `hotcoco.primitives`
 /// keeps one input type per kernel, and this forwards to those kernels.
 #[pyfunction]
-#[pyo3(text_signature = "(dt, gt, iscrowd)")]
+#[pyo3(signature = (dt, gt, iscrowd=None, *, pyiscrowd=None))]
 pub fn iou(
     py: Python<'_>,
     dt: &Bound<'_, PyAny>,
     gt: &Bound<'_, PyAny>,
-    iscrowd: &Bound<'_, PyAny>,
+    iscrowd: Option<&Bound<'_, PyAny>>,
+    pyiscrowd: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
+    let iscrowd = &either_name(py, "iou", ("iscrowd", iscrowd), ("pyiscrowd", pyiscrowd))?;
     use IouInput::{Boxes, Rles};
     let (dt, gt) = (classify_iou_input(dt, "dt")?, classify_iou_input(gt, "gt")?);
     // Two empty lists take the RLE kernel; either kernel gives a (0, 0) result.
@@ -777,13 +858,17 @@ pub fn rle_from_string(py: Python<'_>, s: &str, h: u32, w: u32) -> PyResult<Py<P
 ///     A single RLE dict when ``seg`` is a dict, a list of RLE dicts when it
 ///     is a list — dict in, dict out, exactly as pycocotools does it.
 #[pyfunction]
-#[pyo3(name = "frPyObjects", text_signature = "(seg, h, w)")]
+#[pyo3(name = "frPyObjects", signature = (seg=None, h=None, w=None, *, pyobj=None))]
 pub fn fr_py_objects(
     py: Python<'_>,
-    seg: &Bound<'_, PyAny>,
-    h: u32,
-    w: u32,
+    seg: Option<&Bound<'_, PyAny>>,
+    h: Option<u32>,
+    w: Option<u32>,
+    pyobj: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
+    let seg = &either_name(py, "frPyObjects", ("seg", seg), ("pyobj", pyobj))?;
+    let h = required_dim("frPyObjects", "h", h)?;
+    let w = required_dim("frPyObjects", "w", w)?;
     // Case 1: single dict (uncompressed or compressed RLE) → single dict
     if let Ok(dict) = seg.cast::<PyDict>() {
         let rle = py_to_rle(dict)?;
@@ -869,12 +954,13 @@ pub fn fr_py_objects(
 /// so without it the snake_case spelling this alias exists to provide is the one
 /// spelling not reachable from Python.
 #[pyfunction]
-#[pyo3(name = "fr_py_objects", text_signature = "(seg, h, w)")]
+#[pyo3(name = "fr_py_objects", signature = (seg=None, h=None, w=None, *, pyobj=None))]
 pub fn fr_py_objects_snake(
     py: Python<'_>,
-    seg: &Bound<'_, PyAny>,
-    h: u32,
-    w: u32,
+    seg: Option<&Bound<'_, PyAny>>,
+    h: Option<u32>,
+    w: Option<u32>,
+    pyobj: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    fr_py_objects(py, seg, h, w)
+    fr_py_objects(py, seg, h, w, pyobj)
 }

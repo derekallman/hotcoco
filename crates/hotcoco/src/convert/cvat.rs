@@ -70,7 +70,7 @@ pub fn coco_to_cvat(
 
     let anns_by_image = super::anns_by_image(dataset);
 
-    let file = fs::File::create(output_path)?;
+    let file = fs::File::create(output_path).map_err(super::io_at(output_path))?;
     let buf = BufWriter::new(file);
     let mut writer = Writer::new_with_indent(buf, b' ', 2);
 
@@ -193,7 +193,7 @@ pub fn coco_to_cvat(
 pub fn cvat_to_coco(
     cvat_path: &std::path::Path,
 ) -> Result<(Dataset, CvatImportStats), ConvertError> {
-    let file = fs::File::open(cvat_path)?;
+    let file = fs::File::open(cvat_path).map_err(super::io_at(cvat_path))?;
     let parsed = parse_cvat_xml(BufReader::new(file)).map_err(|e| e.with_path(cvat_path))?;
 
     let (boxes, polygons) = parsed.images.iter().flat_map(|img| &img.shapes).fold(
@@ -237,7 +237,10 @@ struct ParsedCvat {
 /// annotation (counted), not the file.
 fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertError> {
     let mut xml = Reader::from_reader(reader);
-    xml.config_mut().trim_text(true);
+    // Not trimmed by the reader: it trims each piece of a text split at an
+    // entity reference, and `salt &amp; pepper` loses its spaces. The whole
+    // text is trimmed once collected.
+    xml.config_mut().trim_text(false);
 
     let mut meta_labels: Vec<String> = Vec::new();
     let mut images: Vec<ParsedCvatImage> = Vec::new();
@@ -262,11 +265,27 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
     let mut buf = Vec::new();
     // Scratch for skipping a shape's children (`<attribute>` etc.).
     let mut skip_buf = Vec::new();
+    // Elements open at this point, and whether the root has been seen: a
+    // file cut short, or one that is not CVAT XML at all, must be an error,
+    // not a smaller or an empty dataset.
+    let mut open: usize = 0;
+    let mut saw_root = false;
+    let check_root = |tag: &[u8], saw_root: &mut bool| {
+        if !std::mem::replace(saw_root, true) && tag != b"annotations" {
+            return Err(ConvertError::ParseError(format!(
+                "not a CVAT for images file: the root element is <{}>, not <annotations>",
+                String::from_utf8_lossy(tag)
+            )));
+        }
+        Ok(())
+    };
     loop {
         match xml.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => {
                 let name = e.name();
                 let tag = name.as_ref();
+                check_root(tag, &mut saw_root)?;
+                open += 1;
                 if in_label {
                     label_depth += 1;
                 }
@@ -295,6 +314,7 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
                         let end = e.to_end().into_owned();
                         skip_buf.clear();
                         xml.read_to_end_into(end.name(), &mut skip_buf)?;
+                        open -= 1;
                     }
                     // Any other element inside an <image> is a shape kind COCO
                     // cannot express — skipped with its children, and counted.
@@ -303,6 +323,7 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
                         let end = e.to_end().into_owned();
                         skip_buf.clear();
                         xml.read_to_end_into(end.name(), &mut skip_buf)?;
+                        open -= 1;
                     }
                     _ => {}
                 }
@@ -311,6 +332,7 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
             Ok(Event::Empty(ref e)) => {
                 let name = e.name();
                 let tag = name.as_ref();
+                check_root(tag, &mut saw_root)?;
                 match tag {
                     // A self-closing image has no shapes.
                     b"image" => images.push(parse_image_attrs(e)?),
@@ -329,6 +351,7 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
                 }
             }
             Ok(Event::End(ref e)) => {
+                open = open.saturating_sub(1);
                 let name = e.name();
                 match name.as_ref() {
                     // Closing a child of the open `<label>`, not the label itself.
@@ -337,8 +360,10 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
                     b"task" => in_task = false,
                     b"labels" => in_labels = false,
                     b"label" if in_label => {
-                        if !label_name.is_empty() {
-                            meta_labels.push(std::mem::take(&mut label_name));
+                        // Trimmed here, once every piece of the name is in.
+                        let name = std::mem::take(&mut label_name);
+                        if !name.trim().is_empty() {
+                            meta_labels.push(name.trim().to_string());
                         }
                         in_label = false;
                     }
@@ -351,13 +376,24 @@ fn parse_cvat_xml<R: std::io::BufRead>(reader: R) -> Result<ParsedCvat, ConvertE
                 }
                 current_tag.clear();
             }
-            Ok(Event::Text(ref e)) => {
-                if in_label && label_depth == 1 && current_tag == b"name" {
-                    let text = e
-                        .decode()
-                        .map_err(|err| ConvertError::XmlError(format!("invalid text: {err}")))?;
-                    label_name = text.trim().to_string();
-                }
+            // A label's name arrives in pieces, split at each entity
+            // reference — see `push_entity`.
+            Ok(Event::Text(ref e)) if in_label && label_depth == 1 && current_tag == b"name" => {
+                label_name.push_str(
+                    &e.decode()
+                        .map_err(|err| ConvertError::XmlError(format!("invalid text: {err}")))?,
+                );
+            }
+            Ok(Event::GeneralRef(ref e))
+                if in_label && label_depth == 1 && current_tag == b"name" =>
+            {
+                super::push_entity(&mut label_name, e)?;
+            }
+            Ok(Event::Eof) if open > 0 => return Err(super::unclosed_at_eof()),
+            Ok(Event::Eof) if !saw_root => {
+                return Err(ConvertError::ParseError(
+                    "not a CVAT for images file: no <annotations> root element".into(),
+                ));
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -548,9 +584,9 @@ fn parse_image_attrs(e: &BytesStart) -> Result<ParsedCvatImage, ConvertError> {
     let mut height: Option<u32> = None;
 
     for attr in e.attributes().flatten() {
-        let val = String::from_utf8_lossy(&attr.value);
+        let val = super::attr_text(&attr)?;
         match attr.key.as_ref() {
-            b"name" => name = Some(val.to_string()),
+            b"name" => name = Some(val.clone()),
             b"width" => {
                 width = Some(val.parse().map_err(|_| {
                     ConvertError::ParseError(format!("invalid image width: {val}"))
@@ -585,10 +621,10 @@ fn parse_box_attrs(e: &BytesStart) -> Result<ParsedCvatShape, ConvertError> {
     let mut coords: [Option<f64>; 4] = [None; 4];
 
     for attr in e.attributes().flatten() {
-        let val = String::from_utf8_lossy(&attr.value);
+        let val = super::attr_text(&attr)?;
         let key = attr.key.as_ref();
         if key == b"label" {
-            label = Some(val.to_string());
+            label = Some(val.clone());
         } else if let Some(i) = COORDS.iter().position(|c| c.as_bytes() == key) {
             coords[i] =
                 Some(val.parse().map_err(|_| {
@@ -628,8 +664,8 @@ fn parse_polygon_attrs(e: &BytesStart) -> Result<Option<ParsedCvatShape>, Conver
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
-            b"label" => label = Some(String::from_utf8_lossy(&attr.value).to_string()),
-            b"points" => points_str = Some(String::from_utf8_lossy(&attr.value).to_string()),
+            b"label" => label = Some(super::attr_text(&attr)?),
+            b"points" => points_str = Some(super::attr_text(&attr)?),
             _ => {}
         }
     }

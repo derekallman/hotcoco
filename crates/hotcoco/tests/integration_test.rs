@@ -1208,6 +1208,11 @@ fn test_sample_frac() {
 
     // The count truncates: 10 · 0.35 = 3.5 → 3 images.
     assert_eq!(coco.sample(None, Some(0.35), 42).images.len(), 3);
+    // ...a whole product a float falls just short of is not truncated away:
+    // 10 · 0.7 is 7, though the product is 7.000000000000001 or 6.999….
+    for (frac, n) in [(0.7, 7), (0.3, 3), (0.6, 6), (0.29, 2)] {
+        assert_eq!(coco.sample(None, Some(frac), 42).images.len(), n, "{frac}");
+    }
     // A fraction over 1.0 clamps to the whole dataset.
     assert_eq!(coco.sample(None, Some(1.5), 42).images.len(), 10);
 }

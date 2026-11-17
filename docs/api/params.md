@@ -2,7 +2,7 @@
 
 Evaluation parameters. Created automatically by `COCOeval`, but can be modified before calling `evaluate()`.
 
-Every property below also accepts its pycocotools camelCase spelling — `maxDets` for `max_dets`, `iouThrs` for `iou_thrs`, and so on. See the [alias table](../getting-started/migration.md#method-naming).
+Every property below also accepts its pycocotools camelCase spelling — `maxDets` for `max_dets`, `iouThrs` for `iou_thrs`, and so on. See the [alias table](../getting-started/migration.md#method-naming). `iouThrs` and `recThrs` return numpy arrays, as they are in pycocotools; `iou_thrs` and `rec_thrs` return lists.
 
 === "Python"
 

@@ -75,6 +75,7 @@ The pycocotools-named functions accept the argument types pycocotools accepts:
 - Id-list arguments of the query and load methods take an `int` or any iterable of ints, such as a `set` or `dict.keys()` — see [Methods](../api/coco.md#methods).
 - `getAnnIds` takes `iscrowd=0`/`1` and `areaRng=[]` — see [`get_ann_ids`](../api/coco.md#get_ann_ids).
 - `mask.merge` takes `intersect=1` — see [`merge`](../api/mask.md#merge).
+- The `mask` functions take pycocotools' keyword names, such as `decode(rleObjs=...)` — see [mask](../api/mask.md).
 - `mask.iou` takes boxes as well as RLEs, so a `COCOeval` subclass whose `computeIoU` calls `maskUtils.iou` on boxes works under `init_as_pycocotools()` — see [`iou`](../api/mask.md#iou).
 
 `get_ann_ids` and [`hotcoco.primitives`](../api/primitives.md) keep stricter, typed signatures.

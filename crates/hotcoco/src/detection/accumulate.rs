@@ -695,7 +695,20 @@ impl COCOeval {
     /// and the readers beside it wait for the next one.
     pub fn accumulate(&mut self) {
         // Scoped so the grouping's borrow of `self` ends before `self.eval` is written.
-        let eval = accumulate_impl(&EvalGrouping::build(self), None);
+        //
+        // The image axis is resolved by value like the others: `img_ids`
+        // narrowed since `evaluate()` accumulates those images only
+        // (pycocotools reads the new list's positions in the old one, which
+        // is another image set again). Empty means every evaluated
+        // image, as it does before `evaluate()`.
+        let narrowed: Option<HashSet<u64>> = self.eval_inputs.as_ref().and_then(|inputs| {
+            let now: HashSet<u64> = self.params.img_ids.iter().copied().collect();
+            let same = now.len() == inputs.params.img_ids.len()
+                && inputs.params.img_ids.iter().all(|id| now.contains(id));
+            let changed = !(now.is_empty() || same);
+            changed.then_some(now)
+        });
+        let eval = accumulate_impl(&EvalGrouping::build(self), narrowed.as_ref());
         self.eval = Some(eval);
         self.advance_to(super::Stage::Accumulated);
     }

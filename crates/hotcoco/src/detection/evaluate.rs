@@ -187,6 +187,9 @@ impl COCOeval {
     ///
     /// What [`check_inputs`](Self::check_inputs) reports: inputs that cannot
     /// be evaluated under the current `params`. Nothing is evaluated then.
+    /// Also an [`Error::InvalidState`](crate::error::Error::InvalidState) on
+    /// the evaluator `StreamingEval::finalize` returns, which has no datasets
+    /// to evaluate.
     ///
     /// # A new run
     ///
@@ -195,6 +198,7 @@ impl COCOeval {
     /// [`report`](Self::report) and the readers beside it wait for both to run
     /// again, rather than describe the previous run.
     pub fn evaluate(&mut self) -> crate::error::Result<()> {
+        self.needs_datasets("evaluate()")?;
         self.check_inputs()?;
         // OID: expand GT (and optionally DT) using hierarchy — this replaces
         // the `coco_gt`/`coco_dt` handles; see the method docs above.
@@ -207,6 +211,8 @@ impl COCOeval {
             // Expanding an expansion adds nothing, so the ground truth expands in
             // place. The detections expand from the original kept aside while
             // they are expanded, so turning `expand_dt` off restores it.
+            self.unexpanded_gt
+                .get_or_insert_with(|| Arc::clone(&self.coco_gt));
             self.coco_gt = Arc::new(super::expand::expand_annotations(&self.coco_gt, &hierarchy));
             let dt = self
                 .unexpanded_dt
@@ -348,8 +354,11 @@ impl COCOeval {
             coco_dt: &self.coco_dt,
             params,
             ious: &self.ious,
-            is_kp: params.iou_type == crate::params::IouType::Keypoints,
             is_oid: self.eval_mode == EvalMode::OpenImages,
+            gt_rule: super::matching::GtRule {
+                mode: self.eval_mode,
+                is_kp: params.iou_type == crate::params::IouType::Keypoints,
+            },
             match_floors: &match_floors,
         };
         f(&ctx, max_det)
