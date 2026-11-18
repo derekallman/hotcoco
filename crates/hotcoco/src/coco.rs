@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap};
@@ -91,6 +92,54 @@ impl ResultKind {
     }
 }
 
+/// The fields of one result `load_res` checks before keeping it, read from a
+/// record or from a row of a detection array, so the two are checked by one
+/// function: [`COCO::check_results`].
+struct ResultFields<'a> {
+    id: u64,
+    image_id: u64,
+    category_id: u64,
+    score: Option<f64>,
+    bbox: Option<&'a [f64; 4]>,
+}
+
+/// A detection row's category: its seventh column, or 1 for a six-column
+/// row, as pycocotools' `loadNumpyAnnotations` assigns.
+fn detection_category(row: &[f64], ncols: usize) -> u64 {
+    if ncols == 7 { row[6] as u64 } else { 1 }
+}
+
+/// How many rows of `ncols` columns `rows` holds.
+///
+/// # Panics
+///
+/// If `ncols` is not 6 or 7, or `rows` is not a whole number of rows.
+fn detection_row_count(rows: &[f64], ncols: usize) -> usize {
+    assert!(
+        ncols == 6 || ncols == 7,
+        "detections_from_rows: 6 or 7 columns, got {ncols}"
+    );
+    assert_eq!(rows.len() % ncols, 0, "detections_from_rows: a partial row");
+    rows.len() / ncols
+}
+
+/// The area `load_res` gives a box result: its width times its height.
+pub(crate) fn box_area(bbox: &[f64; 4]) -> f64 {
+    bbox[2] * bbox[3]
+}
+
+impl<'a> ResultFields<'a> {
+    fn of(ann: &'a Annotation) -> Self {
+        ResultFields {
+            id: ann.id,
+            image_id: ann.image_id,
+            category_id: ann.category_id,
+            score: ann.score,
+            bbox: ann.bbox.as_ref(),
+        }
+    }
+}
+
 /// How a missing `area` is derived: COCO's instance area for ground truth, or
 /// `load_res`'s precedence for results.
 #[derive(Clone, Copy, Debug)]
@@ -171,10 +220,9 @@ type Checked = ([Option<usize>; 3], (usize, usize));
 /// Why `load_res` rejects a NaN score, from a file and a list alike.
 /// The error for annotation `i` carrying a NaN score; `context` is the caller's
 /// prefix (`"load_res(): "`), empty for the evaluator.
-fn nan_score_error(context: &str, i: usize, ann: &Annotation) -> Error {
+fn nan_score_error(context: &str, i: usize, id: u64, image_id: u64) -> Error {
     Error::InvalidInput(format!(
-        "{context}annotation {i} (id {}, image_id {}) has a NaN score. {NAN_SCORE_WHY}",
-        ann.id, ann.image_id
+        "{context}annotation {i} (id {id}, image_id {image_id}) has a NaN score. {NAN_SCORE_WHY}"
     ))
 }
 
@@ -240,15 +288,20 @@ impl COCO {
     /// set that was capped stays capped and a warning is recorded once.
     #[must_use]
     pub fn reindexed(&self, dataset: Dataset) -> COCO {
+        Self::reindexed_from(&self.warnings, self.per_image_capped, dataset)
+    }
+
+    /// [`reindexed`](Self::reindexed) from the state it keeps.
+    fn reindexed_from(warnings: &[String], per_image_capped: bool, dataset: Dataset) -> COCO {
         let mut rebuilt = COCO::from_dataset(dataset);
         let fresh: Vec<String> = rebuilt
             .warnings
             .drain(..)
-            .filter(|w| !self.warnings.contains(w))
+            .filter(|w| !warnings.contains(w))
             .collect();
-        rebuilt.warnings.clone_from(&self.warnings);
+        rebuilt.warnings = warnings.to_vec();
         rebuilt.warnings.extend(fresh);
-        rebuilt.per_image_capped = self.per_image_capped;
+        rebuilt.per_image_capped = per_image_capped;
         rebuilt
     }
 
@@ -595,10 +648,9 @@ impl COCO {
         self.index.pairs()
     }
 
-    /// One image's annotation ids grouped by category, ascending, and in array
-    /// order within a category.
-    pub(crate) fn ann_ids_for_img_by_cat(&self, img_id: u64) -> &[u64] {
-        self.index.for_img_by_cat(img_id)
+    /// The ids by image and by (image, category).
+    pub(crate) fn ann_index(&self) -> &AnnIndex {
+        &self.index
     }
 
     /// How many (image, category) pairs hold an annotation.
@@ -662,11 +714,26 @@ impl COCO {
         rows: &[f64],
         ncols: usize,
     ) -> crate::error::Result<Vec<Annotation>> {
-        assert!(
-            ncols == 6 || ncols == 7,
-            "detections_from_rows: 6 or 7 columns, got {ncols}"
-        );
-        assert_eq!(rows.len() % ncols, 0, "detections_from_rows: a partial row");
+        Self::check_detection_rows(rows, ncols)?;
+        let parallel = worth_parallel(detection_row_count(rows, ncols));
+        let detection = |row: &[f64]| Annotation {
+            image_id: row[0] as u64,
+            category_id: detection_category(row, ncols),
+            bbox: Some([row[1], row[2], row[3], row[4]]),
+            score: Some(row[5]),
+            ..Default::default()
+        };
+        Ok(if parallel {
+            rows.par_chunks_exact(ncols).map(detection).collect()
+        } else {
+            rows.chunks_exact(ncols).map(detection).collect()
+        })
+    }
+
+    /// [`detections_from_rows`](Self::detections_from_rows)' check of the
+    /// rows' ids, which [`DetectionColumns::check_rows`] runs too.
+    fn check_detection_rows(rows: &[f64], ncols: usize) -> crate::error::Result<()> {
+        let n = detection_row_count(rows, ncols);
         let valid = |v: f64| crate::types::id_from_f64(v).is_some();
         // Ids are checked in a read of the rows first, so the records can be
         // written straight into the result: collecting a fallible map in
@@ -680,7 +747,17 @@ impl COCO {
                 None
             }
         };
-        let parallel = worth_parallel(rows.len() / ncols);
+        let parallel = worth_parallel(n);
+        // Ids are almost always fine: an unordered check of every row first,
+        // and the ordered search for the first bad one only when there is one.
+        if parallel
+            && rows
+                .par_chunks_exact(ncols)
+                .enumerate()
+                .all(|row| first_bad(row).is_none())
+        {
+            return Ok(());
+        }
         let bad = if parallel {
             rows.par_chunks_exact(ncols)
                 .enumerate()
@@ -688,23 +765,12 @@ impl COCO {
         } else {
             rows.chunks_exact(ncols).enumerate().find_map(first_bad)
         };
-        if let Some((row, column, value)) = bad {
-            return Err(Error::InvalidInput(format!(
+        match bad {
+            Some((row, column, value)) => Err(Error::InvalidInput(format!(
                 "row {row} has {column} {value}; ids must be finite, non-negative integers"
-            )));
+            ))),
+            None => Ok(()),
         }
-        let detection = |row: &[f64]| Annotation {
-            image_id: row[0] as u64,
-            category_id: if ncols == 7 { row[6] as u64 } else { 1 },
-            bbox: Some([row[1], row[2], row[3], row[4]]),
-            score: Some(row[5]),
-            ..Default::default()
-        };
-        Ok(if parallel {
-            rows.par_chunks_exact(ncols).map(detection).collect()
-        } else {
-            rows.chunks_exact(ncols).map(detection).collect()
-        })
     }
 
     /// Load detection results from an already-parsed list of annotations.
@@ -720,93 +786,8 @@ impl COCO {
         // One kind for the whole file, from the first annotation, as pycocotools
         // does — then fill in whatever geometry that kind implies.
         let kind = anns.first().and_then(ResultKind::of);
-        let has_cats = !self.cats.is_empty();
-
-        // Validate in one read-only pass, probing the index maps this `COCO`
-        // already built (`self.imgs`/`self.cats`) rather than building a
-        // `HashSet` of GT ids per call, then assign ids and derive geometry in
-        // one writing pass. Both fan out past the shared threshold; the
-        // first offender of each kind is the one reported either way.
-        // `COCO::from_dataset` below walks `anns` again to build the result's
-        // own index; that walk is `create_index`'s.
-        //
-        // A NaN score is rejected rather than warned about: it corrupts the
-        // whole run, not one annotation. NaN has no place in a score order: a
-        // sort with `partial_cmp(..).unwrap_or(Equal)` is not transitive once
-        // it is present, and the bit keys `accumulate()` sorts on put it
-        // wherever its bits fall, so AP becomes a function of the sort
-        // implementation. (`healthcheck` reports the same condition as an
-        // error and points here.) An image_id or category_id not in the GT is
-        // a common mistake that makes the detections silently score low, so
-        // the first of each is a warning.
-        // Beside the first offenders, a census of boxes that read as corner
-        // pairs: a corner-pair box evaluates to plausible, wrong numbers with
-        // no other symptom, so the loader is the one place to catch it. One
-        // box past the edge is a dataset quirk; a majority is a format.
         let census = kind == Some(ResultKind::Bbox);
-        let check = |i: usize, ann: &Annotation| {
-            let img = self.imgs.get(&ann.image_id);
-            let firsts = [
-                ann.score.is_some_and(f64::is_nan).then_some(i),
-                img.is_none().then_some(i),
-                (has_cats && !self.cats.contains_key(&ann.category_id)).then_some(i),
-            ];
-            let reading = match (census, ann.bbox.as_ref(), img) {
-                (true, Some(b), Some(&img)) => {
-                    let img = &self.dataset.images[img];
-                    reads_as_corner_pair(b, img.width, img.height)
-                }
-                _ => None,
-            };
-            (firsts, reading.map_or((0, 0), |r| (1, usize::from(r))))
-        };
-        let combine = |(a, (n, m)): Checked, (b, (n2, m2)): Checked| {
-            let firsts = std::array::from_fn(|j| match (a[j], b[j]) {
-                (Some(x), Some(y)) => Some(x.min(y)),
-                (x, y) => x.or(y),
-            });
-            (firsts, (n + n2, m + m2))
-        };
-        let ([first_nan, first_img, first_cat], (n, m)) = if worth_parallel(anns.len()) {
-            anns.par_iter()
-                .enumerate()
-                .map(|(i, ann)| check(i, ann))
-                .reduce(|| ([None; 3], (0, 0)), combine)
-        } else {
-            anns.iter()
-                .enumerate()
-                .map(|(i, ann)| check(i, ann))
-                .fold(([None; 3], (0, 0)), combine)
-        };
-        if let Some(i) = first_nan {
-            return Err(nan_score_error("load_res(): ", i, &anns[i]));
-        }
-        let mut warnings = Vec::new();
-        if 2 * m > n {
-            warnings.push(format!(
-                "load_res() warning — {m} of {n} detection boxes run past their image \
-                 when read as [x, y, width, height] and fit it when read as \
-                 [x1, y1, x2, y2]. COCO boxes are [x, y, width, height]; corner-pair \
-                 boxes evaluate to plausible but wrong numbers. If yours are corner \
-                 pairs, convert them before evaluating: \
-                 https://derekallman.github.io/hotcoco/getting-started/troubleshooting/#bbox-format-x1-y1-x2-y2-vs-x-y-w-h"
-            ));
-        }
-        if let Some(i) = first_img {
-            warnings.push(format!(
-                "load_res() warning — found annotation with image_id {} not in the \
-                 GT dataset. These DTs will never match. Check your results file matches the \
-                 correct GT split.",
-                anns[i].image_id
-            ));
-        }
-        if let Some(i) = first_cat {
-            warnings.push(format!(
-                "load_res() warning — found annotation with category_id {} not \
-                 in the GT dataset. These DTs will never match.",
-                anns[i].category_id
-            ));
-        }
+        let warnings = self.check_results(anns.len(), census, |i| ResultFields::of(&anns[i]))?;
 
         // Per annotation and, for masks, an RLE decode each: the one expensive
         // step of loading results. A decode costs enough to fan out at any
@@ -848,6 +829,120 @@ impl COCO {
         Ok(res)
     }
 
+    /// What `load_res` checks of `n` results before keeping them, the `i`th
+    /// read through `at`, and the warnings it keeps. Both
+    /// [`load_res_anns`](Self::load_res_anns) and
+    /// [`DetectionColumns::from_checked_rows`] check through this, so a results set
+    /// loaded either way raises and warns alike.
+    ///
+    /// One read-only pass, probing the index maps this `COCO` already built
+    /// (`self.imgs`/`self.cats`) rather than building a `HashSet` of GT ids per
+    /// call. It fans out past the shared threshold; the first offender of each
+    /// kind is the one reported either way.
+    ///
+    /// A NaN score is rejected rather than warned about: it corrupts the
+    /// whole run, not one annotation. NaN has no place in a score order: a
+    /// sort with `partial_cmp(..).unwrap_or(Equal)` is not transitive once
+    /// it is present, and the bit keys `accumulate()` sorts on put it
+    /// wherever its bits fall, so AP becomes a function of the sort
+    /// implementation. (`healthcheck` reports the same condition as an
+    /// error and points here.) An image_id or category_id not in the GT is
+    /// a common mistake that makes the detections silently score low, so
+    /// the first of each is a warning.
+    /// With `census`, beside the first offenders, a census of boxes that read
+    /// as corner pairs: a corner-pair box evaluates to plausible, wrong numbers
+    /// with no other symptom, so the loader is the one place to catch it. One
+    /// box past the edge is a dataset quirk; a majority is a format.
+    fn check_results<'a>(
+        &self,
+        n: usize,
+        census: bool,
+        at: impl Fn(usize) -> ResultFields<'a> + Sync,
+    ) -> crate::error::Result<Vec<String>> {
+        let has_cats = !self.cats.is_empty();
+        // Results usually come image by image, so the image is looked up
+        // again only when it changes: `memo` holds the last one.
+        let check = |memo: &mut Option<(u64, Option<usize>)>, i: usize| {
+            let ann = at(i);
+            let img = match *memo {
+                Some((id, img)) if id == ann.image_id => img,
+                _ => {
+                    let img = self.imgs.get(&ann.image_id).copied();
+                    *memo = Some((ann.image_id, img));
+                    img
+                }
+            };
+            let firsts = [
+                ann.score.is_some_and(f64::is_nan).then_some(i),
+                img.is_none().then_some(i),
+                (has_cats && !self.cats.contains_key(&ann.category_id)).then_some(i),
+            ];
+            let reading = match (census, ann.bbox, img) {
+                (true, Some(b), Some(img)) => {
+                    let img = &self.dataset.images[img];
+                    reads_as_corner_pair(b, img.width, img.height)
+                }
+                _ => None,
+            };
+            (firsts, reading.map_or((0, 0), |r| (1, usize::from(r))))
+        };
+        let combine = |(a, (n, m)): Checked, (b, (n2, m2)): Checked| {
+            let firsts = std::array::from_fn(|j| match (a[j], b[j]) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, y) => x.or(y),
+            });
+            (firsts, (n + n2, m + m2))
+        };
+        let none: Checked = ([None; 3], (0, 0));
+        let ([first_nan, first_img, first_cat], (n, m)) = if worth_parallel(n) {
+            (0..n)
+                .into_par_iter()
+                .fold(
+                    || (none, None),
+                    |(acc, mut memo), i| {
+                        let checked = check(&mut memo, i);
+                        (combine(acc, checked), memo)
+                    },
+                )
+                .map(|(acc, _)| acc)
+                .reduce(|| none, combine)
+        } else {
+            let mut memo = None;
+            (0..n).fold(none, |acc, i| combine(acc, check(&mut memo, i)))
+        };
+        if let Some(i) = first_nan {
+            let ann = at(i);
+            return Err(nan_score_error("load_res(): ", i, ann.id, ann.image_id));
+        }
+        let mut warnings = Vec::new();
+        if 2 * m > n {
+            warnings.push(format!(
+                "load_res() warning — {m} of {n} detection boxes run past their image \
+                 when read as [x, y, width, height] and fit it when read as \
+                 [x1, y1, x2, y2]. COCO boxes are [x, y, width, height]; corner-pair \
+                 boxes evaluate to plausible but wrong numbers. If yours are corner \
+                 pairs, convert them before evaluating: \
+                 https://derekallman.github.io/hotcoco/getting-started/troubleshooting/#bbox-format-x1-y1-x2-y2-vs-x-y-w-h"
+            ));
+        }
+        if let Some(i) = first_img {
+            warnings.push(format!(
+                "load_res() warning — found annotation with image_id {} not in the \
+                 GT dataset. These DTs will never match. Check your results file matches the \
+                 correct GT split.",
+                at(i).image_id
+            ));
+        }
+        if let Some(i) = first_cat {
+            warnings.push(format!(
+                "load_res() warning — found annotation with category_id {} not \
+                 in the GT dataset. These DTs will never match.",
+                at(i).category_id
+            ));
+        }
+        Ok(warnings)
+    }
+
     /// Fill in `area` on every annotation that has none, the way a ground
     /// truth's is derived: the mask's pixel count, then the rotated box's
     /// `w × h`, then the box's, then the extent of the labeled keypoints.
@@ -885,7 +980,7 @@ impl COCO {
         };
         let derive = |&i: &usize| {
             let ann = &anns[i];
-            let from_box = || ann.bbox.map(|bb| bb[2] * bb[3]);
+            let from_box = || ann.bbox.as_ref().map(box_area);
             let from_obb = || ann.obb.as_deref().map(|obb| obb[2] * obb[3]);
             // A mask of no pixels, such as `"segmentation": []` beside a box,
             // says nothing about the object's size.
@@ -929,7 +1024,7 @@ impl COCO {
         let Some(bbox) = ann.bbox else {
             return;
         };
-        ann.area = Some(bbox[2] * bbox[3]);
+        ann.area = Some(box_area(&bbox));
         if ann.segmentation.is_none() {
             ann.segmentation = Some(Segmentation::Rect(bbox));
         }
@@ -1038,12 +1133,17 @@ impl COCO {
     /// `Error::InvalidInput` naming the first such annotation.
     pub fn check_scores(&self) -> crate::error::Result<()> {
         let anns = &self.dataset.annotations;
-        match anns
-            .iter()
-            .enumerate()
-            .find(|(_, ann)| ann.score.is_some_and(f64::is_nan))
-        {
-            Some((i, ann)) => Err(nan_score_error("", i, ann)),
+        // Every `evaluate()` runs this over the whole results set, which at
+        // validation scale is a walk over a million records: in parallel past
+        // the shared threshold, still naming the first offender.
+        let is_nan = |ann: &Annotation| ann.score.is_some_and(f64::is_nan);
+        let first = if worth_parallel(anns.len()) {
+            anns.par_iter().position_first(is_nan)
+        } else {
+            anns.iter().position(is_nan)
+        };
+        match first {
+            Some(i) => Err(nan_score_error("", i, anns[i].id, anns[i].image_id)),
             None => Ok(()),
         }
     }
@@ -1583,6 +1683,193 @@ impl COCO {
     /// Run a health check including GT/DT compatibility.
     pub fn healthcheck_compatibility(&self, dt: &COCO) -> crate::quality::HealthReport {
         crate::quality::healthcheck_compatibility(&self.dataset, &dt.dataset)
+    }
+}
+
+/// One detection of a [`DetectionColumns`]: the fields of a row of the array
+/// the evaluator reads. Its image and category are the index's.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DetectionRow {
+    pub(crate) bbox: [f64; 4],
+    pub(crate) score: f64,
+}
+
+/// Box detections held as rows: what [`COCO::load_res_anns`] makes of a
+/// detection array, without building its record per detection.
+///
+/// A results `COCO` holds a 200-byte [`Annotation`] per detection, and at the
+/// million-detection scale of a detector's validation pass, building and
+/// indexing those records costs more than evaluating them. This is the same
+/// results set kept as 40-byte rows plus the index the records would get:
+/// [`check_rows`](Self::check_rows) then
+/// [`from_checked_rows`](Self::from_checked_rows) run `load_res`'s checks,
+/// with the same errors and warnings, and [`coco`](Self::coco) is the results
+/// `COCO` itself, built on the first call. A box evaluation reads the rows
+/// directly — see `COCOeval::new_columns` — and anything else asks for the
+/// `COCO`.
+///
+/// Plumbing between this crate and its Python bindings, not an API to build
+/// on: its shape follows what the evaluator reads.
+#[doc(hidden)]
+pub struct DetectionColumns {
+    /// The ground truth `load_res` was called on: the images and categories
+    /// [`coco`](Self::coco) copies, as `load_res_anns` does.
+    gt: Arc<COCO>,
+    pub(crate) rows: Vec<DetectionRow>,
+    /// The index [`COCO::create_index`] builds over the records, ids
+    /// `1..=len`, built from the rows by the same code.
+    pub(crate) index: AnnIndex,
+    warnings: Vec<String>,
+    /// The results `COCO`, once something has asked for it: built once, and
+    /// shared by every reader — an evaluator and the Python wrapper alike.
+    coco: OnceLock<Arc<COCO>>,
+}
+
+impl DetectionColumns {
+    /// `load_res`'s first check of `rows`, `ncols` (6 or 7) to a row: their
+    /// ids, with the error [`COCO::detections_from_rows`] returns.
+    /// [`from_checked_rows`](Self::from_checked_rows) makes the rest. Apart,
+    /// so a caller can report this one apart, as the Python binding names the
+    /// call it came from.
+    ///
+    /// # Errors
+    ///
+    /// An `image_id` or `category_id` that is not a non-negative integer.
+    ///
+    /// # Panics
+    ///
+    /// `ncols` not 6 or 7, or a partial row.
+    pub fn check_rows(rows: &[f64], ncols: usize) -> crate::error::Result<()> {
+        COCO::check_detection_rows(rows, ncols)
+    }
+
+    /// The detections of rows [`check_rows`](Self::check_rows) accepted, as
+    /// `gt.load_res_anns(COCO::detections_from_rows(rows, ncols)?)` would load
+    /// them: the rest of `load_res`'s checks, then the columns.
+    ///
+    /// # Errors
+    ///
+    /// A NaN score.
+    ///
+    /// # Panics
+    ///
+    /// `ncols` not 6 or 7, or a partial row.
+    pub fn from_checked_rows(
+        gt: Arc<COCO>,
+        rows: &[f64],
+        ncols: usize,
+    ) -> crate::error::Result<Self> {
+        let n = detection_row_count(rows, ncols);
+        // The records `detections_from_rows` would write, as the check reads
+        // them: id 0 until `load_res_anns` numbers them, and a box on every
+        // one, which makes the results set's kind `Bbox` and turns the
+        // corner-pair census on.
+        let warnings = gt.check_results(n, n > 0, |i| {
+            let row = &rows[i * ncols..(i + 1) * ncols];
+            ResultFields {
+                id: 0,
+                image_id: row[0] as u64,
+                category_id: detection_category(row, ncols),
+                score: Some(row[5]),
+                bbox: <&[f64; 4]>::try_from(&row[1..5]).ok(),
+            }
+        })?;
+        // The image and category of each row go to the index, read from the
+        // rows as `detections_from_rows` reads them; the rest is kept.
+        let index = AnnIndex::from_keys(n, |i| {
+            let row = &rows[i * ncols..(i + 1) * ncols];
+            (row[0] as u64, detection_category(row, ncols), i as u64 + 1)
+        });
+        let row = |row: &[f64]| DetectionRow {
+            bbox: [row[1], row[2], row[3], row[4]],
+            score: row[5],
+        };
+        let rows: Vec<DetectionRow> = if worth_parallel(n) {
+            rows.par_chunks_exact(ncols).map(row).collect()
+        } else {
+            rows.chunks_exact(ncols).map(row).collect()
+        };
+        Ok(DetectionColumns {
+            gt,
+            rows,
+            index,
+            warnings,
+            coco: OnceLock::new(),
+        })
+    }
+
+    /// How many detections.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The warnings `load_res` records for these detections, as
+    /// [`COCO::load_warnings`] lists them on the results `COCO`.
+    pub fn load_warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// The ground truth these detections were loaded against. Its images and
+    /// categories are the results `COCO`'s, which `load_res_anns` copies
+    /// from it, so a read of those alone need not build the results.
+    pub fn ground_truth(&self) -> &Arc<COCO> {
+        &self.gt
+    }
+
+    /// Where the detection with `id` sits: ids are `1..=len` in row order, as
+    /// `load_res_anns` numbers them.
+    pub(crate) fn position(&self, id: u64) -> Option<usize> {
+        let i = usize::try_from(id.checked_sub(1)?).ok()?;
+        (i < self.rows.len()).then_some(i)
+    }
+
+    /// [`coco`](Self::coco)`.`[`reindexed`](COCO::reindexed)`(dataset)`,
+    /// without building the results `COCO` it would replace: a dict assigned
+    /// over the columns is the results set from then on.
+    #[must_use]
+    pub fn reindexed(&self, dataset: Dataset) -> COCO {
+        // `load_res_anns` never caps a results set.
+        COCO::reindexed_from(&self.warnings, false, dataset)
+    }
+
+    /// The results `COCO` these detections stand for: exactly what
+    /// `load_res_anns` builds from the same rows. Built on the first call.
+    pub fn coco(&self) -> &Arc<COCO> {
+        self.coco.get_or_init(|| Arc::new(self.build_coco()))
+    }
+
+    fn build_coco(&self) -> COCO {
+        // Each detection's image and category, from the (image, category)
+        // group of the index that holds its id: every id is in exactly one.
+        let n = self.rows.len();
+        let (mut image_ids, mut category_ids) = (vec![0u64; n], vec![0u64; n]);
+        for (img_id, cat_id) in self.index.pairs() {
+            for &id in self.index.for_img_cat(img_id, cat_id) {
+                let i = (id - 1) as usize;
+                image_ids[i] = img_id;
+                category_ids[i] = cat_id;
+            }
+        }
+        let anns: Vec<Annotation> = self
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| Annotation {
+                image_id: image_ids[i],
+                category_id: category_ids[i],
+                bbox: Some(r.bbox),
+                score: Some(r.score),
+                ..Default::default()
+            })
+            .collect();
+        self.gt
+            .load_res_anns(anns)
+            .expect("from_checked_rows ran load_res's checks on these rows")
     }
 }
 

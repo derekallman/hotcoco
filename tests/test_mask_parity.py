@@ -358,6 +358,25 @@ def test_area_rejects_what_decode_rejects(size, counts):
         assert str(area_error.value) == message
 
 
+def test_area_of_a_long_list_raises_the_error_it_always_raised():
+    """A list of byte-string RLEs is checked as UTF-8 on worker threads. The
+    error is still the first string that is not UTF-8, ahead of an earlier one
+    that does not decode, and otherwise the first that does not decode."""
+    good = hm.encode(np.asfortranarray(np.ones((10, 10), dtype=np.uint8)))
+    rles = [dict(good) for _ in range(3000)]
+    rles[100] = {"size": [2, 2], "counts": b"5"}  # runs past h * w
+    rles[2000] = {"size": [10, 10], "counts": b"\xff"}  # not UTF-8
+    with pytest.raises(ValueError, match="invalid UTF-8 in RLE counts"):
+        hm.area(rles)
+    rles[2000] = dict(good)
+    rles[2500] = {"size": [10, 10], "counts": b"!"}  # below '0'
+    with pytest.raises(ValueError) as first:
+        hm.decode(rles[100])
+    with pytest.raises(ValueError) as raised:
+        hm.area(rles)
+    assert str(raised.value) == str(first.value)
+
+
 # ---------------------------------------------------------------------------
 # toBbox
 # ---------------------------------------------------------------------------

@@ -24,6 +24,9 @@
 //! `mod match;` does not compile without `r#` escaping.
 
 use super::EvalMode;
+use super::dets::{Dets, DtRef};
+use crate::ann_index::AnnIndex;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -59,15 +62,48 @@ pub(super) struct PairCell<'a> {
     /// Index into `gt_anns` -> column in the pair's IoU matrix.
     gt_iou_indices: Vec<usize>,
     /// Detections score-descending and truncated to `max_det`.
-    dt_anns: Vec<&'a Annotation>,
+    dt_anns: Vec<DtRef>,
     /// Position in `dt_anns` -> row in the pair's IoU matrix.
     dt_iou_indices: Vec<usize>,
     dt_scores: Vec<f64>,
     /// `(position in the pair's id list, detection)`, the score sort's
     /// working array.
-    dt_sort: Vec<(usize, &'a Annotation)>,
+    dt_sort: Vec<(usize, DtRef)>,
     /// The pair's similarity matrix, looked up once instead of per area range.
     iou_matrix: Option<&'a IouMatrix>,
+    /// The last image's index groups on either side: pairs come image by
+    /// image, so an image is looked up once for all its pairs.
+    gt_groups: ImageGroups<'a>,
+    dt_groups: ImageGroups<'a>,
+}
+
+/// One image's `(category, start, len)` groups of an [`AnnIndex`], kept while
+/// consecutive pairs share the image.
+#[derive(Default)]
+struct ImageGroups<'a> {
+    img_id: Option<u64>,
+    groups: &'a [(u64, u32, u32)],
+}
+
+impl<'a> ImageGroups<'a> {
+    /// [`get_anns_static`](super::COCOeval::get_anns_static), with the image
+    /// looked up only when it changed when categories are kept apart.
+    fn ids(
+        &mut self,
+        index: &'a AnnIndex,
+        params: &crate::params::Params,
+        img_id: u64,
+        cat_id: u64,
+    ) -> AnnIds<'a> {
+        if !params.use_cats {
+            return super::COCOeval::get_anns_static(index, params, img_id, cat_id);
+        }
+        if self.img_id != Some(img_id) {
+            self.groups = index.groups_of(img_id);
+            self.img_id = Some(img_id);
+        }
+        Cow::Borrowed(index.ids_in(self.groups, cat_id))
+    }
 }
 
 /// Ground truths for one cell, partitioned non-ignored-first.
@@ -261,8 +297,19 @@ impl Cells {
             runs.iter().fold((0, 0, 0), |(p, s, w), &(rp, rs, rw)| {
                 (p + rp, s + rs, w + rw)
             });
+        // The headers in parallel when the runs are: `vec!` clones a struct
+        // element by element on one thread, and at a detector's pair count
+        // they are megabytes.
+        let headers = if run_len.is_some() {
+            (0..=n_pairs)
+                .into_par_iter()
+                .map(|_| PairHeader::default())
+                .collect()
+        } else {
+            vec![PairHeader::default(); n_pairs + 1]
+        };
         let mut cells = Cells {
-            pairs: vec![PairHeader::default(); n_pairs + 1],
+            pairs: headers,
             n_thr,
             n_areas,
             scores: vec![0.0; n_scores],
@@ -531,6 +578,20 @@ impl Block<'_> {
         self.field(d, self.n_thr + rows.start..self.n_thr + rows.end)
     }
 
+    /// [`matched`](Self::matched) and [`ignore`](Self::ignore) together. At
+    /// every threshold the two fields are adjacent, so when they fit one word
+    /// — up to 32 thresholds, COCO's 10 included — they are one read.
+    pub(super) fn flags(&self, d: usize, rows: Range<usize>) -> (u64, u64) {
+        let n = self.n_thr;
+        if n > 0 && rows == (0..n) && 2 * n <= 64 {
+            let both = self.field(d, 0..2 * n);
+            let low = u64::MAX >> (64 - n);
+            (both & low, both >> n)
+        } else {
+            (self.matched(d, rows.clone()), self.ignore(d, rows))
+        }
+    }
+
     fn field(&self, d: usize, bits: Range<usize>) -> u64 {
         debug_assert!(d < self.nd && bits.len() <= 64);
         read_bits(
@@ -715,11 +776,12 @@ struct MatchOutcome {
 /// cells shifted those samples onto later detections.
 fn pair_ids<'a>(
     ctx: &EvalImgContext<'a>,
-    img_id: u64,
-    cat_id: u64,
+    (img_id, cat_id): (u64, u64),
+    gt_groups: &mut ImageGroups<'a>,
+    dt_groups: &mut ImageGroups<'a>,
 ) -> Option<(AnnIds<'a>, AnnIds<'a>)> {
-    let gt_ids = super::COCOeval::get_anns_static(ctx.coco_gt, ctx.params, img_id, cat_id);
-    let dt_ids = super::COCOeval::get_anns_static(ctx.coco_dt, ctx.params, img_id, cat_id);
+    let gt_ids = gt_groups.ids(ctx.coco_gt.ann_index(), ctx.params, img_id, cat_id);
+    let dt_ids = dt_groups.ids(ctx.dets.index(), ctx.params, img_id, cat_id);
     (!gt_ids.is_empty() || !dt_ids.is_empty()).then_some((gt_ids, dt_ids))
 }
 
@@ -738,7 +800,13 @@ fn gather_pair<'a>(
     max_det: usize,
     pair: &mut PairCell<'a>,
 ) -> bool {
-    let Some((gt_ids, dt_ids)) = pair_ids(ctx, img_id, cat_id) else {
+    let ids = pair_ids(
+        ctx,
+        (img_id, cat_id),
+        &mut pair.gt_groups,
+        &mut pair.dt_groups,
+    );
+    let Some((gt_ids, dt_ids)) = ids else {
         return false;
     };
     pair.img_id = img_id;
@@ -759,11 +827,11 @@ fn gather_pair<'a>(
         dt_ids
             .iter()
             .enumerate()
-            .filter_map(|(iou_idx, &id)| Some((iou_idx, ctx.coco_dt.get_ann(id)?))),
+            .filter_map(|(iou_idx, &id)| Some((iou_idx, ctx.dets.get(id)?))),
     );
     // Stable, so tied scores keep load order; `accumulate()` ranks on the same key.
     pair.dt_sort
-        .sort_by_key(|&(_, ann)| descending_score_key(ann.score.unwrap_or(0.0)));
+        .sort_by_key(|&(_, dt)| descending_score_key(dt.score));
     pair.dt_sort.truncate(max_det);
     // The index holds every annotation, so nothing above drops an id:
     // `lean_scores_len` sizes the cell arenas on that.
@@ -775,10 +843,10 @@ fn gather_pair<'a>(
     pair.dt_iou_indices.clear();
     pair.dt_anns.clear();
     pair.dt_scores.clear();
-    for &(iou_idx, ann) in &pair.dt_sort {
+    for &(iou_idx, dt) in &pair.dt_sort {
         pair.dt_iou_indices.push(iou_idx);
-        pair.dt_anns.push(ann);
-        pair.dt_scores.push(ann.score.unwrap_or(0.0));
+        pair.dt_anns.push(dt);
+        pair.dt_scores.push(dt.score);
     }
 
     // `evaluate()` stores a matrix only where both sides have annotations.
@@ -904,8 +972,8 @@ pub(super) fn lvis_ignore(ann: &Annotation) -> bool {
 /// the area range, or LVIS does not count its category on the image
 /// (`not_exhaustive_cat`). A match replaces this with the matched ground
 /// truth's ignore flag.
-fn ignored_unless_matched(ann: &Annotation, area_rng: [f64; 2], not_exhaustive_cat: bool) -> bool {
-    let a = ann.area.unwrap_or(0.0);
+fn ignored_unless_matched(dt: &DtRef, area_rng: [f64; 2], not_exhaustive_cat: bool) -> bool {
+    let a = dt.area;
     not_exhaustive_cat || a < area_rng[0] || a > area_rng[1]
 }
 
@@ -921,7 +989,7 @@ fn area_filter_dt(
     out.extend(
         pair.dt_anns
             .iter()
-            .map(|ann| ignored_unless_matched(ann, area_rng, not_exhaustive_cat)),
+            .map(|dt| ignored_unless_matched(dt, area_rng, not_exhaustive_cat)),
     );
 }
 
@@ -1098,7 +1166,15 @@ pub(super) fn lean_scores_len(
     cat_id: u64,
     max_det: usize,
 ) -> Option<usize> {
-    pair_ids(ctx, img_id, cat_id).map(|(_, dt_ids)| dt_ids.len().min(max_det))
+    // `pair_ids`, the ground truth read only when it decides: a pair with
+    // detections is gathered whatever its ground truth.
+    let dt_ids = super::COCOeval::get_anns_static(ctx.dets.index(), ctx.params, img_id, cat_id);
+    if !dt_ids.is_empty() {
+        return Some(dt_ids.len().min(max_det));
+    }
+    let gt_ids =
+        super::COCOeval::get_anns_static(ctx.coco_gt.ann_index(), ctx.params, img_id, cat_id);
+    (!gt_ids.is_empty()).then_some(0)
 }
 
 /// One pair under every area range, written to `cells` as the record
@@ -1131,7 +1207,7 @@ pub(super) fn push_pair_lean<'a>(
                 .filter(|ann| gt_flags(ann, ar.range, ctx.gt_rule).1)
                 .count();
             let ignored =
-                |d: usize| ignored_unless_matched(pair.dt_anns[d], ar.range, not_exhaustive_cat);
+                |d: usize| ignored_unless_matched(&pair.dt_anns[d], ar.range, not_exhaustive_cat);
             #[cfg(debug_assertions)]
             {
                 match_area(ctx, pair, ar.range, not_exhaustive_cat, s);
@@ -1308,7 +1384,7 @@ impl EvalImg {
 /// within a single [`COCOeval::evaluate`](super::COCOeval::evaluate) invocation.
 pub(super) struct EvalImgContext<'a> {
     pub(super) coco_gt: &'a COCO,
-    pub(super) coco_dt: &'a COCO,
+    pub(super) dets: Dets<'a>,
     pub(super) params: &'a Params,
     pub(super) ious: &'a HashMap<(u64, u64), IouMatrix>,
     /// Whether the evaluator runs Open Images, and the ground-truth ignore

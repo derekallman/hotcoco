@@ -6,7 +6,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Top-level COCO dataset structure.
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Dataset {
     #[serde(default, deserialize_with = "lenient_info")]
     pub info: Option<Info>,
@@ -18,6 +18,28 @@ pub struct Dataset {
     pub categories: Vec<Category>,
     #[serde(default, deserialize_with = "lenient_licenses")]
     pub licenses: Vec<License>,
+}
+
+/// Field by field, as the derive would, with the annotations copied in
+/// parallel past the shared fan-out threshold. A dataset is copied whenever
+/// one that an evaluator still holds is edited — `update_anns` on a results
+/// set, between the passes of a two-IoU-type evaluation — and a million
+/// records, each with its mask string, is the slow part of that copy.
+impl Clone for Dataset {
+    fn clone(&self) -> Self {
+        use rayon::prelude::*;
+        Dataset {
+            info: self.info.clone(),
+            images: self.images.clone(),
+            annotations: if crate::primitives::sim::worth_parallel(self.annotations.len()) {
+                self.annotations.par_iter().cloned().collect()
+            } else {
+                self.annotations.clone()
+            },
+            categories: self.categories.clone(),
+            licenses: self.licenses.clone(),
+        }
+    }
 }
 
 /// Dataset metadata: version, description, date, and the rest of the `info` block.

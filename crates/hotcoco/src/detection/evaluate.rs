@@ -43,12 +43,13 @@ impl COCOeval {
         // set of pairs to build and no sort, which at 10x COCO val2017 took a
         // third of `evaluate()`, on one thread.
         let img_ids = super::sorted_unique(self.params.img_ids.clone());
+        let dt_index = self.dets(&self.params).index();
         if !self.params.use_cats {
             return img_ids
                 .into_iter()
                 .filter(|&img_id| {
                     !self.coco_gt.get_ann_ids_for_img(img_id).is_empty()
-                        || !self.coco_dt.get_ann_ids_for_img(img_id).is_empty()
+                        || !dt_index.for_img(img_id).is_empty()
                 })
                 .map(|img_id| (img_id, super::POOLED_CAT))
                 .collect();
@@ -56,9 +57,8 @@ impl COCOeval {
         let allowed_cats: rustc_hash::FxHashSet<u64> = cat_ids.iter().copied().collect();
         let lvis = self.eval_mode == EvalMode::Lvis;
         // At most every pair of both indexes, so the list never regrows.
-        let mut pairs = Vec::with_capacity(
-            self.coco_gt.nonempty_pair_count() + self.coco_dt.nonempty_pair_count(),
-        );
+        let mut pairs =
+            Vec::with_capacity(self.coco_gt.nonempty_pair_count() + dt_index.pair_count());
         for img_id in img_ids {
             // LVIS keeps a category only the detections have where the image
             // lists it as confirmed absent.
@@ -68,9 +68,8 @@ impl COCOeval {
                 .cat_ids_of_img(img_id)
                 .filter(|cat| allowed_cats.contains(cat))
                 .peekable();
-            let mut dt = self
-                .coco_dt
-                .cat_ids_of_img(img_id)
+            let mut dt = dt_index
+                .cats_of(img_id)
                 .filter(|cat| allowed_cats.contains(cat))
                 .peekable();
             loop {
@@ -116,8 +115,9 @@ impl COCOeval {
         let mut gt_ids = Vec::new();
         let mut dt_ids = Vec::new();
         for &(img_id, cat_id) in sparse_pairs {
-            let gt = Self::get_anns_static(&self.coco_gt, &self.params, img_id, cat_id);
-            let dt = Self::get_anns_static(&self.coco_dt, &self.params, img_id, cat_id);
+            let gt = Self::get_anns_static(self.coco_gt.ann_index(), &self.params, img_id, cat_id);
+            let dt =
+                Self::get_anns_static(self.coco_dt().ann_index(), &self.params, img_id, cat_id);
             if !gt.is_empty() && !dt.is_empty() {
                 gt_ids.extend_from_slice(&gt);
                 dt_ids.extend_from_slice(&dt);
@@ -144,7 +144,10 @@ impl COCOeval {
     /// categories the evaluation covers are checked for geometry.
     pub fn check_inputs(&self) -> crate::error::Result<()> {
         use crate::primitives::sim::SimKind;
-        self.coco_dt.check_scores()?;
+        // Columns were checked by `load_res`, which refuses a NaN score.
+        if self.dt.columns().is_none() {
+            self.coco_dt().check_scores()?;
+        }
         if SimKind::from(self.params.iou_type) == SimKind::Mask {
             // Only the (image, category) pairs `evaluate()` will visit: an
             // annotation on an image outside `params.img_ids`, with no image
@@ -153,7 +156,7 @@ impl COCOeval {
             let (img_ids, cat_ids) = self.resolved_ids();
             let cat_ids = self.params.use_cats.then_some(&*cat_ids);
             self.coco_gt.check_mask_dims(&img_ids, cat_ids)?;
-            self.coco_dt.check_mask_dims(&img_ids, cat_ids)?;
+            self.coco_dt().check_mask_dims(&img_ids, cat_ids)?;
         }
         Ok(())
     }
@@ -217,12 +220,14 @@ impl COCOeval {
             let dt = self
                 .unexpanded_dt
                 .take()
-                .unwrap_or_else(|| Arc::clone(&self.coco_dt));
+                .unwrap_or_else(|| Arc::clone(self.coco_dt()));
             if self.params.expand_dt {
-                self.coco_dt = Arc::new(super::expand::expand_annotations(&dt, &hierarchy));
+                self.dt = super::dets::DtHandle::Records(Arc::new(
+                    super::expand::expand_annotations(&dt, &hierarchy),
+                ));
                 self.unexpanded_dt = Some(dt);
             } else {
-                self.coco_dt = dt;
+                self.dt = super::dets::DtHandle::Records(dt);
             }
             self.hierarchy = Some(hierarchy);
         }
@@ -270,15 +275,16 @@ impl COCOeval {
         use crate::primitives::sim::SimKind;
         self.segm_rles = (SimKind::from(self.params.iou_type) == SimKind::Mask).then(|| {
             let (gt_ids, dt_ids) = self.segm_cell_ann_ids(&sparse_pairs);
-            super::iou::SegmRles::prepare(&self.coco_gt, &self.coco_dt, &gt_ids, &dt_ids)
+            super::iou::SegmRles::prepare(&self.coco_gt, self.coco_dt(), &gt_ids, &dt_ids)
         });
 
         // Compute IoUs only for pairs where both GT and DT are non-empty.
         // Pairs with only GT or only DT produce empty IoU matrices — skip storing them.
+        let dets = self.dets(&self.params);
         let iou_of = |&(img_id, cat_id): &(u64, u64)| {
             Self::compute_iou_static(
                 &self.coco_gt,
-                &self.coco_dt,
+                dets,
                 &self.params,
                 img_id,
                 cat_id,
@@ -320,9 +326,7 @@ impl COCOeval {
     /// against both datasets' annotation counts. A small `StreamingEval` batch
     /// stays on the calling thread.
     fn parallel_pairs(&self) -> bool {
-        worth_parallel(
-            self.coco_gt.dataset.annotations.len() + self.coco_dt.dataset.annotations.len(),
-        )
+        worth_parallel(self.coco_gt.dataset.annotations.len() + self.dt.len())
     }
 
     /// Run `f` with the per-cell context for `params`, reading the IoU cache
@@ -351,7 +355,7 @@ impl COCOeval {
 
         let ctx = EvalImgContext {
             coco_gt: &self.coco_gt,
-            coco_dt: &self.coco_dt,
+            dets: self.dets(params),
             params,
             ious: &self.ious,
             is_oid: self.eval_mode == EvalMode::OpenImages,

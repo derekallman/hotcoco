@@ -366,7 +366,7 @@ impl COCOeval {
         let cat_slots = Self::cat_slots(&evaluated.cat_ids);
         let iou_type = evaluated.iou_type;
         let coco_gt = &self.coco_gt;
-        let coco_dt = &self.coco_dt;
+        let coco_dt = self.coco_dt();
         // `tide_errors` requires `evaluate()` first (checked by its caller), so on
         // a segm run this cache is populated and the matrices below skip
         // re-rasterizing every polygon.
@@ -483,7 +483,7 @@ impl COCOeval {
                 // every id, allocating twice — cost more than the handful of integer
                 // compares it saved. Annotation ids are unique, so `position` and a
                 // map lookup return the same answer.
-                let dt_orig_ids = self.coco_dt.get_ann_ids_for_img_cat(img_id, cat_id);
+                let dt_orig_ids = self.coco_dt().get_ann_ids_for_img_cat(img_id, cat_id);
                 let gt_orig_ids = self.coco_gt.get_ann_ids_for_img_cat(img_id, cat_id);
                 let orig_pos = |ids: &[u64], id: u64| ids.iter().position(|&x| x == id);
                 // Sorted GT position → column, resolved once per cell. The scan in

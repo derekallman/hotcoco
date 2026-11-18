@@ -51,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   about 85 µs (M1). A torch mask needs no `np.asfortranarray`, itself about
   130 µs, and an `(N, H, W)` batch encodes in one call as
   `mask.encode(batch.transpose(1, 2, 0))`.
+- **`load_res` keeps an `(N, 6)` or `(N, 7)` array of boxes as columns**, 40 bytes
+  a detection, and builds the 200-byte annotation records only when something other
+  than a box evaluation reads them; `imgs`, `cats`, and `load_warnings` read without
+  them. Results, warnings, and errors are unchanged. RF-DETR 1.12's box `compute()`
+  on 5,000 images × 300 detections takes 0.20 s where it took 0.30 s (M1, 8 threads).
+- **`accumulate()` computes every IoU threshold and area range in one pass** over a
+  category's ranked detections, from per-detection bit words, and ranks scores with a
+  radix sort; `evaluate()` builds its annotation index and cells in parallel. The
+  numbers are the same, bit for bit.
+- **`segm` evaluation reads masks without copying them** and skips the run-length walk
+  for mask pairs that share no column; `mask.area` of a list of `bytes` RLEs checks
+  UTF-8 on the worker threads, raising the same errors in the same order.
 
 ### Fixed
 
@@ -150,6 +162,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   predicted anything.
 - **`sample(frac=)` no longer loses an image to float error**: `frac=0.29` of 100
   images is 29, not 28. Browse: `/thumbnail/{id}` for an unknown id is a 404.
+- **`scripts/bench.py` gives vernier every core**, through its `num_threads`
+  argument, as the other columns get them. It ran vernier on one thread.
 - **Rust: every `SemanticEval` builder starts the counts over.** `ignore_index()` and
   `reduce_zero_label()` called after `update()` kept the counts made under the old
   rules, mixing two rule sets in one matrix, and `boundary_dilation()` left

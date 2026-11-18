@@ -75,7 +75,7 @@ impl COCOeval {
         let bbox = || {
             Self::compute_bbox_iou_static(
                 coco_gt,
-                coco_dt,
+                super::dets::Dets::Records(coco_dt),
                 dt_ann_ids,
                 gt_ann_ids,
                 super::EvalMode::Coco,
@@ -248,7 +248,7 @@ impl COCOeval {
         // those reported a perfect detection as its parent category's box
         // predicted as the child, with the child's own box missed.
         let coco_gt = self.unexpanded_gt.as_ref().unwrap_or(&self.coco_gt);
-        let coco_dt = self.unexpanded_dt.as_ref().unwrap_or(&self.coco_dt);
+        let coco_dt = self.unexpanded_dt.as_ref().unwrap_or(self.coco_dt());
         // Populated iff the last `evaluate()` was a segm run; per-id fallback
         // inside `cross_category_iou` covers the standalone-call case. Keyed
         // by the ids of the datasets `evaluate()` matched, so not used beside

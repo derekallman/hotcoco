@@ -589,7 +589,23 @@ pub fn area(
     // `uint32`, matching pycocotools' array dtype exactly — the parity suite
     // checks dtypes, not just values. (The scalar path above hands back a
     // Python int, which has no dtype to match.)
-    let areas = each_rle(rle, rmask::areas)?;
+    let read = read_rles(rle)?;
+    // Every `counts` a byte string — what `encode` returns: each checked as
+    // UTF-8 on the worker that decodes it, not all first on this thread. The
+    // first string that is not UTF-8 is still the error, as `view` raises it
+    // before any area is computed, and then the first that does not decode.
+    let bytes: Option<Vec<_>> = read.iter().map(RleDict::bytes_counts).collect();
+    let areas = if let Some(bytes) = bytes {
+        rmask::areas_from_bytes(&bytes)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::convert::invalid_counts_utf8)?
+            .into_iter()
+            .collect::<hotcoco_core::error::Result<Vec<u64>>>()
+            .map_err(to_pyerr)?
+    } else {
+        batch_views(&read, rmask::areas)?
+    };
     let arr = PyArray1::from_vec(py, areas.into_iter().map(|a| a as u32).collect());
     Ok(arr.into_any().unbind())
 }
@@ -604,11 +620,28 @@ fn each_rle<T>(
     obj: &Bound<'_, PyAny>,
     batch: impl FnOnce(&[rmask::RleRef<'_>]) -> Vec<Result<T, hotcoco_core::Error>>,
 ) -> PyResult<Vec<T>> {
-    let items: Vec<Bound<'_, PyAny>> = obj.extract()?;
-    let read = items
-        .iter()
-        .map(|item| RleDict::read(item.cast::<PyDict>()?))
-        .collect::<PyResult<Vec<_>>>()?;
+    batch_views(&read_rles(obj)?, batch)
+}
+
+/// Every RLE dict of a list, read in order, raising the first one's error.
+fn read_rles<'py>(obj: &Bound<'py, PyAny>) -> PyResult<Vec<RleDict<'py>>> {
+    // A list is read in place; any other sequence is collected first. Each
+    // dict keeps its `counts` object alive in the `RleDict`.
+    let read = |item: &Bound<'py, PyAny>| RleDict::read(item.cast::<PyDict>()?);
+    if let Ok(list) = obj.cast::<PyList>() {
+        list.iter().map(|item| read(&item)).collect()
+    } else {
+        let items: Vec<Bound<'py, PyAny>> = obj.extract()?;
+        items.iter().map(read).collect()
+    }
+}
+
+/// The views of `read`, raising the first one's error, then a core batch
+/// over them, raising the first RLE's error.
+fn batch_views<T>(
+    read: &[RleDict<'_>],
+    batch: impl FnOnce(&[rmask::RleRef<'_>]) -> Vec<Result<T, hotcoco_core::Error>>,
+) -> PyResult<Vec<T>> {
     let views = read
         .iter()
         .map(RleDict::view)

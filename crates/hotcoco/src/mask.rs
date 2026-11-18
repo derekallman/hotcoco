@@ -266,6 +266,54 @@ impl Extent {
     }
 }
 
+/// What the mask IoU kernel needs of one mask, from one walk of its runs.
+pub(crate) struct MaskStats {
+    /// [`area`].
+    pub(crate) area: u64,
+    /// The half-open range of columns the foreground spans, `None` for an
+    /// empty mask. Two masks whose spans are apart share no pixel — the span
+    /// covers every foreground pixel — so their [`intersection_area`] is 0
+    /// without walking either.
+    pub(crate) columns: Option<(usize, usize)>,
+    /// Whether the runs end within `h * w`, as every decoded or encoded mask's
+    /// do: then [`intersection_within`] is its [`intersection_area`].
+    pub(crate) within: bool,
+}
+
+/// [`MaskStats`] of a mask.
+pub(crate) fn mask_stats(rle: &Rle) -> MaskStats {
+    let h = rle.h as usize;
+    let (mut pos, mut area) = (0usize, 0u64);
+    let (mut first, mut end) = (None, 0usize);
+    for (i, &count) in rle.counts.iter().enumerate() {
+        let c = count as usize;
+        if i % 2 == 1 && c > 0 {
+            area += u64::from(count);
+            first.get_or_insert(pos);
+            end = pos + c;
+        }
+        pos += c;
+    }
+    let columns = match first {
+        Some(first) if h > 0 => Some((first / h, (end - 1) / h + 1)),
+        _ => None,
+    };
+    let hw = (rle.h as u64) * (rle.w as u64);
+    MaskStats {
+        area,
+        columns,
+        within: pos as u64 <= hw,
+    }
+}
+
+/// Whether two [`MaskStats::columns`] spans share a column.
+pub(crate) fn columns_overlap(a: Option<(usize, usize)>, b: Option<(usize, usize)>) -> bool {
+    match (a, b) {
+        (Some((a0, a1)), Some((b0, b1))) => a0 < b1 && b0 < a1,
+        _ => false,
+    }
+}
+
 /// Merge multiple RLE masks with union (intersect=false) or intersection (intersect=true).
 ///
 /// Errors when the masks do not all share the same dimensions (the result
@@ -449,6 +497,73 @@ pub(crate) fn intersection_area(a: &Rle, b: &Rle) -> u64 {
     }
 
     count
+}
+
+/// [`intersection_area`] of two masks whose runs both end within `h * w`
+/// ([`MaskStats::within`]): their foreground runs as position intervals,
+/// merged two-pointer, the overlap of each pair added. Half the items of the
+/// run-by-run walk — background runs only move a position — and no branch
+/// on which stream to advance past a zero-length run. For runs that end
+/// within `h * w` the two walks count the same pixels; past it the run-by-run
+/// walk counts the whole step that crosses the end, which is why only masks
+/// that stay within it come here.
+pub(crate) fn intersection_within(a: &Rle, b: &Rle) -> u64 {
+    let (mut fa, mut fb) = (
+        ForegroundRuns::new(&a.counts),
+        ForegroundRuns::new(&b.counts),
+    );
+    let (mut x, mut y) = (fa.next(), fb.next());
+    let mut count = 0u64;
+    while let (Some((xs, xe)), Some((ys, ye))) = (x, y) {
+        let (lo, hi) = (xs.max(ys), xe.min(ye));
+        if lo < hi {
+            count += hi - lo;
+        }
+        if xe <= ye {
+            x = fa.next();
+        } else {
+            y = fb.next();
+        }
+    }
+    count
+}
+
+/// A run list's foreground runs as half-open position intervals, in order,
+/// zero-length ones left out.
+struct ForegroundRuns<'a> {
+    counts: &'a [u32],
+    /// The next background run's index.
+    i: usize,
+    /// Where it starts.
+    pos: u64,
+}
+
+impl<'a> ForegroundRuns<'a> {
+    fn new(counts: &'a [u32]) -> Self {
+        ForegroundRuns {
+            counts,
+            i: 0,
+            pos: 0,
+        }
+    }
+}
+
+impl Iterator for ForegroundRuns<'_> {
+    type Item = (u64, u64);
+
+    #[inline]
+    fn next(&mut self) -> Option<(u64, u64)> {
+        while let [background, foreground, ..] = self.counts[self.i..] {
+            let start = self.pos + u64::from(background);
+            let end = start + u64::from(foreground);
+            self.i += 2;
+            self.pos = end;
+            if end > start {
+                return Some((start, end));
+            }
+        }
+        None
+    }
 }
 
 /// `base + s * t`, rounded the way the pycocotools wheel for this architecture
@@ -981,22 +1096,34 @@ impl RleRef<'_> {
 /// [`RleRef::area`] of every RLE, in order. Each mask decodes on its own, so a
 /// batch past the crate's fan-out threshold decodes in parallel.
 pub fn areas(rles: &[RleRef<'_>]) -> Vec<crate::error::Result<u64>> {
-    each(rles, RleRef::area)
+    each(rles, |rle| rle.area())
+}
+
+/// [`areas`] of compressed strings still held as bytes, each checked as UTF-8
+/// on the worker that decodes it, for a caller that would otherwise check
+/// every string on one thread first. The outer error is the UTF-8 check's,
+/// the inner one the decode's.
+#[doc(hidden)]
+pub fn areas_from_bytes(
+    items: &[(&[u8], u32, u32)],
+) -> Vec<Result<crate::error::Result<u64>, std::str::Utf8Error>> {
+    each(items, |&(bytes, h, w)| {
+        std::str::from_utf8(bytes).map(|s| area_from_string(s, h, w))
+    })
 }
 
 /// [`RleRef::to_bbox`] of every RLE, in order, in parallel as [`areas`] is.
 pub fn bboxes(rles: &[RleRef<'_>]) -> Vec<crate::error::Result<[f64; 4]>> {
-    each(rles, RleRef::to_bbox)
+    each(rles, |rle| rle.to_bbox())
 }
 
-fn each<'a, T: Send>(
-    rles: &[RleRef<'a>],
-    f: impl Fn(RleRef<'a>) -> crate::error::Result<T> + Sync + Send,
-) -> Vec<crate::error::Result<T>> {
-    if worth_parallel(rles.len()) {
-        rles.par_iter().map(|&rle| f(rle)).collect()
+/// `f` of every item, in order: in parallel past the crate's fan-out
+/// threshold, since each mask decodes on its own.
+fn each<I: Sync, T: Send>(items: &[I], f: impl Fn(&I) -> T + Sync + Send) -> Vec<T> {
+    if worth_parallel(items.len()) {
+        items.par_iter().map(f).collect()
     } else {
-        rles.iter().map(|&rle| f(rle)).collect()
+        items.iter().map(f).collect()
     }
 }
 
@@ -1059,6 +1186,16 @@ fn fr_string_runs(s: &str, h: u32, w: u32, mut run: impl FnMut(u32)) -> Result<(
         let mut x: i64 = 0;
         let mut shift = 0;
         let mut more = true;
+        // A run of one group — no continuation bit — is most runs of a real
+        // mask: the loop below's first pass with `more` false, without the
+        // loop.
+        let byte = bytes[i];
+        if byte >= 48 && (byte - 48) & 0x20 == 0 {
+            x = i64::from((byte - 48) & 0x1f);
+            i += 1;
+            shift = 5;
+            more = false;
+        }
         while more && i < bytes.len() {
             let byte = bytes[i];
             if byte < 48 {

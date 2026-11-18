@@ -65,7 +65,7 @@ use std::str::FromStr;
 use rayon::prelude::*;
 
 use crate::geometry::{obb_intersection_area, obb_to_corners};
-use crate::mask::{area as rle_area, intersection_area};
+use crate::mask::{MaskStats, columns_overlap, intersection_area, intersection_within, mask_stats};
 use crate::types::Rle;
 
 /// Minimum work before a fan-out switches from sequential to parallel (rayon):
@@ -166,23 +166,47 @@ pub fn mask_iou(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<Vec<f64>> {
 /// [`mask_iou`] as one row-major `D×G` buffer, empty when either side is:
 /// the shape a dense array wants, with no vector per detection.
 pub fn mask_iou_flat(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<f64> {
+    mask_iou_flat_of(dt, gt, iscrowd)
+}
+
+/// [`mask_iou_flat`] over masks held any way that lends an [`Rle`]: the
+/// evaluator's, borrowed from its cache of converted masks rather than copied
+/// out of it for every cell.
+pub(crate) fn mask_iou_flat_of<R: std::borrow::Borrow<Rle> + Sync>(
+    dt: &[R],
+    gt: &[R],
+    iscrowd: &[bool],
+) -> Vec<f64> {
     let d = dt.len();
     let g = gt.len();
     if d == 0 || g == 0 {
         return Vec::new();
     }
 
-    let dt_areas: Vec<u64> = dt.iter().map(rle_area).collect();
-    let gt_areas: Vec<u64> = gt.iter().map(rle_area).collect();
+    // Each mask's area, and from the same walk the columns it spans and
+    // whether its runs stay within the mask. A pair whose spans are apart
+    // intersects in no pixel, so its intersection is 0 without a walk; any
+    // other pair of in-bounds masks takes the foreground-interval merge, and
+    // the IoU comes out of the same formula either way.
+    let dt_meta: Vec<MaskStats> = dt.iter().map(|r| mask_stats(r.borrow())).collect();
+    let gt_meta: Vec<MaskStats> = gt.iter().map(|r| mask_stats(r.borrow())).collect();
 
     rows(d, g, |i, row| {
-        let dt_a = dt_areas[i] as f64;
+        let (a, dt) = (&dt_meta[i], dt[i].borrow());
         for (j, out) in row.iter_mut().enumerate() {
-            *out = if dt[i].h != gt[j].h || dt[i].w != gt[j].w {
+            let gt = gt[j].borrow();
+            *out = if dt.h != gt.h || dt.w != gt.w {
                 -1.0
             } else {
-                let inter = intersection_area(&dt[i], &gt[j]) as f64;
-                iou_from_areas(inter, dt_a, gt_areas[j] as f64, iscrowd[j])
+                let b = &gt_meta[j];
+                let inter = if !columns_overlap(a.columns, b.columns) {
+                    0.0
+                } else if a.within && b.within {
+                    intersection_within(dt, gt) as f64
+                } else {
+                    intersection_area(dt, gt) as f64
+                };
+                iou_from_areas(inter, a.area as f64, b.area as f64, iscrowd[j])
             };
         }
     })
@@ -491,8 +515,139 @@ pub(crate) fn oks_matrix_flat(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mask::area as rle_area;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
+
+    /// The extent prefilter changes no mask IoU: every pair against the run
+    /// walk on every pair, over masks that overlap, touch, sit apart, span
+    /// columns (whose extents cover every row), are empty, are crowd regions,
+    /// or are a different size.
+    #[test]
+    fn mask_iou_skips_only_pairs_that_share_no_pixel() {
+        let mut rng = StdRng::seed_from_u64(0xE7_7E47);
+        let (h, w) = (37u32, 41u32);
+        let mask = |rng: &mut StdRng| -> crate::types::Rle {
+            let mut m = vec![0u8; (h * w) as usize];
+            match rng.random_range(0..5) {
+                0 => {}
+                1 => m.iter_mut().for_each(|p| *p = 1),
+                2 => {
+                    for p in &mut m {
+                        *p = u8::from(rng.random_bool(0.03));
+                    }
+                }
+                _ => {
+                    let (x0, y0) = (rng.random_range(0..w), rng.random_range(0..h));
+                    let (x1, y1) = (rng.random_range(x0..=w), rng.random_range(y0..=h));
+                    for x in x0..x1 {
+                        for y in y0..y1 {
+                            m[(x * h + y) as usize] = 1;
+                        }
+                    }
+                }
+            }
+            crate::mask::encode(&m, h, w).expect("a mask the canvas's size encodes")
+        };
+        for trial in 0..40 {
+            let mut dt: Vec<_> = (0..rng.random_range(1..12))
+                .map(|_| mask(&mut rng))
+                .collect();
+            let mut gt: Vec<_> = (0..rng.random_range(1..9))
+                .map(|_| mask(&mut rng))
+                .collect();
+            if trial % 7 == 0 {
+                gt.push(crate::mask::encode(&[1, 0, 1, 1], 2, 2).expect("a 2x2 mask encodes"));
+            }
+            // A mask of no pixels whose runs still claim some — no column
+            // span when `h` is 0, runs past `h * w` when `w` is — against
+            // its like: no intersection, as the walk counts none.
+            if trial % 5 == 0 {
+                for (h, w) in [(0, 5), (5, 0)] {
+                    let empty = crate::types::Rle {
+                        h,
+                        w,
+                        counts: vec![0, 3],
+                    };
+                    dt.push(empty.clone());
+                    gt.push(empty);
+                }
+            }
+            let iscrowd: Vec<bool> = gt.iter().map(|_| rng.random_bool(0.2)).collect();
+            let got = mask_iou_flat(&dt, &gt, &iscrowd);
+            for (i, d) in dt.iter().enumerate() {
+                for (j, g) in gt.iter().enumerate() {
+                    let want = if d.h != g.h || d.w != g.w {
+                        -1.0
+                    } else {
+                        iou_from_areas(
+                            intersection_area(d, g) as f64,
+                            rle_area(d) as f64,
+                            rle_area(g) as f64,
+                            iscrowd[j],
+                        )
+                    };
+                    assert_eq!(
+                        got[i * gt.len() + j].to_bits(),
+                        want.to_bits(),
+                        "trial {trial}: dt {i} vs gt {j}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The foreground-interval merge counts what the run-by-run walk counts
+    /// for runs that end within the mask — zero-length runs, runs that stop
+    /// short, runs that end exactly at `h * w` — and the kernel keeps the
+    /// walk for runs that overrun it, whose last step the walk counts whole.
+    #[test]
+    fn mask_iou_merges_foreground_runs_as_the_run_walk_counts() {
+        use crate::mask::{intersection_within, mask_stats};
+        let mut rng = StdRng::seed_from_u64(0x1_0E7);
+        let (h, w) = (9u32, 7u32);
+        let n = (h * w) as u64;
+        let runs = |rng: &mut StdRng, overrun: bool| -> crate::types::Rle {
+            let mut counts = Vec::new();
+            let mut total = 0u64;
+            let budget = if overrun {
+                n + rng.random_range(1..20)
+            } else {
+                rng.random_range(0..=n)
+            };
+            while total < budget {
+                let c = rng.random_range(0..=6u32).min((budget - total) as u32);
+                counts.push(c);
+                total += u64::from(c);
+                if rng.random_bool(0.05) {
+                    counts.push(0);
+                }
+            }
+            crate::types::Rle { h, w, counts }
+        };
+        for trial in 0..2000 {
+            let a = runs(&mut rng, trial % 3 == 0);
+            let b = runs(&mut rng, trial % 4 == 0);
+            if mask_stats(&a).within && mask_stats(&b).within {
+                assert_eq!(
+                    intersection_within(&a, &b),
+                    intersection_area(&a, &b),
+                    "trial {trial}: {:?} vs {:?}",
+                    a.counts,
+                    b.counts
+                );
+            }
+            let crowd = [trial % 2 == 0];
+            let got = mask_iou_flat(std::slice::from_ref(&a), std::slice::from_ref(&b), &crowd);
+            let want = iou_from_areas(
+                intersection_area(&a, &b) as f64,
+                rle_area(&a) as f64,
+                rle_area(&b) as f64,
+                crowd[0],
+            );
+            assert_eq!(got[0].to_bits(), want.to_bits(), "trial {trial}");
+        }
+    }
 
     /// A box with realistic detection extents: at least one pixel on a side.
     ///

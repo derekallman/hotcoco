@@ -62,6 +62,58 @@ pub(crate) fn descending_score_key(score: f64) -> u64 {
     !ascending
 }
 
+/// Sort `(key, position)` pairs ascending by key, ties by position, as
+/// `sort_unstable` on the pairs does — for pairs whose positions ascend in
+/// slice order, which makes it the stable sort by key that ranks detections.
+///
+/// A least-significant-digit radix sort on the key's bytes, skipping the ones
+/// every key shares: a pass per byte is stable, so position order survives
+/// every tie. [`descending_score_key`] keys of scores in `[0, 1]` share their
+/// top byte, and scores that came from `float32` their low three, so a
+/// detector's ranking is about four passes over the pairs where a comparison
+/// sort is `log2 n`. A short slice goes to the comparison sort. `scratch` is
+/// working space the caller keeps across calls.
+pub(crate) fn sort_score_keyed(items: &mut Vec<(u64, u32)>, scratch: &mut Vec<(u64, u32)>) {
+    const RADIX_FROM: usize = 512;
+    debug_assert!(
+        items.windows(2).all(|w| w[0].1 < w[1].1),
+        "positions ascend"
+    );
+    if items.len() < RADIX_FROM {
+        items.sort_unstable();
+        return;
+    }
+    let (any, all) = items
+        .iter()
+        .fold((0u64, u64::MAX), |(any, all), &(key, _)| {
+            (any | key, all & key)
+        });
+    let varying = any ^ all;
+    scratch.clear();
+    scratch.resize(items.len(), (0, 0));
+    for shift in (0..64).step_by(8) {
+        if (varying >> shift).trailing_zeros() >= 8 {
+            continue;
+        }
+        let mut at = [0usize; 256];
+        for &(key, _) in items.iter() {
+            at[((key >> shift) & 0xFF) as usize] += 1;
+        }
+        let mut sum = 0;
+        for slot in &mut at {
+            let count = *slot;
+            *slot = sum;
+            sum += count;
+        }
+        for &item in items.iter() {
+            let digit = ((item.0 >> shift) & 0xFF) as usize;
+            scratch[at[digit]] = item;
+            at[digit] += 1;
+        }
+        std::mem::swap(items, scratch);
+    }
+}
+
 /// The detection ranking: indices of `scores`, highest score first, tied
 /// scores in input order — pycocotools' stable sort, and the order `COCOeval`
 /// matches and accumulates in. A caller of
@@ -218,18 +270,33 @@ enum Tally {
     Ignored,
 }
 
-/// **The one owner of TP/FP classification.** `i` indexes the parallel
-/// `matched`/`ignored` arrays; both [`cumulative_tp_fp`] and
+/// **The one owner of TP/FP classification**, over bit lanes: lane `l` of
+/// `matched` and `ignored` is one detection's flags at one IoU threshold, and
+/// `lanes` masks the lanes in use. Returns the true-positive and
+/// false-positive lanes. An ignored lane is neither; of the rest, a matched one
+/// is a true positive and an unmatched one a false positive.
+///
+/// [`tally`] is this rule at a single lane, and
+/// [`precision_recall_curves_of_lanes_into`] applies it to every threshold at
+/// once, so the per-threshold and multi-threshold paths cannot classify a
+/// detection differently.
+#[inline]
+fn tally_lanes(matched: u64, ignored: u64, lanes: u64) -> (u64, u64) {
+    let counted = !ignored & lanes;
+    (matched & counted, !matched & counted)
+}
+
+/// [`tally_lanes`] at one lane. `i` indexes the parallel `matched`/`ignored`
+/// arrays; both [`cumulative_tp_fp`] and
 /// [`precision_recall_curve_of_order_into`] decide TP versus FP versus ignored
 /// through this and nowhere else.
 #[inline]
 fn tally(i: usize, matched: &[bool], ignored: Option<&[bool]>) -> Tally {
-    if ignored.is_some_and(|ig| ig[i]) {
-        Tally::Ignored
-    } else if matched[i] {
-        Tally::TruePositive
-    } else {
-        Tally::FalsePositive
+    let ignored = ignored.is_some_and(|ig| ig[i]);
+    match tally_lanes(u64::from(matched[i]), u64::from(ignored), 1) {
+        (1, _) => Tally::TruePositive,
+        (_, 1) => Tally::FalsePositive,
+        _ => Tally::Ignored,
     }
 }
 
@@ -343,30 +410,206 @@ pub fn precision_recall_curve_of_order_into(
         if !is_tp && d != 0 {
             continue;
         }
-        // "Not below", spelled as the negation of the pair's `rc < rec_thr`
-        // rather than as `rc >= rec_thr`, so an incomparable (`NaN`) threshold
-        // records at the current rank there and here alike.
-        while r_ptr < rec_thrs.len()
-            && rc.partial_cmp(&rec_thrs[r_ptr]) != Some(std::cmp::Ordering::Less)
-        {
-            out.push((r_ptr, 0.0, d));
-            env_idx.push(pr.len().saturating_sub(1));
-            r_ptr += 1;
-        }
+        record_thresholds(rc, rec_thrs, &mut r_ptr, (d, pr.len()), out, env_idx);
     }
+    fill_envelope(pr, env_idx, out);
+    rc
+}
 
-    let final_recall = rc;
+/// At rank `d`, with `pr_len` precisions so far, the points of the recall
+/// thresholds from `*r_ptr` on that recall `rc` is not below, each reading
+/// the latest precision once [`fill_envelope`] fills it in.
+///
+/// "Not below", spelled as the negation of the pair's `rc < rec_thr` rather
+/// than as `rc >= rec_thr`, so an incomparable (`NaN`) threshold records at
+/// the current rank there and here alike.
+#[inline]
+fn record_thresholds(
+    rc: f64,
+    rec_thrs: &[f64],
+    r_ptr: &mut usize,
+    (d, pr_len): (usize, usize),
+    points: &mut Vec<(usize, f64, usize)>,
+    env_idx: &mut Vec<usize>,
+) {
+    while *r_ptr < rec_thrs.len()
+        && rc.partial_cmp(&rec_thrs[*r_ptr]) != Some(std::cmp::Ordering::Less)
+    {
+        points.push((*r_ptr, 0.0, d));
+        env_idx.push(pr_len.saturating_sub(1));
+        *r_ptr += 1;
+    }
+}
 
-    // Make precision monotonically non-increasing from right to left (VOC interp).
+/// Make `pr` monotonically non-increasing from right to left (VOC interp),
+/// then give each of `points` the precision at its `env_idx` entry.
+fn fill_envelope(pr: &mut [f64], env_idx: &[usize], points: &mut [(usize, f64, usize)]) {
     for j in (0..pr.len().saturating_sub(1)).rev() {
         pr[j] = pr[j].max(pr[j + 1]);
     }
-    for (point, &j) in out.iter_mut().zip(env_idx.iter()) {
+    for (point, &j) in points.iter_mut().zip(env_idx.iter()) {
         // No true positive at all: every precision the pair computes is zero.
         point.1 = pr.get(j).copied().unwrap_or(0.0);
     }
+}
 
-    final_recall
+/// The curves [`precision_recall_curves_of_lanes_into`] writes, one per lane,
+/// and the working buffers it reuses. Held by the caller across calls, like
+/// [`PrCurveScratch`].
+#[derive(Debug, Default)]
+pub(crate) struct LaneCurves {
+    /// Per lane, the points [`precision_recall_curve_of_order_into`] emits.
+    pub(crate) points: Vec<Vec<(usize, f64, usize)>>,
+    /// Per lane, the final recall it returns.
+    pub(crate) final_recall: Vec<f64>,
+    /// Per group of lanes: its live lanes as a mask, and the ranks ignored at
+    /// every one of them; per lane, its group.
+    group_masks: Vec<u64>,
+    ignored_group: Vec<usize>,
+    group_of: Vec<usize>,
+    /// Per lane: true positives so far, ranks ignored at that lane but not
+    /// at its whole group, and the next recall threshold to record.
+    tp: Vec<usize>,
+    ignored: Vec<usize>,
+    r_ptr: Vec<usize>,
+    /// Per lane, as in [`PrCurveScratch`]: precision at each true positive,
+    /// and the entry of it each point reads.
+    pr: Vec<Vec<f64>>,
+    env_idx: Vec<Vec<usize>>,
+}
+
+/// [`precision_recall_curve_of_order_into`] at up to 64 IoU thresholds in one
+/// pass over `order`.
+///
+/// `matched[i]` and `ignored[i]` are detection `i`'s flags in every lane, lane
+/// `l` in bit `l`; `num_gts[l]` is lane `l`'s ground-truth count, and there
+/// are `num_gts.len()` lanes (1 to 64), bits above them not read. A lane is
+/// one threshold, or one threshold of one area range when the caller packs
+/// several ranges' flags side by side. For each lane `l`, `curves.points[l]`
+/// and `curves.final_recall[l]` are what
+/// [`precision_recall_curve_of_order_into`] produces from that lane's flags as
+/// `bool` slices and its `num_gt`: the same values in the same order.
+///
+/// Lanes come in groups of `group` (which divides the lane count): one group
+/// for one area range's thresholds. A rank is usually ignored at all of a
+/// group's lanes or at none — a detection outside an area range is ignored at
+/// every threshold of it — so a group ignored whole is counted once, and only
+/// a group ignored at some of its lanes is counted lane by lane.
+///
+/// The single-lane kernel walks every rank once per threshold, and
+/// `detection::accumulate` needs ten thresholds per (category, area range, cap)
+/// cell. Here a rank costs a few word operations unless it is a true positive
+/// at some lane, and the per-lane work — a precision, the recall thresholds it
+/// meets — happens at true positives only, the ranks the single-lane kernel
+/// does that work at. False positives are never counted: at rank `d`, a lane's
+/// count is the `d + 1` ranks seen less its true positives and its ignored
+/// ranks, each decided by [`tally_lanes`].
+///
+/// # Panics
+///
+/// If there are no lanes or more than 64.
+pub(crate) fn precision_recall_curves_of_lanes_into(
+    order: impl IntoIterator<Item = usize>,
+    matched: &[u64],
+    ignored: &[u64],
+    num_gts: &[usize],
+    group: usize,
+    rec_thrs: &[f64],
+    curves: &mut LaneCurves,
+) {
+    let lanes = num_gts.len();
+    assert!(
+        (1..=64).contains(&lanes),
+        "precision_recall_curves_of_lanes_into: 1 to 64 lanes, got {lanes}"
+    );
+    let LaneCurves {
+        points,
+        final_recall,
+        tp,
+        group_masks,
+        ignored_group,
+        group_of,
+        ignored: ignored_at,
+        r_ptr,
+        pr,
+        env_idx,
+    } = curves;
+    points.resize_with(lanes, Vec::new);
+    pr.resize_with(lanes, Vec::new);
+    env_idx.resize_with(lanes, Vec::new);
+    points[..lanes].iter_mut().for_each(Vec::clear);
+    pr[..lanes].iter_mut().for_each(Vec::clear);
+    env_idx[..lanes].iter_mut().for_each(Vec::clear);
+    final_recall.clear();
+    final_recall.resize(lanes, 0.0);
+    for v in [&mut *tp, &mut *ignored_at, &mut *r_ptr] {
+        v.clear();
+        v.resize(lanes, 0);
+    }
+    // As the single-lane kernel, a lane with no ground truth has no points
+    // and recall 0: it is left out of the walk.
+    let lane_mask = num_gts
+        .iter()
+        .enumerate()
+        .fold(0u64, |mask, (l, &n)| mask | (u64::from(n > 0) << l));
+    if lane_mask == 0 {
+        return;
+    }
+    assert!(
+        group > 0 && lanes % group == 0,
+        "precision_recall_curves_of_lanes_into: groups of {group} in {lanes} lanes"
+    );
+    let width_mask = u64::MAX >> (64 - group);
+    group_masks.clear();
+    group_masks.extend((0..lanes / group).map(|g| (width_mask << (g * group)) & lane_mask));
+    ignored_group.clear();
+    ignored_group.resize(group_masks.len(), 0);
+    group_of.clear();
+    group_of.extend((0..lanes).map(|l| l / group));
+    for (d, i) in order.into_iter().enumerate() {
+        let ig = ignored[i] & lane_mask;
+        let (tp_lanes, _) = tally_lanes(matched[i], ig, lane_mask);
+        // Branch-free on the common cases: in an area range other than
+        // `all`, ranks inside and outside it interleave at random, so a branch
+        // on "ignored at the whole group" mispredicts on about half of them.
+        let mut bits = 0;
+        for (count, &gm) in ignored_group.iter_mut().zip(group_masks.iter()) {
+            let at = ig & gm;
+            let whole = at == gm && gm != 0;
+            *count += usize::from(whole);
+            bits |= if whole { 0 } else { at };
+        }
+        while bits != 0 {
+            ignored_at[bits.trailing_zeros() as usize] += 1;
+            bits &= bits - 1;
+        }
+        // Rank 0 records at every lane, as the single-lane kernel does;
+        // after it only a true positive moves recall.
+        let mut recording = if d == 0 { lane_mask } else { tp_lanes };
+        while recording != 0 {
+            let l = recording.trailing_zeros() as usize;
+            recording &= recording - 1;
+            if tp_lanes >> l & 1 == 1 {
+                tp[l] += 1;
+                let fp = d + 1 - tp[l] - ignored_group[group_of[l]] - ignored_at[l];
+                pr[l].push(coco_precision(tp[l] as f64, fp as f64));
+            }
+            // A fresh division, as the single-lane kernel's `rc`.
+            let rc = tp[l] as f64 / num_gts[l] as f64;
+            record_thresholds(
+                rc,
+                rec_thrs,
+                &mut r_ptr[l],
+                (d, pr[l].len()),
+                &mut points[l],
+                &mut env_idx[l],
+            );
+        }
+    }
+    for l in (0..lanes).filter(|&l| lane_mask >> l & 1 == 1) {
+        final_recall[l] = tp[l] as f64 / num_gts[l] as f64;
+        fill_envelope(&mut pr[l], &env_idx[l], &mut points[l]);
+    }
 }
 
 /// Mean interpolated precision over `rec_thrs` — the tail every AP path
@@ -1245,6 +1488,216 @@ mod tests {
                         legacy(&order, &matched, ig, num_gt, odd_grids[2]),
                         fused(&order, &matched, ig, num_gt, odd_grids[2]),
                     );
+                }
+            }
+        }
+    }
+
+    /// The radix ranking is `sort_unstable` on `(key, position)` exactly:
+    /// keys with many ties, keys of `float32` scores (most bytes shared),
+    /// keys over the whole range, NaN and signed-zero keys, scores a few ulps
+    /// apart at several magnitudes (so keys differing only in their low byte,
+    /// or only in a middle one, decide the order), and lengths on both sides
+    /// of the comparison-sort cutoff.
+    #[test]
+    fn radix_ranking_is_the_comparison_sort() {
+        let mut rng = StdRng::seed_from_u64(0x5_0E7);
+        let mut scratch = Vec::new();
+        for &n in &[0usize, 1, 2, 511, 512, 513, 5000, 40_000] {
+            for kind in 0..5 {
+                let scores: Vec<f64> = (0..n)
+                    .map(|_| match kind {
+                        0 => f64::from(rng.random_range(0..7u8)) / 6.0,
+                        1 => f64::from(rng.random::<f32>()),
+                        2 => f64::from_bits(rng.random::<u64>()),
+                        3 => [0.0, -0.0, f64::NAN, 0.5, 1.0, -1.0, f64::INFINITY]
+                            [rng.random_range(0..7)],
+                        _ => {
+                            let base = [0.3f64, 0.5, 0.9][rng.random_range(0..3)].to_bits();
+                            let step = 1u64 << (8 * rng.random_range(0..4u32));
+                            f64::from_bits(base + step * rng.random_range(0..200u64))
+                        }
+                    })
+                    .collect();
+                let mut want: Vec<(u64, u32)> = scores
+                    .iter()
+                    .zip(0u32..)
+                    .map(|(&s, i)| (descending_score_key(s), i))
+                    .collect();
+                let mut got = want.clone();
+                want.sort_unstable();
+                sort_score_keyed(&mut got, &mut scratch);
+                assert_eq!(got, want, "n={n} kind={kind}");
+            }
+        }
+    }
+
+    /// The multi-threshold kernel is, at every lane, bit-identical to the
+    /// single-lane kernel run on that lane's flags — same `final_recall`, same
+    /// tuples, same order.
+    ///
+    /// What could tell them apart is here on purpose: ranks ignored at every
+    /// lane (counted once, not per lane) beside ranks ignored at some, set bits
+    /// above `lanes` (which must not be read), one lane and the full 64, rank 0
+    /// recording at lanes that are not true positives there, no detections, no
+    /// ground truth, and the odd recall grids the single-lane test uses.
+    #[test]
+    fn lane_curves_match_the_single_lane_kernel_at_every_lane() {
+        let grid = crate::params::default_rec_thrs();
+        let odd_grids: [&[f64]; 5] = [
+            &[],
+            &[0.95, 0.9500000000000001, 0.95],
+            &[0.5, 0.9, 0.3, 0.3, 1.0, 0.0],
+            &[0.2, f64::NAN, 0.4, 0.6],
+            &[1.5],
+        ];
+        let bit = |w: u64, l: usize| w >> l & 1 == 1;
+        let check = |label: &str,
+                     order: &[usize],
+                     matched: &[u64],
+                     ignored: &[u64],
+                     num_gts: &[usize],
+                     group: usize,
+                     rec_thrs: &[f64],
+                     curves: &mut LaneCurves| {
+            // Garbage from a previous call must not survive.
+            curves
+                .points
+                .iter_mut()
+                .for_each(|p| p.push((7, f64::NAN, 7)));
+            curves.final_recall.iter_mut().for_each(|r| *r = f64::NAN);
+            precision_recall_curves_of_lanes_into(
+                order.iter().copied(),
+                matched,
+                ignored,
+                num_gts,
+                group,
+                rec_thrs,
+                curves,
+            );
+            for (l, &num_gt) in num_gts.iter().enumerate() {
+                let m: Vec<bool> = matched.iter().map(|&w| bit(w, l)).collect();
+                let ig: Vec<bool> = ignored.iter().map(|&w| bit(w, l)).collect();
+                let mut scratch = PrCurveScratch::default();
+                let mut want = Vec::new();
+                let fr = precision_recall_curve_of_order_into(
+                    order.iter().copied(),
+                    &m,
+                    Some(&ig),
+                    num_gt,
+                    rec_thrs,
+                    &mut scratch,
+                    &mut want,
+                );
+                let got = &curves.points[l];
+                assert_eq!(
+                    curves.final_recall[l].to_bits(),
+                    fr.to_bits(),
+                    "{label} lane {l}: final_recall"
+                );
+                assert_eq!(got.len(), want.len(), "{label} lane {l}: point count");
+                for (i, (a, b)) in got.iter().zip(&want).enumerate() {
+                    assert_eq!(a.0, b.0, "{label} lane {l}: rec_thr_idx at point {i}");
+                    assert_eq!(
+                        a.1.to_bits(),
+                        b.1.to_bits(),
+                        "{label} lane {l}: precision at point {i}"
+                    );
+                    assert_eq!(a.2, b.2, "{label} lane {l}: detection_rank at point {i}");
+                }
+            }
+        };
+
+        let mut curves = LaneCurves::default();
+        let mut rng = StdRng::seed_from_u64(0x1A_9E5);
+        for &lanes in &[1usize, 10, 63, 64] {
+            let all = u64::MAX >> (64 - lanes);
+            for &nd in &[0usize, 1, 2, 17, 600] {
+                for &num_gt in &[0usize, 1, 7, 300] {
+                    for trial in 0..6 {
+                        // Matched mostly at low lanes, as IoU thresholds rise.
+                        let matched: Vec<u64> = (0..nd)
+                            .map(|_| {
+                                let upto = rng.random_range(0..=lanes + 2);
+                                let lanes_matched = if upto >= lanes {
+                                    all
+                                } else {
+                                    (1u64 << upto) - 1
+                                };
+                                // Garbage above `lanes`, which must not be read.
+                                lanes_matched | (rng.random::<u64>() & !all)
+                            })
+                            .collect();
+                        // Lanes in groups — one per area range in the
+                        // accumulator — every divisor of the lane count in
+                        // turn, ignored a whole group at a time, at random
+                        // lanes, or not at all.
+                        let divisors: Vec<usize> = (1..=lanes).filter(|g| lanes % g == 0).collect();
+                        let group = divisors[trial % divisors.len()];
+                        let width_mask = u64::MAX >> (64 - group);
+                        let p_whole = [0.0, 0.3, 0.8][trial % 3];
+                        let ignored: Vec<u64> = (0..nd)
+                            .map(|_| {
+                                let mut lanes_ignored = 0u64;
+                                for g in 0..lanes / group {
+                                    let gm = width_mask << (g * group);
+                                    lanes_ignored |= if rng.random_bool(p_whole) {
+                                        gm
+                                    } else if trial % 2 == 0 {
+                                        rng.random::<u64>() & gm
+                                    } else {
+                                        0
+                                    };
+                                }
+                                lanes_ignored | (rng.random::<u64>() & !all)
+                            })
+                            .collect();
+                        let mut order: Vec<usize> = (0..nd).collect();
+                        for i in (1..nd).rev() {
+                            order.swap(i, rng.random_range(0..=i));
+                        }
+                        // One count for every lane, or one per lane, as area
+                        // ranges packed side by side have, with lanes of no
+                        // ground truth among them.
+                        let num_gts: Vec<usize> = if trial < 3 {
+                            vec![num_gt; lanes]
+                        } else {
+                            (0..lanes)
+                                .map(|l| {
+                                    if l % 5 == 2 {
+                                        0
+                                    } else {
+                                        rng.random_range(0..=num_gt)
+                                    }
+                                })
+                                .collect()
+                        };
+                        let label = format!(
+                            "lanes={lanes} group={group} nd={nd} num_gt={num_gt} trial={trial}"
+                        );
+                        check(
+                            &format!("{label} / grid"),
+                            &order,
+                            &matched,
+                            &ignored,
+                            &num_gts,
+                            group,
+                            &grid,
+                            &mut curves,
+                        );
+                        for (g, rec_thrs) in odd_grids.iter().enumerate() {
+                            check(
+                                &format!("{label} / odd grid {g}"),
+                                &order,
+                                &matched,
+                                &ignored,
+                                &num_gts,
+                                group,
+                                rec_thrs,
+                                &mut curves,
+                            );
+                        }
+                    }
                 }
             }
         }

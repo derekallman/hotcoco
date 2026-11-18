@@ -18,6 +18,7 @@ mod calibration;
 mod catalog;
 mod compare;
 mod confusion;
+mod dets;
 mod diagnostics;
 mod evaluate;
 pub mod expand;
@@ -201,7 +202,11 @@ impl Stage {
 /// ```
 pub struct COCOeval {
     coco_gt: Arc<COCO>,
-    coco_dt: Arc<COCO>,
+    /// The detections: a results `COCO`, or the columns `load_res` kept for
+    /// an array of boxes — see [`dets::DtHandle`]. Read through
+    /// [`coco_dt`](Self::coco_dt), or [`dets`](Self::dets) on the paths that
+    /// can take the columns.
+    dt: dets::DtHandle,
     pub params: Params,
     /// The full per-image records, built on first access — see
     /// [`eval_imgs`](Self::eval_imgs). Reset by every `evaluate()`.
@@ -282,24 +287,32 @@ impl COCOeval {
     /// A set [`COCO::cap_detections_per_image`] already capped is kept as is.
     fn with_mode(
         coco_gt: impl Into<Arc<COCO>>,
-        coco_dt: impl Into<Arc<COCO>>,
+        dt: dets::DtHandle,
         params: Params,
         eval_mode: EvalMode,
         hierarchy: Option<Hierarchy>,
     ) -> Self {
         let mut coco_gt: Arc<COCO> = coco_gt.into();
-        let mut coco_dt: Arc<COCO> = coco_dt.into();
-        if eval_mode == EvalMode::Lvis && !coco_dt.is_per_image_capped() {
-            if let Some(capped) = coco_dt.capped_copy(crate::coco::LVIS_MAX_DETS_PER_IMAGE) {
-                coco_dt = Arc::new(capped);
-            }
-        }
         // A missing area would read as 0 and put the object in `small`.
         fill_areas(&mut coco_gt, AreaRule::Instance);
-        fill_areas(&mut coco_dt, AreaRule::Result);
+        // Columns are box results, every one with the area `load_res` gives
+        // it: in COCO mode, nothing to cap or fill. Any other mode reads the
+        // records.
+        let dt = if let (dets::DtHandle::Columns(_), EvalMode::Coco) = (&dt, eval_mode) {
+            dt
+        } else {
+            let mut coco_dt = Arc::clone(dt.coco());
+            if eval_mode == EvalMode::Lvis && !coco_dt.is_per_image_capped() {
+                if let Some(capped) = coco_dt.capped_copy(crate::coco::LVIS_MAX_DETS_PER_IMAGE) {
+                    coco_dt = Arc::new(capped);
+                }
+            }
+            fill_areas(&mut coco_dt, AreaRule::Result);
+            dets::DtHandle::Records(coco_dt)
+        };
         COCOeval {
             coco_gt,
-            coco_dt,
+            dt,
             params,
             eval_imgs: std::sync::OnceLock::new(),
             default_eval_imgs: std::sync::OnceLock::new(),
@@ -340,7 +353,9 @@ impl COCOeval {
         };
         let mut ev = Self::with_mode(
             coco_gt,
-            COCO::from_dataset(crate::types::Dataset::default()),
+            dets::DtHandle::Records(Arc::new(COCO::from_dataset(
+                crate::types::Dataset::default(),
+            ))),
             params,
             eval_mode,
             None,
@@ -361,7 +376,29 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            coco_dt,
+            dets::DtHandle::Records(coco_dt.into()),
+            EvalMode::Coco.default_params(iou_type),
+            EvalMode::Coco,
+            None,
+        )
+    }
+
+    /// An evaluator over detections `load_res` kept as columns: the same
+    /// evaluation as `COCOeval::new(coco_gt, columns.coco(), iou_type)`, with
+    /// the records built only if something other than a box evaluation reads
+    /// them — see [`dets`](Self::dets).
+    ///
+    /// Plumbing for the Python bindings' `load_res(array)`, not an API to
+    /// build on — see [`DetectionColumns`](crate::DetectionColumns).
+    #[doc(hidden)]
+    pub fn new_columns(
+        coco_gt: impl Into<Arc<COCO>>,
+        columns: Arc<crate::DetectionColumns>,
+        iou_type: IouType,
+    ) -> Self {
+        Self::with_mode(
+            coco_gt,
+            dets::DtHandle::Columns(columns),
             EvalMode::Coco.default_params(iou_type),
             EvalMode::Coco,
             None,
@@ -379,7 +416,22 @@ impl COCOeval {
     /// The detection dataset this evaluator reads — see [`coco_gt`](Self::coco_gt).
     /// Under LVIS, the per-image-capped copy [`new_lvis`](Self::new_lvis) made.
     pub fn coco_dt(&self) -> &Arc<COCO> {
-        &self.coco_dt
+        self.dt.coco()
+    }
+
+    /// Where an evaluation under `params` reads the detections: the columns
+    /// `load_res` kept, for a box evaluation in COCO mode, and the records
+    /// otherwise. Both give the same ids, scores, areas, and boxes, and the
+    /// same index, so the choice changes no result.
+    fn dets(&self, params: &Params) -> dets::Dets<'_> {
+        match self.dt.columns() {
+            Some(columns)
+                if self.eval_mode == EvalMode::Coco && params.iou_type == IouType::Bbox =>
+            {
+                dets::Dets::Columns(columns)
+            }
+            _ => dets::Dets::Records(self.coco_dt()),
+        }
     }
 
     /// Per-image evaluation results (sparse — indexed by image position).
@@ -488,7 +540,7 @@ impl COCOeval {
             .map(|eval| eval.params.clone());
         Some(Replay {
             coco_gt: Arc::clone(self.unexpanded_gt.as_ref().unwrap_or(&self.coco_gt)),
-            coco_dt: Arc::clone(self.unexpanded_dt.as_ref().unwrap_or(&self.coco_dt)),
+            coco_dt: Arc::clone(self.unexpanded_dt.as_ref().unwrap_or(self.coco_dt())),
             evaluated,
             accumulated,
             summarized: self.stage == Stage::Summarized && self.stats.is_some(),
@@ -806,11 +858,11 @@ impl COCOeval {
         };
         let cap = params.max_det();
         let in_rank_order = |img_id: u64, cat_id: u64, matrix: &IouMatrix| {
-            let dt_ids = Self::get_anns_static(&self.coco_dt, params, img_id, cat_id);
+            let dt_ids = Self::get_anns_static(self.coco_dt().ann_index(), params, img_id, cat_id);
             let scores: Vec<f64> = dt_ids
                 .iter()
                 .map(|&id| {
-                    self.coco_dt
+                    self.coco_dt()
                         .get_ann(id)
                         .and_then(|ann| ann.score)
                         .unwrap_or(0.0)
@@ -935,7 +987,7 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            coco_dt,
+            dets::DtHandle::Records(coco_dt.into()),
             EvalMode::Lvis.default_params(iou_type),
             EvalMode::Lvis,
             None,
@@ -970,7 +1022,7 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            coco_dt,
+            dets::DtHandle::Records(coco_dt.into()),
             EvalMode::OpenImages.default_params(IouType::Bbox),
             EvalMode::OpenImages,
             hierarchy,

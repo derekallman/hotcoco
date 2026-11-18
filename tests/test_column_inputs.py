@@ -308,3 +308,128 @@ class TestLoadResSegmentation:
     def test_one_entry_per_row(self):
         with pytest.raises(ValueError, match="segmentation has 2 entries for 1 rows"):
             COCO(dict_dataset()).load_res(self.ARRAY[:1], segmentation=self.masks())
+
+
+class TestArrayResultsKeptAsColumns:
+    """``load_res`` keeps an array of boxes as columns and builds the records only
+    when something reads them; a box ``COCOeval`` reads the columns. Every read and
+    every evaluation must answer as the same detections loaded as dicts, read before
+    the records exist and after.
+
+    Box sides sit near 32 and 96, the area-range edges, so a detection's area
+    decides its range on many rows, and most detections are jittered ground-truth
+    boxes, so matching decides the curves."""
+
+    SIDES = (31.0, 31.9, 32.1, 33.0, 95.0, 95.9, 96.1, 97.0, 12.0, 60.0)
+
+    @classmethod
+    def ground_truth(cls, seed=5):
+        rng = np.random.default_rng(seed)
+        images = [{"id": i, "width": 200, "height": 200} for i in (1, 2, 3)]
+        anns = []
+        for i in range(60):
+            w, h = rng.choice(cls.SIDES, 2)
+            x, y = rng.uniform(0, 100, 2)
+            anns.append(
+                {
+                    "id": i + 1,
+                    "image_id": int(rng.choice([1, 2, 3])),
+                    "category_id": int(rng.choice([1, 2])),
+                    "bbox": [float(x), float(y), float(w), float(h)],
+                    "area": float(w * h),
+                    "iscrowd": int(rng.random() < 0.05),
+                }
+            )
+        return COCO({"images": images, "annotations": anns, "categories": CATEGORIES})
+
+    @classmethod
+    def rows(cls, gt, ncols, n=600, seed=3):
+        rng = np.random.default_rng(seed)
+        anns = gt.dataset["annotations"]
+        out = []
+        for _ in range(n):
+            if rng.random() < 0.7:
+                a = anns[rng.integers(len(anns))]
+                x, y, w, h = (v * rng.uniform(0.97, 1.03) for v in a["bbox"])
+                image_id, category_id = a["image_id"], a["category_id"]
+            else:
+                w, h = rng.choice(cls.SIDES, 2)
+                x, y = rng.uniform(0, 100, 2)
+                image_id = int(rng.choice([1, 2, 3, 9]))  # 9 is not in the ground truth
+                category_id = int(rng.choice([1, 2, 7]))  # nor 7
+            row = [image_id, x, y, w, h, rng.integers(0, 6) / 5]  # scores tie
+            if ncols == 7:
+                row.append(category_id)
+            out.append(row)
+        return np.array(out, dtype=np.float64)
+
+    @staticmethod
+    def as_dicts(rows):
+        return [
+            {
+                "image_id": int(r[0]),
+                "bbox": [float(v) for v in r[1:5]],
+                "score": float(r[5]),
+                "category_id": int(r[6]) if len(r) == 7 else 1,
+            }
+            for r in rows
+        ]
+
+    @staticmethod
+    def load(gt, res):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            dt = gt.load_res(res)
+        return dt, [str(w.message) for w in caught]
+
+    @staticmethod
+    def evaluated(gt, dt, iou_type, retype=None):
+        ev = COCOeval(gt, dt, iou_type)
+        if retype:
+            ev.params.iouType = retype
+        ev.evaluate()
+        ev.accumulate()
+        ev.summarize()
+        return ev
+
+    @pytest.mark.parametrize("ncols", [6, 7])
+    def test_reads_and_evaluations_match_the_dicts(self, ncols, capsys):
+        gt = self.ground_truth()
+        rows = self.rows(gt, ncols)
+        by_array, warned_array = self.load(gt, rows)
+        by_dicts, warned_dicts = self.load(gt, self.as_dicts(rows))
+        assert warned_array == warned_dicts and warned_array
+        # Reads of the images and categories alone, before anything builds the records.
+        assert by_array.imgs == by_dicts.imgs
+        assert by_array.cats == by_dicts.cats
+        assert by_array.load_warnings == by_dicts.load_warnings
+        # A box evaluation of the columns, then a segm one of the records it builds.
+        for iou_type, retype in [("bbox", None), ("bbox", "segm"), ("segm", None)]:
+            a = self.evaluated(gt, by_array, iou_type, retype)
+            d = self.evaluated(gt, by_dicts, iou_type, retype)
+            assert a.stats.tolist() == d.stats.tolist(), (iou_type, retype)
+            for key in ("precision", "recall", "scores"):
+                assert np.array_equal(a.eval[key], d.eval[key]), (iou_type, retype, key)
+            assert a.evalImgs == d.evalImgs, (iou_type, retype)
+        capsys.readouterr()
+        # Everything that reads the records.
+        assert by_array.anns == by_dicts.anns
+        assert by_array.dataset == by_dicts.dataset
+        assert by_array.getAnnIds(imgIds=[3], catIds=[1]) == by_dicts.getAnnIds(imgIds=[3], catIds=[1])
+        assert 0 < by_dicts.loadAnns(1)[0]["area"]
+
+    def test_errors_match_the_dicts(self):
+        gt = self.ground_truth()
+        rows = self.rows(gt, 7)
+        nan_score, bad_id = rows.copy(), rows.copy()
+        nan_score[17, 5] = np.nan
+        bad_id[23, 0] = 1.5
+        with pytest.raises(ValueError) as by_array:
+            gt.load_res(nan_score)
+        with pytest.raises(ValueError) as by_dicts:
+            gt.load_res(self.as_dicts(nan_score))
+        assert str(by_array.value) == str(by_dicts.value)
+        with pytest.raises(ValueError, match=r"load_res: row 23 has image_id 1\.5"):
+            gt.load_res(bad_id)

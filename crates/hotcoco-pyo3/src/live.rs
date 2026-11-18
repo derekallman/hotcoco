@@ -8,27 +8,45 @@
 //! is private to this module and [`LiveDataset::get`] is its one reader, so a
 //! binding method cannot skip the read-back and compile; `tests/test_live_dataset.py`
 //! calls every public method after an edit to prove it.
+//!
+//! A results set `load_res` built from an array of boxes starts as the
+//! [`DetectionColumns`] it stands for, and the data is built from them the
+//! first time anything reads it — see [`LiveDataset::columns`]. Until then a
+//! box `COCOeval` reads the columns themselves
+//! ([`LiveDataset::pending_columns`]), which at a detector's validation scale
+//! is most of the cost of evaluating it.
 
 use std::sync::Arc;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyMapping};
 
+use hotcoco_core::DetectionColumns;
+
 use crate::convert::{annotation_to_py, category_to_py, image_to_py, py_to_dataset};
 use crate::{DatasetWarning, warn};
 
 pub(crate) struct LiveDataset {
-    inner: Arc<hotcoco_core::COCO>,
+    /// The data, read through [`ready`](Self::ready), which builds it.
+    data: Data,
     /// The dict `dataset` hands out — the same object on every access, as
     /// pycocotools' is, and the one assigned to `dataset` if one was. `None`
     /// until the first access.
     dict: Option<Py<PyDict>>,
-    /// Whether `dict` has been handed to Python since `inner` was last built
-    /// from it, and so may carry an edit `inner` has not seen.
+    /// Whether `dict` has been handed to Python since the data was last built
+    /// from it, and so may carry an edit the data has not seen.
     handed_out: bool,
     /// `imgToAnns` and `catToImgs`, each kept from its first read until
-    /// `inner` next changes — see [`index_map`](Self::index_map).
+    /// the data next changes — see [`index_map`](Self::index_map).
     index_maps: [Option<Py<PyAny>>; 2],
+}
+
+/// A wrapper's data: built, or still the columns `load_res` kept for an
+/// array of boxes. The columns are dropped once the data is built from them:
+/// the data can be edited, and the columns cannot.
+enum Data {
+    Built(Arc<hotcoco_core::COCO>),
+    Columns(Arc<DetectionColumns>),
 }
 
 /// Which of pycocotools' two index maps; the slot in `index_maps`.
@@ -43,10 +61,71 @@ pub(crate) enum IndexMap {
 impl LiveDataset {
     pub(crate) fn new(inner: impl Into<Arc<hotcoco_core::COCO>>) -> Self {
         Self {
-            inner: inner.into(),
+            data: Data::Built(inner.into()),
             dict: None,
             handed_out: false,
             index_maps: [None, None],
+        }
+    }
+
+    /// A results set held as the columns `load_res` kept for an array of
+    /// boxes, its data built on the first read. `load_res` has emitted the
+    /// load warnings already, and the data built from the columns carries the
+    /// same ones, so none is emitted again.
+    pub(crate) fn columns(columns: Arc<DetectionColumns>) -> Self {
+        Self {
+            data: Data::Columns(columns),
+            dict: None,
+            handed_out: false,
+            index_maps: [None, None],
+        }
+    }
+
+    /// A dataset with this one's images, categories, and load warnings, for a
+    /// read of those alone: the data, or, while it is still the columns
+    /// `load_res` kept, the ground truth they were loaded against — whose
+    /// images and categories `load_res` copies — so nothing is built for the
+    /// read. RF-DETR's adapter reads `len(coco_preds.imgs)` before every
+    /// evaluation.
+    pub(crate) fn images_and_categories(
+        &mut self,
+        py: Python<'_>,
+    ) -> PyResult<Arc<hotcoco_core::COCO>> {
+        match self.pending_columns() {
+            Some(columns) => Ok(Arc::clone(columns.ground_truth())),
+            None => self.get(py),
+        }
+    }
+
+    /// The load warnings, without building the data from the columns.
+    pub(crate) fn load_warnings(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
+        match self.pending_columns() {
+            Some(columns) => Ok(columns.load_warnings().to_vec()),
+            None => Ok(self.get(py)?.load_warnings().to_vec()),
+        }
+    }
+
+    /// The columns while they are the results set — the one reader of them
+    /// outside [`ready`](Self::ready). Handing the dict out builds the data
+    /// from them, but assigning one (`coco.dataset = d`) does not: the dict is
+    /// the dataset from then on, read back on the next `get`, and the columns
+    /// describe what it replaced.
+    pub(crate) fn pending_columns(&self) -> Option<&Arc<DetectionColumns>> {
+        match &self.data {
+            Data::Columns(columns) if self.dict.is_none() => Some(columns),
+            _ => None,
+        }
+    }
+
+    /// The data, built from the columns on the first call — the `COCO` they
+    /// keep, so an evaluator over the same columns builds none of its own.
+    fn ready(&mut self) -> &mut Arc<hotcoco_core::COCO> {
+        if let Data::Columns(columns) = &self.data {
+            self.data = Data::Built(Arc::clone(columns.coco()));
+        }
+        match &mut self.data {
+            Data::Built(inner) => inner,
+            Data::Columns(_) => unreachable!("built just above"),
         }
     }
 
@@ -56,7 +135,7 @@ impl LiveDataset {
     /// and the dict stays pending, so the next call reads the repaired dict.
     pub(crate) fn get(&mut self, py: Python<'_>) -> PyResult<Arc<hotcoco_core::COCO>> {
         self.sync(py)?;
-        Ok(Arc::clone(&self.inner))
+        Ok(Arc::clone(self.ready()))
     }
 
     /// One of the index maps, with an edit to the dict read back first: built
@@ -65,7 +144,7 @@ impl LiveDataset {
     /// read `coco.imgToAnns[img_id]` once per image, and a map built on every
     /// read made that loop quadratic (139 ms a read on val2017).
     ///
-    /// Every path that replaces or edits `inner` drops both maps: `sync`,
+    /// Every path that replaces or edits the data drops both maps: `sync`,
     /// `edit`, and `reindex`.
     pub(crate) fn index_map(
         &mut self,
@@ -77,7 +156,7 @@ impl LiveDataset {
         if let Some(map) = &self.index_maps[which as usize] {
             return Ok(map.clone_ref(py));
         }
-        let map = build(&self.inner)?;
+        let map = build(self.ready())?;
         self.index_maps[which as usize] = Some(map.clone_ref(py));
         Ok(map)
     }
@@ -93,7 +172,7 @@ impl LiveDataset {
     ) -> PyResult<()> {
         self.sync(py)?;
         self.index_maps = [None, None];
-        let ids = edit(&mut self.inner)?;
+        let ids = edit(self.ready())?;
         self.mirror(py, &ids)
     }
 
@@ -105,7 +184,7 @@ impl LiveDataset {
         let dict = match &self.dict {
             Some(dict) => dict.clone_ref(py),
             None => {
-                let dict = dataset_to_py(py, &self.inner.dataset)?;
+                let dict = dataset_to_py(py, &self.ready().dataset)?;
                 self.dict = Some(dict.clone_ref(py));
                 dict
             }
@@ -132,7 +211,7 @@ impl LiveDataset {
         self.sync(py)
     }
 
-    /// Rebuild `inner` from the dict if Python has had it since the last
+    /// Rebuild the data from the dict if Python has had it since the last
     /// build. The rest of the `COCO` — the loader's warnings, the LVIS cap
     /// marker — carries over, and only a warning the edit introduced is
     /// emitted.
@@ -140,11 +219,16 @@ impl LiveDataset {
         let Some(dict) = self.dict.as_ref().filter(|_| self.handed_out) else {
             return Ok(());
         };
-        let rebuilt = self.inner.reindexed(py_to_dataset(dict.bind(py))?);
-        for w in &rebuilt.load_warnings()[self.inner.load_warnings().len()..] {
+        let dataset = py_to_dataset(dict.bind(py))?;
+        // A dict assigned over the columns replaces them unbuilt.
+        let (rebuilt, kept) = match &self.data {
+            Data::Built(inner) => (inner.reindexed(dataset), inner.load_warnings().len()),
+            Data::Columns(columns) => (columns.reindexed(dataset), columns.load_warnings().len()),
+        };
+        for w in &rebuilt.load_warnings()[kept..] {
             warn::<DatasetWarning>(py, w)?;
         }
-        self.inner = Arc::new(rebuilt);
+        self.data = Data::Built(Arc::new(rebuilt));
         self.handed_out = false;
         self.index_maps = [None, None];
         Ok(())
@@ -156,12 +240,13 @@ impl LiveDataset {
     /// The dict becomes the record, key for key: a field the edit cleared
     /// leaves the dict too, or the next read-back would parse it back in.
     /// Each dict is found by its `id`, at the record's own position when the
-    /// list is still in `inner`'s order. A list reordered or shortened through
+    /// list is still in the data's order. A list reordered or shortened through
     /// a reference kept from before the last call is not: `sync` does not see
     /// that edit, the position then names another annotation's dict, and an
     /// annotation no longer listed has no dict to write.
     fn mirror(&self, py: Python<'_>, ids: &[u64]) -> PyResult<()> {
-        let Some(dict) = &self.dict else {
+        // `edit` built the data before it called this.
+        let (Some(dict), Data::Built(inner)) = (&self.dict, &self.data) else {
             return Ok(());
         };
         let Some(anns) = dict.bind(py).get_item(pyo3::intern!(py, "annotations"))? else {
@@ -176,7 +261,7 @@ impl LiveDataset {
             (found == id).then(|| item.clone())
         }
         for &id in ids {
-            let Some(i) = self.inner.ann_position(id) else {
+            let Some(i) = inner.ann_position(id) else {
                 continue;
             };
             let in_place = anns.get_item(i).ok().and_then(|item| holds(&item, id));
@@ -184,7 +269,7 @@ impl LiveDataset {
             else {
                 continue;
             };
-            let record = annotation_to_py(py, &self.inner.dataset.annotations[i])?;
+            let record = annotation_to_py(py, &inner.dataset.annotations[i])?;
             target.clear();
             target.update(record.bind(py).cast::<PyMapping>()?)?;
         }

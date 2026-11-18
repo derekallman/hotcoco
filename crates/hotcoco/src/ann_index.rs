@@ -56,83 +56,179 @@ impl Default for AnnIndex {
 
 impl AnnIndex {
     pub(crate) fn build(anns: &[Annotation]) -> Self {
+        // The one read of `anns`: each annotation's `(image, category, id)`,
+        // so the passes after it read 24 bytes per annotation rather than a
+        // whole record. It fans out past the shared threshold: at a million
+        // detections the records are hundreds of megabytes and the keys a
+        // tenth of that.
+        let key = |ann: &Annotation| (ann.image_id, ann.category_id, ann.id);
+        let keys: Vec<(u64, u64, u64)> = if worth_parallel(anns.len()) {
+            anns.par_iter().map(key).collect()
+        } else {
+            anns.iter().map(key).collect()
+        };
+        Self::from_keys(keys.len(), |i| keys[i])
+    }
+
+    /// The index of `n` annotations, annotation `i` read as
+    /// `(image_id, category_id, id)` through `key`, in array order: what
+    /// [`build`](Self::build) reads off the records, for a caller that holds
+    /// the three fields without the records — the detections
+    /// [`crate::DetectionColumns`] keeps. One builder, so the two cannot group
+    /// or order differently.
+    pub(crate) fn from_keys(n: usize, key: impl Fn(usize) -> (u64, u64, u64) + Sync) -> Self {
         assert!(
-            u32::try_from(anns.len()).is_ok(),
+            u32::try_from(n).is_ok(),
             "annotation index positions are u32"
         );
-        // Pass 1, the one read of `anns`: one slot per distinct image, in
-        // first-seen order, how many annotations each holds, and each
-        // annotation's `(slot, category, id)`, so the passes after it read 24
-        // bytes per annotation rather than a whole record. Consecutive
-        // annotations usually share an image, so the slot is looked up again
-        // only when the image changes.
-        let mut img_ids = Vec::new();
+        let parallel = worth_parallel(n);
+        // One slot per distinct image, in first-seen order, which is
+        // contract, and every image's annotations by array position, in
+        // array order within it.
+        //
+        // When every image's annotations form one run, as a detector's
+        // output listed image by image does, the runs are the slots and the
+        // array order is already by image: the runs' starts are found in
+        // parallel, and slots are assigned over the runs alone, not key by
+        // key. A run whose image was seen before means the runs are not
+        // distinct, and the serial walk below does the general case.
+        let starts: Vec<u32> = {
+            let starts_run = |&i: &usize| i == 0 || key(i).0 != key(i - 1).0;
+            if parallel {
+                (0..n)
+                    .into_par_iter()
+                    .filter(starts_run)
+                    .map(|i| i as u32)
+                    .collect()
+            } else {
+                (0..n).filter(starts_run).map(|i| i as u32).collect()
+            }
+        };
+        let mut img_ids = Vec::with_capacity(starts.len());
         let mut img_slot = FxHashMap::default();
-        let mut img_offsets: Vec<u32> = vec![0];
-        let mut last: Option<(u64, u32)> = None;
-        let compact: Vec<(u32, u64, u64)> = anns
-            .iter()
-            .map(|ann| {
-                let slot = match last {
-                    Some((id, slot)) if id == ann.image_id => slot,
-                    _ => {
-                        let slot = *img_slot.entry(ann.image_id).or_insert_with(|| {
-                            img_ids.push(ann.image_id);
-                            img_offsets.push(0);
-                            img_ids.len() as u32 - 1
-                        });
-                        last = Some((ann.image_id, slot));
-                        slot
-                    }
-                };
-                img_offsets[slot as usize + 1] += 1;
-                (slot, ann.category_id, ann.id)
-            })
-            .collect();
-        for i in 1..img_offsets.len() {
-            img_offsets[i] += img_offsets[i - 1];
-        }
-        // Pass 2: place every (category, id) at its image's next position.
-        let mut cursor = img_offsets.clone();
-        let mut keyed = vec![(0u64, 0u64); anns.len()];
-        for &(slot, category_id, id) in &compact {
-            let at = &mut cursor[slot as usize];
-            keyed[*at as usize] = (category_id, id);
-            *at += 1;
-        }
-        drop(compact);
-        let by_img: Vec<u64> = keyed.iter().map(|&(_, id)| id).collect();
-        // Per image, in parallel past the shared threshold: stably sort its
-        // slice by category and run-length encode the categories that sort
-        // produces.
-        let mut slices: Vec<&mut [(u64, u64)]> = Vec::with_capacity(img_ids.len());
-        let mut rest = keyed.as_mut_slice();
+        img_slot.reserve(starts.len());
+        let grouped = starts.iter().all(|&start| {
+            let image_id = key(start as usize).0;
+            let fresh = img_slot.insert(image_id, img_ids.len() as u32).is_none();
+            img_ids.push(image_id);
+            fresh
+        });
+        let (img_offsets, positions): (Vec<u32>, Vec<u32>) = if grouped {
+            let mut offsets = starts;
+            offsets.push(n as u32);
+            let positions = if parallel {
+                (0..n as u32).into_par_iter().collect()
+            } else {
+                (0..n as u32).collect()
+            };
+            (offsets, positions)
+        } else {
+            drop(starts);
+            img_ids.clear();
+            img_slot.clear();
+            // Slots key by key; consecutive annotations usually share an
+            // image, so the slot is looked up again only when it changes.
+            let mut img_offsets: Vec<u32> = vec![0];
+            let mut last: Option<(u64, u32)> = None;
+            let slots: Vec<u32> = (0..n)
+                .map(|i| {
+                    let image_id = key(i).0;
+                    let slot = match last {
+                        Some((id, slot)) if id == image_id => slot,
+                        _ => {
+                            let slot = *img_slot.entry(image_id).or_insert_with(|| {
+                                img_ids.push(image_id);
+                                img_offsets.push(0);
+                                img_ids.len() as u32 - 1
+                            });
+                            last = Some((image_id, slot));
+                            slot
+                        }
+                    };
+                    img_offsets[slot as usize + 1] += 1;
+                    slot
+                })
+                .collect();
+            for i in 1..img_offsets.len() {
+                img_offsets[i] += img_offsets[i - 1];
+            }
+            // Every (category, id) at its image's next position.
+            let mut cursor = img_offsets.clone();
+            let mut positions = vec![0u32; n];
+            for (i, &slot) in slots.iter().enumerate() {
+                let at = &mut cursor[slot as usize];
+                positions[*at as usize] = i as u32;
+                *at += 1;
+            }
+            (img_offsets, positions)
+        };
+        let id_at = |p: u32| key(p as usize).2;
+        let by_img: Vec<u64> = if parallel {
+            positions.par_iter().map(|&p| id_at(p)).collect()
+        } else {
+            positions.iter().map(|&p| id_at(p)).collect()
+        };
+        // Per image, in parallel past the shared threshold: order its
+        // annotations by category, keeping array order within one, and
+        // run-length encode the categories. Positions are distinct and
+        // ascend in array order, so an unstable sort on (category, position)
+        // is exactly the stable sort by category, without the buffer a
+        // stable sort allocates for every image.
+        let mut by_pair = vec![0u64; n];
+        let mut windows: Vec<(&mut [u64], &[u32], u32)> = Vec::with_capacity(img_ids.len());
+        let mut rest = by_pair.as_mut_slice();
         for w in img_offsets.windows(2) {
             let (head, tail) = rest.split_at_mut((w[1] - w[0]) as usize);
-            slices.push(head);
+            windows.push((head, &positions[w[0] as usize..w[1] as usize], w[0]));
             rest = tail;
         }
-        let group = |(slice, &start): (&mut [(u64, u64)], &u32)| {
-            slice.sort_by_key(|&(cat, _)| cat);
+        //
+        // A category id that fits 32 bits — every one in practice — packs
+        // with the position into one `u64` whose order is the pair's, and a
+        // sort of plain integers is the cheaper one.
+        let group = |(packed, order): &mut (Vec<u64>, Vec<(u64, u32)>),
+                     (out, pos, start): (&mut [u64], &[u32], u32)| {
             let mut groups: Vec<(u64, u32, u32)> = Vec::new();
-            for (i, &(cat, _)) in slice.iter().enumerate() {
+            let mut push = |i: usize, cat: u64, p: u32, slot: &mut u64| {
+                *slot = id_at(p);
                 match groups.last_mut() {
                     Some((last, _, n)) if *last == cat => *n += 1,
                     _ => groups.push((cat, start + i as u32, 1)),
                 }
+            };
+            packed.clear();
+            let fits = pos.iter().all(|&p| {
+                let cat = key(p as usize).1;
+                packed.push(cat << 32 | u64::from(p));
+                u32::try_from(cat).is_ok()
+            });
+            if fits {
+                packed.sort_unstable();
+                for (i, (&k, slot)) in packed.iter().zip(out.iter_mut()).enumerate() {
+                    push(i, k >> 32, k as u32, slot);
+                }
+            } else {
+                order.clear();
+                order.extend(pos.iter().map(|&p| (key(p as usize).1, p)));
+                order.sort_unstable();
+                for (i, (&(cat, p), slot)) in order.iter().zip(out.iter_mut()).enumerate() {
+                    push(i, cat, p, slot);
+                }
             }
             groups
         };
-        let per_img: Vec<Vec<(u64, u32, u32)>> = if worth_parallel(anns.len()) {
-            slices
+        let per_img: Vec<Vec<(u64, u32, u32)>> = if parallel {
+            windows
                 .into_par_iter()
-                .zip(&img_offsets)
-                .map(group)
+                .map_init(<(Vec<u64>, Vec<(u64, u32)>)>::default, group)
                 .collect()
         } else {
-            slices.into_iter().zip(&img_offsets).map(group).collect()
+            let mut scratch = <(Vec<u64>, Vec<(u64, u32)>)>::default();
+            windows
+                .into_iter()
+                .map(|w| group(&mut scratch, w))
+                .collect()
         };
-        let by_pair = keyed.into_iter().map(|(_, id)| id).collect();
         let mut groups = Vec::with_capacity(per_img.iter().map(Vec::len).sum());
         let mut group_offsets = Vec::with_capacity(per_img.len() + 1);
         group_offsets.push(0);
@@ -170,7 +266,13 @@ impl AnnIndex {
 
     /// The annotation ids of one (image, category) pair, in array order.
     pub(crate) fn for_img_cat(&self, img_id: u64, cat_id: u64) -> &[u64] {
-        let groups = self.groups_of(img_id);
+        self.ids_in(self.groups_of(img_id), cat_id)
+    }
+
+    /// [`for_img_cat`](Self::for_img_cat) for an image whose groups the
+    /// caller already holds from [`groups_of`](Self::groups_of): the binary
+    /// search without the image lookup, for a walk over one image's pairs.
+    pub(crate) fn ids_in(&self, groups: &[(u64, u32, u32)], cat_id: u64) -> &[u64] {
         match groups.binary_search_by_key(&cat_id, |&(cat, _, _)| cat) {
             Ok(i) => {
                 let (_, start, len) = groups[i];
@@ -186,7 +288,7 @@ impl AnnIndex {
     }
 
     /// One image's `(category, start, len)` groups, ascending by category.
-    fn groups_of(&self, img_id: u64) -> &[(u64, u32, u32)] {
+    pub(crate) fn groups_of(&self, img_id: u64) -> &[(u64, u32, u32)] {
         match self.img_slot.get(&img_id) {
             Some(&slot) => &self.groups[span(&self.group_offsets, slot)],
             None => &[],
@@ -247,11 +349,16 @@ pub(crate) struct Duplicates {
 
 impl IdIndex {
     pub(crate) fn build(anns: &[Annotation]) -> (Self, Option<Duplicates>) {
-        if anns
-            .iter()
-            .enumerate()
-            .all(|(i, ann)| ann.id == i as u64 + 1)
-        {
+        // `load_res` numbers its results `1..=N`, so a results set is
+        // usually dense; the check reads every record once, in parallel
+        // past the shared threshold.
+        let dense_at = |(i, ann): (usize, &Annotation)| ann.id == i as u64 + 1;
+        let dense = if worth_parallel(anns.len()) {
+            anns.par_iter().enumerate().all(dense_at)
+        } else {
+            anns.iter().enumerate().all(dense_at)
+        };
+        if dense {
             return (IdIndex::Dense { len: anns.len() }, None);
         }
         let mut map = FxHashMap::with_capacity_and_hasher(anns.len(), rustc_hash::FxBuildHasher);
@@ -328,36 +435,108 @@ mod tests {
 
     /// Many images and categories, so the parallel per-image sort, the
     /// offset tables past the first few slots, and a binary search over more
-    /// than two categories all run — checked against naive maps.
+    /// than two categories all run — checked against naive maps, for keys in
+    /// every order the builder takes a different path for: images
+    /// interleaved, each image one run (no key moves), and one run each with
+    /// ids that do not ascend in array order, which a sort on ids instead of
+    /// positions would get wrong. Sizes on both sides of the parallel
+    /// threshold.
     #[test]
     fn index_agrees_with_naive_maps_at_scale() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(0x9E37_79B9);
-        let anns: Vec<Annotation> = (0..3000)
-            .map(|i| ann(i * 7 + 1, rng.random_range(0..41), rng.random_range(0..11)))
-            .collect();
+        for n in [300usize, 3000] {
+            let interleaved: Vec<Annotation> = (0..n as u64)
+                .map(|i| ann(i * 7 + 1, rng.random_range(0..41), rng.random_range(0..11)))
+                .collect();
+            let mut grouped = interleaved.clone();
+            grouped.sort_by_key(|a| a.image_id);
+            let mut shuffled_ids = grouped.clone();
+            for i in (1..n).rev() {
+                let j = rng.random_range(0..=i);
+                let id = shuffled_ids[i].id;
+                shuffled_ids[i].id = shuffled_ids[j].id;
+                shuffled_ids[j].id = id;
+            }
+            // One run per image but the first image's, which comes back at
+            // the end: the run check fails after it has filled its tables.
+            // Category ids past 32 bits, which do not pack with a position.
+            let mut wide_cats = interleaved.clone();
+            for a in wide_cats.iter_mut().step_by(3) {
+                a.category_id += 1 << 40;
+            }
+            let mut recurring = grouped.clone();
+            let mut back = grouped[0].clone();
+            back.id = 10 * n as u64 + 1;
+            recurring.push(back);
+            for (label, anns) in [
+                ("interleaved", &interleaved),
+                ("grouped", &grouped),
+                ("grouped, ids shuffled", &shuffled_ids),
+                ("grouped, first image recurring", &recurring),
+                ("category ids past 32 bits", &wide_cats),
+            ] {
+                assert_matches_naive_maps(&format!("{label}, n={n}"), anns);
+            }
+        }
+    }
+
+    fn assert_matches_naive_maps(label: &str, anns: &[Annotation]) {
+        let mut first_seen: Vec<u64> = Vec::new();
         let mut by_img: HashMap<u64, Vec<u64>> = HashMap::new();
         let mut by_pair: HashMap<(u64, u64), Vec<u64>> = HashMap::new();
-        for a in &anns {
+        for a in anns {
+            if !by_img.contains_key(&a.image_id) {
+                first_seen.push(a.image_id);
+            }
             by_img.entry(a.image_id).or_default().push(a.id);
             by_pair
                 .entry((a.image_id, a.category_id))
                 .or_default()
                 .push(a.id);
         }
-        let ix = AnnIndex::build(&anns);
+        let ix = AnnIndex::build(anns);
+        assert_eq!(
+            ix.img_ids().collect::<Vec<_>>(),
+            first_seen,
+            "{label}: image order"
+        );
         for (img, ids) in &by_img {
-            assert_eq!(ix.for_img(*img), ids.as_slice(), "image {img}");
+            assert_eq!(ix.for_img(*img), ids.as_slice(), "{label}: image {img}");
+            let mut cats: Vec<u64> = by_pair
+                .keys()
+                .filter(|k| k.0 == *img)
+                .map(|k| k.1)
+                .collect();
+            cats.sort_unstable();
+            assert_eq!(
+                ix.cats_of(*img).collect::<Vec<_>>(),
+                cats,
+                "{label}: categories of {img}"
+            );
+            let by_cat: Vec<u64> = cats
+                .iter()
+                .flat_map(|&c| by_pair[&(*img, c)].clone())
+                .collect();
+            assert_eq!(
+                ix.for_img_by_cat(*img),
+                by_cat.as_slice(),
+                "{label}: image {img} by category"
+            );
         }
         for (&(img, cat), ids) in &by_pair {
-            assert_eq!(ix.for_img_cat(img, cat), ids.as_slice(), "pair {img}/{cat}");
+            assert_eq!(
+                ix.for_img_cat(img, cat),
+                ids.as_slice(),
+                "{label}: pair {img}/{cat}"
+            );
         }
         assert_eq!(ix.for_img_cat(0, 99), &[] as &[u64]);
         let mut pairs: Vec<_> = ix.pairs().collect();
         pairs.sort_unstable();
         let mut expected: Vec<_> = by_pair.keys().copied().collect();
         expected.sort_unstable();
-        assert_eq!(pairs, expected);
-        assert_eq!(ix.img_ids().count(), by_img.len());
+        assert_eq!(pairs, expected, "{label}: pairs");
+        assert_eq!(ix.pair_count(), by_pair.len(), "{label}: pair count");
     }
 
     #[test]

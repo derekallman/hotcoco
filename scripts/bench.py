@@ -190,7 +190,12 @@ def _run_cell(impl, iou_type, gt_path, dt_path):
             dt = f.read()
         t_load = time.perf_counter() - t0
         t0 = time.perf_counter()
-        summary = Evaluator(iou=kind, parity_mode="strict").evaluate(gt, dt)
+        # vernier evaluates on one thread unless told otherwise, while every
+        # other library here uses all cores by default. Give it the same budget
+        # (RF-DETR passes torch.get_num_threads() for the same reason); without
+        # this, tables up to 2026-10-07 compared one-thread vernier to 8-thread
+        # rivals.
+        summary = Evaluator(iou=kind, parity_mode="strict").evaluate(gt, dt, num_threads=os.cpu_count())
         return t_load, time.perf_counter() - t0, float(summary.stats[0])
 
     if impl == "hotcoco":

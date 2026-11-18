@@ -256,14 +256,17 @@ fn counts_str<'a>(counts: &'a Bound<'_, PyAny>) -> PyResult<Option<&'a str>> {
         return Ok(None);
     }
     if let Ok(b) = counts.cast::<PyBytes>() {
-        let s = std::str::from_utf8(b.as_bytes()).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
-        })?;
+        let s = std::str::from_utf8(b.as_bytes()).map_err(invalid_counts_utf8)?;
         return Ok(Some(s));
     }
     // A `str` with no UTF-8 form (a lone surrogate) is left to the list
     // branch, which rejects it.
     Ok(counts.cast::<PyString>()?.to_str().ok())
+}
+
+/// The error for `bytes` counts that are not UTF-8, wherever they are checked.
+pub(crate) fn invalid_counts_utf8(e: std::str::Utf8Error) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(format!("invalid UTF-8 in RLE counts: {e}"))
 }
 
 /// Whether `counts` is a compressed string, `bytes` or `str`, judged by type
@@ -879,8 +882,31 @@ impl<'py> RleDict<'py> {
             }
         };
         let (h, w): (u32, u32) = if let Some(size) = dict.get_item(pyo3::intern!(py, "size"))? {
-            let [h, w]: [u32; 2] = size.extract().map_err(out_of_range("size"))?;
-            (h, w)
+            // A tuple or list of two ints that fit — what `encode` returns and
+            // torchmetrics stores — read item by item, which skips the
+            // generic sequence extraction a list of RLEs pays per mask.
+            // Anything else takes that extraction, and its error.
+            let pair = |a: Bound<'py, PyAny>, b: Bound<'py, PyAny>| {
+                Some((a.extract::<u32>().ok()?, b.extract::<u32>().ok()?))
+            };
+            let fast = if let Ok(t) = size.cast::<PyTuple>() {
+                (t.len() == 2)
+                    .then(|| pair(t.get_item(0).ok()?, t.get_item(1).ok()?))
+                    .flatten()
+            } else if let Ok(l) = size.cast::<PyList>() {
+                (l.len() == 2)
+                    .then(|| pair(l.get_item(0).ok()?, l.get_item(1).ok()?))
+                    .flatten()
+            } else {
+                None
+            };
+            match fast {
+                Some(hw) => hw,
+                None => {
+                    let [h, w]: [u32; 2] = size.extract().map_err(out_of_range("size"))?;
+                    (h, w)
+                }
+            }
         } else if let Some(h) = dict.get_item(pyo3::intern!(py, "h"))? {
             let w = dict
                 .get_item(pyo3::intern!(py, "w"))?
@@ -914,6 +940,19 @@ impl<'py> RleDict<'py> {
             })?)
         };
         Ok(RleDict { h, w, counts })
+    }
+
+    /// The size and the compressed `counts` when they are `bytes`, unchecked
+    /// as UTF-8: for a batch that checks on worker threads what
+    /// [`view`](Self::view) checks here.
+    pub(crate) fn bytes_counts(&self) -> Option<(&[u8], u32, u32)> {
+        match &self.counts {
+            Counts::Compressed(obj) => obj
+                .cast::<PyBytes>()
+                .ok()
+                .map(|b| (b.as_bytes(), self.h, self.w)),
+            Counts::Runs(_) => None,
+        }
     }
 
     /// The RLE as the core's borrowed view, for its area, box, or run list.

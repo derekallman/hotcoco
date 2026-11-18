@@ -560,3 +560,28 @@ def test_an_index_map_is_built_once_and_rebuilt_after_an_edit(name):
     # `createIndex()` is how pycocotools rebuilds them.
     coco.createIndex()
     assert getattr(coco, name) is not after_method_edit
+
+
+def array_results():
+    """A results set ``load_res`` built from an array of boxes, which it keeps as
+    columns until something reads it, and the ground truth it was loaded on."""
+    gt = COCO(dataset())
+    ann = gt.dataset["annotations"][0]
+    rows = np.array([[ann["image_id"], 1, 1, 5, 5, 0.9, ann["category_id"]]], dtype=np.float64)
+    return gt, gt.load_res(rows)
+
+
+@pytest.mark.parametrize("name", sorted(READS | UNLISTED_READS) + ["COCOeval"])
+def test_every_method_reads_a_dict_assigned_to_array_results(name, tmp_path):
+    """The columns are the results set only until a dict is assigned: every read
+    after that, and an evaluator built on it, reads the assigned dict."""
+    gt, dt = array_results()
+    assigned = dataset(predictions=True)
+    assigned["annotations"][1]["id"] = assigned["annotations"][0]["id"]
+    dt.dataset = assigned
+    call = (READS | UNLISTED_READS).get(name) or (lambda c, p: COCOeval(gt, c, "bbox"))
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        with contextlib.suppress(Exception):  # what the call does with the data is its own test
+            call(dt, tmp_path)
+    assert any("duplicate" in str(w.message) for w in seen), f"{name} ran on the columns"

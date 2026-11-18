@@ -158,8 +158,8 @@ pub(crate) fn warn<W: pyo3::PyTypeInfo>(py: Python<'_>, msg: &str) -> PyResult<(
 /// as Python warnings, where the user data came in: a constructor, the
 /// ``dataset`` setter, ``load_res``, ``from_arrays``, ``merge``, a converter.
 /// The library only records them.
-fn warn_on_load(py: Python<'_>, coco: &hotcoco_core::COCO) -> PyResult<()> {
-    for w in coco.load_warnings() {
+fn warn_on_load(py: Python<'_>, warnings: &[String]) -> PyResult<()> {
+    for w in warnings {
         warn::<DatasetWarning>(py, w)?;
     }
     Ok(())
@@ -267,8 +267,13 @@ fn default_list_dict(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
 impl PyCOCO {
     /// A dataset derived from this one — same images, so same `image_dir`.
     fn derived(&self, inner: impl Into<Arc<hotcoco_core::COCO>>) -> PyCOCO {
+        self.derived_live(live::LiveDataset::new(inner))
+    }
+
+    /// Same, for data that may still be the columns `load_res` kept.
+    fn derived_live(&self, live: live::LiveDataset) -> PyCOCO {
         PyCOCO {
-            live: live::LiveDataset::new(inner),
+            live,
             image_dir: self.image_dir.clone(),
         }
     }
@@ -282,7 +287,7 @@ impl PyCOCO {
     /// format, or a merge whose inputs came from different directories.
     fn without_image_dir(py: Python<'_>, dataset: hotcoco_core::Dataset) -> PyResult<PyCOCO> {
         let coco = hotcoco_core::COCO::from_dataset(dataset);
-        warn_on_load(py, &coco)?;
+        warn_on_load(py, coco.load_warnings())?;
         Ok(Self::shared(coco))
     }
 
@@ -300,6 +305,12 @@ impl PyCOCO {
     /// — so each is borrowed on its own and the borrows never overlap.
     pub(crate) fn synced(coco: &Bound<'_, PyCOCO>) -> PyResult<Arc<hotcoco_core::COCO>> {
         coco.borrow_mut().live.get(coco.py())
+    }
+
+    /// The columns a results set from `load_res(array)` still is, before
+    /// anything has read it — see [`live::LiveDataset::pending_columns`].
+    fn pending_columns(coco: &Bound<'_, PyCOCO>) -> Option<Arc<hotcoco_core::DetectionColumns>> {
+        coco.borrow().live.pending_columns().cloned()
     }
 
     /// `load_res`'s three input forms, returning the owned `COCO` so a caller
@@ -343,7 +354,7 @@ impl PyCOCO {
         result: hotcoco_core::error::Result<hotcoco_core::COCO>,
     ) -> PyResult<hotcoco_core::COCO> {
         let coco = result.map_err(to_pyerr)?;
-        warn_on_load(py, &coco)?;
+        warn_on_load(py, coco.load_warnings())?;
         Ok(coco)
     }
 }
@@ -375,7 +386,7 @@ impl PyCOCO {
             }
             None => hotcoco_core::COCO::from_dataset(hotcoco_core::Dataset::default()),
         };
-        warn_on_load(py, &inner)?;
+        warn_on_load(py, inner.load_warnings())?;
         let mut coco = Self::shared(inner);
         coco.image_dir = image_dir;
         Ok(coco)
@@ -506,6 +517,14 @@ impl PyCOCO {
         segmentation: Option<&Bound<'_, PyList>>,
     ) -> PyResult<PyCOCO> {
         let inner = self.live.get(py)?;
+        // An array of boxes alone stays the columns it is, its records built
+        // only when something reads them; with masks, the records hold them.
+        if segmentation.is_none() {
+            if let Some(columns) = columns_from_array(&inner, res, "load_res")? {
+                warn_on_load(py, columns.load_warnings())?;
+                return Ok(self.derived_live(live::LiveDataset::columns(Arc::new(columns))));
+            }
+        }
         Self::load_res_core(&inner, res, segmentation).map(|inner| self.derived(inner))
     }
 
@@ -1594,8 +1613,7 @@ impl PyCOCO {
     /// An empty list means the load was clean.
     #[getter]
     fn load_warnings(&mut self, py: Python<'_>) -> PyResult<Vec<String>> {
-        let inner = self.live.get(py)?;
-        Ok(inner.load_warnings().to_vec())
+        self.live.load_warnings(py)
     }
 
     /// The dataset as plain dicts: ``{"images": [...], "annotations": [...],
@@ -1616,7 +1634,7 @@ impl PyCOCO {
 
     #[getter]
     fn imgs(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let inner = self.live.get(py)?;
+        let inner = self.live.images_and_categories(py)?;
         let dict = PyDict::new(py);
         for img in &inner.dataset.images {
             dict.set_item(img.id, image_to_py(py, img)?)?;
@@ -1747,7 +1765,7 @@ impl PyCOCO {
 
     #[getter]
     fn cats(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let inner = self.live.get(py)?;
+        let inner = self.live.images_and_categories(py)?;
         let dict = PyDict::new(py);
         for cat in &inner.dataset.categories {
             dict.set_item(cat.id, category_to_py(py, cat)?)?;
@@ -1898,8 +1916,46 @@ fn segmentation_needs_array(what: &str) -> PyErr {
 /// column, so every row gets category 1, as in pycocotools. `segmentation`,
 /// when given, holds one entry per row and is set on it. `None` when `obj`
 /// is not such an array, so the caller names what it accepts instead.
-/// The one owner of the array form: `load_res` and `StreamingEval.update`
-/// both read it here.
+/// An `(N, 6)` or `(N, 7)` array of boxes as the columns `load_res` keeps,
+/// refused as [`anns_from_array`] then `load_res_anns` refuse it: the same
+/// checks in the same order, raising the same errors. `None` when `obj` is
+/// not an array.
+fn columns_from_array(
+    gt: &Arc<hotcoco_core::COCO>,
+    obj: &Bound<'_, PyAny>,
+    what: &str,
+) -> PyResult<Option<hotcoco_core::DetectionColumns>> {
+    let Some(arr) =
+        convert::contiguous_array::<f64, numpy::Ix2>(obj, what, convert::NUMERIC_KINDS)?
+    else {
+        return Ok(None);
+    };
+    let ncols = arr.shape()[1];
+    check_result_columns(ncols, what)?;
+    let rows = arr.as_slice();
+    // The rows are numpy's memory, read under the GIL, as `anns_from_rows`.
+    hotcoco_core::DetectionColumns::check_rows(rows, ncols)
+        .map_err(|e| convert::with_context(obj.py(), what, to_pyerr(e)))?;
+    hotcoco_core::DetectionColumns::from_checked_rows(Arc::clone(gt), rows, ncols)
+        .map(Some)
+        .map_err(to_pyerr)
+}
+
+/// A results array is `[image_id, x, y, w, h, score]` with an optional
+/// `category_id`: six or seven columns.
+fn check_result_columns(ncols: usize, what: &str) -> PyResult<()> {
+    if ncols != 6 && ncols != 7 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "{what}: numpy array must have 6 or 7 columns \
+             [image_id, x, y, w, h, score[, category_id]], got {ncols}",
+        )));
+    }
+    Ok(())
+}
+
+/// The one owner of the array form as records: `load_res` and
+/// `StreamingEval.update` both read it here. [`columns_from_array`] reads it
+/// as columns, with the same checks.
 fn anns_from_array(
     obj: &Bound<'_, PyAny>,
     what: &str,
@@ -1923,12 +1979,7 @@ fn anns_from_rows(
     what: &str,
     segmentation: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Vec<Annotation>> {
-    if ncols != 6 && ncols != 7 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "{what}: numpy array must have 6 or 7 columns \
-             [image_id, x, y, w, h, score[, category_id]], got {ncols}",
-        )));
-    }
+    check_result_columns(ncols, what)?;
     let nrows = rows.len() / ncols;
     if let Some(segs) = segmentation {
         if segs.len() != nrows {
@@ -2532,6 +2583,15 @@ impl PyCOCOeval {
         // Each dataset is read back on its own borrow: `COCOeval(coco, coco)` is
         // one object twice.
         let gt = PyCOCO::synced(&coco_gt)?;
+        // A COCO-mode evaluation of a results set `load_res` kept as columns
+        // reads the columns, and builds the records only if something other
+        // than a box evaluation reads them.
+        if !oid_style && !lvis_style {
+            if let Some(columns) = PyCOCO::pending_columns(&coco_dt) {
+                let inner = hotcoco_core::COCOeval::new_columns(gt, columns, iou);
+                return Python::attach(|py| Self::from_inner(py, inner));
+            }
+        }
         let dt = PyCOCO::synced(&coco_dt)?;
 
         let inner = if oid_style {

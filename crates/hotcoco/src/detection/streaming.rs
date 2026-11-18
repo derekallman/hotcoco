@@ -268,7 +268,13 @@ impl StreamingEval {
         // than the whole run's list.
         let mut params = self.params.clone();
         params.img_ids.clone_from(&ids);
-        let mut ev = COCOeval::with_mode(gt, dt, params, self.eval_mode, None);
+        let mut ev = COCOeval::with_mode(
+            gt,
+            super::dets::DtHandle::Records(std::sync::Arc::new(dt)),
+            params,
+            self.eval_mode,
+            None,
+        );
         ev.evaluate()?;
         let cells = std::mem::take(&mut ev.cells);
 

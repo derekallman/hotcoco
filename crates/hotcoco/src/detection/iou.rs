@@ -1,13 +1,15 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 
 use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
+use crate::ann_index::AnnIndex;
 use crate::coco::COCO;
 use crate::params::Params;
 use crate::primitives::sim::{self, SimKind};
 use crate::types::Rle;
 
+use super::dets::Dets;
 use super::matching::IouMatrix;
 use super::{COCOeval, EvalMode};
 
@@ -41,27 +43,37 @@ pub(super) struct SegmRles {
     // Private on purpose, mirroring the `ious` cache discipline ("the
     // visibility is the enforcement"): consumers get one RLE at a time via the
     // `*_rle_or_convert` helpers and can never iterate or retain the map.
-    gt: HashMap<u64, Rle>,
-    dt: HashMap<u64, Rle>,
+    gt: FxHashMap<u64, Rle>,
+    dt: FxHashMap<u64, Rle>,
 }
 
 impl SegmRles {
-    /// The cache-miss policy, in one place: a hit clones the prepared RLE, a
+    /// The cache-miss policy, in one place: a hit lends the prepared RLE, a
     /// miss — or no cache at all — converts on the spot. Correctness never
     /// depends on what the cache happens to hold; a miss only costs speed.
-    pub(super) fn gt_rle_or_convert(cache: Option<&Self>, coco_gt: &COCO, id: u64) -> Option<Rle> {
+    /// Lent rather than cloned: a clone was an allocation and a copy of the
+    /// run list for every detection of every cell.
+    pub(super) fn gt_rle_or_convert<'a>(
+        cache: Option<&'a Self>,
+        coco_gt: &COCO,
+        id: u64,
+    ) -> Option<Cow<'a, Rle>> {
         if let Some(rle) = cache.and_then(|c| c.gt.get(&id)) {
-            return Some(rle.clone());
+            return Some(Cow::Borrowed(rle));
         }
-        coco_gt.ann_to_rle(coco_gt.get_ann(id)?)
+        coco_gt.ann_to_rle(coco_gt.get_ann(id)?).map(Cow::Owned)
     }
 
     /// Detection twin of [`gt_rle_or_convert`](Self::gt_rle_or_convert).
-    pub(super) fn dt_rle_or_convert(cache: Option<&Self>, coco_dt: &COCO, id: u64) -> Option<Rle> {
+    pub(super) fn dt_rle_or_convert<'a>(
+        cache: Option<&'a Self>,
+        coco_dt: &COCO,
+        id: u64,
+    ) -> Option<Cow<'a, Rle>> {
         if let Some(rle) = cache.and_then(|c| c.dt.get(&id)) {
-            return Some(rle.clone());
+            return Some(Cow::Borrowed(rle));
         }
-        coco_dt.ann_to_rle(coco_dt.get_ann(id)?)
+        coco_dt.ann_to_rle(coco_dt.get_ann(id)?).map(Cow::Owned)
     }
 
     /// Convert exactly the annotations that [`COCOeval::compute_segm_iou_static`]
@@ -78,7 +90,7 @@ impl SegmRles {
     /// [`gt_rle_or_convert`](Self::gt_rle_or_convert) — just paid for on the
     /// spot instead of upfront.
     pub(super) fn prepare(coco_gt: &COCO, coco_dt: &COCO, gt_ids: &[u64], dt_ids: &[u64]) -> Self {
-        let convert = |coco: &COCO, ids: &[u64]| -> HashMap<u64, Rle> {
+        let convert = |coco: &COCO, ids: &[u64]| -> FxHashMap<u64, Rle> {
             ids.par_iter()
                 .filter_map(|&id| Some((id, coco.ann_to_rle(coco.get_ann(id)?)?)))
                 .collect()
@@ -207,15 +219,15 @@ impl COCOeval {
     /// onto its neighbor's IoU row.
     pub(super) fn compute_iou_static(
         coco_gt: &COCO,
-        coco_dt: &COCO,
+        dets: Dets<'_>,
         params: &Params,
         img_id: u64,
         cat_id: u64,
         eval_mode: EvalMode,
         segm_rles: Option<&SegmRles>,
     ) -> Option<IouMatrix> {
-        let gt_anns = Self::get_anns_static(coco_gt, params, img_id, cat_id);
-        let dt_anns = Self::get_anns_static(coco_dt, params, img_id, cat_id);
+        let gt_anns = Self::get_anns_static(coco_gt.ann_index(), params, img_id, cat_id);
+        let dt_anns = Self::get_anns_static(dets.index(), params, img_id, cat_id);
         let (gt_anns, dt_anns) = (&*gt_anns, &*dt_anns);
 
         if gt_anns.is_empty() || dt_anns.is_empty() {
@@ -226,16 +238,27 @@ impl COCOeval {
         // what selects a kernel, and every family (detection here, tracking and
         // panoptic later) branches on the same four values. The helpers below do
         // marshaling only — reshaping annotations into the kernel's input types.
+        // Every geometry but a box is on the records: an evaluator reads
+        // columns for a box evaluation only (`COCOeval::dets`).
+        let records = || {
+            dets.records()
+                .expect("detections held as columns are evaluated as boxes only")
+        };
         let values = match SimKind::from(params.iou_type) {
             SimKind::Mask => Self::compute_segm_iou_static(
-                coco_gt, coco_dt, dt_anns, gt_anns, eval_mode, segm_rles,
+                coco_gt,
+                records(),
+                dt_anns,
+                gt_anns,
+                eval_mode,
+                segm_rles,
             ),
             SimKind::Bbox => {
-                Self::compute_bbox_iou_static(coco_gt, coco_dt, dt_anns, gt_anns, eval_mode)
+                Self::compute_bbox_iou_static(coco_gt, dets, dt_anns, gt_anns, eval_mode)
             }
-            SimKind::Oks => Self::compute_oks_static(coco_gt, coco_dt, params, dt_anns, gt_anns),
+            SimKind::Oks => Self::compute_oks_static(coco_gt, records(), params, dt_anns, gt_anns),
             SimKind::Obb => {
-                Self::compute_obb_iou_static(coco_gt, coco_dt, dt_anns, gt_anns, eval_mode)
+                Self::compute_obb_iou_static(coco_gt, records(), dt_anns, gt_anns, eval_mode)
             }
         };
         Some(IouMatrix::new(values, gt_anns.len()))
@@ -247,29 +270,29 @@ impl COCOeval {
     /// leaves out a category not listed there. The order decides ties: the
     /// score sort is stable, and on equal IoU the later ground truth wins.
     pub(super) fn get_anns_static<'a>(
-        coco: &'a COCO,
+        index: &'a AnnIndex,
         params: &Params,
         img_id: u64,
         cat_id: u64,
     ) -> AnnIds<'a> {
         if params.use_cats {
-            return Cow::Borrowed(coco.get_ann_ids_for_img_cat(img_id, cat_id));
+            return Cow::Borrowed(index.for_img_cat(img_id, cat_id));
         }
         // The index groups an image's ids by category, ascending, so under the
         // default `cat_ids` — every category, ascending — the list is its slice.
         let ascending = params.cat_ids.is_sorted_by(|a, b| a < b);
         if ascending
-            && coco
-                .cat_ids_of_img(img_id)
+            && index
+                .cats_of(img_id)
                 .all(|cat| params.cat_ids.binary_search(&cat).is_ok())
         {
-            return Cow::Borrowed(coco.ann_ids_for_img_by_cat(img_id));
+            return Cow::Borrowed(index.for_img_by_cat(img_id));
         }
         Cow::Owned(
             params
                 .cat_ids
                 .iter()
-                .flat_map(|&cat| coco.get_ann_ids_for_img_cat(img_id, cat))
+                .flat_map(|&cat| index.for_img_cat(img_id, cat))
                 .copied()
                 .collect(),
         )
@@ -294,14 +317,14 @@ impl COCOeval {
             eval_mode,
             |id| SegmRles::dt_rle_or_convert(segm_rles, coco_dt, id),
             |_ann, id| SegmRles::gt_rle_or_convert(segm_rles, coco_gt, id),
-            sim::mask_iou_flat,
+            sim::mask_iou_flat_of,
         )
     }
 
     /// Compute bounding box IoU by extracting bbox arrays and calling `sim::bbox_iou`.
     pub(super) fn compute_bbox_iou_static(
         coco_gt: &COCO,
-        coco_dt: &COCO,
+        dets: Dets<'_>,
         dt_ids: &[u64],
         gt_ids: &[u64],
         eval_mode: EvalMode,
@@ -311,7 +334,7 @@ impl COCOeval {
             dt_ids,
             gt_ids,
             eval_mode,
-            |id| coco_dt.get_ann(id)?.bbox,
+            |id| dets.bbox(id),
             |ann, _id| ann.bbox,
             sim::bbox_iou_flat,
         )

@@ -349,7 +349,7 @@ impl COCOeval {
             if status != DtStatus::Fp {
                 continue;
             }
-            let Some(ann) = self.coco_dt.get_ann(dt_id) else {
+            let Some(ann) = self.coco_dt().get_ann(dt_id) else {
                 continue;
             };
             let (Some(score), Some(bbox)) = (ann.score, ann.bbox) else {
