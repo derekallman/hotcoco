@@ -7,6 +7,7 @@
 //! definition.
 
 use hotcoco_core::mask as rmask;
+use hotcoco_core::mask::Order;
 use numpy::ndarray::{ArrayView2, Axis};
 use numpy::{
     PyArray1, PyArray2, PyArray3, PyArrayDescrMethods, PyArrayMethods, PyUntypedArray,
@@ -165,97 +166,6 @@ fn col_major(view: ArrayView2<'_, u8>) -> Vec<u8> {
         .map_or_else(|| std.iter().copied().collect(), <[u8]>::to_vec)
 }
 
-/// The column-major RLE of a mask given as its rows, each a contiguous slice
-/// of the same width — a C-order mask, or a crop of one — read once, top to
-/// bottom, with no transposed copy. The caller checks that the mask has at
-/// most `u32::MAX` pixels, as runs are 32-bit.
-///
-/// Down a column, a run ends exactly where a pixel differs from the one above
-/// it. So each row is binarized and compared with the row above, eight bytes
-/// at a time, and every column where they differ is recorded with the row;
-/// the row above the first is background, so a column whose top pixel is
-/// foreground records row 0. A row that matches the one above is skipped
-/// after one vectorized pass, which is most rows of a typical mask. A
-/// counting sort on the column puts the changes in column-major order, and
-/// the runs are the gaps between them. The one boundary the rows cannot see
-/// is between the bottom of one column and the top of the next: the run in
-/// progress carries over when the two pixels match and ends when they differ.
-///
-/// `mask.encode` of a 426×640 val2017 mask takes about 18 µs this way,
-/// against about 85 µs for an 8×8 blocked transpose to column-major order
-/// and a scan of that, and about 8 µs for a Fortran-order mask read in place.
-fn encode_rows(rows: &[&[u8]]) -> hotcoco_core::Rle {
-    let (h, w) = (rows.len(), rows.first().map_or(0, |row| row.len()));
-    // Both rows are padded to whole words with background that never changes.
-    let padded = w.next_multiple_of(8);
-    let (mut above, mut row01) = (vec![0u8; padded], vec![0u8; padded]);
-    // `(x, y)` where pixel `(x, y)` differs from `(x, y - 1)`, and how many
-    // changes each column has, at `per_column[x + 1]`.
-    let mut changes: Vec<(u32, u32)> = Vec::with_capacity(2 * w);
-    let mut per_column = vec![0usize; w + 1];
-    for (y, row) in rows.iter().enumerate() {
-        let mut differs = 0;
-        for ((bit, &px), &up) in row01.iter_mut().zip(*row).zip(&above) {
-            *bit = u8::from(px != 0);
-            differs |= *bit ^ up;
-        }
-        if differs != 0 {
-            for (i, (now, up)) in row01.chunks_exact(8).zip(above.chunks_exact(8)).enumerate() {
-                let mut d = load_le(now) ^ load_le(up);
-                while d != 0 {
-                    let x = i * 8 + (d.trailing_zeros() / 8) as usize;
-                    changes.push((x as u32, y as u32));
-                    per_column[x + 1] += 1;
-                    d &= d - 1;
-                }
-            }
-        }
-        std::mem::swap(&mut above, &mut row01);
-    }
-
-    // Counting sort on the column, stable, so each column's rows stay in
-    // order. `per_column[x]` starts as column `x`'s first slot in `ys` and,
-    // used as the write cursor, ends as its last slot plus one.
-    for x in 0..w {
-        per_column[x + 1] += per_column[x];
-    }
-    let mut ys = vec![0u32; changes.len()];
-    for &(x, y) in &changes {
-        let slot = &mut per_column[x as usize];
-        ys[*slot] = y;
-        *slot += 1;
-    }
-
-    // Runs alternate background, foreground, ... from background, so a mask
-    // whose first pixel is foreground opens with a 0, as `rmask::encode`'s do.
-    let mut counts = Vec::with_capacity(changes.len() + 2);
-    let (mut last, mut foreground) = (0, false);
-    let mut first = 0;
-    for x in 0..w {
-        let base = x * h;
-        let column = &ys[first..per_column[x]];
-        first = per_column[x];
-        let top = column.first() == Some(&0);
-        if top != foreground {
-            counts.push((base - last) as u32);
-            last = base;
-            foreground = top;
-        }
-        for &y in &column[usize::from(top)..] {
-            let at = base + y as usize;
-            counts.push((at - last) as u32);
-            last = at;
-            foreground = !foreground;
-        }
-    }
-    counts.push((h * w - last) as u32);
-    hotcoco_core::Rle {
-        h: h as u32,
-        w: w as u32,
-        counts,
-    }
-}
-
 /// Write the `rows × cols` byte matrix `src` into `dst` transposed: element
 /// `(r, c)`, read from `src[r * src_stride + c]`, lands at
 /// `dst[c * dst_stride + r]`.
@@ -382,15 +292,10 @@ fn encode_view(view: ArrayView2<'_, u8>) -> hotcoco_core::error::Result<hotcoco_
     if let Some(col_major) = view.t().to_slice() {
         return rmask::encode(col_major, h as u32, w as u32);
     }
-    // A mask past `u32::MAX` pixels has no 32-bit runs; `rmask::encode` owns
-    // that error, so such a mask takes the copy below and gets it from there.
-    let rows: Option<Vec<&[u8]>> = if u32::try_from(h * w).is_ok() {
-        view.rows().into_iter().map(|row| row.to_slice()).collect()
-    } else {
-        None
-    };
+    // Rows each contiguous (C order, or a crop of it) are read in place.
+    let rows: Option<Vec<&[u8]>> = view.rows().into_iter().map(|row| row.to_slice()).collect();
     match rows {
-        Some(rows) => Ok(encode_rows(&rows)),
+        Some(rows) => rmask::encode_rows(rows, h as u32, w as u32),
         None => rmask::encode(&col_major(view), h as u32, w as u32),
     }
 }
@@ -429,9 +334,15 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAn
         } else {
             encode_slices(&stack, h, w, n)
         }
+    } else if let Some(slices) = (0..n)
+        .map(|i| view.index_axis(Axis(2), i).to_slice())
+        .collect::<Option<Vec<&[u8]>>>()
+    {
+        // Every slice C-order: a torch-style `(N, H, W)` batch passed as
+        // `batch.transpose(1, 2, 0)`. Core reads each row by row, in parallel
+        // for a large batch, on rayon's workers while this call holds the GIL.
+        compress_each(&slices, h, w, Order::RowMajor)
     } else {
-        // Slice by slice. A torch-style `(N, H, W)` batch passed as
-        // `batch.transpose(1, 2, 0)` lands here, each slice C-order.
         (0..n)
             .map(|i| {
                 let rle = encode_view(view.index_axis(Axis(2), i))?;
@@ -472,8 +383,7 @@ fn encode_fortran_stack(
 }
 
 /// The compressed `counts` string of each `h × w` column-major block of a
-/// Fortran-order `(h, w, n)` stack. Each block's run list is dropped as soon
-/// as it is compressed, so the runs of only one mask are held at a time.
+/// Fortran-order `(h, w, n)` stack.
 fn encode_slices(
     stack: &[u8],
     h: usize,
@@ -481,9 +391,30 @@ fn encode_slices(
     n: usize,
 ) -> hotcoco_core::error::Result<Vec<String>> {
     let hw = h * w;
-    (0..n)
-        .map(|i| encode_slice(&stack[i * hw..(i + 1) * hw], h, w))
-        .collect()
+    let blocks: Vec<&[u8]> = (0..n).map(|i| &stack[i * hw..(i + 1) * hw]).collect();
+    compress_each(&blocks, h, w, Order::ColumnMajor)
+}
+
+/// How many masks one [`rmask::encode_each`] call takes: their run lists are
+/// all held until it returns, which for masks with many runs (a noise mask
+/// has `h * w / 2`) is several times their compressed strings.
+const MASKS_PER_BATCH: usize = 64;
+
+/// The compressed `counts` string of each mask, encoded by core
+/// [`MASKS_PER_BATCH`] at a time, raising the first mask's error.
+fn compress_each(
+    masks: &[&[u8]],
+    h: usize,
+    w: usize,
+    order: Order,
+) -> hotcoco_core::error::Result<Vec<String>> {
+    let mut out = Vec::with_capacity(masks.len());
+    for batch in masks.chunks(MASKS_PER_BATCH) {
+        for rle in rmask::encode_each(batch, h as u32, w as u32, order) {
+            out.push(rmask::rle_to_string(&rle?));
+        }
+    }
+    Ok(out)
 }
 
 /// The compressed `counts` string of one `h × w` column-major block.

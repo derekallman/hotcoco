@@ -66,7 +66,8 @@ Encode a binary mask to RLE.
 
     A C-order mask is read row by row with no copy, so a torch mask needs no
     `np.asfortranarray` first. A batch stored `(N, H, W)`, as torch stores one,
-    encodes in one call as `mask.encode(batch.transpose(1, 2, 0))`.
+    encodes in one call as `mask.encode(batch.transpose(1, 2, 0))`, and a large
+    batch encodes its masks in parallel.
 
 === "Rust"
 
@@ -85,6 +86,26 @@ Encode a binary mask to RLE.
     ```rust
     let rle = mask::encode(&pixels, 100, 100);
     ```
+
+    A row-major mask (numpy's C order) is encoded as it lies, row by row, with
+    `encode_rows`: a contiguous buffer passes `chunks_exact(w)`, a crop of a
+    larger mask passes its rows. A batch of same-size masks goes to
+    `encode_each`, which encodes them in parallel past about 1 MiB of pixels and
+    returns one result per mask:
+
+    ```rust
+    fn encode_rows<'a>(rows: impl IntoIterator<Item = &'a [u8]>, h: u32, w: u32) -> Result<Rle>
+    fn encode_each(masks: &[&[u8]], h: u32, w: u32, order: Order) -> Vec<Result<Rle>>
+    ```
+
+    ```rust
+    let rle = mask::encode_rows(row_major.chunks_exact(640), 426, 640)?;
+    let rles = mask::encode_each(&masks, 426, 640, mask::Order::RowMajor);
+    ```
+
+    Both give the RLE `encode` gives the same mask in column-major order.
+    `encode_rows` errors when there are not `h` rows or a row is not `w` bytes,
+    and on the same size limit as `encode`.
 
 ---
 

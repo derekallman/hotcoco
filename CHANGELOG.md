@@ -43,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Rust: `COCOeval::eval_imgs_grid()`, `unevaluated_params()`, `replay()`,
   `Hierarchy::parent_map()`**, and
   `COCO::is_per_image_capped()` is now public.
+- **Rust: `mask::encode_rows`, `mask::encode_each`, and `mask::Order`**:
+  `encode_rows` encodes a row-major mask, or a crop's rows, with no transposed
+  copy; `encode_each` encodes a batch of masks of one size in either order, in
+  parallel past about 1 MiB of pixels.
 
 ### Changed
 
@@ -65,11 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   run**: a new IoU threshold, area range, category, or image, a switched
   `useCats`, or a larger `maxDets`. Those results were, and are, `-1`, which
   silently dropped them from every mean. A `CallOrderWarning` now says so.
-- **`mask.encode` reads a C-order mask in place**, row by row, instead of
-  transposing a copy: about 18 µs for a 426×640 val2017 mask where it took
-  about 85 µs (M1). A torch mask needs no `np.asfortranarray`, itself about
-  130 µs, and an `(N, H, W)` batch encodes in one call as
-  `mask.encode(batch.transpose(1, 2, 0))`.
+- **`mask.encode` reads a C-order mask in place**, row by row: about 18 µs for
+  a 426×640 val2017 mask where it took about 85 µs (M1). A large batch, such as
+  an `(N, H, W)` torch batch passed as `batch.transpose(1, 2, 0)` or a C-order
+  `(H, W, N)` stack, encodes its masks in parallel: about 7 µs a mask for 100
+  of those masks, against 12 µs one call at a time.
 - **`load_res` keeps an `(N, 6)` or `(N, 7)` array of boxes as columns**, 48 bytes
   a detection, and builds the 200-byte annotation records only when something other
   than a box evaluation reads them; `imgs`, `cats`, and `load_warnings` read without

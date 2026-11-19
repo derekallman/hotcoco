@@ -144,6 +144,171 @@ fn run_end<const FOREGROUND: bool>(mask: &[u8], from: usize) -> usize {
         .unwrap_or(tail.len())
 }
 
+/// Which way a mask's pixels run in memory.
+///
+/// COCO's runs go down each column, so [`encode`] reads a column-major mask as
+/// it lies and [`encode_rows`] reads a row-major one row by row. Both give the
+/// same RLE for the same mask.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    /// Pixel `(x, y)` at `y * w + x`: numpy's C order, as torch stores a mask.
+    RowMajor,
+    /// Pixel `(x, y)` at `x * h + y`: numpy's Fortran order, as [`encode`] takes it.
+    ColumnMajor,
+}
+
+/// Encode a row-major binary mask into RLE, given as its rows top to bottom,
+/// with no transposed copy: the RLE [`encode`] gives the same mask in
+/// column-major order.
+///
+/// `rows` is each row's `w` bytes — `mask.chunks_exact(w)` for a contiguous
+/// buffer, or the rows of a crop of a larger one. Any nonzero byte is
+/// foreground, as in [`encode`].
+///
+/// Down a column, a run ends exactly where a pixel differs from the one above
+/// it. So each row is binarized and compared with the row above, eight bytes
+/// at a time, and every column where they differ is recorded with the row;
+/// the row above the first is background, so a column whose top pixel is
+/// foreground records row 0. A row that matches the one above is skipped
+/// after one vectorized pass, which is most rows of a typical mask. A
+/// counting sort on the column puts the changes in column-major order, and
+/// the runs are the gaps between them. The one boundary the rows cannot see
+/// is between the bottom of one column and the top of the next: the run in
+/// progress carries over when the two pixels match and ends when they differ.
+///
+/// About 10 µs for a 426×640 val2017 mask on an M1, against about 75 µs for
+/// an 8×8 blocked transpose to column-major order followed by [`encode`].
+///
+/// Errors when `h * w` exceeds `u32::MAX`, as [`encode`] does and before a row
+/// is read, when there are not `h` rows, or when a row is not `w` bytes long.
+pub fn encode_rows<'a>(
+    rows: impl IntoIterator<Item = &'a [u8]>,
+    h: u32,
+    w: u32,
+) -> crate::error::Result<Rle> {
+    checked_hw(h, w)?;
+    let (rows_expected, w) = (h as usize, w as usize);
+    // Both rows are padded to whole words with background that never changes.
+    let padded = w.next_multiple_of(8);
+    let (mut above, mut row01) = (vec![0u8; padded], vec![0u8; padded]);
+    // `(x, y)` where pixel `(x, y)` differs from `(x, y - 1)`, and how many
+    // changes each column has, at `per_column[x + 1]`.
+    let mut changes: Vec<(u32, u32)> = Vec::with_capacity(2 * w);
+    let mut per_column = vec![0usize; w + 1];
+    let mut h = 0;
+    for row in rows {
+        if h == rows_expected {
+            return Err(Error::InvalidInput(format!(
+                "encode_rows: more than h = {rows_expected} rows"
+            )));
+        }
+        if row.len() != w {
+            return Err(Error::InvalidInput(format!(
+                "encode_rows: row {h} is {} bytes, expected w = {w}",
+                row.len()
+            )));
+        }
+        let mut differs = 0;
+        for ((bit, &px), &up) in row01.iter_mut().zip(row).zip(&above) {
+            *bit = u8::from(px != 0);
+            differs |= *bit ^ up;
+        }
+        if differs != 0 {
+            for (i, (now, up)) in row01.chunks_exact(8).zip(above.chunks_exact(8)).enumerate() {
+                let mut d = word(now) ^ word(up);
+                while d != 0 {
+                    let x = i * 8 + (d.trailing_zeros() / 8) as usize;
+                    changes.push((x as u32, h as u32));
+                    per_column[x + 1] += 1;
+                    d &= d - 1;
+                }
+            }
+        }
+        std::mem::swap(&mut above, &mut row01);
+        h += 1;
+    }
+    if h != rows_expected {
+        return Err(Error::InvalidInput(format!(
+            "encode_rows: {h} rows, expected h = {rows_expected}"
+        )));
+    }
+
+    // Counting sort on the column, stable, so each column's rows stay in
+    // order. `per_column[x]` starts as column `x`'s first slot in `ys` and,
+    // used as the write cursor, ends as its last slot plus one.
+    for x in 0..w {
+        per_column[x + 1] += per_column[x];
+    }
+    let mut ys = vec![0u32; changes.len()];
+    for &(x, y) in &changes {
+        let slot = &mut per_column[x as usize];
+        ys[*slot] = y;
+        *slot += 1;
+    }
+
+    // Runs alternate background, foreground, ... from background, so a mask
+    // whose first pixel is foreground opens with a 0, as `encode`'s do.
+    let mut counts = Vec::with_capacity(changes.len() + 2);
+    let (mut last, mut foreground) = (0, false);
+    let mut first = 0;
+    for x in 0..w {
+        let base = x * h;
+        let column = &ys[first..per_column[x]];
+        first = per_column[x];
+        let top = column.first() == Some(&0);
+        if top != foreground {
+            counts.push((base - last) as u32);
+            last = base;
+            foreground = top;
+        }
+        for &y in &column[usize::from(top)..] {
+            let at = base + y as usize;
+            counts.push((at - last) as u32);
+            last = at;
+            foreground = !foreground;
+        }
+    }
+    counts.push((h * w - last) as u32);
+    Ok(Rle {
+        h: h as u32,
+        w: w as u32,
+        counts,
+    })
+}
+
+/// How many bytes of mask make one unit of work for [`worth_parallel`]: the
+/// scale at which scanning a mask costs about what one item of the crate's
+/// per-annotation passes does.
+const MASK_BYTES_PER_WORK: usize = 1 << 10;
+
+/// Encode `masks`, each `h × w` and contiguous in `order`, into one RLE each,
+/// in order. The masks are encoded in parallel once there is enough of them
+/// to pay for it (about 1 MiB of pixels).
+///
+/// Each result is [`encode`]'s or [`encode_rows`]'s for that mask alone, so a
+/// mask of the wrong length is an error in its own place and the others still
+/// encode. Every run list is held until the call returns.
+pub fn encode_each(
+    masks: &[&[u8]],
+    h: u32,
+    w: u32,
+    order: Order,
+) -> Vec<crate::error::Result<Rle>> {
+    let one = |mask: &&[u8]| match order {
+        Order::ColumnMajor => encode(mask, h, w),
+        // `encode` owns the length and size checks; a mask of no width has no
+        // rows to read, and its RLE is the empty one either way.
+        Order::RowMajor if mask.len() != h as usize * w as usize || w == 0 => encode(mask, h, w),
+        Order::RowMajor => encode_rows(mask.chunks_exact(w as usize), h, w),
+    };
+    let bytes = masks.len().saturating_mul(h as usize * w as usize);
+    if worth_parallel(bytes / MASK_BYTES_PER_WORK) {
+        masks.par_iter().map(one).collect()
+    } else {
+        masks.iter().map(one).collect()
+    }
+}
+
 /// Decode an RLE to a column-major binary mask of size `h * w`.
 pub fn decode(rle: &Rle) -> Vec<u8> {
     let n = (rle.h as usize) * (rle.w as usize);
@@ -1407,6 +1572,182 @@ mod tests {
         let rle = encode(&mask, h as u32, w as u32).unwrap();
         assert_eq!(rle.counts, encode_reference(&mask));
         assert_eq!(decode(&rle), mask);
+    }
+
+    /// The column-major bytes of a row-major `h × w` mask.
+    fn transposed(rows: &[u8], h: usize, w: usize) -> Vec<u8> {
+        let mut cols = vec![0; h * w];
+        for y in 0..h {
+            for x in 0..w {
+                cols[x * h + y] = rows[y * w + x];
+            }
+        }
+        cols
+    }
+
+    /// `encode_rows` on a row-major mask gives `encode`'s RLE of the same
+    /// mask in column-major order.
+    fn check_encode_rows(rows: &[u8], h: usize, w: usize) {
+        let want = encode(&transposed(rows, h, w), h as u32, w as u32).unwrap();
+        let got = encode_rows(rows.chunks_exact(w), h as u32, w as u32).unwrap();
+        assert_eq!(got.counts, want.counts, "{h}x{w} {rows:?}");
+        assert_eq!((got.h, got.w), (h as u32, w as u32));
+    }
+
+    /// Named `h × w` row-major masks aimed at the row scan: a column whose top
+    /// pixel continues or ends the run of the column before it, rows that
+    /// match the row above, and changes on and across 8-byte word edges.
+    fn row_patterns(h: usize, w: usize) -> Vec<Vec<u8>> {
+        let at = |f: &dyn Fn(usize, usize) -> bool| -> Vec<u8> {
+            (0..h * w).map(|i| u8::from(f(i % w, i / w))).collect()
+        };
+        vec![
+            at(&|_, _| false),
+            at(&|_, _| true),
+            at(&|_, y| y == 0),
+            at(&|_, y| y == h - 1),
+            at(&|_, y| y == 0 || y == h - 1),
+            at(&|x, _| x == 0),
+            at(&|x, _| x == w - 1),
+            at(&|x, _| x % 3 == 0),
+            at(&|_, y| y % 2 == 0),
+            at(&|x, y| (x + y) % 2 == 0),
+            at(&|x, y| (x + y * w) % 2 == 1),
+            at(&|x, _| (5..11).contains(&x) || (14..18).contains(&x)),
+            at(&|x, y| x == 0 && y == 0),
+            at(&|x, y| x == w - 1 && y == h - 1),
+        ]
+    }
+
+    #[test]
+    fn test_encode_rows_matches_column_major_encode() {
+        // Widths on both sides of every word edge up to 65, so a row ends
+        // inside a word, on one, and one byte past one.
+        for w in [1, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65] {
+            for h in [1, 2, 3, 7, 8, 9, 33] {
+                for rows in row_patterns(h, w) {
+                    check_encode_rows(&rows, h, w);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_encode_rows_random_masks_and_bytes() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x0E4C_0DE5);
+        for _ in 0..2000 {
+            let (h, w) = (rng.random_range(1..40), rng.random_range(1..80));
+            let density = [0.0, 0.03, 0.5, 0.97, 1.0][rng.random_range(0..5)];
+            // Any nonzero byte is foreground, as in `encode`.
+            let rows: Vec<u8> = (0..h * w)
+                .map(|_| {
+                    if rng.random_bool(density) {
+                        rng.random_range(1..=255)
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            check_encode_rows(&rows, h, w);
+        }
+    }
+
+    #[test]
+    fn test_encode_rows_reads_a_crop_row_by_row() {
+        // The rows of a crop are contiguous but further apart than the width.
+        let (h, w, stride) = (9, 13, 20);
+        let mut buf = vec![0u8; h * stride];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = u8::from((i * 7 + i / stride) % 5 == 0);
+        }
+        let crop: Vec<&[u8]> = (0..h)
+            .map(|y| &buf[y * stride + 3..y * stride + 3 + w])
+            .collect();
+        let packed: Vec<u8> = crop.concat();
+        let want = encode(&transposed(&packed, h, w), h as u32, w as u32).unwrap();
+        assert_eq!(encode_rows(crop, h as u32, w as u32).unwrap(), want);
+    }
+
+    #[test]
+    fn test_encode_rows_errors() {
+        let rows = [0u8; 12];
+        let err = |r: Result<Rle, Error>| match r {
+            Err(Error::InvalidInput(msg)) => msg,
+            other => panic!("expected InvalidInput, got {other:?}"),
+        };
+        // Fewer rows than `h`, more rows than `h`, a row of the wrong length.
+        assert!(err(encode_rows(rows.chunks_exact(4), 4, 4)).contains("3 rows"));
+        assert!(err(encode_rows(rows.chunks_exact(4), 2, 4)).contains("more than h = 2"));
+        assert!(err(encode_rows(rows.chunks(5), 3, 5)).contains("row 2"));
+        // More pixels than 32-bit runs can count: `encode`'s error, before a row is read.
+        let too_big = err(encode_rows(std::iter::empty(), 70_000, 70_000));
+        assert_eq!(too_big, err(encode(&[], 70_000, 70_000)));
+        // No rows of no width is the empty mask.
+        assert_eq!(
+            encode_rows(std::iter::empty(), 0, 5).unwrap().counts,
+            vec![0]
+        );
+        assert_eq!(
+            encode_rows(std::iter::repeat_n(&[][..], 3), 3, 0)
+                .unwrap()
+                .counts,
+            vec![0]
+        );
+    }
+
+    fn views(masks: &[Vec<u8>]) -> Vec<&[u8]> {
+        masks.iter().map(Vec::as_slice).collect()
+    }
+
+    #[test]
+    fn test_encode_each_matches_encode_in_both_orders() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xEAC4);
+        // A batch small enough to run on one thread and one large enough to
+        // fan out, so both paths are held to `encode`.
+        for (h, w, n) in [(5, 7, 4), (426, 640, 12)] {
+            let row_major: Vec<Vec<u8>> = (0..n)
+                .map(|_| {
+                    let (y0, x0) = (rng.random_range(0..h), rng.random_range(0..w));
+                    (0..h * w)
+                        .map(|i| u8::from(i / w >= y0 && i % w >= x0 && rng.random_bool(0.9)))
+                        .collect()
+                })
+                .collect();
+            let col_major: Vec<Vec<u8>> = row_major.iter().map(|m| transposed(m, h, w)).collect();
+            let want: Vec<Rle> = col_major
+                .iter()
+                .map(|m| encode(m, h as u32, w as u32).unwrap())
+                .collect();
+            for (order, masks) in [
+                (Order::RowMajor, &row_major),
+                (Order::ColumnMajor, &col_major),
+            ] {
+                let got: Vec<Rle> = encode_each(&views(masks), h as u32, w as u32, order)
+                    .into_iter()
+                    .map(Result::unwrap)
+                    .collect();
+                assert_eq!(got, want, "{h}x{w}x{n} {order:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_encode_each_reports_each_mask_on_its_own() {
+        let good = vec![1u8; 6];
+        let short = vec![1u8; 5];
+        for order in [Order::RowMajor, Order::ColumnMajor] {
+            let got = encode_each(&[&good, &short, &good], 2, 3, order);
+            assert_eq!(got.len(), 3);
+            assert!(got[0].is_ok() && got[2].is_ok(), "{order:?}");
+            assert!(
+                matches!(&got[1], Err(Error::InvalidInput(msg)) if msg.contains("mask length 5")),
+                "{order:?}: {:?}",
+                got[1]
+            );
+        }
+        assert!(encode_each(&[], 3, 3, Order::RowMajor).is_empty());
     }
 
     #[test]

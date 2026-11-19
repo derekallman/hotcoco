@@ -17,7 +17,7 @@ see `plans/PLAN.md` for the ladder, `plans/POSITIONING.md` for how the docs say 
 - Single root `pyproject.toml` acts as both maturin build config and Python package definition; `manifest-path = "crates/hotcoco-pyo3/Cargo.toml"` points maturin at the cdylib. `[tool.uv] package = false` means uv won't auto-build — always use `just build` explicitly.
 - `hotcoco-pyo3` uses `hotcoco-core` as the Cargo dependency alias for `hotcoco` to avoid name collision with the `hotcoco` Python module name
 - Python bindings return plain dicts (not wrapped Rust structs) matching pycocotools conventions
-- Mask operations handle numpy row-major <-> Rust column-major transposition in the PyO3 layer
+- **Algorithms live in core; the binding is an adapter.** A PyO3 function converts Python objects, borrows numpy memory, picks the core function, and converts the result. Mask layout is no exception: core's `mask::encode` reads column-major bytes and `mask::encode_rows` row-major ones, and the binding only chooses between them. Logic that would land in `hotcoco-pyo3` without touching a Python object goes in `crates/hotcoco` instead, with a public API agreed first if it needs one. `plans/BINDING-TO-CORE.md` lists what still sits in the binding.
 - `COCO.dataset` is live: the wrapper's data sits behind `live::LiveDataset` in
   `crates/hotcoco-pyo3/src/live.rs`, whose `get` reads an edit to the dict back
   before returning it, and whose `edit` is the one route for a Rust-side
