@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/hotcoco)](https://crates.io/crates/hotcoco)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**A drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi), written in Rust.** Same numbers, bit for bit. Up to 113× faster. No compiler to install.
+**A drop-in replacement for [pycocotools](https://github.com/ppwwyyxx/cocoapi), written in Rust.** Same numbers, bit for bit. Up to 133× faster. No compiler to install.
 
 ```bash
 pip install hotcoco
