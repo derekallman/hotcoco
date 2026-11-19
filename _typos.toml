@@ -28,6 +28,8 @@ pycocotools = "pycocotools"
 bimask = "bimask"
 pyo = "pyo"
 maturin = "maturin"
+# numpy's `arange`, which TrackEval builds its HOTA thresholds with.
+arange = "arange"
 cdylib = "cdylib"
 bbox = "bbox"
 bboxes = "bboxes"

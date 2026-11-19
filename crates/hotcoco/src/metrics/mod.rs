@@ -22,7 +22,7 @@
 //! | | Produces | Contains |
 //! |---|---|---|
 //! | [`primitives`](crate::primitives) | matches and similarities | `sim`, `greedy`, `assign` |
-//! | `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic`, `semantic` |
+//! | `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic`, `semantic`, `tracking` |
 //!
 //! `primitives::greedy::greedy_match_masked` decides *which detection pairs
 //! with which ground truth*. `metrics::counts::average_precision` turns that
@@ -63,6 +63,7 @@ pub mod counts;
 pub mod panoptic;
 pub mod semantic;
 pub(crate) mod sum;
+pub mod tracking;
 
 /// Mean of `count` values summing to `sum`, or the `-1.0` "not computed" sentinel.
 ///

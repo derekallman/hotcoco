@@ -516,7 +516,7 @@ fn primitives_allowed() -> Vec<&'static str> {
 
 /// The family drivers held to [`family_allowed`]: every driver but
 /// detection, which the rule is about. A new family is one entry here.
-const FAMILY_DIRS: &[&str] = &["/panoptic/", "/semantic/"];
+const FAMILY_DIRS: &[&str] = &["/panoptic/", "/semantic/", "/tracking/"];
 
 /// What a family driver other than detection may reach: the two shared
 /// layers, the output contract, and the data layer. Not another driver —
@@ -533,6 +533,10 @@ fn family_allowed() -> Vec<&'static str> {
             "crate::report",
             "crate::error",
             "crate::types",
+            // The compact tables a driver reads instead of records — the data
+            // layer beside `types`. Tracking's `TrackTable` lives there so it
+            // shares `BoxColumn` with detection's tables, not detection's driver.
+            "crate::table",
         ],
     ]
     .concat()

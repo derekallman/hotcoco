@@ -29,6 +29,7 @@
 //! | [`report`] | [`EvalReport`] — the shape every metric family reports in. |
 //! | [`detection`] | The detection metric family: AP/AR, LVIS, Open Images, TIDE. |
 //! | [`panoptic`] | The panoptic metric family: PQ, SQ, RQ against panopticapi. |
+//! | [`tracking`] | The tracking metric family: HOTA, CLEAR, Identity against TrackEval. |
 //! | [`quality`] | Dataset introspection: health checks and statistics. |
 //! | [`convert`] | YOLO, Pascal VOC, CVAT, DOTA, and Open Images conversion. |
 //!
@@ -77,6 +78,7 @@ pub mod quality;
 pub mod report;
 pub mod semantic;
 mod table;
+pub mod tracking;
 pub mod types;
 
 /// How many parallel runs each thread draws when work is cut into runs: a
@@ -116,4 +118,5 @@ pub use quality::{
 };
 pub use report::{EvalReport, Provenance};
 pub use semantic::{SemanticEval, SemanticResults};
+pub use tracking::{Benchmark, TrackingEval, TrackingResult};
 pub use types::{Annotation, Category, Dataset, Extra, Image, Rle, Segmentation};

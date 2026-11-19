@@ -4,7 +4,7 @@
 //! [`greedy`] resolves it into COCO's rank-ordered assignment, [`assign`] resolves
 //! it optimally via rectangular LSAP, and [`panoptic`] counts pixel overlaps
 //! between two label maps and matches segments on them. Family drivers
-//! (detection, panoptic; tracking/concepts later) compose them. The one
+//! (detection, panoptic, tracking; concepts later) compose them. The one
 //! non-kernel export is [`greedy::ThreshMatrix`], the container shape of the
 //! greedy kernel's per-threshold output.
 //!

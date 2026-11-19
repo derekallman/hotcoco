@@ -51,9 +51,157 @@ pub(crate) fn pairwise_sum(values: &[f64]) -> f64 {
     }
 }
 
+/// numpy's default buffer size in elements, `np.getbufsize()`.
+const NUMPY_BUFSIZE: usize = 8192;
+
+/// `np.sum` of a whole C-ordered 2-D `f64` array of `len` cells, in the order
+/// numpy 1.23 adds it, from the array's non-zero cells alone: `cells` holds
+/// `(flat index, value)` pairs in ascending index order.
+///
+/// numpy 1.23 reduces a whole 2-D array through its buffered iterator: it sums
+/// each run of 8192 cells with [`pairwise_sum`] and adds the runs left to
+/// right. (numpy 2 sums the flattened array in one pairwise pass instead; the
+/// tracking reference pins 1.23.) A cell of `+0.0` changes no partial sum, so
+/// leaving the zero cells out keeps every bit, which is what lets a mostly
+/// empty grid be held as its non-zero cells.
+///
+/// # Panics
+///
+/// If an index is not below `len`, or the indices are not ascending.
+pub(crate) fn grid_sum(len: usize, cells: &[(usize, f64)]) -> f64 {
+    assert!(
+        cells.windows(2).all(|w| w[0].0 < w[1].0),
+        "grid_sum: cell indices must ascend"
+    );
+    assert!(
+        cells.last().is_none_or(|&(i, _)| i < len),
+        "grid_sum: a cell index is past the grid's {len} cells"
+    );
+    let mut total = 0.0;
+    let mut rest = cells;
+    while let Some(&(first, _)) = rest.first() {
+        let start = first - first % NUMPY_BUFSIZE;
+        let n = NUMPY_BUFSIZE.min(len - start);
+        let end = rest.partition_point(|&(i, _)| i < start + n);
+        total += sparse_pairwise_sum(start, n, &rest[..end]);
+        rest = &rest[end..];
+    }
+    total
+}
+
+/// [`pairwise_sum`] of the `n` cells from `start`, given only the non-zero
+/// ones: the same lanes, splits, and tail, with the zeros left out.
+fn sparse_pairwise_sum(start: usize, n: usize, cells: &[(usize, f64)]) -> f64 {
+    if cells.is_empty() {
+        return 0.0;
+    }
+    if n < PW_UNROLL {
+        return cells.iter().fold(0.0, |s, &(_, v)| s + v);
+    }
+    if n <= PW_BLOCKSIZE {
+        let blocks_end = start + n - n % PW_UNROLL;
+        let tail = cells.partition_point(|&(i, _)| i < blocks_end);
+        let mut r = [0.0f64; PW_UNROLL];
+        for &(i, v) in &cells[..tail] {
+            r[(i - start) % PW_UNROLL] += v;
+        }
+        let head = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        return cells[tail..].iter().fold(head, |s, &(_, v)| s + v);
+    }
+    let half = n / 2;
+    let split = half - half % PW_UNROLL;
+    let mid = cells.partition_point(|&(i, _)| i < start + split);
+    sparse_pairwise_sum(start, split, &cells[..mid])
+        + sparse_pairwise_sum(start + split, n - split, &cells[mid..])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::pairwise_sum;
+    use super::{NUMPY_BUFSIZE, grid_sum, pairwise_sum};
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    /// The dense definition `grid_sum` must agree with: pairwise within each
+    /// buffer run, runs added left to right.
+    fn dense_grid_sum(values: &[f64]) -> f64 {
+        values
+            .chunks(NUMPY_BUFSIZE)
+            .fold(0.0, |s, run| s + pairwise_sum(run))
+    }
+
+    fn cells_of(values: &[f64]) -> Vec<(usize, f64)> {
+        values
+            .iter()
+            .enumerate()
+            .filter(|&(_, &v)| v != 0.0)
+            .map(|(i, &v)| (i, v))
+            .collect()
+    }
+
+    /// Sparse and dense agree to the bit over grids that cross every
+    /// boundary the order has: 8 lanes, 128-cell blocks, 8192-cell runs.
+    #[test]
+    fn sparse_grid_sum_is_the_dense_sum() {
+        let mut rng = StdRng::seed_from_u64(0x6_51D);
+        for trial in 0..400 {
+            let len = match trial % 4 {
+                0 => rng.random_range(1..16),
+                1 => rng.random_range(100..300),
+                2 => rng.random_range(8000..8400),
+                _ => rng.random_range(16_000..30_000),
+            };
+            let density = [0.01, 0.2, 0.9][trial % 3];
+            let values: Vec<f64> = (0..len)
+                .map(|_| {
+                    if rng.random_bool(density) {
+                        rng.random_range(0.0..3.0) / 7.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            assert_eq!(
+                grid_sum(len, &cells_of(&values)).to_bits(),
+                dense_grid_sum(&values).to_bits(),
+                "trial {trial}, len {len}"
+            );
+        }
+        assert_eq!(grid_sum(10, &[]), 0.0);
+    }
+
+    /// Bit patterns of `np.sum(m)` under numpy 1.23.5 for the `G × T` grid
+    /// with `m[i, j] = 1 / ((7919 i + 104729 j) % 1009 + 1)` where
+    /// `(31 i + 17 j) % k == 0` and 0 elsewhere. On each of these, one pairwise
+    /// pass over the flattened grid lands on a different bit pattern, so they
+    /// tell the buffered order from numpy 2's.
+    #[test]
+    fn matches_numpy_1_23_on_whole_grids() {
+        for &(g, t, k, bits) in NUMPY_1_23_GRIDS {
+            let values: Vec<f64> = (0..g * t)
+                .map(|c| {
+                    let (i, j) = (c / t, c % t);
+                    if (31 * i + 17 * j) % k == 0 {
+                        1.0 / ((7919 * i + 104_729 * j) % 1009 + 1) as f64
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            assert_eq!(
+                grid_sum(g * t, &cells_of(&values)).to_bits(),
+                bits,
+                "{g} x {t}, k = {k}"
+            );
+            assert_ne!(pairwise_sum(&values).to_bits(), bits, "{g} x {t}, k = {k}");
+        }
+    }
+
+    const NUMPY_1_23_GRIDS: &[(usize, usize, usize, u64)] = &[
+        (97, 113, 3, 0x403cc85eed89202b),
+        (97, 113, 5, 0x4031d7b6fe46c16b),
+        (130, 211, 1, 0x4069e39611c159c4),
+        (64, 200, 3, 0x40407b20bfa4e142),
+    ];
 
     /// A sequence whose serial and pairwise sums differ: a large value followed
     /// by many values too small to register against it one at a time.

@@ -112,6 +112,61 @@ pub fn iou_from_counts(intersection: u64, a: u64, b: u64) -> f64 {
     iou_from_areas(intersection as f64, a as f64, b as f64, false)
 }
 
+/// IoU of two weighted sets from their total weights and their overlap, or
+/// `0.0` where the union is not above `floor`: [`iou_from_counts`] for
+/// counts that are sums of similarities rather than whole numbers.
+///
+/// HOTA's association counts are such sums. TrackEval normalizes each frame's
+/// similarities by `sim / (column sum + row sum − sim)` where that
+/// denominator is above `f64::EPSILON`, and scores two tracks by
+/// `overlap / (a + b − overlap)` over the whole sequence; both are this
+/// formula, with the floor TrackEval's comparison sets.
+#[inline]
+pub(crate) fn iou_from_weights(overlap: f64, a: f64, b: f64, floor: f64) -> f64 {
+    let union = a + b - overlap;
+    if union > floor { overlap / union } else { 0.0 }
+}
+
+/// IoU of two `[x, y, w, h]` boxes as TrackEval's `_calculate_box_ious`
+/// computes it: the box similarity of the tracking family.
+///
+/// It is not [`bbox_iou_pair`], and the difference moves last bits, which
+/// moves a pair across a threshold when it sits on one:
+///
+/// - each box is turned into corners first, and its area is taken from them,
+///   `((x + w) − x) × ((y + h) − y)`, which is not always `w × h`;
+/// - a pair scores `0.0` when either area, or the union, is at most
+///   `f64::EPSILON`, where [`bbox_iou_pair`] tests the union against zero.
+#[inline]
+pub(crate) fn bbox_iou_corners(a: [f64; 4], b: [f64; 4]) -> f64 {
+    let (ax1, ay1) = (a[0] + a[2], a[1] + a[3]);
+    let (bx1, by1) = (b[0] + b[2], b[1] + b[3]);
+    let iw = (ax1.min(bx1) - a[0].max(b[0])).max(0.0);
+    let ih = (ay1.min(by1) - a[1].max(b[1])).max(0.0);
+    let intersection = iw * ih;
+    let area_a = (ax1 - a[0]) * (ay1 - a[1]);
+    let area_b = (bx1 - b[0]) * (by1 - b[1]);
+    let union = area_a + area_b - intersection;
+    if area_a <= f64::EPSILON || area_b <= f64::EPSILON || union <= f64::EPSILON {
+        0.0
+    } else {
+        intersection / union
+    }
+}
+
+/// [`bbox_iou_corners`] of every box in `a` against every box in `b`, as one
+/// row-major `a.len() × b.len()` buffer, empty when either side is.
+pub(crate) fn bbox_iou_corners_flat(a: &[[f64; 4]], b: &[[f64; 4]]) -> Vec<f64> {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    rows(a.len(), b.len(), |i, row| {
+        for (out, &bj) in row.iter_mut().zip(b) {
+            *out = bbox_iou_corners(a[i], bj);
+        }
+    })
+}
+
 /// Run a per-detection-row kernel into one row-major `d × g` buffer, going
 /// parallel only past [`MIN_PARALLEL_WORK`]. `fill_row(i, row)` writes
 /// detection `i`'s `g` values.
@@ -996,6 +1051,76 @@ mod tests {
             }
         }
     }
+
+    /// Bit patterns of TrackEval's `_calculate_box_ious(gt, tracker, 'xywh')`.
+    /// The first pair is one where corner areas and `w × h` areas part: the
+    /// tracking kernel must give the reference's bits, not `bbox_iou_pair`'s.
+    #[test]
+    fn corner_kernel_matches_trackeval_bits() {
+        for &(a, b, bits) in TRACKEVAL_BOX_IOUS {
+            assert_eq!(
+                bbox_iou_corners(a, b).to_bits(),
+                bits,
+                "{a:?} vs {b:?}: got {}",
+                bbox_iou_corners(a, b)
+            );
+        }
+        let (a, b, bits) = TRACKEVAL_BOX_IOUS[0];
+        assert_ne!(
+            bbox_iou_pair(a, b, false).to_bits(),
+            bits,
+            "the first case no longer tells the two kernels apart"
+        );
+    }
+
+    /// A zero-area box, or one under `f64::EPSILON`, scores 0 against
+    /// anything, itself included.
+    #[test]
+    fn corner_kernel_scores_degenerate_boxes_zero() {
+        let tiny = [5.0, 5.0, 1e-9, 1e-9];
+        assert_eq!(bbox_iou_corners(tiny, tiny), 0.0);
+        let flat = [0.0, 0.0, 10.0, 0.0];
+        assert_eq!(bbox_iou_corners(flat, [0.0, 0.0, 10.0, 10.0]), 0.0);
+        let negative = [0.0, 0.0, -3.0, 4.0];
+        assert_eq!(bbox_iou_corners(negative, [0.0, 0.0, 10.0, 10.0]), 0.0);
+        let m = bbox_iou_corners_flat(&[[0.0, 0.0, 10.0, 10.0]], &[[5.0, 0.0, 10.0, 10.0], tiny]);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[1], 0.0);
+        assert_eq!(bbox_iou_corners_flat(&[], &[tiny]), Vec::<f64>::new());
+    }
+
+    /// Recorded under the pinned environment (`.venv-trackeval`, numpy
+    /// 1.23.5) by running the lines of `_calculate_box_ious` on each pair as
+    /// one-row arrays, `ground truth` first, and printing
+    /// `hex(iou.view(np.uint64))`.
+    const TRACKEVAL_BOX_IOUS: &[([f64; 4], [f64; 4], u64)] = &[
+        (
+            [2.49, 1.97, 1.47, 1.74],
+            [1.29, 2.28, 1.86, 0.3],
+            0x3fb15f3ae8272a7b,
+        ),
+        (
+            [0.1, 0.2, 0.7, 0.3],
+            [0.3, 0.1, 0.5, 0.35],
+            0x3fdec4ec4ec4ec4a,
+        ),
+        (
+            [10.0, 10.0, 50.0, 80.0],
+            [11.0, 10.0, 50.0, 80.0],
+            0x3feebebebebebebf,
+        ),
+        (
+            [1.0, 1.0, 2.0, 2.0],
+            [2.0, 2.0, 2.0, 2.0],
+            0x3fc2492492492492,
+        ),
+        ([0.0, 0.0, 10.0, 10.0], [10.0, 0.0, 10.0, 10.0], 0x0),
+        (
+            [123.456, 78.9, 33.3, 91.7],
+            [130.01, 80.2, 30.1, 88.8],
+            0x3fe6ad5dc578399d,
+        ),
+    ];
 
     #[test]
     fn bbox_kernel_matches_and_obeys_contract() {

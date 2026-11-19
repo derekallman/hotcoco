@@ -7,11 +7,12 @@
 | Layer | Produces | Contents |
 |---|---|---|
 | `primitives` | matches and similarities | `sim`, `greedy`, `assign`, `panoptic` |
-| `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic`, `semantic` |
+| `metrics` | numbers from matches | `counts`, `calibration`, `confusion`, `bootstrap`, `panoptic`, `semantic`, `tracking` |
 | `report` | the cross-family output contract | `EvalReport`, `Provenance` |
 | `detection` | the detection family driver | `COCOeval` + AP/AR, LVIS, Open Images, TIDE |
 | `panoptic` | the panoptic family driver | `PanopticEval` + PQ/SQ/RQ, PNG and mask inputs |
 | `semantic` | the semantic family driver | `SemanticEval` + mIoU/fwIoU/mAcc/aAcc, array and PNG label-map inputs |
+| `tracking` | the tracking family driver | `TrackingEval` + HOTA/CLEAR/Identity on MOTChallenge boxes, array and folder inputs |
 | `quality` | dataset introspection | health checks, statistics |
 
 `primitives` and `metrics` are **free functions over flat arrays** — callable with no
@@ -21,13 +22,16 @@ analysis methods (`calibration`, `confusion_matrix`, `compare`, `f_scores`) are
 shared function. **Put metric math in `metrics`, never in a `COCOeval` method** — the
 alternative is what 1.0 spent its whole cycle undoing.
 
-Dependencies run one way: `detection` → `metrics` → `primitives`, and `panoptic` →
-`metrics` → `primitives` and `semantic` → `metrics` → `primitives` beside it —
-`tests/architecture.rs` holds `panoptic/` and `semantic/` to an allowlist that
-excludes `detection`. `metrics` may reach `primitives::sim` for the one count-based
-IoU kernel (`iou_from_counts`); a second IoU formula anywhere else still fails the
-build. Tracking and concepts will be further siblings,
-composing the same two layers, each with an allowlist entry of its own.
+Dependencies run one way: `detection` → `metrics` → `primitives`, and `panoptic`,
+`semantic`, and `tracking` → `metrics` → `primitives` beside it —
+`tests/architecture.rs` holds `panoptic/`, `semantic/`, and `tracking/` to an
+allowlist that excludes `detection` (it admits `crate::table`, the data layer
+tracking's `TrackTable` lives in). `metrics` may reach `primitives::sim` for the one
+count-based IoU kernel (`iou_from_counts`, which semantic IoU and HOTA's AssA both
+call); a second IoU formula anywhere else still fails the build, which is why
+TrackEval's box IoU (`bbox_iou_corners`) and HOTA's soft-count IoU
+(`iou_from_weights`) are kernels in `sim` too. Concepts will be a further sibling,
+composing the same two layers, with an allowlist entry of its own.
 
 Detection keeps what is genuinely detection-shaped: TIDE's Cls/Loc/Both/Dupe/Bkg
 taxonomy is about box localization vs classification, and `image_diagnostics` reports
