@@ -39,6 +39,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`scripts/bench.py --workload arrays`** times boxes passed as in-memory
+  arrays, the shape RF-DETR's metric hands its backend (`just bench-arrays`).
+  `--threads` sets every library's thread budget, reps alternate between
+  libraries, and inputs are generated up front in worker processes.
 - **`params.iouThrs` and `params.recThrs` return numpy arrays**, as in
   pycocotools, so `np.where(0.5 == params.iouThrs)` works. They returned
   lists; `iou_thrs` and `rec_thrs` still do.
