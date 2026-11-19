@@ -55,9 +55,9 @@ yet. This page is the signatures and return shapes.
 | `update_folders(gt_folder, pred_folder, *, seqmap=None)` | `int` | Evaluate every sequence of a benchmark in TrackEval's layout, in parallel; returns how many. Sequence `s` is `{gt_folder}/{s}/gt/gt.txt` with the `seqLength` of `{gt_folder}/{s}/seqinfo.ini`, against `{pred_folder}/{s}.txt`. The sequences are those `seqmap` names after its header line, or every folder in `gt_folder` not starting with a dot. `FileNotFoundError` naming a missing folder or file; `ValueError` for a line that is not numbers, a `seqinfo.ini` with no `seqLength`, a sequence already evaluated, or anything `update` refuses. Nothing is kept then |
 | `merge(other)` | `None` | Add another evaluator's sequences — the shards of a distributed run. `ValueError` if the two differ in benchmark or thresholds, share a sequence, or are the same evaluator |
 | `results()` | `dict` | The combined run; see [`results()`](#results) |
-| `sequence_results()` | `dict` | `{name: dict}` in name order, each shaped like `results()` plus `Frames`. Empty before any sequence is added |
+| `sequence_results()` | `dict` | `{name: dict}` in name order, each the 44 values of `results()` plus `Frames` |
 | `curves(sequence=None)` | `dict` | The per-threshold values of the combined run, or of the sequence named; see [`curves()`](#curves). `KeyError` for a sequence not evaluated |
-| `stats` | `list[float]` | The values of `results()` as floats, in `METRIC_NAMES` order |
+| `stats` | `list[float]` | The 44 values of `results()` as floats, in `METRIC_NAMES` order |
 | `summarize()` | `None` | Print TrackEval's HOTA, CLEAR, Identity, and Count tables: a row per sequence and a `COMBINED` row, scores in percent |
 | `summary_lines()` | `list[str]` | The same tables as strings, without printing |
 | `report()` | `dict` | The [`EvalReport`](cocoeval.md#report) every family produces; see [`report()`](#report) |
@@ -65,8 +65,8 @@ yet. This page is the signatures and return shapes.
 | `reference_deviations()` | `list[str]` | Why this run is not comparable to TrackEval. Empty unless `benchmark` is `None` and a ground-truth row has `conf` 0, which TrackEval never evaluates |
 | `provenance()` | `str` | `"parity_verified"` or `"extension"` |
 
-`results()`, `curves()`, `stats`, `summarize()`, `summary_lines()`, and
-`report()` raise `RuntimeError` before any sequence is added. An evaluator
+`results()`, `sequence_results()`, `curves()`, `stats`, `summarize()`,
+`summary_lines()`, and `report()` raise `RuntimeError` before any sequence is added. An evaluator
 pickles; `pickle.loads(pickle.dumps(ev))` carries the configuration and every
 sequence's result.
 
@@ -86,6 +86,9 @@ returns a `[f64; 44]`; `curves()` is the combined run's, and
 
 ```python
 {
+    "hotcoco_version": "1.5.0",
+    "provenance": "parity_verified",
+    "reference_deviations": [],
     "HOTA": 0.5257, "DetA": 0.8042, "AssA": 0.3463, "DetRe": 0.8120, "DetPr": 0.9474,
     "AssRe": 0.4683, "AssPr": 0.5392, "LocA": 0.9083, "OWTA": 0.5292,
     "HOTA(0)": 0.5563, "LocA(0)": 0.9055, "HOTALocA(0)": 0.5038,
@@ -127,7 +130,7 @@ ulp above the decimal. The three counts are floats here.
 |-----|----------|
 | `task` | `"tracking"` |
 | `provenance` | `"parity_verified"`, or `"extension"` when `reference_deviations()` has an entry |
-| `metrics` | `results()`, every value a float |
+| `metrics` | the 44 values of `results()`, every one a float |
 | `per_class` | empty; only pedestrians are scored |
 | `per_group` | sequence name → its `METRIC_NAMES` values |
 | `curves` | `curves()` of the combined run |

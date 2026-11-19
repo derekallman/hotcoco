@@ -622,6 +622,7 @@ Return evaluation results as a serializable dict.
 |-----|------|-------------|
 | `"hotcoco_version"` | `str` | hotcoco version that produced these results. |
 | `"provenance"` | `str` | Same value as `report()["provenance"]`. |
+| `"reference_deviations"` | `list[str]` | What `reference_deviations()` returns: why `provenance` is `"extension"`, and empty when it is not. Every family's `results()` has these three keys. |
 | `"params"` | `dict` | Evaluation parameters: `iou_type`, `eval_mode`, `iou_thresholds`, `recall_thresholds`, `area_ranges`, `max_dets`, `use_cats`, `kpt_oks_sigmas`, and `reference_deviations` — enough for a saved run to explain its own provenance. |
 | `"metrics"` | `dict[str, float]` | Summary metrics keyed by name (same keys as `get_results()`). |
 | `"per_class"` | `dict[str, float]` \| absent | Per-category AP values keyed by category name. Only present if `per_class=True`. |
@@ -637,6 +638,7 @@ Serialized, the dict looks like this:
 {
   "hotcoco_version": "1.0.0",
   "provenance": "parity_verified",
+  "reference_deviations": [],
   "params": {
     "iou_type": "bbox",
     "eval_mode": "coco",

@@ -222,8 +222,10 @@ Raises ``RuntimeError`` before any sequence is added."]
         Ok(self.inner.summarize_lines())
     }
 
-    #[doc = "The combined run, TrackEval's ``COMBINED_SEQ``, as a flat dict under
-TrackEval's field names, in ``METRIC_NAMES`` order.
+    #[doc = "The combined run, TrackEval's ``COMBINED_SEQ``, as a flat dict:
+``hotcoco_version``, ``provenance``, and ``reference_deviations``, as every
+family's ``results()`` carries them, then the 44 values under TrackEval's
+field names, in ``METRIC_NAMES`` order.
 
 ``HOTA``, ``DetA``, ``AssA``, ``DetRe``, ``DetPr``, ``AssRe``, ``AssPr``,
 ``LocA``, and ``OWTA`` are the mean over HOTA's 19 localization thresholds,
@@ -234,15 +236,22 @@ fields (``MOTA``, ``MOTP``, ... ``IDSW``, ``Frag``), the Identity fields
 fields (``Dets``, ``GT_Dets``, ``IDs``, ``GT_IDs``). Scores are fractions
 and counts are ints. Raises ``RuntimeError`` before any sequence is added."]
     fn results<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        summary_dict(py, &self.inner.results().map_err(to_pyerr)?)
+        let metrics = summary_dict(py, &self.inner.results().map_err(to_pyerr)?)?;
+        let d = PyDict::new(py);
+        d.set_item("hotcoco_version", env!("CARGO_PKG_VERSION"))?;
+        d.set_item("provenance", provenance_str(self.inner.provenance())?)?;
+        d.set_item("reference_deviations", self.inner.reference_deviations())?;
+        d.update(metrics.as_mapping())?;
+        Ok(d)
     }
 
-    #[doc = "Each sequence's result by name, in name order, shaped like
+    #[doc = "Each sequence's result by name, in name order: the 44 values of
 ``results()`` plus ``Frames``, the sequence's frame count. A sequence with no
 ground truth or no predictions left after clean-up has TrackEval's
 early-return row: the CLEAR scores are 0 but ``MLR`` is 1 and ``CLR_Frames``
-is 0, and ``LocA`` is 1. Empty before any sequence is added."]
+is 0, and ``LocA`` is 1. Raises ``RuntimeError`` before any sequence is added."]
     fn sequence_results<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.check_updated()?;
         let d = PyDict::new(py);
         for (name, r) in self.inner.sequence_results() {
             d.set_item(name, summary_dict(py, r)?)?;

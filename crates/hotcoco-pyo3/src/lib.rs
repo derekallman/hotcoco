@@ -2999,6 +2999,9 @@ Must be called after ``summarize()`` (or ``run()``), and raises ``RuntimeError``
 when ``report()`` does. Returns a dict with:
 
 - ``hotcoco_version``: hotcoco version string that produced these results.
+- ``provenance``: ``'parity_verified'`` or ``'extension'``, as ``provenance()`` returns.
+- ``reference_deviations``: why not, as ``reference_deviations()`` returns; empty
+  when the run is comparable to the reference.
 - ``params``: evaluation parameters (iou_type, iou_thresholds, area_ranges, max_dets)
 - ``metrics``: summary metrics (AP, AP50, AP75, and the rest)
 - ``per_class``: per-category AP values (only if ``per_class=True``)

@@ -115,7 +115,8 @@ def pq_from_primitives(images, categories):
 def test_pq_from_the_primitives_is_panoptic_eval(tmp_path, case):
     paths = case.write(tmp_path)
     ev = panoptic.PanopticEval(paths["gt"][0], paths["pred"][0], gt_folder=paths["gt"][1], pred_folder=paths["pred"][1])
-    assert ev.eval_imgs == []
+    with pytest.raises(RuntimeError, match="evaluate"):
+        _ = ev.eval_imgs
     ev.evaluate()
     want = ev.results()
 

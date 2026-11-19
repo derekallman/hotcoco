@@ -5211,7 +5211,8 @@ fn test_eval_results_json_shape_is_stable() {
             "metrics",
             "params",
             "per_class",
-            "provenance"
+            "provenance",
+            "reference_deviations"
         ],
         "EvalResults gained or lost a top-level key"
     );

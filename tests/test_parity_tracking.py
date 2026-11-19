@@ -49,6 +49,18 @@ def evaluator(case, sequences=None, rows=np.asarray):
     return ev
 
 
+# What every family's `results()` carries beside its numbers
+# (`tests/test_family_contract.py`); TrackEval has no such fields.
+INFO_KEYS = ("hotcoco_version", "provenance", "reference_deviations")
+
+
+def metrics(ev):
+    """``results()`` without the keys TrackEval does not report."""
+    results = ev.results()
+    assert tuple(results)[:3] == INFO_KEYS
+    return {k: v for k, v in results.items() if k not in INFO_KEYS}
+
+
 def mismatches(at, scalars, curves, want):
     """Every field of ``want`` that ``scalars`` (for a number) or ``curves`` (for a
     per-threshold list) does not hold exactly, and every field of ours TrackEval
@@ -72,7 +84,7 @@ def mismatches(at, scalars, curves, want):
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["name"])
 def test_matches_trackeval_on_every_field(case):
     ev = evaluator(case)
-    found = mismatches("combined", ev.results(), ev.curves(), case["expected"]["combined"])
+    found = mismatches("combined", metrics(ev), ev.curves(), case["expected"]["combined"])
     per_sequence = ev.sequence_results()
     assert list(per_sequence) == list(case["expected"]["per_sequence"])
     for seq, want in case["expected"]["per_sequence"].items():
@@ -86,7 +98,7 @@ def test_the_comparison_tells_a_wrong_number_apart():
     case = CASES[0]
     ev = evaluator(case)
     want = case["expected"]["combined"]
-    scalars, curves = ev.results(), ev.curves()
+    scalars, curves = metrics(ev), ev.curves()
     assert mismatches("c", scalars, curves, want) == []
     assert mismatches("c", {**scalars, "MOTA": np.nextafter(scalars["MOTA"], 2.0)}, curves, want)
     assert mismatches("c", {**scalars, "IDSW": float(scalars["IDSW"])}, curves, want)
@@ -239,7 +251,9 @@ def test_an_evaluator_pickles_and_copies():
         assert back.sequence_results() == ev.sequence_results()
         assert back.results() == ev.results() and back.stats == ev.stats
     empty = pickle.loads(pickle.dumps(TrackingEval("mot15")))
-    assert empty.benchmark == "MOT15" and empty.sequence_results() == {}
+    assert empty.benchmark == "MOT15"
+    with pytest.raises(RuntimeError, match="update"):
+        empty.sequence_results()
 
 
 def test_reading_results_before_any_update_is_a_runtime_error():
@@ -252,10 +266,10 @@ def test_reading_results_before_any_update_is_a_runtime_error():
         ev.report,
         ev.summarize,
         ev.summary_lines,
+        ev.sequence_results,
     ):
         with pytest.raises(RuntimeError, match="update"):
             call()
-    assert ev.sequence_results() == {}
     assert ev.reference_deviations() == [] and ev.provenance() == "parity_verified"
 
 
@@ -275,9 +289,9 @@ def test_report_contract():
     assert report["task"] == "tracking"
     assert report["provenance"] == "parity_verified"
     assert len(tracking.METRIC_NAMES) == 44 and tracking.METRIC_NAMES[:3] == ["HOTA", "DetA", "AssA"]
-    assert list(ev.results()) == tracking.METRIC_NAMES
-    assert report["metrics"] == {k: float(v) for k, v in ev.results().items()}
-    assert ev.stats == [float(v) for v in ev.results().values()]
+    assert list(metrics(ev)) == tracking.METRIC_NAMES
+    assert report["metrics"] == {k: float(v) for k, v in metrics(ev).items()}
+    assert ev.stats == [float(v) for v in metrics(ev).values()]
     assert report["per_class"] == {}
     assert report["per_group"] == {
         seq: {k: float(v) for k, v in r.items() if k != "Frames"} for seq, r in ev.sequence_results().items()

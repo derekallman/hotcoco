@@ -67,6 +67,10 @@ pub struct EvalResults {
     /// `--json` emits it, and the PDF report renders from it. Provenance that
     /// exists only inside a live process cannot be audited afterwards.
     pub provenance: Provenance,
+    /// Why `provenance` is not `ParityVerified`:
+    /// [`COCOeval::reference_deviations`](super::COCOeval::reference_deviations).
+    /// Empty when it is.
+    pub reference_deviations: Vec<String>,
     /// Evaluation parameters used to produce these metrics.
     pub params: EvalParams,
     /// Summary metrics: AP, AP50, AP75, AR1, AR10, AR100, and the rest of the catalog.

@@ -9,15 +9,14 @@ use std::path::PathBuf;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use hotcoco_core::panoptic::{METRIC_NAMES, PanopticDataset, PanopticEval};
+use hotcoco_core::panoptic::{METRIC_NAMES, PanopticDataset, PanopticEval, PanopticResult};
 
 use crate::convert::{
     py_to_dataset, py_to_panoptic_dataset, record_list, set_segment_matches, type_name,
     with_context,
 };
 use crate::{
-    CallOrderWarning, PyCOCO, ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py,
-    to_pyerr, warn,
+    PyCOCO, ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn,
 };
 
 /// Whether a dict is COCO panoptic JSON — its annotations carry
@@ -119,6 +118,18 @@ pub(crate) struct PyPanopticEval {
     inner: PanopticEval,
 }
 
+impl PyPanopticEval {
+    /// The result, or the `RuntimeError` every reader raises before
+    /// `evaluate()`; `method` is the reader as the caller spelled it.
+    fn check_evaluated(&self, method: &str) -> PyResult<&PanopticResult> {
+        self.inner.result().ok_or_else(|| {
+            to_pyerr(hotcoco_core::Error::InvalidState(format!(
+                "evaluate() must be called before {method}"
+            )))
+        })
+    }
+}
+
 #[pymethods]
 impl PyPanopticEval {
     #[new]
@@ -149,24 +160,20 @@ prediction category, or label maps of different sizes."]
 
     #[doc = "Print the summary table — PQ, SQ, RQ, N for All, Things, Stuff — in
 percent, as panopticapi prints it. Each entry of ``reference_deviations()``
-is emitted first as a ``ReferenceDeviationWarning``."]
+is emitted first as a ``ReferenceDeviationWarning``. Raises ``RuntimeError``
+before ``evaluate()``."]
     fn summarize(&mut self, py: Python<'_>) -> PyResult<()> {
-        if self.inner.result().is_none() {
-            warn::<CallOrderWarning>(py, "summarize() called before evaluate().")?;
-            return Ok(());
-        }
+        self.check_evaluated("summarize()")?;
         for w in self.inner.reference_deviations() {
             warn::<ReferenceDeviationWarning>(py, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }
 
-    #[doc = "The summary table as a list of strings, without printing it. Empty,
-with a ``CallOrderWarning``, before ``evaluate()``."]
-    fn summary_lines(&self, py: Python<'_>) -> PyResult<Vec<String>> {
-        if self.inner.result().is_none() {
-            warn::<CallOrderWarning>(py, "summary_lines() called before evaluate().")?;
-        }
+    #[doc = "The summary table as a list of strings, without printing it. Raises
+``RuntimeError`` before ``evaluate()``."]
+    fn summary_lines(&self) -> PyResult<Vec<String>> {
+        self.check_evaluated("summary_lines()")?;
         Ok(self.inner.summarize_lines())
     }
 
@@ -179,13 +186,10 @@ with a ``CallOrderWarning``, before ``evaluate()``."]
     #[getter]
     #[doc = "The nine headline values, fractions in [0, 1]: PQ, SQ, RQ over all
 categories, then over things, then over stuff — ``panoptic.METRIC_NAMES``
-gives the order. ``-1.0`` where a split had no category to average. Empty before
-``evaluate()``."]
-    fn stats(&self) -> Vec<f64> {
-        self.inner
-            .result()
-            .map(|r| r.stats().to_vec())
-            .unwrap_or_default()
+gives the order. ``-1.0`` where a split had no category to average. Raises
+``RuntimeError`` before ``evaluate()``."]
+    fn stats(&self) -> PyResult<Vec<f64>> {
+        Ok(self.check_evaluated("stats")?.stats().to_vec())
     }
 
     #[getter]
@@ -196,10 +200,11 @@ One dict per ground-truth image, in the order ``evaluate()`` visits them:
 the image. Ids are the input's: the PNG colors of the COCO panoptic format, or
 the annotation ids of a ``COCO`` dataset, repeated where the annotations repeat
 them. ``matched`` is in the order the IoUs were summed: by id for the COCO
-panoptic format, by annotation order for a ``COCO`` dataset. Empty before
-``evaluate()``. Each read converts every record, so bind the list once rather
+panoptic format, by annotation order for a ``COCO`` dataset. Raises
+``RuntimeError`` before ``evaluate()``. Each read converts every record, so bind the list once rather
 than indexing the attribute in a loop."]
     fn eval_imgs(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.check_evaluated("eval_imgs")?;
         let records = PyList::empty(py);
         for rec in self.inner.eval_imgs() {
             let d = PyDict::new(py);
@@ -219,7 +224,8 @@ and, beyond panopticapi, the ``tp``, ``fp``, ``fn`` and summed ``iou`` they
 came from. A category with no segment on either side reports ``-1.0`` for the
 three scores, where panopticapi prints ``0.0`` and skips it in the mean —
 the counts beside it are all zero either way. Also carries ``provenance``,
-``reference_deviations`` and ``hotcoco_version``."]
+``reference_deviations`` and ``hotcoco_version``. Raises ``RuntimeError``
+before ``evaluate()``."]
     fn results(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let results = self.inner.results().map_err(to_pyerr)?;
         let dict = serde_to_py(py, &results)?;
@@ -241,7 +247,7 @@ segmentation, every segment painted with its category, a predicted void
 counting as a miss and not as a class), ``per_class`` (PQ/SQ/RQ by category
 name for evaluable categories, and IoU, Acc, and Dice where computed), ``per_group``
 (``all``, ``things``, ``stuff`` with their ``n``), ``curves`` (empty) and
-``params``."]
+``params``. Raises ``RuntimeError`` before ``evaluate()``."]
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let report = self.inner.report().map_err(to_pyerr)?;
         serde_to_py(py, &report)

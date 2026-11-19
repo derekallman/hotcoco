@@ -183,14 +183,16 @@ too, as they are errors in TrackEval.
 
 ```python
 r = ev.results()                    # the combined run: {"HOTA": 0.5257, "MOTA": 0.5714, "IDF1": 0.6154, "IDSW": 2, ...}
-ev.sequence_results()["walk-01"]    # the same fields for one sequence, plus "Frames"
+ev.sequence_results()["walk-01"]    # the same 44 fields for one sequence, plus "Frames"
 ev.curves()                         # {"alphas": [0.05, ..., 0.95], "HOTA": [...], "DetA": [...], ...}
 ev.curves("walk-01")                # one sequence's curves
-ev.stats                            # the values of results(), in tracking.METRIC_NAMES order
+ev.stats                            # the 44 values of results(), in tracking.METRIC_NAMES order
 ev.report()                         # metrics, per_group (one entry per sequence), curves, provenance
 ```
 
-`results()` is TrackEval's `COMBINED_SEQ` row: counts summed over sequences,
+`results()` is TrackEval's `COMBINED_SEQ` row under TrackEval's field names,
+after the three keys every family's `results()` starts with
+(`hotcoco_version`, `provenance`, `reference_deviations`): counts summed over sequences,
 and scores combined as TrackEval combines them — recomputed from the summed
 counts, with `AssA`, `AssRe`, `AssPr`, and `LocA` weighted by each sequence's
 true positives. The HOTA family is the mean over the 19 thresholds, as

@@ -95,7 +95,10 @@ one malformed value through every path and fails on any disagreement.
 - **A call made before the step it needs raises `Error::InvalidState`** (see
   [Input errors](#input-errors)). `CallOrderWarning` is only for the pipeline methods
   that already return an empty result instead, which callers rely on; a new method
-  raises.
+  raises. `tests/test_family_contract.py` holds every family's readers to that, names
+  the `COCOeval` exceptions, and checks that each family's `results()` carries
+  `hotcoco_version`, `provenance`, and `reference_deviations`. A new reader on any
+  evaluator needs a row there.
 
 ### Core-crate architecture
 

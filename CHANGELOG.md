@@ -46,6 +46,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Breaking: `PanopticEval` and `SemanticEval` readers raise `RuntimeError` before
+  there is a result**, as `TrackingEval`'s and `COCOeval.results()` do. `stats`,
+  `summarize()`, `summary_lines()`, and `PanopticEval.eval_imgs` returned an empty
+  value, and `SemanticEval.results()` and `report()` returned `-1.0` for every score.
+  `COCOeval` members that copy pycocotools are unchanged.
+- **`COCOeval.results()` has a `reference_deviations` key**, so every family's
+  `results()` carries `hotcoco_version`, `provenance`, and `reference_deviations`.
+  Saved result files gain the key.
 - **`scripts/bench.py --workload arrays`** times boxes passed as in-memory
   arrays, the shape RF-DETR's metric hands its backend (`just bench-arrays`).
   `--threads` sets every library's thread budget, reps alternate between

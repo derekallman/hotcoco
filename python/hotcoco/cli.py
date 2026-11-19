@@ -419,10 +419,6 @@ def cmd_eval(args):
 
     if args.json:
         result = ev.results(per_class=False)
-        # `results()` already carries `provenance`; the reasons are what is missing.
-        # JSON output is the easiest surface to paste into a comparison table and
-        # the stderr warnings do not survive a pipe, so they travel with it.
-        result["reference_deviations"] = ev.reference_deviations()
         if cal_result is not None:
             result["calibration"] = cal_result
         if tide_result is not None:

@@ -16,10 +16,7 @@ use hotcoco_core::metrics::semantic::boundary::DEFAULT_DILATION_RATIO;
 use hotcoco_core::semantic::{FolderPairing, METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
-use crate::{
-    CallOrderWarning, ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py,
-    to_pyerr, warn,
-};
+use crate::{ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, aAcc, and mDice
 against mmsegmentation's protocol, and boundary IoU against the paper's.
@@ -88,6 +85,19 @@ fn evaluator_for(classes: &Bound<'_, PyAny>) -> PyResult<SemanticEval> {
     Err(pyo3::exceptions::PyTypeError::new_err(
         "classes must be the number of classes or a sequence of class names",
     ))
+}
+
+impl PySemanticEval {
+    /// The `RuntimeError` every reader raises before the first update;
+    /// `method` is the reader as the caller spelled it.
+    fn check_updated(&self, method: &str) -> PyResult<()> {
+        if self.inner.n_images() > 0 {
+            return Ok(());
+        }
+        Err(to_pyerr(hotcoco_core::Error::InvalidState(format!(
+            "call update(), update_png(), or update_folders() before {method}"
+        ))))
+    }
 }
 
 #[pymethods]
@@ -232,32 +242,29 @@ batch is one, and one per PNG pair."]
 
     #[getter]
     #[doc = "The six headline values as fractions, in ``semantic.METRIC_NAMES``
-order: mIoU, fwIoU, mAcc, aAcc, mDice, mBIoU. ``-1.0`` where nothing was
-counted, and for mBIoU when boundary IoU is off."]
-    fn stats(&self) -> Vec<f64> {
-        self.inner.stats().to_vec()
+order: mIoU, fwIoU, mAcc, aAcc, mDice, mBIoU. ``-1.0`` for mBIoU when
+boundary IoU is off. Raises ``RuntimeError`` before the first update."]
+    fn stats(&self) -> PyResult<Vec<f64>> {
+        self.check_updated("stats")?;
+        Ok(self.inner.stats().to_vec())
     }
 
     #[doc = "Print the table: one row per class with IoU, Acc, Dice, and BIoU in
 percent, then the six means. Each entry of ``reference_deviations()`` is
-emitted first as a ``ReferenceDeviationWarning``. Before anything is counted,
-prints nothing and emits a ``CallOrderWarning``."]
+emitted first as a ``ReferenceDeviationWarning``. Raises ``RuntimeError``
+before the first update."]
     fn summarize(&self, py: Python<'_>) -> PyResult<()> {
-        if self.inner.n_images() == 0 {
-            return warn::<CallOrderWarning>(py, "summarize() called before update().");
-        }
+        self.check_updated("summarize()")?;
         for w in self.inner.reference_deviations() {
             warn::<ReferenceDeviationWarning>(py, &w)?;
         }
         print_lines(py, &self.inner.summarize_lines())
     }
 
-    #[doc = "The table as a list of strings, without printing it. Empty, with a
-``CallOrderWarning``, before anything is counted."]
-    fn summary_lines(&self, py: Python<'_>) -> PyResult<Vec<String>> {
-        if self.inner.n_images() == 0 {
-            warn::<CallOrderWarning>(py, "summary_lines() called before update().")?;
-        }
+    #[doc = "The table as a list of strings, without printing it. Raises
+``RuntimeError`` before the first update."]
+    fn summary_lines(&self) -> PyResult<Vec<String>> {
+        self.check_updated("summary_lines()")?;
         Ok(self.inner.summarize_lines())
     }
 
@@ -266,8 +273,9 @@ prints nothing and emits a ``CallOrderWarning``."]
 class-id order of ``{\"name\", \"IoU\", \"Acc\", \"Dice\", \"BIoU\", \"tp\",
 \"gt_area\", \"pred_area\"}`` with ``-1.0`` for a score that is not computed;
 ``n_images``, ``n_pixels``, ``provenance``, ``reference_deviations`` and
-``hotcoco_version``."]
+``hotcoco_version``. Raises ``RuntimeError`` before the first update."]
     fn results(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.check_updated("results()")?;
         serde_to_py(py, &self.inner.results())
     }
 
@@ -275,8 +283,9 @@ class-id order of ``{\"name\", \"IoU\", \"Acc\", \"Dice\", \"BIoU\", \"tp\",
 ``task``, ``provenance``, ``metrics`` (the means; ``mBIoU`` only when boundary
 IoU is on), ``per_class`` (``IoU``, ``Acc``, ``Dice``, and ``BIoU`` by class
 name, computed values only), ``per_group`` (empty), ``curves`` (empty) and
-``params``."]
+``params``. Raises ``RuntimeError`` before the first update."]
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.check_updated("report()")?;
         serde_to_py(py, &self.inner.report())
     }
 

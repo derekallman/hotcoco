@@ -56,14 +56,17 @@ signatures and return shapes.
 |--------|---------|-------------|
 | `evaluate()` | `None` | Score every ground-truth image against its prediction, in parallel. Raises `ValueError` on the inputs panopticapi rejects |
 | `summarize()` | `None` | Print the table — PQ, SQ, RQ, N for All, Things, Stuff — in percent |
-| `summary_lines()` | `list[str]` | The same table as strings, without printing. Empty, with a `CallOrderWarning`, before `evaluate()` |
+| `summary_lines()` | `list[str]` | The same table as strings, without printing |
 | `run()` | `None` | `evaluate()` then `summarize()` |
-| `stats` | `list[float]` | The nine headline values, in `METRIC_NAMES` order; empty before `evaluate()` |
-| `eval_imgs` | `list[dict]` | Per-image match records, below; empty before `evaluate()` |
+| `stats` | `list[float]` | The nine headline values, in `METRIC_NAMES` order |
+| `eval_imgs` | `list[dict]` | Per-image match records, below |
 | `results()` | `dict` | panopticapi's result shape, below |
 | `report()` | `dict` | The [`EvalReport`](cocoeval.md#report) every family produces |
 | `reference_deviations()` | `list[str]` | Why this run is not comparable to panopticapi; empty when it is |
 | `provenance()` | `str` | `"parity_verified"` or `"extension"` |
+
+`stats`, `eval_imgs`, `summarize()`, `summary_lines()`, `results()`, and
+`report()` raise `RuntimeError` before `evaluate()`.
 
 In Rust the same names return `Result` where Python raises: `results()`
 returns a `PanopticResults` with `to_json()` and `save()`, `result()` exposes

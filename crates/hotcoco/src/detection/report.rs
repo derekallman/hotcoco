@@ -550,6 +550,7 @@ impl COCOeval {
         Ok(EvalResults {
             hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
             provenance: report.provenance,
+            reference_deviations: self.reference_deviations(),
             params: EvalParams::from_eval(self),
             metrics: report.metrics.into_iter().collect(),
             per_class: per_class_map,
