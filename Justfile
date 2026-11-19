@@ -47,6 +47,10 @@ report type="bbox": build
 bench: build
     uv run python scripts/bench.py
 
+# Benchmark boxes passed as in-memory arrays (RF-DETR's compute() shape)
+bench-arrays: build
+    uv run python scripts/bench.py --workload arrays --impls vernier hotcoco
+
 # Download COCO val2017 annotations + generate parity result files (~240 MB)
 download-coco:
     uv run python scripts/download_coco.py
