@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Multi-object tracking — the fourth metric family.** `hotcoco.tracking.TrackingEval`
+  scores HOTA, CLEAR (MOTA, MOTP), and Identity (IDF1) on MOTChallenge 2D boxes, from
+  arrays or a benchmark's folders, under TrackEval's field names, and matches TrackEval
+  to the bit on synthetic sequences. MOTS, COCO-video, and a CLI are not covered yet. See
+  [Multi-object tracking](https://derekallman.github.io/hotcoco/guide/tracking/).
+- **Rust: `tracking::{TrackingEval, Benchmark, TrackingResult}`**, and the HOTA, CLEAR,
+  and Identity formulas in `metrics::tracking`.
 - **Rust: `COCOeval::check_accumulated()` and `check_summarized()`**, the reason
   `f_scores()` and `get_results()` return an empty map. The Python
   `CallOrderWarning`s from those two and `print_results()` now carry it.

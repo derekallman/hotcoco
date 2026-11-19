@@ -13,7 +13,7 @@ Perception evaluation for Python, written in Rust.
 </p>
 
 <p class="hero-sub">
-hotcoco evaluates perception models: detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — panoptic segmentation, and semantic segmentation. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 133× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
+hotcoco evaluates perception models: detection — boxes, masks, keypoints, and oriented boxes on the COCO, LVIS, and Open Images protocols — panoptic segmentation, semantic segmentation, and multi-object tracking. It's a drop-in replacement for pycocotools — the same numbers bit for bit, up to 133× faster — and it includes the analysis you'd otherwise need separate tools for: TIDE error analysis, confusion matrices, calibration, model comparison, and a dataset browser.
 </p>
 
 <div class="hero-actions" markdown>
@@ -81,7 +81,7 @@ pip install hotcoco
 
 <div class="feature-card" markdown>
 <strong>Evaluate</strong>
-<p>COCO, LVIS, and Open Images protocols over boxes, masks, keypoints, and oriented boxes; panoptic quality against panopticapi; semantic mIoU against mmsegmentation. <code>init_as_pycocotools()</code> patches existing pycocotools imports in place — no code changes.</p>
+<p>COCO, LVIS, and Open Images protocols over boxes, masks, keypoints, and oriented boxes; panoptic quality against panopticapi; semantic mIoU against mmsegmentation; tracking HOTA, MOTA, and IDF1 against TrackEval. <code>init_as_pycocotools()</code> patches existing pycocotools imports in place — no code changes.</p>
 </div>
 
 <div class="feature-card" markdown>
@@ -206,5 +206,22 @@ for gt, pred in loader:
 ev.report()["metrics"]["mIoU"]
 ```
 
-See the [semantic guide](guide/semantic.md). Tracking is next —
-see the [roadmap](https://github.com/derekallman/hotcoco/blob/main/ROADMAP.md).
+See the [semantic guide](guide/semantic.md).
+
+## Multi-object tracking
+
+The fourth family: HOTA, CLEAR (MOTA, MOTP), and Identity (IDF1) on
+MOTChallenge 2D boxes, matching TrackEval field for field, under TrackEval's
+names. One sequence at a time from arrays in MOTChallenge column order, or a
+whole benchmark from its folders:
+
+```python
+from hotcoco.tracking import TrackingEval
+
+ev = TrackingEval("MOT17")
+ev.update_folders("gt/mot_challenge/MOT17-train", "trackers/mot_challenge/MOT17-train/MyTracker/data")
+ev.results()["HOTA"]
+```
+
+See the [tracking guide](guide/tracking.md), which also lists what is not
+covered yet: masks, COCO-video, and the other TrackEval datasets.

@@ -312,5 +312,6 @@ Analyses that need per-image records — TIDE, the confusion matrix, calibration
 - [LVIS and Open Images](lvis-open-images.md) — federated AP, category hierarchies, and group-of matching
 - [Panoptic segmentation](panoptic.md) — PQ, SQ, and RQ against panopticapi, from PNG files or from masks
 - [Semantic segmentation](semantic.md) — mIoU, fwIoU, mAcc, aAcc, and mDice against mmsegmentation, and boundary IoU, from a validation loop or from PNG label maps
+- [Multi-object tracking](tracking.md) — HOTA, CLEAR, and Identity against TrackEval, from MOTChallenge rows or a benchmark's folders
 - [Model diagnostics](diagnostics.md) — confusion matrix, TIDE error analysis, calibration, F-scores, model comparison, and per-image failure mining
 - [Working with results](results.md) — the evaluation report, provenance, per-category AP, JSON export, and experiment-tracker logging

@@ -4,7 +4,7 @@ What's planned, in order. This page is forward-looking only — for what has alr
 shipped, see the [CHANGELOG](CHANGELOG.md).
 
 hotcoco is one engine — `primitives` for similarity and matching, `metrics` for the
-numbers — with a family driver per task on top. Detection, panoptic, and semantic ship today. Each
+numbers — with a family driver per task on top. Detection, panoptic, semantic, and tracking on MOTChallenge boxes ship today. Each
 family below lands as an additive minor release on the same layering, so nothing
 about the shipped families changes when a sibling arrives. The families are listed in the order they
 are planned; a version number is assigned when one is ready to ship.
@@ -22,13 +22,17 @@ are planned; a version number is assigned when one is ready to ship.
   Cyanotype color swap: typography, spacing, legends, and defaults that look
   right in a paper and a notebook without arguments.
 
-## Multi-object tracking
+## Multi-object tracking, beyond MOTChallenge boxes
 
-HOTA, CLEAR (MOTA/MOTP), and Identity (IDF1), verified against TrackEval, with
-Track AP (TAO) as the natural extension once the video model is in. Tracking
-brings the video data model — videos, tracks, `track_id` on annotations —
-along with MOTChallenge and video-COCO interchange, video-aware `merge`,
-`split`, and `sample`, and healthcheck rules for video datasets.
+HOTA, CLEAR, and Identity on more of what TrackEval covers, each verified
+against it with a frozen fixture of its own: MOTS (masks and ignore regions),
+TAO and COCO-video JSON with per-class evaluation and class averaging, the
+other TrackEval datasets (KITTI, BDD100K), and Track AP as the natural
+extension once the video model is in. That model — videos, tracks, `track_id`
+on annotations — brings MOTChallenge and video-COCO interchange, video-aware
+`merge`, `split`, and `sample`, healthcheck rules for video datasets, and a
+`coco tracking` CLI subcommand. Also planned: a parity run on real MOT17
+data, against TrackEval's example tracker.
 
 ## Concept segmentation
 

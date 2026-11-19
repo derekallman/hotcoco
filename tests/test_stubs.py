@@ -298,7 +298,7 @@ def test_primitives_stub_matches_runtime():
     assert not missing, f"Names missing from primitives.pyi: {sorted(missing)}"
 
 
-FAMILIES = [("panoptic", "PanopticEval"), ("semantic", "SemanticEval")]
+FAMILIES = [("panoptic", "PanopticEval"), ("semantic", "SemanticEval"), ("tracking", "TrackingEval")]
 
 
 @pytest.mark.parametrize(("family", "_cls"), FAMILIES)
@@ -584,6 +584,7 @@ SIGNATURE_STUBS = {
     "primitives.pyi": "hotcoco.primitives",
     "panoptic.pyi": "hotcoco.panoptic",
     "semantic.pyi": "hotcoco.semantic",
+    "tracking.pyi": "hotcoco.tracking",
 }
 
 # Callables whose stub signature differs from the runtime one on purpose.

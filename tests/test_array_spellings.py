@@ -16,7 +16,8 @@ reaches it through each caller: ``label_array`` (label maps, for semantic
 counts and ``primitives.segment_overlaps``), ``u64_matrix_arg`` (a confusion
 matrix), ``u64_vec`` (an id column), ``f64_vec`` and ``f64_matrix_arg`` (a
 float column, a box table, the similarity matrix, scores, and thresholds of
-``primitives.greedy_match``), ``anns_from_array`` (a detection table),
+``primitives.greedy_match``, and the MOTChallenge rows of
+``TrackingEval.update``), ``anns_from_array`` (a detection table),
 ``flag_vec`` (``iscrowd``, ``gt_ignore``, ``dt_ignore``), ``bool_vec`` (``matched``), and the
 numpy scalars that ``extract_int`` reads inside a record.
 
@@ -29,7 +30,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from hotcoco import COCO, metrics, primitives, semantic
+from hotcoco import COCO, metrics, primitives, semantic, tracking
 
 INT_DTYPES = [np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64]
 FLOAT_DTYPES = [np.float16, np.float32, np.float64]
@@ -334,6 +335,77 @@ def test_greedy_match_group_of_reads_the_same_in_every_spelling(dtype, layout):
     assert not same_matches(want, as_crowd), "a group-of box must match differently from a crowd region"
 
 
+# --- MOTChallenge rows: TrackingEval.update ------------------------------------
+
+# `frame, id, x, y, w, h, conf, class, visibility`, small whole numbers, exact in
+# every dtype. Under MOT17 every column but visibility is read: ground-truth id 2 is
+# zero-marked (conf 0) at frame 2, id 3 is a static person (class 7) whose matched
+# prediction is removed, and predictions 5 and 6 swap at frame 3.
+TRACK_GT = np.array(
+    [
+        [1, 1, 10, 10, 20, 40, 1, 1, 1],
+        [1, 2, 60, 10, 20, 40, 1, 1, 1],
+        [1, 3, 100, 60, 20, 20, 1, 7, 1],
+        [2, 1, 12, 10, 20, 40, 1, 1, 1],
+        [2, 2, 62, 10, 20, 40, 0, 1, 1],
+        [2, 3, 100, 60, 20, 20, 1, 7, 1],
+        [3, 1, 14, 10, 20, 40, 1, 1, 1],
+        [3, 2, 64, 10, 20, 40, 1, 1, 1],
+        [4, 2, 66, 10, 20, 40, 1, 1, 1],
+    ]
+)
+TRACK_PRED = np.array(
+    [
+        [1, 5, 11, 10, 20, 40, 1, 1, 1],
+        [1, 6, 60, 12, 20, 40, 1, 1, 1],
+        [1, 7, 100, 60, 20, 20, 1, 1, 1],
+        [2, 5, 12, 11, 20, 40, 1, 1, 1],
+        [2, 6, 62, 10, 20, 40, 1, 1, 1],
+        [3, 6, 14, 10, 20, 40, 1, 1, 1],
+        [3, 5, 64, 10, 20, 40, 1, 1, 1],
+        [4, 8, 90, 90, 10, 10, 1, 1, 1],
+    ]
+)
+
+
+def tracked(gt, pred):
+    ev = tracking.TrackingEval("MOT17")
+    ev.update("seq-a", gt, pred, num_frames=4)
+    return ev.sequence_results()
+
+
+def test_the_track_rows_read_every_column():
+    """Each column the clean-up reads must change the answer, or a misread one would pass."""
+    want = tracked(TRACK_GT, TRACK_PRED)["seq-a"]
+    assert want["GT_Dets"] == len(TRACK_GT) - 3, "the zero-marked row and both distractor rows are dropped"
+    assert want["Dets"] == len(TRACK_PRED) - 1, "the prediction on a distractor is removed"
+    assert want["IDSW"] > 0 and want["CLR_FP"] > 0
+    # The table is square, so a column-major buffer read row-major keeps its shape: it
+    # is the transpose, whose third row starts at frame 10 of 4.
+    with pytest.raises(ValueError, match="frame 10"):
+        tracked(TRACK_GT.T.copy(), TRACK_PRED)
+
+
+@pytest.mark.parametrize("side", ["gt", "pred"])
+@pytest.mark.parametrize("layout", LAYOUTS)
+@pytest.mark.parametrize("dtype", INT_DTYPES + FLOAT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_track_rows_score_the_same_in_every_spelling(dtype, layout, side):
+    gt, pred = TRACK_GT.astype(np.float64), TRACK_PRED.astype(np.float64)
+    if side == "gt":
+        gt = spelled(TRACK_GT, dtype, layout)
+    else:
+        pred = spelled(TRACK_PRED, dtype, layout)
+    assert tracked(gt, pred) == tracked(TRACK_GT.tolist(), TRACK_PRED.tolist())
+
+
+@pytest.mark.parametrize("dtype", INT_DTYPES + FLOAT_DTYPES, ids=lambda d: np.dtype(d).name)
+def test_an_empty_track_table_is_a_side_with_no_boxes(dtype):
+    empty = np.zeros((0, 9), dtype)
+    got = tracked(empty, TRACK_PRED)["seq-a"]
+    assert (got["GT_Dets"], got["Dets"], got["CLR_FP"]) == (0, len(TRACK_PRED), len(TRACK_PRED))
+    assert tracked(TRACK_GT, empty)["seq-a"]["CLR_FN"] == len(TRACK_GT) - 3
+
+
 def degenerate(shape, dtype, width=5):
     """A zero-size array, or one with a length-one axis, in ``dtype``. The last is a
     one-row view with an odd row stride, which numpy still flags C-contiguous."""
@@ -392,3 +464,10 @@ def test_a_numpy_scalar_option_reads_as_the_int(value):
     ev = semantic.SemanticEval(np.int32(3), ignore_index=value)
     ev.update(GT, PRED)
     assert np.array_equal(ev.confusion(), reference_confusion())
+
+
+@pytest.mark.parametrize("value", [v for _, v in SCALARS], ids=[name for name, _ in SCALARS])
+def test_a_numpy_scalar_frame_count_reads_as_the_int(value):
+    ev = tracking.TrackingEval()
+    ev.update("seq-a", [[1, 1, 0, 0, 5, 5]], [[1, 1, 0, 0, 5, 5]], num_frames=value)
+    assert ev.sequence_results()["seq-a"]["Frames"] == 1

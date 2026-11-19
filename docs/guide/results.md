@@ -167,8 +167,8 @@ report["provenance"]   # 'parity_verified'
 
 `"parity_verified"` means the numbers were checked against the reference
 implementation — bbox, segm, and keypoints match pycocotools **at reference
-parameters**, panoptic quality matches panopticapi, and semantic mIoU matches
-mmsegmentation. `"extension"` means a real metric or configuration with no reference implementation checked against
+parameters**, panoptic quality matches panopticapi, semantic mIoU matches
+mmsegmentation, and tracking's HOTA, CLEAR, and Identity match TrackEval. `"extension"` means a real metric or configuration with no reference implementation checked against
 it. That covers more than geometry:
 
 - oriented bounding boxes — no reference protocol exists to check against

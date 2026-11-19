@@ -21,6 +21,7 @@ from . import metrics as metrics
 from . import panoptic as panoptic
 from . import primitives as primitives
 from . import semantic as semantic
+from . import tracking as tracking
 
 __version__: str
 

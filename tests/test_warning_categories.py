@@ -13,6 +13,7 @@ one category never has to catch another kind too.
 
 from __future__ import annotations
 
+import pickle
 import re
 import warnings
 from collections import Counter
@@ -32,6 +33,7 @@ from hotcoco import (
     ReferenceDeviationWarning,
     panoptic,
     semantic,
+    tracking,
 )
 
 PYO3_SRC = WORKSPACE / "crates" / "hotcoco-pyo3" / "src"
@@ -39,6 +41,7 @@ LIB_RS = "crates/hotcoco-pyo3/src/lib.rs"
 LIVE_RS = "crates/hotcoco-pyo3/src/live.rs"
 PANOPTIC_RS = "crates/hotcoco-pyo3/src/panoptic.rs"
 SEMANTIC_RS = "crates/hotcoco-pyo3/src/semantic.rs"
+TRACKING_RS = "crates/hotcoco-pyo3/src/tracking.rs"
 INTEGRATIONS_PY = "python/hotcoco/integrations.py"
 
 IMAGES = [{"id": 1, "width": 100, "height": 100}]
@@ -109,6 +112,13 @@ def _edit_makes_duplicate_ids(_):
     coco = COCO({"images": IMAGES, "annotations": [GT, {**GT, "id": GT["id"] + 1}], "categories": CATS})
     coco.dataset["annotations"][1]["id"] = GT["id"]
     coco.getAnnIds()
+
+
+def _tracking_keeping_a_zero_confidence_row():
+    ev = tracking.TrackingEval()
+    row = [[1, 1, 10, 10, 20, 40, 0, 1, 1]]
+    ev.update("seq-a", row, [[1, 1, 10, 10, 20, 40, 1]], num_frames=1)
+    return ev
 
 
 def _cvat_import(tmp_path):
@@ -221,6 +231,13 @@ SITES = [
         "no evaluation for iou_type='bbox'",
         INTEGRATIONS_PY,
         id="coco-evaluator-summarize",
+    ),
+    pytest.param(
+        lambda _: _tracking_keeping_a_zero_confidence_row().summarize(),
+        ReferenceDeviationWarning,
+        "confidence is 0",
+        TRACKING_RS,
+        id="tracking-zero-confidence-kept",
     ),
 ]
 
@@ -365,6 +382,34 @@ def test_semantic_has_no_deviation_yet():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         ev.summarize()
+
+
+def test_tracking_deviates_only_by_keeping_a_zero_confidence_row(capsys):
+    """A benchmark drops a ground-truth row whose confidence is 0, as TrackEval
+    does in every mode. No benchmark keeps it, and says so."""
+    row = [[1, 1, 10, 10, 20, 40, 1, 1, 1]]
+    zero = [[1, 1, 10, 10, 20, 40, 0, 1, 1]]
+    for benchmark, gt in [("MOT17", row), ("MOT17", zero), ("MOT15", zero), (None, row), (None, [r[:6] for r in row])]:
+        ev = tracking.TrackingEval(benchmark)
+        ev.update("seq-a", gt, row, num_frames=1)
+        assert ev.reference_deviations() == [], (benchmark, gt)
+        assert ev.provenance() == "parity_verified"
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            ev.summarize()
+        assert "COMBINED" in capsys.readouterr().out
+
+    ev = _tracking_keeping_a_zero_confidence_row()
+    assert len(ev.reference_deviations()) == 1
+    assert ev.provenance() == "extension"
+    assert ev.report()["provenance"] == "extension"
+    assert ev.results()["GT_Dets"] == 1
+    # The flag travels with a pickle and through a merge.
+    assert pickle.loads(pickle.dumps(ev)).reference_deviations() == ev.reference_deviations()
+    whole = tracking.TrackingEval()
+    whole.update("seq-b", row, row, num_frames=1)
+    whole.merge(ev)
+    assert whole.provenance() == "extension"
 
 
 LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning, DatasetWarning)

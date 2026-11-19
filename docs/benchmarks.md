@@ -370,6 +370,30 @@ confusion-matrix metrics are pure functions of the matrix and the band a pure
 function of the maps, so this synthetic comparison covers them; there is no
 real-dataset run for the family. Both suites run on every commit.
 
+### Tracking
+
+**Reference:** [TrackEval](https://github.com/JonathonLuiten/TrackEval) at commit
+`12c8791`, its `MotChallenge2DBox` dataset with the `HOTA`, `CLEAR`, `Identity`, and
+`Count` metrics, under numpy 1.23.5 and scipy 1.15.3 — TrackEval does not run on
+numpy 1.24 or later. `scripts/gen_tracking_fixtures.py` runs TrackEval's own
+`Evaluator` and freezes its output to `tests/fixtures/trackeval_expected.json`;
+`just gen-tracking-fixtures` regenerates it, in an environment of its own.
+**Inputs:** 32 synthetic cases, 51 sequences in all — distractors under each
+benchmark, a distractor that only an optimal assignment removes, IoUs one ulp either
+side of a threshold, rows marked "do not evaluate", empty frames, sequences with no
+ground truth or no predictions, identity switches across gaps, tied similarities,
+zero-area and negative-size boxes, ids up to 2,000,000, and random sequences under
+MOT17, MOT20, and no benchmark — plus 16 inputs TrackEval refuses.
+
+Every field TrackEval reports — per localization threshold, per sequence, and
+combined — is identical: the 6,110 integers exactly and the 15,770 floats to the bit.
+Each of the 16 refused inputs raises `ValueError` here too, except the two hotcoco
+accepts by design (a prediction class above 1 without a benchmark, and 6-column
+predictions; see [the tracking guide](guide/tracking.md#what-each-benchmark-setting-cleans-up)).
+The Rust suite checks the core and the Python suite the same numbers through the
+bindings, from arrays and from the folder layout; both run on every commit. There is
+no run on real MOTChallenge data yet, so no MOT17 figure is claimed here.
+
 ### Verify it yourself
 
 You do not have to take these numbers on faith, and you should not have to clone
@@ -458,6 +482,7 @@ just parity-panoptic                        # PQ/SQ/RQ vs panopticapi
 uv run pytest tests/test_mask_parity.py     # hotcoco.mask vs pycocotools.mask, bit for bit
 uv run pytest tests/test_parity_oid.py      # Open Images vs the TF Object Detection API
 uv run pytest tests/test_parity_semantic.py # mIoU, mDice vs mmseg, torchmetrics, detectron2; boundary IoU vs its authors' kernel (frozen)
+uv run pytest tests/test_parity_tracking.py # HOTA, CLEAR, Identity vs TrackEval (frozen; just gen-tracking-fixtures regenerates)
 just fuzz                                   # hypothesis fuzzer, ~10,000 generated datasets
 ```
 

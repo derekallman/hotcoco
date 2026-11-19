@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 from helpers import PanopticCase
 from hotcoco import COCO, COCOeval, StreamingEval, mask, panoptic, primitives, semantic
+from hotcoco.tracking import TrackingEval
 
 IMAGES = [{"id": 1, "width": 100, "height": 100, "file_name": "a.jpg"}]
 CATS = [{"id": 1, "name": "cat"}]
@@ -447,6 +448,97 @@ def test_an_isthing_of_none_is_absent_in_a_dict_as_null_is_in_a_file(tmp_path):
     assert COCO(detection).loadCats(1)[0].get("isthing") is None
 
 
+# --------------------------------------------------------- tracking rows
+
+TRACK_COLUMNS = ["frame", "id", "x", "y", "w", "h", "conf", "class", "visibility"]
+TRACK_GT = [1, 1, 10, 10, 20, 40, 1, 1, 1]
+TRACK_PRED = [1, 5, 11, 10, 20, 40, 0.9, -1, -1, -1]  # a tracker file's 10 columns
+
+
+def track_row(row, **changes):
+    row = list(row)
+    for column, value in changes.items():
+        row[TRACK_COLUMNS.index(column)] = value
+    return row
+
+
+def track_outcomes(tmp_path, benchmark, gt, pred, num_frames=3):
+    """One sequence's MOTChallenge rows through ``update`` as an array and as a list
+    of rows, and through ``update_folders`` as the text files TrackEval reads."""
+
+    def through(rows):
+        def load():
+            TrackingEval(benchmark).update("seq-a", rows(gt), rows(pred), num_frames=num_frames)
+
+        return load
+
+    def from_folders():
+        seq = tmp_path / "gt" / "seq-a"
+        (seq / "gt").mkdir(parents=True)
+        (tmp_path / "pred").mkdir()
+        text = lambda rows: "".join(",".join(str(v) for v in row) + "\n" for row in rows)  # noqa: E731
+        (seq / "gt" / "gt.txt").write_text(text(gt))
+        (seq / "seqinfo.ini").write_text(f"[Sequence]\nseqLength={num_frames}\n")
+        (tmp_path / "pred" / "seq-a.txt").write_text(text(pred))
+        TrackingEval(benchmark).update_folders(tmp_path / "gt", tmp_path / "pred")
+
+    return {
+        "array": outcome(through(lambda rows: np.array(rows, dtype=float)), None),
+        "list": outcome(through(lambda rows: rows), None),
+        "folders": outcome(from_folders, None),
+    }
+
+
+TRACK_CASES = [
+    ("valid", "MOT17", [TRACK_GT], [TRACK_PRED], "accept"),
+    ("fractional frame", None, [track_row(TRACK_GT, frame=1.5)], [TRACK_PRED], "reject"),
+    ("frame 0", None, [TRACK_GT], [track_row(TRACK_PRED, frame=0)], "reject"),
+    ("frame past the end", None, [track_row(TRACK_GT, frame=4)], [TRACK_PRED], "reject"),
+    ("fractional id", None, [TRACK_GT], [track_row(TRACK_PRED, id=2.5)], "reject"),
+    ("negative id", None, [track_row(TRACK_GT, id=-1)], [TRACK_PRED], "reject"),
+    ("NaN box", None, [TRACK_GT], [track_row(TRACK_PRED, w=math.nan)], "reject"),
+    ("infinite box", None, [track_row(TRACK_GT, x=math.inf)], [TRACK_PRED], "reject"),
+    ("NaN ground-truth confidence", None, [track_row(TRACK_GT, conf=math.nan)], [TRACK_PRED], "reject"),
+    ("NaN prediction confidence", None, [TRACK_GT], [track_row(TRACK_PRED, conf=math.nan)], "reject"),
+    ("the same id twice in a frame", None, [TRACK_GT], [TRACK_PRED, track_row(TRACK_PRED, x=60)], "reject"),
+    ("ground-truth class 14", "MOT17", [track_row(TRACK_GT, **{"class": 14})], [TRACK_PRED], "reject"),
+    ("prediction class 2", "MOT17", [TRACK_GT], [track_row(TRACK_PRED, **{"class": 2})], "reject"),
+    ("prediction class 2 under MOT15", "MOT15", [TRACK_GT], [track_row(TRACK_PRED, **{"class": 2})], "reject"),
+    ("prediction class 2 without a benchmark", None, [TRACK_GT], [track_row(TRACK_PRED, **{"class": 2})], "accept"),
+    ("7-column ground truth", "MOT17", [TRACK_GT[:7]], [TRACK_PRED], "reject"),
+    ("6-column ground truth without a benchmark", None, [TRACK_GT[:6]], [TRACK_PRED], "accept"),
+    ("6-column predictions", "MOT17", [TRACK_GT], [TRACK_PRED[:6]], "accept"),
+    ("5-column predictions", None, [TRACK_GT], [TRACK_PRED[:5]], "reject"),
+    ("no predictions", "MOT17", [TRACK_GT], [], "accept"),
+]
+
+
+@pytest.mark.parametrize("benchmark, gt, pred, expect", [c[1:] for c in TRACK_CASES], ids=[c[0] for c in TRACK_CASES])
+def test_a_tracking_row(tmp_path, benchmark, gt, pred, expect):
+    assert_agree(track_outcomes(tmp_path, benchmark, gt, pred), expect)
+
+
+def test_a_bad_tracking_argument_is_a_value_error():
+    row = [TRACK_GT]
+    for call, message in (
+        (lambda: TrackingEval("MOT99"), "unknown benchmark"),
+        (lambda: TrackingEval(clear_threshold=1.5), "clear_threshold"),
+        (lambda: TrackingEval(identity_threshold=math.nan), "identity_threshold"),
+        (lambda: TrackingEval().update("s", row, row, num_frames=-1), "num_frames"),
+        (lambda: TrackingEval().update("s", row, row, num_frames=1.5), "num_frames"),
+        (lambda: TrackingEval().update("s", row, row, num_frames=True), "num_frames"),
+        (lambda: TrackingEval().update("s", [TRACK_GT, [1]], row, num_frames=1), "rectangular"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            call()
+    ev = TrackingEval()
+    ev.update("s", row, row, num_frames=1)
+    with pytest.raises(ValueError, match="sequence s was already evaluated"):
+        ev.update("s", row, row, num_frames=1)
+    with pytest.raises(ValueError, match="itself"):
+        ev.merge(ev)
+
+
 def test_greedy_match_takes_the_ground_truth_count_from_its_flags_when_sim_is_empty():
     """``[]`` has no columns to count, so an image with no detections is still sized by
     its ground truths' flags, as ``np.zeros((0, G))`` would be."""
@@ -536,6 +628,10 @@ def test_an_argument_of_the_wrong_kind_is_a_type_error():
         lambda: primitives.greedy_match([[0.5]], [0.9], iscrowd=42),
         lambda: primitives.greedy_match([[0.5]], [0.9], group_of=42),
         lambda: primitives.greedy_match([[0.5]], [0.9], dt_ignore=42),
+        lambda: TrackingEval(17),
+        lambda: TrackingEval().update("s", "rows", [], num_frames=1),
+        lambda: TrackingEval().update("s", np.zeros(9), [], num_frames=1),
+        lambda: TrackingEval().update("s", [], [], num_frames="3"),
     ):
         with pytest.raises(TypeError):
             call()
@@ -556,6 +652,7 @@ def test_a_missing_file_is_file_not_found_naming_it(tmp_path):
         lambda: sem.update_png(str(missing), str(missing)),
         lambda: sem.update_folders(str(tmp_path / "no-such-folder"), str(tmp_path)),
         lambda: gt.save(str(tmp_path / "no-such-folder" / "out.json")),
+        lambda: TrackingEval().update_folders(str(tmp_path / "no-such-folder"), str(tmp_path)),
     ):
         with pytest.raises(FileNotFoundError) as caught:
             call()
@@ -567,12 +664,17 @@ def test_a_file_that_does_not_parse_is_a_value_error(tmp_path):
     truncated.write_text('{"images": [')
     not_png = tmp_path / "not.png"
     not_png.write_text("not a PNG")
+    (tmp_path / "track" / "seq-a" / "gt").mkdir(parents=True)
+    (tmp_path / "track" / "seq-a" / "gt" / "gt.txt").write_text("1,1,ten,10,20,40,1,1,1\n")
+    (tmp_path / "track" / "seq-a" / "seqinfo.ini").write_text("[Sequence]\nseqLength=1\n")
+    (tmp_path / "seq-a.txt").write_text("")
     gt = COCO({"images": IMAGES, "annotations": [GT], "categories": CATS})
     for call in (
         lambda: COCO(str(truncated)),
         lambda: gt.load_res(str(truncated)),
         lambda: panoptic.PanopticEval(str(truncated), str(truncated)),
         lambda: semantic.SemanticEval(3).update_png(str(not_png), str(not_png)),
+        lambda: TrackingEval().update_folders(tmp_path / "track", tmp_path),
     ):
         with pytest.raises(ValueError):
             call()
@@ -605,6 +707,8 @@ def test_a_call_before_the_step_it_needs_is_a_runtime_error():
         hotcoco.compare(ev, ev)
     with pytest.raises(RuntimeError, match="run"):
         panoptic.PanopticEval(gt, gt).results()
+    with pytest.raises(RuntimeError, match="update"):
+        TrackingEval().results()
 
 
 # --------------------------------------------- what the rules must not catch
