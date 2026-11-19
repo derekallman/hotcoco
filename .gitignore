@@ -76,6 +76,7 @@ pytestdebug.log
 .env
 .venv
 .venv-frameworks/
+.venv-trackeval/
 env/
 venv/
 ENV/

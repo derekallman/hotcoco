@@ -166,6 +166,29 @@ setup-frameworks:
         "git+https://github.com/facebookresearch/detectron2.git@247691a1c292654867deb35cabb27f18d75a1363"
     .venv-frameworks/bin/python -c 'import torch, hotcoco, mmdet, detectron2; print("frameworks env ready: mmdet", mmdet.__version__, "detectron2", detectron2.__version__)'
 
+# Regenerate the tracking fixtures (tests/fixtures/trackeval_expected.json) by
+# running TrackEval's own Evaluator on synthetic MOTChallenge sequences (first
+# run builds the env; needs network)
+gen-tracking-fixtures:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -x .venv-trackeval/bin/python ] || just setup-trackeval
+    .venv-trackeval/bin/python scripts/gen_tracking_fixtures.py
+
+# Build .venv-trackeval for `just gen-tracking-fixtures`: TrackEval pinned to
+# the commit last compared, in its own environment because it calls `np.float`
+# and `np.int`, which numpy 1.24 removed. Python 3.11 is the newest numpy 1.23
+# has wheels for. scipy is pinned because its linear_sum_assignment picks among
+# tied optima, and that choice reaches HOTA and CLEAR.
+setup-trackeval:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf .venv-trackeval
+    uv venv .venv-trackeval --python 3.11 -q
+    uv pip install -q --python .venv-trackeval/bin/python numpy==1.23.5 scipy==1.15.3 \
+        "git+https://github.com/JonathonLuiten/TrackEval.git@12c8791b303e0a0b50f753af204249e622d0281a"
+    .venv-trackeval/bin/python -c 'import numpy, scipy, trackeval; print("trackeval env ready: numpy", numpy.__version__, "scipy", scipy.__version__)'
+
 # Fuzz oriented-box IoU against shapely
 fuzz-obb: build
     uv run pytest tests/fuzz_obb.py -v -x --tb=short
