@@ -9,9 +9,10 @@ use crate::params::Params;
 use crate::primitives::sim::{self, SimKind};
 use crate::types::Rle;
 
-use super::dets::Dets;
+use super::dets::{Dets, Gts};
 use super::matching::IouMatrix;
 use super::{COCOeval, EvalMode};
+use crate::table::GtFlags;
 
 /// Every annotation's mask that a both-non-empty `(img, cat)` cell will
 /// actually read, converted to RLE once per `evaluate()`.
@@ -116,12 +117,12 @@ impl SegmRles {
 /// kernels: hardcoding `false` for Open Images made the group-of pass unreachable
 /// for any detection smaller than the group box — the normal case — and it was
 /// wrong in all three places at once, because there were three places.
-fn uses_ioa(ann: &crate::types::Annotation, eval_mode: EvalMode) -> bool {
+pub(super) fn uses_ioa(flags: GtFlags, eval_mode: EvalMode) -> bool {
     match eval_mode {
-        EvalMode::OpenImages => ann.is_group_of.unwrap_or(false),
+        EvalMode::OpenImages => flags.group_of(),
         // lvis-api passes `iscrowd = 0` for every ground truth.
         EvalMode::Lvis => false,
-        EvalMode::Coco => ann.iscrowd,
+        EvalMode::Coco => flags.crowd(),
     }
 }
 
@@ -170,12 +171,11 @@ fn scatter_full(
 /// geometry type and the extraction closures differ per family, so those are
 /// the type parameters and the arguments; the marshaling itself lives here once.
 fn iou_scaffold<D, G>(
-    coco_gt: &COCO,
     dt_ids: &[u64],
     gt_ids: &[u64],
     eval_mode: EvalMode,
     dt_geom: impl Fn(u64) -> Option<D>,
-    gt_geom: impl Fn(&crate::types::Annotation, u64) -> Option<G>,
+    gt_geom: impl Fn(u64) -> Option<(G, GtFlags)>,
     kernel: impl FnOnce(&[D], &[G], &[bool]) -> Vec<f64>,
 ) -> Vec<f64> {
     let (dt_rows, dt_geoms): (Vec<usize>, Vec<D>) = dt_ids
@@ -187,15 +187,12 @@ fn iou_scaffold<D, G>(
     let mut gt_geoms = Vec::with_capacity(gt_ids.len());
     let mut iscrowd = Vec::with_capacity(gt_ids.len());
     for (idx, &id) in gt_ids.iter().enumerate() {
-        let Some(ann) = coco_gt.get_ann(id) else {
-            continue;
-        };
-        let Some(geom) = gt_geom(ann, id) else {
+        let Some((geom, flags)) = gt_geom(id) else {
             continue;
         };
         gt_cols.push(idx);
         gt_geoms.push(geom);
-        iscrowd.push(uses_ioa(ann, eval_mode));
+        iscrowd.push(uses_ioa(flags, eval_mode));
     }
 
     let valid = kernel(&dt_geoms, &gt_geoms, &iscrowd);
@@ -218,7 +215,7 @@ impl COCOeval {
     /// geometry-less annotation would silently shift every later annotation
     /// onto its neighbor's IoU row.
     pub(super) fn compute_iou_static(
-        coco_gt: &COCO,
+        gts: Gts<'_>,
         dets: Dets<'_>,
         params: &Params,
         img_id: u64,
@@ -226,7 +223,8 @@ impl COCOeval {
         eval_mode: EvalMode,
         segm_rles: Option<&SegmRles>,
     ) -> Option<IouMatrix> {
-        let gt_anns = Self::get_anns_static(coco_gt.ann_index(), params, img_id, cat_id);
+        let coco_gt = gts.records();
+        let gt_anns = Self::get_anns_static(gts.index(), params, img_id, cat_id);
         let dt_anns = Self::get_anns_static(dets.index(), params, img_id, cat_id);
         let (gt_anns, dt_anns) = (&*gt_anns, &*dt_anns);
 
@@ -238,12 +236,8 @@ impl COCOeval {
         // what selects a kernel, and every family (detection here, tracking and
         // panoptic later) branches on the same four values. The helpers below do
         // marshaling only — reshaping annotations into the kernel's input types.
-        // Every geometry but a box is on the records: an evaluator reads
-        // columns for a box evaluation only (`COCOeval::dets`).
-        let records = || {
-            dets.records()
-                .expect("detections held as columns are evaluated as boxes only")
-        };
+        // Every geometry but a box is still on the records.
+        let records = || dets.records();
         let values = match SimKind::from(params.iou_type) {
             SimKind::Mask => Self::compute_segm_iou_static(
                 coco_gt,
@@ -253,9 +247,13 @@ impl COCOeval {
                 eval_mode,
                 segm_rles,
             ),
-            SimKind::Bbox => {
-                Self::compute_bbox_iou_static(coco_gt, dets, dt_anns, gt_anns, eval_mode)
-            }
+            SimKind::Bbox => Self::compute_bbox_iou_static(
+                |id| dets.bbox(id),
+                |id| gts.bbox(id),
+                dt_anns,
+                gt_anns,
+                eval_mode,
+            ),
             SimKind::Oks => Self::compute_oks_static(coco_gt, records(), params, dt_anns, gt_anns),
             SimKind::Obb => {
                 Self::compute_obb_iou_static(coco_gt, records(), dt_anns, gt_anns, eval_mode)
@@ -311,31 +309,32 @@ impl COCOeval {
         segm_rles: Option<&SegmRles>,
     ) -> Vec<f64> {
         iou_scaffold(
-            coco_gt,
             dt_ids,
             gt_ids,
             eval_mode,
             |id| SegmRles::dt_rle_or_convert(segm_rles, coco_dt, id),
-            |_ann, id| SegmRles::gt_rle_or_convert(segm_rles, coco_gt, id),
+            |id| {
+                let flags = GtFlags::of(coco_gt.get_ann(id)?);
+                Some((SegmRles::gt_rle_or_convert(segm_rles, coco_gt, id)?, flags))
+            },
             sim::mask_iou_flat_of,
         )
     }
 
     /// Compute bounding box IoU by extracting bbox arrays and calling `sim::bbox_iou`.
     pub(super) fn compute_bbox_iou_static(
-        coco_gt: &COCO,
-        dets: Dets<'_>,
+        dt_box: impl Fn(u64) -> Option<[f64; 4]>,
+        gt_box: impl Fn(u64) -> Option<([f64; 4], GtFlags)>,
         dt_ids: &[u64],
         gt_ids: &[u64],
         eval_mode: EvalMode,
     ) -> Vec<f64> {
         iou_scaffold(
-            coco_gt,
             dt_ids,
             gt_ids,
             eval_mode,
-            |id| dets.bbox(id),
-            |ann, _id| ann.bbox,
+            dt_box,
+            gt_box,
             sim::bbox_iou_flat,
         )
     }
@@ -396,12 +395,14 @@ impl COCOeval {
         eval_mode: EvalMode,
     ) -> Vec<f64> {
         iou_scaffold(
-            coco_gt,
             dt_ids,
             gt_ids,
             eval_mode,
             |id| coco_dt.get_ann(id)?.obb.as_deref().copied(),
-            |ann, _id| ann.obb.as_deref().copied(),
+            |id| {
+                let ann = coco_gt.get_ann(id)?;
+                Some((ann.obb.as_deref().copied()?, GtFlags::of(ann)))
+            },
             sim::obb_iou_flat,
         )
     }

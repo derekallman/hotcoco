@@ -76,6 +76,7 @@ pub mod primitives;
 pub mod quality;
 pub mod report;
 pub mod semantic;
+mod table;
 pub mod types;
 
 /// How many parallel runs each thread draws when work is cut into runs: a

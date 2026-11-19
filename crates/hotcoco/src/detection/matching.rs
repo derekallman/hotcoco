@@ -24,7 +24,7 @@
 //! `mod match;` does not compile without `r#` escaping.
 
 use super::EvalMode;
-use super::dets::{Dets, DtRef};
+use super::dets::{Dets, DtRef, GtRef, Gts};
 use crate::ann_index::AnnIndex;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -32,11 +32,9 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use crate::coco::COCO;
 use crate::metrics::counts::descending_score_key;
 use crate::params::Params;
 use crate::primitives::greedy::{GreedyMatches, GroupOfBoxes, GtMasks, ThreshMatrix};
-use crate::types::Annotation;
 
 use super::iou::AnnIds;
 
@@ -58,7 +56,7 @@ pub(super) struct PairCell<'a> {
     cat_id: u64,
     max_det: usize,
     /// Ground truths in load order — the order `gt_ids` arrived in.
-    gt_anns: Vec<&'a Annotation>,
+    gt_anns: Vec<GtRef>,
     /// Index into `gt_anns` -> column in the pair's IoU matrix.
     gt_iou_indices: Vec<usize>,
     /// Detections score-descending and truncated to `max_det`.
@@ -780,7 +778,7 @@ fn pair_ids<'a>(
     gt_groups: &mut ImageGroups<'a>,
     dt_groups: &mut ImageGroups<'a>,
 ) -> Option<(AnnIds<'a>, AnnIds<'a>)> {
-    let gt_ids = gt_groups.ids(ctx.coco_gt.ann_index(), ctx.params, img_id, cat_id);
+    let gt_ids = gt_groups.ids(ctx.gts.index(), ctx.params, img_id, cat_id);
     let dt_ids = dt_groups.ids(ctx.dets.index(), ctx.params, img_id, cat_id);
     (!gt_ids.is_empty() || !dt_ids.is_empty()).then_some((gt_ids, dt_ids))
 }
@@ -816,7 +814,7 @@ fn gather_pair<'a>(
     pair.gt_iou_indices.clear();
     pair.gt_anns.clear();
     for (iou_idx, &id) in gt_ids.iter().enumerate() {
-        if let Some(ann) = ctx.coco_gt.get_ann(id) {
+        if let Some(ann) = ctx.gts.get(id) {
             pair.gt_iou_indices.push(iou_idx);
             pair.gt_anns.push(ann);
         }
@@ -893,11 +891,11 @@ fn partition_gt(gt: &mut GtView, pair: &PairCell<'_>, area_rng: [f64; 2], rule: 
     iscrowd_sorted.clear();
     // Only COCO has crowd regions; lvis-api never reads `iscrowd`.
     if rule.mode == EvalMode::Coco {
-        iscrowd_sorted.extend(order.iter().map(|&i| anns[i].iscrowd));
+        iscrowd_sorted.extend(order.iter().map(|&i| anns[i].flags.crowd()));
     }
     is_group_of_sorted.clear();
     if rule.mode == EvalMode::OpenImages {
-        is_group_of_sorted.extend(order.iter().map(|&i| anns[i].is_group_of.unwrap_or(false)));
+        is_group_of_sorted.extend(order.iter().map(|&i| anns[i].flags.group_of()));
     }
 }
 
@@ -909,22 +907,19 @@ fn partition_gt(gt: &mut GtView, pair: &PairCell<'_>, area_rng: [f64; 2], rule: 
 /// and "counted" at once, which Open Images group-of boxes need: they are
 /// held out of matching (the second pass in `match_cell` absorbs them) yet
 /// still count as one ground truth. See `EvalImg::gt_in_denominator`.
-fn gt_flags(ann: &Annotation, area_rng: [f64; 2], rule: GtRule) -> (bool, bool) {
-    let a = ann.area.unwrap_or(0.0);
+fn gt_flags(ann: &GtRef, area_rng: [f64; 2], rule: GtRule) -> (bool, bool) {
+    let a = ann.area;
     let area_ignore = a < area_rng[0] || a > area_rng[1];
     match rule.mode {
-        EvalMode::OpenImages => (
-            ann.is_group_of.unwrap_or(false) || area_ignore,
-            !area_ignore,
-        ),
+        EvalMode::OpenImages => (ann.flags.group_of() || area_ignore, !area_ignore),
         EvalMode::Lvis => {
-            let ignore = lvis_ignore(ann) || area_ignore;
+            let ignore = ann.flags.lvis_ignore() || area_ignore;
             (ignore, !ignore)
         }
         EvalMode::Coco => {
-            let mut ignore = ann.iscrowd || area_ignore;
+            let mut ignore = ann.flags.crowd() || area_ignore;
             if rule.is_kp {
-                ignore = ignore || ann.num_visible_keypoints() == 0;
+                ignore = ignore || ann.flags.no_labeled_keypoints();
             }
             (ignore, !ignore)
         }
@@ -951,21 +946,6 @@ fn gt_flags(ann: &Annotation, area_rng: [f64; 2], rule: GtRule) -> (bool, bool) 
 pub(super) struct GtRule {
     pub(super) mode: EvalMode,
     pub(super) is_kp: bool,
-}
-
-/// lvis-api's `if g["ignore"]`: the annotation's `ignore` key, by Python
-/// truthiness. `ignore` is not a COCO schema field, so it rides in `extra`;
-/// real LVIS files do not carry it and this is one lookup in an empty map.
-pub(super) fn lvis_ignore(ann: &Annotation) -> bool {
-    use serde_json::Value;
-    match ann.extra.get("ignore") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Number(n)) => n.as_f64().is_some_and(|x| x != 0.0),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::Object(o)) => !o.is_empty(),
-    }
 }
 
 /// Whether a detection is ignored when nothing matches it: it falls outside
@@ -1172,8 +1152,7 @@ pub(super) fn lean_scores_len(
     if !dt_ids.is_empty() {
         return Some(dt_ids.len().min(max_det));
     }
-    let gt_ids =
-        super::COCOeval::get_anns_static(ctx.coco_gt.ann_index(), ctx.params, img_id, cat_id);
+    let gt_ids = super::COCOeval::get_anns_static(ctx.gts.index(), ctx.params, img_id, cat_id);
     (!gt_ids.is_empty()).then_some(0)
 }
 
@@ -1383,7 +1362,7 @@ impl EvalImg {
 /// Read-only context shared across all [`gather_pair`]/[`match_area`] calls
 /// within a single [`COCOeval::evaluate`](super::COCOeval::evaluate) invocation.
 pub(super) struct EvalImgContext<'a> {
-    pub(super) coco_gt: &'a COCO,
+    pub(super) gts: Gts<'a>,
     pub(super) dets: Dets<'a>,
     pub(super) params: &'a Params,
     pub(super) ious: &'a HashMap<(u64, u64), IouMatrix>,

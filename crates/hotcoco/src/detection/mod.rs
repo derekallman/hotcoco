@@ -202,6 +202,8 @@ impl Stage {
 /// ```
 pub struct COCOeval {
     coco_gt: Arc<COCO>,
+    /// What the matcher reads of `coco_gt`, filled whenever it is assigned.
+    gt_table: crate::table::GroundTruthTable,
     /// The detections: a results `COCO`, or the columns `load_res` kept for
     /// an array of boxes — see [`dets::DtHandle`]. Read through
     /// [`coco_dt`](Self::coco_dt), or [`dets`](Self::dets) on the paths that
@@ -287,7 +289,7 @@ impl COCOeval {
     /// A set [`COCO::cap_detections_per_image`] already capped is kept as is.
     fn with_mode(
         coco_gt: impl Into<Arc<COCO>>,
-        dt: dets::DtHandle,
+        dt: dets::DtSource,
         params: Params,
         eval_mode: EvalMode,
         hierarchy: Option<Hierarchy>,
@@ -296,21 +298,26 @@ impl COCOeval {
         // A missing area would read as 0 and put the object in `small`.
         fill_areas(&mut coco_gt, AreaRule::Instance);
         // Columns are box results, every one with the area `load_res` gives
-        // it: in COCO mode, nothing to cap or fill. Any other mode reads the
-        // records.
-        let dt = if let (dets::DtHandle::Columns(_), EvalMode::Coco) = (&dt, eval_mode) {
-            dt
+        // it: in COCO mode, nothing to cap or fill, and their table is the one
+        // to read. Any other mode changes the records, so it takes them and
+        // fills its table from the result.
+        let dt = if let (dets::DtSource::Columns(columns), EvalMode::Coco) = (&dt, eval_mode) {
+            dets::DtHandle::Columns(Arc::clone(columns))
         } else {
-            let mut coco_dt = Arc::clone(dt.coco());
+            let mut coco_dt = match dt {
+                dets::DtSource::Records(coco) => coco,
+                dets::DtSource::Columns(columns) => Arc::clone(columns.coco()),
+            };
             if eval_mode == EvalMode::Lvis && !coco_dt.is_per_image_capped() {
                 if let Some(capped) = coco_dt.capped_copy(crate::coco::LVIS_MAX_DETS_PER_IMAGE) {
                     coco_dt = Arc::new(capped);
                 }
             }
             fill_areas(&mut coco_dt, AreaRule::Result);
-            dets::DtHandle::Records(coco_dt)
+            dets::DtHandle::records(coco_dt)
         };
         COCOeval {
+            gt_table: crate::table::GroundTruthTable::from_records(&coco_gt.dataset.annotations),
             coco_gt,
             dt,
             params,
@@ -353,7 +360,7 @@ impl COCOeval {
         };
         let mut ev = Self::with_mode(
             coco_gt,
-            dets::DtHandle::Records(Arc::new(COCO::from_dataset(
+            dets::DtSource::Records(Arc::new(COCO::from_dataset(
                 crate::types::Dataset::default(),
             ))),
             params,
@@ -376,7 +383,7 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            dets::DtHandle::Records(coco_dt.into()),
+            dets::DtSource::Records(coco_dt.into()),
             EvalMode::Coco.default_params(iou_type),
             EvalMode::Coco,
             None,
@@ -385,8 +392,8 @@ impl COCOeval {
 
     /// An evaluator over detections `load_res` kept as columns: the same
     /// evaluation as `COCOeval::new(coco_gt, columns.coco(), iou_type)`, with
-    /// the records built only if something other than a box evaluation reads
-    /// them — see [`dets`](Self::dets).
+    /// the records built only when something reads one: a geometry other
+    /// than a box, `report()`, TIDE, the per-image records.
     ///
     /// Plumbing for the Python bindings' `load_res(array)`, not an API to
     /// build on — see [`DetectionColumns`](crate::DetectionColumns).
@@ -398,7 +405,7 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            dets::DtHandle::Columns(columns),
+            dets::DtSource::Columns(columns),
             EvalMode::Coco.default_params(iou_type),
             EvalMode::Coco,
             None,
@@ -419,19 +426,16 @@ impl COCOeval {
         self.dt.coco()
     }
 
-    /// Where an evaluation under `params` reads the detections: the columns
-    /// `load_res` kept, for a box evaluation in COCO mode, and the records
-    /// otherwise. Both give the same ids, scores, areas, and boxes, and the
-    /// same index, so the choice changes no result.
-    fn dets(&self, params: &Params) -> dets::Dets<'_> {
-        match self.dt.columns() {
-            Some(columns)
-                if self.eval_mode == EvalMode::Coco && params.iou_type == IouType::Bbox =>
-            {
-                dets::Dets::Columns(columns)
-            }
-            _ => dets::Dets::Records(self.coco_dt()),
-        }
+    /// What the matcher reads of the detections: their table, index, and id
+    /// lookup. A geometry other than a box is still read off
+    /// [`coco_dt`](Self::coco_dt).
+    fn dets(&self) -> dets::Dets<'_> {
+        self.dt.dets()
+    }
+
+    /// What the matcher reads of the ground truth — see [`dets`](Self::dets).
+    fn gts(&self) -> dets::Gts<'_> {
+        dets::Gts::new(&self.coco_gt, &self.gt_table)
     }
 
     /// Per-image evaluation results (sparse — indexed by image position).
@@ -987,7 +991,7 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            dets::DtHandle::Records(coco_dt.into()),
+            dets::DtSource::Records(coco_dt.into()),
             EvalMode::Lvis.default_params(iou_type),
             EvalMode::Lvis,
             None,
@@ -1022,7 +1026,7 @@ impl COCOeval {
     ) -> Self {
         Self::with_mode(
             coco_gt,
-            dets::DtHandle::Records(coco_dt.into()),
+            dets::DtSource::Records(coco_dt.into()),
             EvalMode::OpenImages.default_params(IouType::Bbox),
             EvalMode::OpenImages,
             hierarchy,

@@ -43,7 +43,7 @@ impl COCOeval {
         // set of pairs to build and no sort, which at 10x COCO val2017 took a
         // third of `evaluate()`, on one thread.
         let img_ids = super::sorted_unique(self.params.img_ids.clone());
-        let dt_index = self.dets(&self.params).index();
+        let dt_index = self.dets().index();
         if !self.params.use_cats {
             return img_ids
                 .into_iter()
@@ -145,7 +145,7 @@ impl COCOeval {
     pub fn check_inputs(&self) -> crate::error::Result<()> {
         use crate::primitives::sim::SimKind;
         // Columns were checked by `load_res`, which refuses a NaN score.
-        if self.dt.columns().is_none() {
+        if !self.dt.is_columns() {
             self.coco_dt().check_scores()?;
         }
         if SimKind::from(self.params.iou_type) == SimKind::Mask {
@@ -217,17 +217,19 @@ impl COCOeval {
             self.unexpanded_gt
                 .get_or_insert_with(|| Arc::clone(&self.coco_gt));
             self.coco_gt = Arc::new(super::expand::expand_annotations(&self.coco_gt, &hierarchy));
-            let dt = self
-                .unexpanded_dt
-                .take()
-                .unwrap_or_else(|| Arc::clone(self.coco_dt()));
+            self.gt_table =
+                crate::table::GroundTruthTable::from_records(&self.coco_gt.dataset.annotations);
+            let unexpanded = self.unexpanded_dt.take();
             if self.params.expand_dt {
-                self.dt = super::dets::DtHandle::Records(Arc::new(
+                let dt = unexpanded.unwrap_or_else(|| Arc::clone(self.coco_dt()));
+                self.dt = super::dets::DtHandle::records(Arc::new(
                     super::expand::expand_annotations(&dt, &hierarchy),
                 ));
                 self.unexpanded_dt = Some(dt);
-            } else {
-                self.dt = super::dets::DtHandle::Records(dt);
+            } else if let Some(dt) = unexpanded {
+                // Restore the original only when an earlier run expanded it:
+                // otherwise `self.dt` already is the original, table and all.
+                self.dt = super::dets::DtHandle::records(dt);
             }
             self.hierarchy = Some(hierarchy);
         }
@@ -280,10 +282,10 @@ impl COCOeval {
 
         // Compute IoUs only for pairs where both GT and DT are non-empty.
         // Pairs with only GT or only DT produce empty IoU matrices — skip storing them.
-        let dets = self.dets(&self.params);
+        let (gts, dets) = (self.gts(), self.dets());
         let iou_of = |&(img_id, cat_id): &(u64, u64)| {
             Self::compute_iou_static(
-                &self.coco_gt,
+                gts,
                 dets,
                 &self.params,
                 img_id,
@@ -326,7 +328,7 @@ impl COCOeval {
     /// against both datasets' annotation counts. A small `StreamingEval` batch
     /// stays on the calling thread.
     fn parallel_pairs(&self) -> bool {
-        worth_parallel(self.coco_gt.dataset.annotations.len() + self.dt.len())
+        worth_parallel(self.coco_gt.dataset.annotations.len() + self.dets().len())
     }
 
     /// Run `f` with the per-cell context for `params`, reading the IoU cache
@@ -354,8 +356,8 @@ impl COCOeval {
             .collect();
 
         let ctx = EvalImgContext {
-            coco_gt: &self.coco_gt,
-            dets: self.dets(params),
+            gts: self.gts(),
+            dets: self.dets(),
             params,
             ious: &self.ious,
             is_oid: self.eval_mode == EvalMode::OpenImages,

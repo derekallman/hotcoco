@@ -33,6 +33,24 @@ Detection keeps what is genuinely detection-shaped: TIDE's Cls/Loc/Both/Dupe/Bkg
 taxonomy is about box localization vs classification, and `image_diagnostics` reports
 per-image fields. Those would need redesigning, not moving, to serve another family.
 
+## The matcher reads tables, not records
+
+`src/table.rs` holds the compact columns a detection evaluation reads:
+`DetectionTable` (score, area, boxes) and `GroundTruthTable` (area, the ignore
+flags each protocol reads, boxes). A table is filled once, from annotation
+records or straight from an array, and is never edited: a changed dataset gets
+a new table.
+
+- The matcher and box IoU reach annotations only through `detection/dets.rs`
+  (`Dets`, `Gts`). Do not add a `get_ann` call to `matching.rs`.
+- A field the matcher needs goes in a table, filled in `table.rs`, where the
+  rule for reading it off a record lives once (`GtFlags::of`).
+- Masks, keypoints, and oriented boxes are still read from records, as are
+  TIDE, the confusion matrix, and diagnostics. `plans/ARCH-REVIEW.md` has the
+  order they move in.
+- A geometry column is its own type (`BoxColumn`), not a field of a row, so
+  the next family's table can hold the same column.
+
 ## Architecture conformance is enforced
 
 `crates/hotcoco/tests/architecture.rs` fails the build on: a second IoU formula, a

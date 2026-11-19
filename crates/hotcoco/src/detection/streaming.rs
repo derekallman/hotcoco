@@ -270,7 +270,7 @@ impl StreamingEval {
         params.img_ids.clone_from(&ids);
         let mut ev = COCOeval::with_mode(
             gt,
-            super::dets::DtHandle::Records(std::sync::Arc::new(dt)),
+            super::dets::DtSource::Records(std::sync::Arc::new(dt)),
             params,
             self.eval_mode,
             None,

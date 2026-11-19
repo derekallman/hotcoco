@@ -74,8 +74,11 @@ impl COCOeval {
 
         let bbox = || {
             Self::compute_bbox_iou_static(
-                coco_gt,
-                super::dets::Dets::Records(coco_dt),
+                |id| coco_dt.get_ann(id)?.bbox,
+                |id| {
+                    let ann = coco_gt.get_ann(id)?;
+                    Some((ann.bbox?, crate::table::GtFlags::of(ann)))
+                },
                 dt_ann_ids,
                 gt_ann_ids,
                 super::EvalMode::Coco,

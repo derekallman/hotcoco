@@ -653,6 +653,11 @@ impl COCO {
         &self.index
     }
 
+    /// Annotation id to position in `dataset.annotations`.
+    pub(crate) fn id_index(&self) -> &IdIndex {
+        &self.anns
+    }
+
     /// How many (image, category) pairs hold an annotation.
     pub(crate) fn nonempty_pair_count(&self) -> usize {
         self.index.pair_count()
@@ -1686,27 +1691,19 @@ impl COCO {
     }
 }
 
-/// One detection of a [`DetectionColumns`]: the fields of a row of the array
-/// the evaluator reads. Its image and category are the index's.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DetectionRow {
-    pub(crate) bbox: [f64; 4],
-    pub(crate) score: f64,
-}
-
 /// Box detections held as rows: what [`COCO::load_res_anns`] makes of a
 /// detection array, without building its record per detection.
 ///
 /// A results `COCO` holds a 200-byte [`Annotation`] per detection, and at the
 /// million-detection scale of a detector's validation pass, building and
 /// indexing those records costs more than evaluating them. This is the same
-/// results set kept as 40-byte rows plus the index the records would get:
+/// results set kept as a 48-byte table row plus the index the records would get:
 /// [`check_rows`](Self::check_rows) then
 /// [`from_checked_rows`](Self::from_checked_rows) run `load_res`'s checks,
 /// with the same errors and warnings, and [`coco`](Self::coco) is the results
-/// `COCO` itself, built on the first call. A box evaluation reads the rows
-/// directly — see `COCOeval::new_columns` — and anything else asks for the
-/// `COCO`.
+/// `COCO` itself, built on the first call. An evaluation reads the table
+/// directly — see `COCOeval::new_columns` — and anything that needs a record
+/// asks for the `COCO`.
 ///
 /// Plumbing between this crate and its Python bindings, not an API to build
 /// on: its shape follows what the evaluator reads.
@@ -1715,7 +1712,10 @@ pub struct DetectionColumns {
     /// The ground truth `load_res` was called on: the images and categories
     /// [`coco`](Self::coco) copies, as `load_res_anns` does.
     gt: Arc<COCO>,
-    pub(crate) rows: Vec<DetectionRow>,
+    /// What an evaluator reads of each detection, in row order.
+    pub(crate) table: crate::table::DetectionTable,
+    /// Row `i` is id `i + 1`, as `load_res_anns` numbers its results.
+    pub(crate) ids: IdIndex,
     /// The index [`COCO::create_index`] builds over the records, ids
     /// `1..=len`, built from the rows by the same code.
     pub(crate) index: AnnIndex,
@@ -1780,18 +1780,16 @@ impl DetectionColumns {
             let row = &rows[i * ncols..(i + 1) * ncols];
             (row[0] as u64, detection_category(row, ncols), i as u64 + 1)
         });
-        let row = |row: &[f64]| DetectionRow {
-            bbox: [row[1], row[2], row[3], row[4]],
-            score: row[5],
-        };
-        let rows: Vec<DetectionRow> = if worth_parallel(n) {
-            rows.par_chunks_exact(ncols).map(row).collect()
+        let fields = |row: &[f64]| ([row[1], row[2], row[3], row[4]], row[5]);
+        let (boxes, scores): (Vec<[f64; 4]>, Vec<f64>) = if worth_parallel(n) {
+            rows.par_chunks_exact(ncols).map(fields).unzip()
         } else {
-            rows.chunks_exact(ncols).map(row).collect()
+            rows.chunks_exact(ncols).map(fields).unzip()
         };
         Ok(DetectionColumns {
             gt,
-            rows,
+            table: crate::table::DetectionTable::from_boxes(boxes, scores),
+            ids: IdIndex::Dense { len: n },
             index,
             warnings,
             coco: OnceLock::new(),
@@ -1800,12 +1798,12 @@ impl DetectionColumns {
 
     /// How many detections.
     pub fn len(&self) -> usize {
-        self.rows.len()
+        self.table.len()
     }
 
     /// Whether there are none.
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.table.len() == 0
     }
 
     /// The warnings `load_res` records for these detections, as
@@ -1819,13 +1817,6 @@ impl DetectionColumns {
     /// from it, so a read of those alone need not build the results.
     pub fn ground_truth(&self) -> &Arc<COCO> {
         &self.gt
-    }
-
-    /// Where the detection with `id` sits: ids are `1..=len` in row order, as
-    /// `load_res_anns` numbers them.
-    pub(crate) fn position(&self, id: u64) -> Option<usize> {
-        let i = usize::try_from(id.checked_sub(1)?).ok()?;
-        (i < self.rows.len()).then_some(i)
     }
 
     /// [`coco`](Self::coco)`.`[`reindexed`](COCO::reindexed)`(dataset)`,
@@ -1846,7 +1837,7 @@ impl DetectionColumns {
     fn build_coco(&self) -> COCO {
         // Each detection's image and category, from the (image, category)
         // group of the index that holds its id: every id is in exactly one.
-        let n = self.rows.len();
+        let n = self.table.len();
         let (mut image_ids, mut category_ids) = (vec![0u64; n], vec![0u64; n]);
         for (img_id, cat_id) in self.index.pairs() {
             for &id in self.index.for_img_cat(img_id, cat_id) {
@@ -1855,15 +1846,12 @@ impl DetectionColumns {
                 category_ids[i] = cat_id;
             }
         }
-        let anns: Vec<Annotation> = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| Annotation {
+        let anns: Vec<Annotation> = (0..n)
+            .map(|i| Annotation {
                 image_id: image_ids[i],
                 category_id: category_ids[i],
-                bbox: Some(r.bbox),
-                score: Some(r.score),
+                bbox: self.table.bbox(i),
+                score: Some(self.table.score(i)),
                 ..Default::default()
             })
             .collect();
