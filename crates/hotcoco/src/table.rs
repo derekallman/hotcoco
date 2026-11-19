@@ -4,7 +4,9 @@
 //! file can say. An evaluator reads a handful of numbers per annotation, so it
 //! reads them from columns: one value per annotation, addressed by the
 //! annotation's position. A table is filled once, from records or straight
-//! from an array, and never edited; a changed dataset gets a new table.
+//! from an array, and never edited; a changed dataset gets a new table. The
+//! one column that waits is the boxes of a table filled from records, which
+//! the first box evaluation fills ([`DetectionTable::fill_boxes`]).
 //!
 //! Geometry columns are their own types ([`BoxColumn`]) rather than fields of
 //! a row, so another family's table — tracking's, grouped by sequence and
@@ -35,13 +37,14 @@ impl BoxColumn {
         }
     }
 
-    /// The column of boxes read off records, some of which may have none.
-    fn from_options(boxes: Vec<Option<[f64; 4]>>) -> Self {
-        let missing = boxes
-            .iter()
-            .any(Option::is_none)
-            .then(|| boxes.iter().map(Option::is_none).collect());
-        let xywh = boxes.into_iter().map(Option::unwrap_or_default).collect();
+    /// The boxes of `anns`, row `i` for `anns[i]`.
+    fn from_records(anns: &[Annotation]) -> Self {
+        // Both columns in the one pass over the records, with no
+        // `Option<[f64; 4]>` per row held in between.
+        let (xywh, missing): (Vec<[f64; 4]>, Vec<bool>) = collect(anns, |ann| {
+            (ann.bbox.unwrap_or_default(), ann.bbox.is_none())
+        });
+        let missing = missing.contains(&true).then_some(missing);
         BoxColumn { xywh, missing }
     }
 
@@ -52,11 +55,13 @@ impl BoxColumn {
             _ => Some(self.xywh[i]),
         }
     }
-
-    pub(crate) fn len(&self) -> usize {
-        self.xywh.len()
-    }
 }
+
+/// What a table says when a box is read before [`fill_boxes`] ran: a bug in
+/// the evaluator, never a property of the data.
+///
+/// [`fill_boxes`]: DetectionTable::fill_boxes
+const BOXES_NOT_FILLED: &str = "a box evaluation fills the box column before reading it";
 
 /// What a detection evaluation reads of each detection, one row per
 /// detection in the order of the results set.
@@ -69,24 +74,32 @@ pub(crate) struct DetectionTable {
     score: Vec<f64>,
     /// `0.0` for a detection without an area, as the area ranges read one.
     area: Vec<f64>,
-    boxes: BoxColumn,
+    /// `None` until a box evaluation asks: a mask or keypoint evaluation
+    /// never reads a box, and the column is 32 bytes a detection.
+    boxes: Option<BoxColumn>,
 }
 
 impl DetectionTable {
-    /// The table of a results set's records, row `i` for `anns[i]`.
+    /// The table of a results set's records, row `i` for `anns[i]`, without
+    /// its boxes — see [`fill_boxes`](Self::fill_boxes).
     pub(crate) fn from_records(anns: &[Annotation]) -> Self {
         // One pass over the records: they are the expensive thing to read.
-        let (score, (area, boxes)) = collect(anns, |ann| {
-            (
-                ann.score.unwrap_or(0.0),
-                (ann.area.unwrap_or(0.0), ann.bbox),
-            )
+        let (score, area) = collect(anns, |ann| {
+            (ann.score.unwrap_or(0.0), ann.area.unwrap_or(0.0))
         });
         DetectionTable {
             score,
             area,
-            boxes: BoxColumn::from_options(boxes),
+            boxes: None,
         }
+    }
+
+    /// Fill the box column from the records the table was filled from, if it
+    /// is not filled yet. A box evaluation calls this before it reads a box.
+    pub(crate) fn fill_boxes(&mut self, anns: &[Annotation]) {
+        debug_assert_eq!(anns.len(), self.score.len());
+        self.boxes
+            .get_or_insert_with(|| BoxColumn::from_records(anns));
     }
 
     /// The table of box results that never were records: each row's area is
@@ -101,12 +114,12 @@ impl DetectionTable {
         DetectionTable {
             score,
             area,
-            boxes: BoxColumn::full(xywh),
+            boxes: Some(BoxColumn::full(xywh)),
         }
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.boxes.len()
+        self.score.len()
     }
 
     pub(crate) fn score(&self, i: usize) -> f64 {
@@ -118,7 +131,7 @@ impl DetectionTable {
     }
 
     pub(crate) fn bbox(&self, i: usize) -> Option<[f64; 4]> {
-        self.boxes.get(i)
+        self.boxes.as_ref().expect(BOXES_NOT_FILLED).get(i)
     }
 }
 
@@ -189,20 +202,28 @@ pub(crate) struct GroundTruthTable {
     /// `0.0` for a ground truth without an area, as the area ranges read one.
     area: Vec<f64>,
     flags: Vec<GtFlags>,
-    boxes: BoxColumn,
+    /// `None` until a box evaluation asks, as [`DetectionTable`]'s.
+    boxes: Option<BoxColumn>,
 }
 
 impl GroundTruthTable {
-    /// The table of a dataset's records, row `i` for `anns[i]`.
+    /// The table of a dataset's records, row `i` for `anns[i]`, without its
+    /// boxes — see [`fill_boxes`](Self::fill_boxes).
     pub(crate) fn from_records(anns: &[Annotation]) -> Self {
-        let (area, (flags, boxes)) = collect(anns, |ann| {
-            (ann.area.unwrap_or(0.0), (GtFlags::of(ann), ann.bbox))
-        });
+        let (area, flags) = collect(anns, |ann| (ann.area.unwrap_or(0.0), GtFlags::of(ann)));
         GroundTruthTable {
             area,
             flags,
-            boxes: BoxColumn::from_options(boxes),
+            boxes: None,
         }
+    }
+
+    /// Fill the box column from the records the table was filled from, if it
+    /// is not filled yet. A box evaluation calls this before it reads a box.
+    pub(crate) fn fill_boxes(&mut self, anns: &[Annotation]) {
+        debug_assert_eq!(anns.len(), self.area.len());
+        self.boxes
+            .get_or_insert_with(|| BoxColumn::from_records(anns));
     }
 
     pub(crate) fn area(&self, i: usize) -> f64 {
@@ -214,16 +235,16 @@ impl GroundTruthTable {
     }
 
     pub(crate) fn bbox(&self, i: usize) -> Option<[f64; 4]> {
-        self.boxes.get(i)
+        self.boxes.as_ref().expect(BOXES_NOT_FILLED).get(i)
     }
 }
 
-/// Three columns off the records in one pass, in parallel past the shared
+/// Two columns off the records in one pass, in parallel past the shared
 /// threshold.
-fn collect<A: Send, B: Send, C: Send>(
+fn collect<A: Send, B: Send>(
     anns: &[Annotation],
-    fields: impl Fn(&Annotation) -> (A, (B, C)) + Sync + Send,
-) -> (Vec<A>, (Vec<B>, Vec<C>)) {
+    fields: impl Fn(&Annotation) -> (A, B) + Sync + Send,
+) -> (Vec<A>, Vec<B>) {
     if worth_parallel(anns.len()) {
         anns.par_iter().map(fields).unzip()
     } else {
@@ -249,10 +270,11 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        let (a, b) = (
+        let (mut a, b) = (
             DetectionTable::from_records(&anns),
             DetectionTable::from_boxes(boxes, scores),
         );
+        a.fill_boxes(&anns);
         assert_eq!(a.len(), b.len());
         for i in 0..a.len() {
             assert_eq!(a.score(i), b.score(i));
@@ -270,10 +292,32 @@ mod tests {
             },
             Annotation::default(),
         ];
-        let t = DetectionTable::from_records(&anns);
+        let mut t = DetectionTable::from_records(&anns);
+        t.fill_boxes(&anns);
         assert_eq!(t.bbox(0), Some([1.0, 1.0, 2.0, 2.0]));
         // No box is no box, not a zero-sized one at the origin.
         assert_eq!(t.bbox(1), None);
         assert_eq!((t.score(1), t.area(1)), (0.0, 0.0));
+    }
+
+    fn boxed() -> Vec<Annotation> {
+        vec![Annotation {
+            bbox: Some([1.0, 1.0, 2.0, 2.0]),
+            ..Default::default()
+        }]
+    }
+
+    /// A box read before `fill_boxes` panics. Read as "no box" instead, it
+    /// would score every pair zero and the run would look like a bad model.
+    #[test]
+    #[should_panic(expected = "fills the box column before reading it")]
+    fn a_detection_box_read_before_the_fill_panics() {
+        DetectionTable::from_records(&boxed()).bbox(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "fills the box column before reading it")]
+    fn a_ground_truth_box_read_before_the_fill_panics() {
+        GroundTruthTable::from_records(&boxed()).bbox(0);
     }
 }

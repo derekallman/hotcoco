@@ -142,6 +142,14 @@ impl DtHandle {
         DtHandle::Records { coco, table }
     }
 
+    /// Fill the table's box column, before a box evaluation reads it. Columns
+    /// hold theirs from the start.
+    pub(super) fn fill_boxes(&mut self) {
+        if let DtHandle::Records { coco, table } = self {
+            table.fill_boxes(&coco.dataset.annotations);
+        }
+    }
+
     /// What the matcher reads.
     pub(super) fn dets(&self) -> Dets<'_> {
         match self {

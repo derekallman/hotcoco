@@ -862,15 +862,11 @@ impl COCOeval {
         };
         let cap = params.max_det();
         let in_rank_order = |img_id: u64, cat_id: u64, matrix: &IouMatrix| {
-            let dt_ids = Self::get_anns_static(self.coco_dt().ann_index(), params, img_id, cat_id);
+            let dets = self.dets();
+            let dt_ids = Self::get_anns_static(dets.index(), params, img_id, cat_id);
             let scores: Vec<f64> = dt_ids
                 .iter()
-                .map(|&id| {
-                    self.coco_dt()
-                        .get_ann(id)
-                        .and_then(|ann| ann.score)
-                        .unwrap_or(0.0)
-                })
+                .map(|&id| dets.get(id).map_or(0.0, |dt| dt.score))
                 .collect();
             let mut order = score_order(&scores);
             order.truncate(cap);

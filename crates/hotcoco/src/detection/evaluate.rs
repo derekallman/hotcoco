@@ -280,6 +280,19 @@ impl COCOeval {
             super::iou::SegmRles::prepare(&self.coco_gt, self.coco_dt(), &gt_ids, &dt_ids)
         });
 
+        // What the IoU kernel reads is made ready before the fan-out. A box
+        // run reads the tables' box columns. Every other geometry is read off
+        // the records, which detections kept as columns build on first use:
+        // that build fans out on the same pool, so started by a worker inside
+        // the fan-out below, it holds every other worker at its lock and can
+        // be handed one of their pairs while it waits on its own work.
+        if SimKind::from(self.params.iou_type) == SimKind::Bbox {
+            self.dt.fill_boxes();
+            self.gt_table.fill_boxes(&self.coco_gt.dataset.annotations);
+        } else {
+            let _ = self.coco_dt();
+        }
+
         // Compute IoUs only for pairs where both GT and DT are non-empty.
         // Pairs with only GT or only DT produce empty IoU matrices — skip storing them.
         let (gts, dets) = (self.gts(), self.dets());

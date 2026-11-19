@@ -45,9 +45,14 @@ a new table.
   (`Dets`, `Gts`). Do not add a `get_ann` call to `matching.rs`.
 - A field the matcher needs goes in a table, filled in `table.rs`, where the
   rule for reading it off a record lives once (`GtFlags::of`).
-- Masks, keypoints, and oriented boxes are still read from records, as are
-  TIDE, the confusion matrix, and diagnostics. `plans/ARCH-REVIEW.md` has the
-  order they move in.
+- Masks, keypoints, and oriented boxes are read from records, and stay
+  there: a mask cannot be copied into a column cheaply, and a keypoint row is
+  about 400 bytes. TIDE, the confusion matrix, and diagnostics read records
+  too; they need each detection's image and category, which a table leaves to
+  the index.
+- A table filled from records gets its box column at `evaluate()`, and only for
+  a box run (`fill_boxes`): a mask or keypoint run never reads a box. Reading a
+  box before that is a bug and panics; it does not read as "no box".
 - A geometry column is its own type (`BoxColumn`), not a field of a row, so
   the next family's table can hold the same column.
 

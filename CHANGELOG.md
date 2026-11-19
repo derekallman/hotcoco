@@ -55,7 +55,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   about 85 µs (M1). A torch mask needs no `np.asfortranarray`, itself about
   130 µs, and an `(N, H, W)` batch encodes in one call as
   `mask.encode(batch.transpose(1, 2, 0))`.
-- **`load_res` keeps an `(N, 6)` or `(N, 7)` array of boxes as columns**, 40 bytes
+- **`load_res` keeps an `(N, 6)` or `(N, 7)` array of boxes as columns**, 48 bytes
   a detection, and builds the 200-byte annotation records only when something other
   than a box evaluation reads them; `imgs`, `cats`, and `load_warnings` read without
   them. Results, warnings, and errors are unchanged. RF-DETR 1.12's box `compute()`
