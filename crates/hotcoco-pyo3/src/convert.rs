@@ -1464,23 +1464,6 @@ pub(crate) fn label_pair_or_lists<'py>(
     label_pair(&as_labels(gt)?, &as_labels(pred)?)
 }
 
-/// The cell count of a `side × side` count matrix, or a `ValueError` when it
-/// is more than an array can hold: `side * side` wraps in release builds, and
-/// the matrix then built is too small for the first count written to it.
-pub(crate) fn square_cells(side: usize, classes: impl std::fmt::Display) -> PyResult<usize> {
-    side.checked_mul(side)
-        .filter(|cells| {
-            cells
-                .checked_mul(8)
-                .is_some_and(|bytes| isize::try_from(bytes).is_ok())
-        })
-        .ok_or_else(|| {
-            pyo3::exceptions::PyValueError::new_err(format!(
-                "{classes} is too many classes for a confusion matrix"
-            ))
-        })
-}
-
 /// A flat `(side, side)` block of confusion counts as a numpy `uint64` array.
 ///
 /// The one marshaling site for `COCOeval.confusion_matrix()` and

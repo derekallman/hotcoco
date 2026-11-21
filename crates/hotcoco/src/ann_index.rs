@@ -23,6 +23,8 @@
 use std::ops::Range;
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use rustc_hash::FxHashMap;
 
 use crate::primitives::sim::worth_parallel;
@@ -63,7 +65,7 @@ impl AnnIndex {
         // tenth of that.
         let key = |ann: &Annotation| (ann.image_id, ann.category_id, ann.id);
         let keys: Vec<(u64, u64, u64)> = if worth_parallel(anns.len()) {
-            anns.par_iter().map(key).collect()
+            anns.par_iter().fork_safe().map(key).collect()
         } else {
             anns.iter().map(key).collect()
         };
@@ -97,6 +99,7 @@ impl AnnIndex {
             if parallel {
                 (0..n)
                     .into_par_iter()
+                    .fork_safe()
                     .filter(starts_run)
                     .map(|i| i as u32)
                     .collect()
@@ -117,7 +120,7 @@ impl AnnIndex {
             let mut offsets = starts;
             offsets.push(n as u32);
             let positions = if parallel {
-                (0..n as u32).into_par_iter().collect()
+                (0..n as u32).into_par_iter().fork_safe().collect()
             } else {
                 (0..n as u32).collect()
             };
@@ -164,7 +167,11 @@ impl AnnIndex {
         };
         let id_at = |p: u32| key(p as usize).2;
         let by_img: Vec<u64> = if parallel {
-            positions.par_iter().map(|&p| id_at(p)).collect()
+            positions
+                .par_iter()
+                .fork_safe()
+                .map(|&p| id_at(p))
+                .collect()
         } else {
             positions.iter().map(|&p| id_at(p)).collect()
         };
@@ -220,6 +227,7 @@ impl AnnIndex {
         let per_img: Vec<Vec<(u64, u32, u32)>> = if parallel {
             windows
                 .into_par_iter()
+                .fork_safe()
                 .map_init(<(Vec<u64>, Vec<(u64, u32)>)>::default, group)
                 .collect()
         } else {
@@ -354,7 +362,7 @@ impl IdIndex {
         // past the shared threshold.
         let dense_at = |(i, ann): (usize, &Annotation)| ann.id == i as u64 + 1;
         let dense = if worth_parallel(anns.len()) {
-            anns.par_iter().enumerate().all(dense_at)
+            anns.par_iter().fork_safe().enumerate().all(dense_at)
         } else {
             anns.iter().enumerate().all(dense_at)
         };

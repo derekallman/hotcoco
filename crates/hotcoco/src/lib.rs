@@ -87,7 +87,7 @@ pub mod types;
 /// per-run setup stays noise.
 pub(crate) const RUNS_PER_THREAD: usize = 4;
 
-pub use coco::{COCO, DetectionColumns};
+pub use coco::{AnnotationColumns, COCO, DetectionColumns};
 pub use convert::{
     ConvertError, CvatImportStats, CvatStats, DotaStats, OidStats, VocStats, YoloStats,
 };

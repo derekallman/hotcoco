@@ -61,7 +61,9 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU32, Ordering};
 
+use rayon::iter::MinLen;
 use rayon::prelude::*;
 
 use crate::geometry::{obb_intersection_area, obb_to_corners};
@@ -83,6 +85,88 @@ const MIN_PARALLEL_WORK: usize = 1024;
 #[inline]
 pub(crate) fn worth_parallel(work: usize) -> bool {
     work >= MIN_PARALLEL_WORK
+}
+
+/// The process that started rayon's thread pool, or 0 while none has.
+static POOL_OWNER: AtomicU32 = AtomicU32::new(0);
+
+/// Whether rayon's thread pool can run a fan-out in this process.
+///
+/// A child that `fork()` makes inherits the pool but none of its threads, so
+/// a fan-out there queues work no thread takes and waits forever: a PyTorch
+/// `DataLoader` worker on Linux, forked from a process that already
+/// evaluated, decoding masks. The first fan-out records its process, before
+/// the pool starts; a process whose id is not the recorded one is such a
+/// child, and runs every fan-out on the calling thread. A child forked
+/// before any fan-out records itself and starts a pool of its own.
+///
+/// No fork hook is needed, so a fork made from C or from Rust is covered as
+/// well as `os.fork()`. Every touch of the pool goes through this: the
+/// iterators through [`ForkSafe::fork_safe`], and [`join`],
+/// [`drop_in_background`], and [`pool_threads`]. `tests/architecture.rs`
+/// fails on a parallel iterator without `fork_safe` and on any other use of
+/// rayon outside this file.
+pub(crate) fn pool_usable() -> bool {
+    let me = std::process::id();
+    match POOL_OWNER.load(Ordering::Relaxed) {
+        0 => match POOL_OWNER.compare_exchange(0, me, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => true,
+            Err(owner) => owner == me,
+        },
+        owner => owner == me,
+    }
+}
+
+/// How every parallel iterator in the crate reaches rayon's pool.
+pub(crate) trait ForkSafe: IndexedParallelIterator {
+    /// The iterator unchanged where the pool is usable, and run as one job on
+    /// the calling thread where it is not ([`pool_usable`]). The result is
+    /// the same either way: a fan-out already gives the same answer on any
+    /// number of threads.
+    fn fork_safe(self) -> MinLen<Self> {
+        // rayon splits no job below its minimum length, and never splitting
+        // runs the whole job on the calling thread without reaching a worker.
+        self.with_min_len(if pool_usable() { 1 } else { usize::MAX })
+    }
+}
+
+impl<I: IndexedParallelIterator> ForkSafe for I {}
+
+/// [`rayon::join`] where the pool is usable ([`pool_usable`]), and `a` then
+/// `b` on the calling thread where it is not.
+pub(crate) fn join<A, B, RA, RB>(a: A, b: B) -> (RA, RB)
+where
+    A: FnOnce() -> RA + Send,
+    B: FnOnce() -> RB + Send,
+    RA: Send,
+    RB: Send,
+{
+    if pool_usable() {
+        rayon::join(a, b)
+    } else {
+        (a(), b())
+    }
+}
+
+/// Free `value` on the pool, off the caller's thread, or on the caller's
+/// thread where the pool is not usable ([`pool_usable`]): a job spawned
+/// there would never run, and the value would never be freed.
+pub(crate) fn drop_in_background<T: Send + 'static>(value: T) {
+    if pool_usable() {
+        rayon::spawn(move || drop(value));
+    } else {
+        drop(value);
+    }
+}
+
+/// How many threads a fan-out runs on: the pool's, or 1 where the pool is
+/// not usable ([`pool_usable`]).
+pub(crate) fn pool_threads() -> usize {
+    if pool_usable() {
+        rayon::current_num_threads()
+    } else {
+        1
+    }
 }
 
 /// The shared IoU closing formula, identical across bbox/mask/OBB.
@@ -144,14 +228,23 @@ pub(crate) fn bbox_iou_corners(a: [f64; 4], b: [f64; 4]) -> f64 {
     let iw = (ax1.min(bx1) - a[0].max(b[0])).max(0.0);
     let ih = (ay1.min(by1) - a[1].max(b[1])).max(0.0);
     let intersection = iw * ih;
-    let area_a = (ax1 - a[0]) * (ay1 - a[1]);
-    let area_b = (bx1 - b[0]) * (by1 - b[1]);
+    let area_a = corner_area(a);
+    let area_b = corner_area(b);
     let union = area_a + area_b - intersection;
     if area_a <= f64::EPSILON || area_b <= f64::EPSILON || union <= f64::EPSILON {
         0.0
     } else {
         intersection / union
     }
+}
+
+/// An `[x, y, w, h]` box's area as [`bbox_iou_corners`] takes it, from its
+/// corners: `((x + w) − x) × ((y + h) − y)`. With `x` and `y` finite, a box
+/// whose corner area is finite has finite corners, and no two such boxes
+/// have a NaN IoU: the intersection is at most either area.
+#[inline]
+pub(crate) fn corner_area(b: [f64; 4]) -> f64 {
+    ((b[0] + b[2]) - b[0]) * ((b[1] + b[3]) - b[1])
 }
 
 /// [`bbox_iou_corners`] of every box in `a` against every box in `b`, as one
@@ -186,6 +279,7 @@ where
     }
     if worth_parallel(d * g) {
         out.par_chunks_mut(g)
+            .fork_safe()
             .enumerate()
             .for_each(|(i, row)| fill_row(i, row));
     } else {
@@ -224,6 +318,17 @@ pub fn mask_iou_flat(dt: &[Rle], gt: &[Rle], iscrowd: &[bool]) -> Vec<f64> {
     mask_iou_flat_of(dt, gt, iscrowd)
 }
 
+/// The IoU pycocotools' `rleIou` gives two masks of different sizes: `-1`
+/// where their boxes overlap, and the boxes' IoU, `0`, where they do not —
+/// its box IoU gates every pair before the size is looked at. The overlap is
+/// its `bbIou`'s: a positive width and height, with crowd or without.
+fn size_mismatch_iou(dt: &Rle, gt: &Rle) -> f64 {
+    let (d, g) = (crate::mask::to_bbox(dt), crate::mask::to_bbox(gt));
+    let w = (d[2] + d[0]).min(g[2] + g[0]) - d[0].max(g[0]);
+    let h = (d[3] + d[1]).min(g[3] + g[1]) - d[1].max(g[1]);
+    if w > 0.0 && h > 0.0 { -1.0 } else { 0.0 }
+}
+
 /// [`mask_iou_flat`] over masks held any way that lends an [`Rle`]: the
 /// evaluator's, borrowed from its cache of converted masks rather than copied
 /// out of it for every cell.
@@ -251,7 +356,7 @@ pub(crate) fn mask_iou_flat_of<R: std::borrow::Borrow<Rle> + Sync>(
         for (j, out) in row.iter_mut().enumerate() {
             let gt = gt[j].borrow();
             *out = if dt.h != gt.h || dt.w != gt.w {
-                -1.0
+                size_mismatch_iou(dt, gt)
             } else {
                 let b = &gt_meta[j];
                 let inter = if !columns_overlap(a.columns, b.columns) {
@@ -570,6 +675,44 @@ pub(crate) fn oks_matrix_flat(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Which pool threads ran a fan-out of 10 000 items: `None` for the
+    /// calling thread.
+    fn threads_that_ran() -> Vec<Option<usize>> {
+        let mut ran: Vec<Option<usize>> = (0..10_000)
+            .into_par_iter()
+            .fork_safe()
+            .map(|_| rayon::current_thread_index())
+            .collect();
+        ran.sort_unstable();
+        ran.dedup();
+        ran
+    }
+
+    /// A process that started the pool, or one forked before any fan-out,
+    /// runs on the pool; a child forked after its parent started it runs on
+    /// the calling thread, and so do `join`, `pool_threads`, and
+    /// `drop_in_background`. A fork is simulated by recording another
+    /// process as the pool's owner; the one test that does so restores it.
+    #[test]
+    fn a_child_forked_after_the_pool_started_runs_on_the_calling_thread() {
+        let me = std::process::id();
+        POOL_OWNER.store(0, Ordering::Relaxed);
+        assert!(pool_usable(), "the first fan-out starts the pool");
+        assert_eq!(POOL_OWNER.load(Ordering::Relaxed), me);
+        assert!(threads_that_ran().iter().all(Option::is_some));
+
+        POOL_OWNER.store(me.wrapping_add(1), Ordering::Relaxed);
+        assert!(!pool_usable());
+        assert_eq!(threads_that_ran(), vec![None]);
+        assert_eq!(pool_threads(), 1);
+        let on = join(rayon::current_thread_index, rayon::current_thread_index);
+        assert_eq!(on, (None, None));
+        drop_in_background(vec![0u8; 16]);
+
+        POOL_OWNER.store(me, Ordering::Relaxed);
+        assert!(pool_usable());
+    }
     use crate::mask::area as rle_area;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
@@ -630,10 +773,22 @@ mod tests {
             }
             let iscrowd: Vec<bool> = gt.iter().map(|_| rng.random_bool(0.2)).collect();
             let got = mask_iou_flat(&dt, &gt, &iscrowd);
+            // Two extents meet when both are positive and each starts before
+            // the other ends.
+            let meet = |a: f64, a_len: f64, b: f64, b_len: f64| {
+                a_len > 0.0 && b_len > 0.0 && a < b + b_len && b < a + a_len
+            };
             for (i, d) in dt.iter().enumerate() {
                 for (j, g) in gt.iter().enumerate() {
                     let want = if d.h != g.h || d.w != g.w {
-                        -1.0
+                        // pycocotools' box IoU gates its size check: `-1`
+                        // only where the two boxes overlap.
+                        let (db, gb) = (crate::mask::to_bbox(d), crate::mask::to_bbox(g));
+                        if meet(db[0], db[2], gb[0], gb[2]) && meet(db[1], db[3], gb[1], gb[3]) {
+                            -1.0
+                        } else {
+                            0.0
+                        }
                     } else {
                         iou_from_areas(
                             intersection_area(d, g) as f64,

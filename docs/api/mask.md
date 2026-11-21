@@ -107,6 +107,14 @@ Encode a binary mask to RLE.
     `encode_rows` errors when there are not `h` rows or a row is not `w` bytes,
     and on the same size limit as `encode`.
 
+    A C-order `(H, W, N)` stack, whose masks interleave byte by byte, is
+    rewritten in Fortran order first with `to_fortran_stack`, which moves 8×8
+    blocks of bytes a word at a time, then encoded as `ColumnMajor`:
+
+    ```rust
+    fn to_fortran_stack(stack: &[u8], h: u32, w: u32, n: usize) -> Result<Vec<u8>>
+    ```
+
 ---
 
 ### `decode`
@@ -129,6 +137,12 @@ Decode an RLE to a binary mask.
     m3 = mask.decode([r1, r2])    # (H, W, 2)
     ```
 
+    The masks in a list must be one size: a list of mixed sizes raises
+    `ValueError` naming the first that differs. pycocotools reads the size
+    off the first RLE alone and returns a scrambled array instead. An empty
+    list is a `(0, 0, 0)` array; pycocotools reads its size from memory it
+    never wrote.
+
 === "Rust"
 
     ```rust
@@ -139,6 +153,17 @@ Decode an RLE to a binary mask.
 
     ```rust
     let pixels = mask::decode(&rle);
+    ```
+
+    `decode_rows` decodes to row-major order instead, the mirror of
+    `encode_rows`. `decode_stack` decodes RLEs of one size into one buffer,
+    the masks back to back, each column-major: the bytes of the `(H, W, N)`
+    array Python returns. It decodes in parallel past about 1 MiB of pixels,
+    and a mask of another size is `Error::InvalidInput`:
+
+    ```rust
+    fn decode_rows(rle: &Rle) -> Vec<u8>
+    fn decode_stack(rles: &[Rle]) -> Result<Vec<u8>>
     ```
 
 ---
@@ -315,7 +340,8 @@ Compute pairwise IoU between two lists of RLE masks, or two lists of boxes.
 
 `iscrowd` selects the crowd convention per GT — defined under
 [`primitives.bbox_iou`](primitives.md#bbox_iou). Two masks of different sizes
-score `-1`, as in pycocotools.
+score `-1` where their boxes overlap and `0` where they do not, as in
+pycocotools.
 
 ---
 

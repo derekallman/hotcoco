@@ -177,6 +177,9 @@ it. That covers more than geometry:
 - panoptic evaluation of categories without `isthing` — panopticapi requires it, so
   the things and stuff splits of such a run have no reference; see
   [Panoptic segmentation](panoptic.md#evaluate-without-png-files)
+- tracking with no `benchmark` that keeps a ground-truth row of confidence 0,
+  which TrackEval drops even with its clean-up off; see
+  [What each benchmark setting cleans up](tracking.md#what-each-benchmark-setting-cleans-up)
 - any run with non-default `iou_thrs`, `rec_thrs`, `max_dets`, area-range labels
   or bounds, `use_cats=False`, or custom `kpt_oks_sigmas` — the metric is real,
   but nobody checked *that* configuration against a reference. The default

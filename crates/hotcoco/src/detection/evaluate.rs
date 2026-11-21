@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
+use crate::primitives::sim::ForkSafe;
+
 use super::matching::{
     Cells, EvalImgContext, IouMatrix, PairScratch, lean_scores_len, push_pair_lean,
 };
@@ -309,7 +311,11 @@ impl COCOeval {
             .map(|iou_matrix| ((img_id, cat_id), iou_matrix))
         };
         let iou_results: Vec<((u64, u64), IouMatrix)> = if self.parallel_pairs() {
-            sparse_pairs.par_iter().filter_map(iou_of).collect()
+            sparse_pairs
+                .par_iter()
+                .fork_safe()
+                .filter_map(iou_of)
+                .collect()
         } else {
             sparse_pairs.iter().filter_map(iou_of).collect()
         };
@@ -440,6 +446,7 @@ impl COCOeval {
         let n = area_idxs.len();
         let mut out: Vec<Option<super::matching::EvalImg>> = (0..inputs.sparse_pairs.len() * n)
             .into_par_iter()
+            .fork_safe()
             .map(|_| None)
             .collect();
         if n == 0 {
@@ -447,7 +454,8 @@ impl COCOeval {
         }
         self.with_cell_context(&inputs.params, |ctx, max_det| {
             out.par_chunks_mut(n)
-                .zip(inputs.sparse_pairs.par_iter())
+                .fork_safe()
+                .zip(inputs.sparse_pairs.par_iter().fork_safe())
                 .for_each_init(
                     PairScratch::default,
                     |scratch, (chunk, &(img_id, cat_id))| {

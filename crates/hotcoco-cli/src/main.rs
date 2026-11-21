@@ -366,7 +366,12 @@ fn run_panoptic(args: PanopticArgs) -> Result<(), Box<dyn std::error::Error>> {
 
 fn run_semantic(args: SemanticArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut ev = match args.classes.parse::<usize>() {
-        Ok(n) => SemanticEval::new(n),
+        // `SemanticEval::new` panics on a count with no matrix; checked first,
+        // it is the CLI's usual error.
+        Ok(n) => {
+            hotcoco::metrics::confusion::check_num_classes(n)?;
+            SemanticEval::new(n)
+        }
         Err(_) => {
             let text = std::fs::read_to_string(&args.classes)
                 .map_err(|e| format!("cannot read class names {}: {e}", args.classes))?;

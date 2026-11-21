@@ -271,11 +271,269 @@ pub(crate) fn check_unique_stems(dataset: &Dataset) -> Result<(), ConvertError> 
     Ok(())
 }
 
-/// Image file extensions tried when a bare stem has no direct hit.
-//
-// The single owner of this list: `hotcoco-pyo3`'s `read_image_dims` reaches it
-// as `hotcoco_core::convert::IMAGE_EXTENSIONS` rather than keeping its own copy.
+/// Image file extensions tried when a bare stem has no direct hit, and the
+/// files [`read_image_dims`] reads.
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "tif", "tiff"];
+
+/// The `(width, height)` of every image directly in `dir` whose extension is
+/// in [`IMAGE_EXTENSIONS`], in any case, keyed by file stem: the
+/// `image_dims` map the YOLO, DOTA, and Open Images importers take, since
+/// none of the three formats records a pixel size. Each size comes from the
+/// file's header, as Pillow's `Image.size` reports it, with nothing decoded.
+/// The format comes from the content, as Pillow detects it, so a GIF, WebP,
+/// ICO, PNM, TGA, PSD, QOI, or DDS
+/// file under one of those extensions reads too. Two files with one stem keep
+/// the size of whichever `read_dir` lists last, and a file whose stem is not
+/// UTF-8, which no label file can name, is left out.
+///
+/// # Errors
+///
+/// [`ConvertError::Io`], naming the path, when `dir` or a file in it cannot
+/// be read, and [`ConvertError::ParseError`], naming the file, for one whose
+/// header is none of those formats'.
+pub fn read_image_dims(dir: &Path) -> Result<HashMap<String, (u32, u32)>, ConvertError> {
+    use crate::primitives::sim::ForkSafe;
+    use rayon::prelude::*;
+
+    let images: Vec<(String, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .map_err(io_at(dir))?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let ext = path.extension()?.to_str()?.to_lowercase();
+            if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+                return None;
+            }
+            let stem = path.file_stem()?.to_str()?.to_owned();
+            Some((stem, path))
+        })
+        .collect();
+    let size = |(stem, path): &(String, std::path::PathBuf)| {
+        let (width, height) = image_size(path)?;
+        let side = |v: usize| {
+            u32::try_from(v)
+                .map_err(|_| parse_err(path, format_args!("an image side of {v} pixels")))
+        };
+        Ok((stem.clone(), (side(width)?, side(height)?)))
+    };
+    // Parallel even for a few images: each item opens a file, thousands of
+    // times the work `worth_parallel`'s threshold is calibrated on. Each
+    // result is kept in `read_dir` order, so the last of two files with one
+    // stem still wins and the error raised is the first failing file's, as a
+    // serial loop raises it: collected straight into a `Result`, rayon returns
+    // whichever worker fails first, and the kind and the file named varied
+    // from run to run.
+    type Sized = Result<(String, (u32, u32)), ConvertError>;
+    let sizes: Vec<Sized> = images.par_iter().fork_safe().map(size).collect();
+    sizes.into_iter().collect()
+}
+
+/// `(width, height)` from `path`'s header, as Pillow's `Image.size` reads
+/// it. The format comes from the content, not the extension, so a PNG named
+/// `.jpg` still reads.
+fn image_size(path: &Path) -> Result<(usize, usize), ConvertError> {
+    let bad = |e: imagesize::ImageError| match e {
+        // A file shorter than its header is bad content too.
+        imagesize::ImageError::IoError(e) if e.kind() != io::ErrorKind::UnexpectedEof => {
+            io_at(path)(e)
+        }
+        e => parse_err(path, format_args!("cannot read its image size: {e}")),
+    };
+    let mut reader = io::BufReader::new(std::fs::File::open(path).map_err(io_at(path))?);
+    let kind = imagesize::reader_type(&mut reader).map_err(bad)?;
+    // The formats whose `imagesize` reader disagrees with Pillow on files
+    // Pillow reads get readers of their own.
+    match kind {
+        imagesize::ImageType::Bmp => bmp_size(&mut reader).map_err(bad),
+        imagesize::ImageType::Gif => gif_size(&mut reader).map_err(bad),
+        imagesize::ImageType::Jpeg => jpeg_size(&mut reader).map_err(bad),
+        imagesize::ImageType::Png => png_size(&mut reader).map_err(bad),
+        imagesize::ImageType::Webp => webp_size(&mut reader).map_err(bad),
+        kind => {
+            let dims = kind.reader_size(&mut reader).map_err(bad)?;
+            Ok((dims.width, dims.height))
+        }
+    }
+}
+
+/// A PNG's `(width, height)` from its `IHDR` chunk, found by walking the
+/// chunks as Pillow does. `imagesize` reads the bytes where `IHDR` sits when
+/// it is first, so a file with another chunk first (Apple's `CgBI`) came back
+/// at a size of its other chunk's bytes.
+fn png_size<R: io::Read + io::Seek>(reader: &mut R) -> imagesize::ImageResult<(usize, usize)> {
+    reader.seek(io::SeekFrom::Start(8))?;
+    loop {
+        let mut head = [0u8; 8];
+        reader.read_exact(&mut head)?;
+        let len = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+        match &head[4..] {
+            b"IHDR" => {
+                let mut sides = [0u8; 8];
+                reader.read_exact(&mut sides)?;
+                let side = |i: usize| {
+                    u32::from_be_bytes([sides[i], sides[i + 1], sides[i + 2], sides[i + 3]])
+                        as usize
+                };
+                return Ok((side(0), side(4)));
+            }
+            // The image data or its end before any header: Pillow gives up.
+            b"IDAT" | b"IEND" => return Err(imagesize::ImageError::CorruptedImage),
+            // Another chunk: its data, then its CRC.
+            _ => {
+                reader.seek(io::SeekFrom::Current(i64::from(len) + 4))?;
+            }
+        }
+    }
+}
+
+/// A GIF's `(width, height)` as Pillow reports it: the logical screen,
+/// grown to the first frame where the frame reaches past it. `imagesize`
+/// reads the logical screen alone.
+fn gif_size<R: io::Read + io::Seek>(reader: &mut R) -> imagesize::ImageResult<(usize, usize)> {
+    fn byte<R: io::Read>(reader: &mut R) -> io::Result<u8> {
+        let mut b = [0u8; 1];
+        reader.read_exact(&mut b)?;
+        Ok(b[0])
+    }
+    let mut screen = [0u8; 13];
+    reader.seek(io::SeekFrom::Start(0))?;
+    reader.read_exact(&mut screen)?;
+    let u16_at = |b: &[u8], i: usize| usize::from(u16::from_le_bytes([b[i], b[i + 1]]));
+    let (screen_w, screen_h) = (u16_at(&screen, 6), u16_at(&screen, 8));
+    let flags = screen[10];
+    if flags & 0x80 != 0 {
+        // The global color table.
+        reader.seek(io::SeekFrom::Current(3 << ((flags & 7) + 1)))?;
+    }
+    loop {
+        match byte(reader)? {
+            // An extension: its label, then data sub-blocks up to an empty one.
+            b'!' => {
+                byte(reader)?;
+                loop {
+                    let n = byte(reader)?;
+                    if n == 0 {
+                        break;
+                    }
+                    reader.seek(io::SeekFrom::Current(i64::from(n)))?;
+                }
+            }
+            // The first frame: left, top, width, height.
+            b',' => {
+                let mut frame = [0u8; 8];
+                reader.read_exact(&mut frame)?;
+                let x1 = u16_at(&frame, 0) + u16_at(&frame, 4);
+                let y1 = u16_at(&frame, 2) + u16_at(&frame, 6);
+                return Ok((x1.max(screen_w), y1.max(screen_h)));
+            }
+            // The trailer before any frame: no image.
+            b';' => return Err(imagesize::ImageError::CorruptedImage),
+            // A stray byte, which Pillow skips.
+            _ => {}
+        }
+    }
+}
+
+/// A WebP's `(width, height)`. A lossy (`VP8 `) file's 16-bit sides carry
+/// two scale bits on top, which libwebp, and so Pillow, masks off and
+/// `imagesize` does not; the other kinds read as `imagesize` reads them.
+fn webp_size<R: io::BufRead + io::Seek>(reader: &mut R) -> imagesize::ImageResult<(usize, usize)> {
+    let mut head = [0u8; 16];
+    reader.seek(io::SeekFrom::Start(0))?;
+    reader.read_exact(&mut head)?;
+    if &head[12..16] == b"VP8 " {
+        // The chunk size, the frame tag, the start code, then the sides.
+        let mut frame = [0u8; 14];
+        reader.read_exact(&mut frame)?;
+        let side = |i: usize| usize::from(u16::from_le_bytes([frame[i], frame[i + 1]]) & 0x3FFF);
+        return Ok((side(10), side(12)));
+    }
+    let dims = imagesize::ImageType::Webp.reader_size(reader)?;
+    Ok((dims.width, dims.height))
+}
+
+/// A JPEG's `(width, height)`, read as Pillow's `JpegImageFile._open` reads
+/// it: the markers walked from the start of image to the first start of
+/// scan, any byte between segments that does not start a marker skipped,
+/// `0xFF` fill bytes before a marker skipped, and the size taken from the
+/// last frame header (`SOFn`) before the scan. `imagesize` stops at a byte
+/// between segments that is not `0xFF` and reads a fill byte as a marker
+/// with a length, so it failed on files libjpeg and Pillow read.
+fn jpeg_size<R: io::Read + io::Seek>(reader: &mut R) -> imagesize::ImageResult<(usize, usize)> {
+    fn byte<R: io::Read>(reader: &mut R) -> io::Result<u8> {
+        let mut b = [0u8; 1];
+        reader.read_exact(&mut b)?;
+        Ok(b[0])
+    }
+    // A segment's length counts its own two bytes; Pillow reads one shorter
+    // than that as empty.
+    fn segment_len<R: io::Read>(reader: &mut R) -> io::Result<usize> {
+        let mut len = [0u8; 2];
+        reader.read_exact(&mut len)?;
+        Ok(usize::from(u16::from_be_bytes(len)).saturating_sub(2))
+    }
+    // Past `FF D8 FF`, which `reader_type` matched: the third byte starts
+    // the first marker.
+    reader.seek(io::SeekFrom::Start(3))?;
+    let mut lead = 0xFF;
+    let mut size = (0, 0);
+    loop {
+        if lead != 0xFF {
+            lead = byte(reader)?;
+            continue;
+        }
+        match byte(reader)? {
+            // A fill byte: the next one may still be the marker's.
+            0xFF => continue,
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF | 0xDE => {
+                let mut frame = vec![0u8; segment_len(reader)?];
+                reader.read_exact(&mut frame)?;
+                // Precision, then the height and the width.
+                let be16 = |i: usize| -> imagesize::ImageResult<usize> {
+                    let b = frame
+                        .get(i..i + 2)
+                        .ok_or(imagesize::ImageError::CorruptedImage)?;
+                    Ok(usize::from(u16::from_be_bytes([b[0], b[1]])))
+                };
+                size = (be16(3)?, be16(1)?);
+            }
+            // The segments with a length; the start of scan ends the header.
+            marker @ (0xC4 | 0xCC | 0xDA..=0xDD | 0xDF | 0xE0..=0xEF | 0xFE) => {
+                let len = segment_len(reader)?;
+                reader.seek(io::SeekFrom::Current(len as i64))?;
+                if marker == 0xDA {
+                    return Ok(size);
+                }
+            }
+            // `FF 00`, an escaped `0xFF`, and the markers with no segment:
+            // JPG, RSTn, SOI, EOI, JPGn.
+            0x00 | 0xC8 | 0xD0..=0xD9 | 0xF0..=0xFD => {}
+            // `FF 01` to `FF BF`: no marker Pillow knows, and it gives up.
+            _ => return Err(imagesize::ImageError::CorruptedImage),
+        }
+        lead = byte(reader)?;
+    }
+}
+
+/// A BMP's `(width, height)` from its DIB header, read as Pillow reads it:
+/// the 16-bit sides of an OS/2 header, and otherwise signed sides with the
+/// height's sign dropped. `imagesize` reads the height as unsigned, so a
+/// top-down BMP, whose height is stored negative, came back about 2³² rows
+/// tall.
+fn bmp_size<R: io::Read + io::Seek>(reader: &mut R) -> imagesize::ImageResult<(usize, usize)> {
+    let mut header = [0u8; 26];
+    reader.seek(io::SeekFrom::Start(0))?;
+    reader.read_exact(&mut header)?;
+    let u16_at = |i: usize| usize::from(u16::from_le_bytes([header[i], header[i + 1]]));
+    let i32_at =
+        |i: usize| i32::from_le_bytes([header[i], header[i + 1], header[i + 2], header[i + 3]]);
+    // The DIB header's size: 12 for OS/2's BITMAPCOREHEADER.
+    if i32_at(14) == 12 {
+        return Ok((u16_at(18), u16_at(20)));
+    }
+    let width = usize::try_from(i32_at(18)).map_err(|_| imagesize::ImageError::CorruptedImage)?;
+    Ok((width, i32_at(22).unsigned_abs() as usize))
+}
 
 /// Look up image dimensions by stem; try common extensions as fallback.
 ///

@@ -160,8 +160,14 @@ pub(super) fn read_rows_file(path: &Path, what: &str) -> Result<Rows> {
     Ok(Rows { values, ncols })
 }
 
+/// `path` as text. Bytes that are not UTF-8 are bad content, a `ValueError`
+/// as a line that is not numbers is, and as the converters and the JSON
+/// loader raise them; only a filesystem failure is an I/O error.
 fn read(path: &Path, what: &str) -> Result<String> {
     std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::InvalidData {
+            return Error::InvalidInput(format!("{what} file {}: {e}", path.display()));
+        }
         Error::io(
             e,
             format_args!("cannot read {what} file {}", path.display()),

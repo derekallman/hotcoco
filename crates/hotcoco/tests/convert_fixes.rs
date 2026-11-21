@@ -698,3 +698,45 @@ fn a_label_file_that_is_not_utf8_is_a_parse_error_naming_it() {
         "{err:?}"
     );
 }
+
+/// A `w × h` grayscale PNG, the way the semantic family's PNG reader is fed.
+fn write_png(path: &std::path::Path, w: u32, h: u32) {
+    let file = std::fs::File::create(path).expect("create png");
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("png header");
+    writer
+        .write_image_data(&vec![0; (w * h) as usize])
+        .expect("png data");
+}
+
+/// `read_image_dims` keys `(width, height)` by stem, reads an extension in
+/// any case, skips files that are not images by name, and names the file
+/// whose header is no image. `tests/test_image_dims.py` holds every format to
+/// Pillow's size.
+#[test]
+fn read_image_dims_reads_headers_by_stem() {
+    use hotcoco::convert::{ConvertError, read_image_dims};
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_png(&dir.path().join("wide.png"), 37, 21);
+    write_png(&dir.path().join("TALL.PNG"), 5, 40);
+    std::fs::write(dir.path().join("notes.txt"), "not an image").expect("write");
+    let dims = read_image_dims(dir.path()).expect("readable");
+    assert_eq!(dims.len(), 2);
+    assert_eq!(dims["wide"], (37, 21));
+    assert_eq!(dims["TALL"], (5, 40));
+
+    std::fs::write(dir.path().join("broken.jpg"), b"\x00\x01 not a jpeg").expect("write");
+    match read_image_dims(dir.path()) {
+        Err(ConvertError::ParseError(m)) => assert!(m.contains("broken.jpg"), "{m}"),
+        other => panic!("{other:?}"),
+    }
+    match read_image_dims(&dir.path().join("nowhere")) {
+        Err(ConvertError::Io(e)) => {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+            assert!(e.to_string().contains("nowhere"), "{e}");
+        }
+        other => panic!("{other:?}"),
+    }
+}

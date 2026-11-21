@@ -6,8 +6,6 @@ use numpy::{PyArray2, PyArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTuple, PyType};
 
-use mask::transpose_mask;
-
 use hotcoco_core::Annotation;
 
 mod convert;
@@ -19,54 +17,11 @@ mod primitives;
 mod semantic;
 mod tracking;
 
-/// Read `(width, height)` for every image in `dir`, keyed by file stem.
-///
-/// YOLO, DOTA and Open Images all store coordinates normalized to the image, and
-/// none of the three records the pixel size, so denormalizing means measuring the
-/// images. Pillow is an optional dependency — its absence is only an error once a
-/// caller actually asks for dimensions by passing `images_dir`.
+/// `(width, height)` for every image in `dir`, keyed by file stem, read by
+/// core from each file's header without the GIL.
 fn read_image_dims(py: Python<'_>, dir: &str) -> PyResult<HashMap<String, (u32, u32)>> {
-    let pil_image = py.import("PIL.Image").map_err(|_| {
-        pyo3::exceptions::PyImportError::new_err(
-            "Pillow is required to read image dimensions. \
-             Install it with: pip install Pillow",
-        )
-    })?;
-
-    let read_dir = std::fs::read_dir(dir).map_err(|e| {
-        to_pyerr(hotcoco_core::Error::io(
-            e,
-            format_args!("cannot read images_dir {dir}"),
-        ))
-    })?;
-
-    let img_exts = hotcoco_core::convert::IMAGE_EXTENSIONS;
-    let mut image_dims: HashMap<String, (u32, u32)> = HashMap::new();
-
-    for entry in read_dir.flatten() {
-        let path = entry.path();
-        let ext_lower = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_lowercase);
-        let Some(ext) = ext_lower else { continue };
-        if !img_exts.contains(&ext.as_str()) {
-            continue;
-        }
-
-        let path_str = path.to_string_lossy().into_owned();
-        let pil_img = pil_image.getattr("open")?.call1((path_str.as_str(),))?;
-        let size: (u32, u32) = pil_img.getattr("size")?.extract()?;
-        let _ = pil_img.call_method0("close");
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        image_dims.insert(stem, size);
-    }
-
-    Ok(image_dims)
+    py.detach(|| hotcoco_core::convert::read_image_dims(Path::new(dir)))
+        .map_err(|e| to_pyerr(e.into()))
 }
 
 /// Convert a hotcoco error to the Python exception its kind names.
@@ -287,7 +242,12 @@ impl PyCOCO {
     /// A dataset with no image directory to inherit: a conversion from a foreign
     /// format, or a merge whose inputs came from different directories.
     fn without_image_dir(py: Python<'_>, dataset: hotcoco_core::Dataset) -> PyResult<PyCOCO> {
-        let coco = hotcoco_core::COCO::from_dataset(dataset);
+        Self::indexed_without_image_dir(py, hotcoco_core::COCO::from_dataset(dataset))
+    }
+
+    /// [`without_image_dir`](Self::without_image_dir) for a dataset core has
+    /// already indexed, its load warnings raised the same way.
+    fn indexed_without_image_dir(py: Python<'_>, coco: hotcoco_core::COCO) -> PyResult<PyCOCO> {
         warn_on_load(py, coco.load_warnings())?;
         Ok(Self::shared(coco))
     }
@@ -626,93 +586,45 @@ impl PyCOCO {
                 })
             })
             .transpose()?;
-        let (ids, area, iscrowd, segmentation) = (
-            ids.as_ref(),
-            area.as_ref(),
-            iscrowd.as_ref(),
-            segmentation.as_ref(),
-        );
-        let value_err = |msg: String| pyo3::exceptions::PyValueError::new_err(msg);
         let image_ids = convert::u64_vec(image_ids, "image_ids")?;
-        let n = image_ids.len();
-        let same_length = |name: &str, len: usize| {
-            if len == n {
-                Ok(())
-            } else {
-                Err(value_err(format!(
-                    "from_arrays: {name} has {len} entries but image_ids has {n}"
-                )))
-            }
-        };
         let category_ids = convert::u64_vec(category_ids, "category_ids")?;
-        same_length("category_ids", category_ids.len())?;
         let (flat, rows, cols) = convert::f64_matrix_arg(boxes, "boxes")?;
-        // An empty nested list has no columns to count; `[]` is a valid empty box column.
-        if rows != n || (cols != 4 && n != 0) {
-            return Err(value_err(format!(
-                "from_arrays: boxes must have shape ({n}, 4), got ({rows}, {cols})"
+        // An empty nested list has no columns to count; `[]` is a valid empty
+        // box column. Core checks the row count, as for every column.
+        if cols != 4 && rows != 0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "from_arrays: boxes must have shape ({}, 4), got ({rows}, {cols})",
+                image_ids.len()
             )));
         }
-        let ids = match ids {
-            Some(obj) => {
-                let ids = convert::u64_vec(obj, "ids")?;
-                same_length("ids", ids.len())?;
-                ids
-            }
-            None => (1..=n as u64).collect(),
+        let columns = hotcoco_core::AnnotationColumns {
+            image_ids,
+            category_ids,
+            boxes: flat
+                .chunks_exact(4)
+                .map(|b| [b[0], b[1], b[2], b[3]])
+                .collect(),
+            ids: ids.map(|obj| convert::u64_vec(&obj, "ids")).transpose()?,
+            area: area.map(|obj| convert::f64_vec(&obj, "area")).transpose()?,
+            iscrowd: iscrowd
+                .map(|obj| convert::flag_vec(&obj, "iscrowd"))
+                .transpose()?,
+            segmentation: segmentation
+                .map(|segs| {
+                    segs.iter()
+                        .enumerate()
+                        .map(|(i, seg)| convert::segmentation_at(&seg, i))
+                        .collect::<PyResult<Vec<_>>>()
+                })
+                .transpose()?,
         };
-        let area = match (area, segmentation) {
-            (Some(obj), _) => {
-                let area = convert::f64_vec(obj, "area")?;
-                same_length("area", area.len())?;
-                Some(area)
-            }
-            (None, Some(_)) => {
-                return Err(value_err(
-                    "from_arrays: area is required with segmentation, because the box \
-                     area would not match the mask"
-                        .into(),
-                ));
-            }
-            (None, None) => None,
-        };
-        let iscrowd = match iscrowd {
-            Some(obj) => {
-                let crowd = convert::flag_vec(obj, "iscrowd")?;
-                same_length("iscrowd", crowd.len())?;
-                Some(crowd)
-            }
-            None => None,
-        };
-        if let Some(segmentation) = segmentation {
-            same_length("segmentation", segmentation.len())?;
-        }
-
-        let mut annotations = Vec::with_capacity(n);
-        for i in 0..n {
-            let b = &flat[i * 4..i * 4 + 4];
-            let bbox = [b[0], b[1], b[2], b[3]];
-            annotations.push(Annotation {
-                id: ids[i],
-                image_id: image_ids[i],
-                category_id: category_ids[i],
-                bbox: Some(bbox),
-                area: Some(area.as_ref().map_or(bbox[2] * bbox[3], |a| a[i])),
-                iscrowd: iscrowd.as_ref().is_some_and(|c| c[i]),
-                segmentation: match segmentation {
-                    Some(segs) => Some(convert::segmentation_at(&segs.get_item(i)?, i)?),
-                    None => None,
-                },
-                ..Default::default()
-            });
-        }
-        let dataset = hotcoco_core::Dataset {
-            images: dict_list(images, "images", py_to_image)?,
-            categories: dict_list(categories, "categories", py_to_category)?,
-            annotations,
-            ..Default::default()
-        };
-        PyCOCO::without_image_dir(cls.py(), dataset)
+        let coco = hotcoco_core::COCO::from_arrays(
+            dict_list(images, "images", py_to_image)?,
+            dict_list(categories, "categories", py_to_category)?,
+            columns,
+        )
+        .map_err(to_pyerr)?;
+        PyCOCO::indexed_without_image_dir(cls.py(), coco)
     }
 
     /// Convert an annotation's segmentation to RLE.
@@ -743,12 +655,9 @@ impl PyCOCO {
                 "Could not convert annotation to RLE (image not found?)",
             )
         })?;
-        let col_major = hotcoco_core::mask::decode(&rle);
-        let h = rle.h as usize;
-        let w = rle.w as usize;
-        let row_major = transpose_mask(&col_major, w, h);
+        let row_major = hotcoco_core::mask::decode_rows(&rle);
         let flat = numpy::PyArray1::from_vec(py, row_major);
-        let arr = flat.reshape([h, w])?;
+        let arr = flat.reshape([rle.h as usize, rle.w as usize])?;
         Ok(arr.unbind())
     }
 
@@ -829,17 +738,9 @@ impl PyCOCO {
         test_frac: Option<f64>,
         seed: u64,
     ) -> PyResult<Py<PyAny>> {
-        fraction("val_frac", val_frac)?;
-        if let Some(test_frac) = test_frac {
-            fraction("test_frac", test_frac)?;
-            if val_frac + test_frac > 1.0 {
-                return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                    "val_frac + test_frac must be at most 1, got {val_frac} + {test_frac}"
-                )));
-            }
-        }
         let inner = self.live.get(py)?;
-        let (train_ds, val_ds, test_ds) = inner.split(val_frac, test_frac, seed);
+        let (train_ds, val_ds, test_ds) =
+            inner.split(val_frac, test_frac, seed).map_err(to_pyerr)?;
         let train_py = Py::new(py, self.derived_from(train_ds))?;
         let val_py = Py::new(py, self.derived_from(val_ds))?;
         if let Some(test_ds) = test_ds {
@@ -864,11 +765,8 @@ impl PyCOCO {
         frac: Option<f64>,
         seed: u64,
     ) -> PyResult<PyCOCO> {
-        if let Some(frac) = frac {
-            fraction("frac", frac)?;
-        }
         let inner = self.live.get(py)?;
-        let result = inner.sample(n, frac, seed);
+        let result = inner.sample(n, frac, seed).map_err(to_pyerr)?;
         Ok(self.derived_from(result))
     }
 
@@ -1031,10 +929,10 @@ impl PyCOCO {
     /// yolo_dir : str
     ///     Directory containing ``.txt`` label files and ``data.yaml``.
     /// images_dir : str, optional
-    ///     Directory of source images. When provided, Pillow reads each image to
-    ///     populate ``width`` and ``height`` on the resulting image records.
-    ///     Without this, images are stored with ``width=0, height=0``.
-    ///     Requires ``pip install Pillow``.
+    ///     Directory of source images, matched to label files by file stem.
+    ///     Each image's ``width`` and ``height`` are read from its file header,
+    ///     as Pillow reads them. YOLO boxes are normalized, so a label file
+    ///     with no image of known size raises ``ValueError``.
     ///
     /// Returns
     /// -------
@@ -1043,19 +941,14 @@ impl PyCOCO {
     ///
     /// Raises
     /// ------
-    /// ImportError
-    ///     If ``images_dir`` is provided but Pillow is not installed.
     /// ValueError
-    ///     If ``data.yaml`` is missing or a label file cannot be parsed.
-    /// IOError
-    ///     If the directory cannot be read.
+    ///     If ``data.yaml`` is missing, a label file cannot be parsed, or an
+    ///     image's size is unknown or cannot be read from its header.
+    /// OSError
+    ///     If a directory or file cannot be read.
     ///
     /// Examples
     /// --------
-    /// >>> # Without image dims (width/height will be 0)
-    /// >>> coco = COCO.from_yolo("labels/val2017/")
-    ///
-    /// >>> # With image dims read via Pillow
     /// >>> coco = COCO.from_yolo("labels/val2017/", images_dir="images/val2017/")
     /// >>> coco.save("reconstructed.json")
     #[classmethod]
@@ -1289,8 +1182,8 @@ impl PyCOCO {
     ///     Directory containing DOTA ``.txt`` label files.
     /// images_dir : str, optional
     ///     Directory of source images. DOTA labels are in absolute pixels, so this
-    ///     only populates ``width``/``height`` on the image records; box
-    ///     coordinates are unaffected. Requires ``pip install Pillow``.
+    ///     only populates ``width``/``height`` on the image records, read from
+    ///     each image's file header; box coordinates are unaffected.
     /// categories : list of str, optional
     ///     Category names in the order they should be numbered. Without this,
     ///     categories are discovered from the label files and sorted, which means
@@ -1386,7 +1279,7 @@ impl PyCOCO {
     ///     category names remain MIDs.
     /// images_dir : str, optional
     ///     Directory of source images, used to denormalize coordinates into
-    ///     pixels. Requires ``pip install Pillow``.
+    ///     pixels. Each image's size is read from its file header.
     ///
     /// Notes
     /// -----
@@ -1932,7 +1825,6 @@ fn columns_from_array(
         return Ok(None);
     };
     let ncols = arr.shape()[1];
-    check_result_columns(ncols, what)?;
     let rows = arr.as_slice();
     // The rows are numpy's memory, read under the GIL, as `anns_from_rows`.
     hotcoco_core::DetectionColumns::check_rows(rows, ncols)
@@ -1940,18 +1832,6 @@ fn columns_from_array(
     hotcoco_core::DetectionColumns::from_checked_rows(Arc::clone(gt), rows, ncols)
         .map(Some)
         .map_err(to_pyerr)
-}
-
-/// A results array is `[image_id, x, y, w, h, score]` with an optional
-/// `category_id`: six or seven columns.
-fn check_result_columns(ncols: usize, what: &str) -> PyResult<()> {
-    if ncols != 6 && ncols != 7 {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "{what}: numpy array must have 6 or 7 columns \
-             [image_id, x, y, w, h, score[, category_id]], got {ncols}",
-        )));
-    }
-    Ok(())
 }
 
 /// The one owner of the array form as records: `load_res` and
@@ -1980,22 +1860,19 @@ fn anns_from_rows(
     what: &str,
     segmentation: Option<&Bound<'_, PyList>>,
 ) -> PyResult<Vec<Annotation>> {
-    check_result_columns(ncols, what)?;
-    let nrows = rows.len() / ncols;
-    if let Some(segs) = segmentation {
-        if segs.len() != nrows {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "{what}: segmentation has {} entries for {nrows} rows",
-                segs.len(),
-            )));
-        }
-    }
     // The rows are numpy's memory, so they are read under the GIL — see the
     // GIL rule in `mask.rs`. The conversion is parallel on the thread pool
     // either way; only this thread holds the GIL.
     let mut anns = hotcoco_core::COCO::detections_from_rows(rows, ncols)
         .map_err(|e| convert::with_context(py, what, to_pyerr(e)))?;
     if let Some(segs) = segmentation {
+        if segs.len() != anns.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{what}: segmentation has {} entries for {} rows",
+                segs.len(),
+                anns.len()
+            )));
+        }
         for (i, (ann, seg)) in anns.iter_mut().zip(segs).enumerate() {
             ann.segmentation = Some(convert::segmentation_at(&seg, i)?);
         }
@@ -2290,18 +2167,6 @@ impl PyParams {
     fn set_use_cats_camel(&mut self, val: &Bound<'_, PyAny>) -> PyResult<()> {
         self.set_use_cats(val)
     }
-}
-
-/// A fraction-of-the-images argument: in `[0, 1]`, which NaN is not. Out of
-/// range it is an error and never clamped: clamping makes `val_frac=-1` an
-/// empty validation set and `val_frac=0.9, test_frac=0.9` a test set of a tenth.
-fn fraction(name: &str, value: f64) -> PyResult<()> {
-    if (0.0..=1.0).contains(&value) {
-        return Ok(());
-    }
-    Err(pyo3::exceptions::PyValueError::new_err(format!(
-        "{name} must be between 0 and 1, got {value}"
-    )))
 }
 
 fn parse_iou_type(s: &str) -> PyResult<hotcoco_core::IouType> {

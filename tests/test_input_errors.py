@@ -498,6 +498,31 @@ TRACK_CASES = [
     ("negative id", None, [track_row(TRACK_GT, id=-1)], [TRACK_PRED], "reject"),
     ("NaN box", None, [TRACK_GT], [track_row(TRACK_PRED, w=math.nan)], "reject"),
     ("infinite box", None, [track_row(TRACK_GT, x=math.inf)], [TRACK_PRED], "reject"),
+    # Finite values whose far edge or corner area ((x + w) - x) * ((y + h) - y)
+    # is not: two such boxes have an IoU of inf / inf, NaN, which TrackEval's
+    # scipy assignment raises on. The last one's w * h is finite; its NaN
+    # reached the assignment, which panicked.
+    (
+        "a box whose right edge overflows",
+        None,
+        [track_row(TRACK_GT, x=1e308, w=1e308)],
+        [track_row(TRACK_PRED, x=1e308, w=1e308)],
+        "reject",
+    ),
+    (
+        "a box whose area overflows",
+        None,
+        [track_row(TRACK_GT, w=1e200, h=1e200)],
+        [track_row(TRACK_PRED, w=1e200, h=1e200)],
+        "reject",
+    ),
+    (
+        "a box whose corner area overflows",
+        None,
+        [track_row(TRACK_GT, x=-2.040552280408471e307, y=0, w=8.988465674311579e307, h=2)],
+        [track_row(TRACK_PRED, x=-2.040552280408471e307, y=0, w=8.988465674311579e307, h=2)],
+        "reject",
+    ),
     ("NaN ground-truth confidence", None, [track_row(TRACK_GT, conf=math.nan)], [TRACK_PRED], "reject"),
     ("NaN prediction confidence", None, [TRACK_GT], [track_row(TRACK_PRED, conf=math.nan)], "reject"),
     ("the same id twice in a frame", None, [TRACK_GT], [TRACK_PRED, track_row(TRACK_PRED, x=60)], "reject"),
@@ -518,6 +543,14 @@ def test_a_tracking_row(tmp_path, benchmark, gt, pred, expect):
     assert_agree(track_outcomes(tmp_path, benchmark, gt, pred), expect)
 
 
+@pytest.mark.parametrize("num_frames", [2**64 - 1, 2**62, 10**17], ids=["wraps", "capacity overflow", "no allocation"])
+def test_a_frame_count_no_memory_holds_is_a_value_error(tmp_path, num_frames):
+    """The frame offsets of ``num_frames``, from the argument or ``seqLength``:
+    one past ``usize`` wrapped to an empty table and panicked, and a size the
+    system refuses aborted the interpreter."""
+    assert_agree(track_outcomes(tmp_path, None, [TRACK_GT], [TRACK_PRED], num_frames=num_frames), "reject")
+
+
 def test_a_bad_tracking_argument_is_a_value_error():
     row = [TRACK_GT]
     for call, message in (
@@ -528,6 +561,9 @@ def test_a_bad_tracking_argument_is_a_value_error():
         (lambda: TrackingEval().update("s", row, row, num_frames=1.5), "num_frames"),
         (lambda: TrackingEval().update("s", row, row, num_frames=True), "num_frames"),
         (lambda: TrackingEval().update("s", [TRACK_GT, [1]], row, num_frames=1), "rectangular"),
+        # A bool is no frame or id in a row, as in any record; it read as 1.
+        (lambda: TrackingEval().update("s", [track_row(TRACK_GT, frame=True)], row, num_frames=1), r"^gt\[0\]\[0\]"),
+        (lambda: TrackingEval().update("s", row, np.ones((1, 7), bool), num_frames=1), r"^pred\[0\]\[0\]"),
     ):
         with pytest.raises(ValueError, match=message):
             call()
@@ -705,7 +741,8 @@ def test_a_call_before_the_step_it_needs_is_a_runtime_error():
         ev.tide_errors()
     with pytest.raises(RuntimeError, match="evaluate"):
         hotcoco.compare(ev, ev)
-    with pytest.raises(RuntimeError, match="run"):
+    # Python's step, as every PanopticEval reader names it, not Rust's `run()`.
+    with pytest.raises(RuntimeError, match=r"^evaluate\(\) must be called before results\(\)"):
         panoptic.PanopticEval(gt, gt).results()
     with pytest.raises(RuntimeError, match="update"):
         TrackingEval().results()
@@ -801,12 +838,15 @@ def test_an_argument_no_matrix_can_hold_is_a_value_error():
     rows, cols = primitives.lsap([[inf, 1], [1, inf]])
     assert (rows.tolist(), cols.tolist()) == ([0, 1], [1, 0])
 
-    for too_many in (2**32, 2**64 - 1):
-        with pytest.raises(ValueError, match="too many classes"):
+    # 2**28 classes fit the arithmetic, but no system grants the ~2**59 bytes:
+    # that allocation aborted the interpreter before it was checked.
+    for too_many in (2**28, 2**32, 2**64 - 1):
+        # The error names the argument as the caller spelled it.
+        with pytest.raises(ValueError, match=f"^num_classes: {too_many} is too many classes"):
             metrics.confusion_matrix([0], [0], too_many)
-        with pytest.raises(ValueError, match="too many classes"):
+        with pytest.raises(ValueError, match=f"^num_classes: {too_many} is too many classes"):
             metrics.pixel_confusion([0], [0], too_many)
-        with pytest.raises(ValueError, match="too many classes"):
+        with pytest.raises(ValueError, match=f"^classes: {too_many} is too many classes"):
             semantic.SemanticEval(too_many)
     with pytest.raises(ValueError, match="more pixels"):
         metrics.mean_iou(np.full((2, 2), 2**62, dtype=np.uint64))
@@ -940,3 +980,48 @@ def test_a_converter_names_the_file_it_could_not_read(tmp_path):
     (tmp_path / "labels" / "bad.txt").write_bytes(b"\xff\xfe 1 2 3")
     with pytest.raises(ValueError, match="bad.txt"):
         COCO.from_dota(str(tmp_path / "labels"))
+
+
+def test_a_tracking_file_that_is_not_utf8_is_a_value_error(tmp_path):
+    """Bad content, as a line that is not numbers is, and as the converters and
+    the JSON loader raise it: `read_to_string`'s `InvalidData` was kept as an I/O
+    error, a plain `OSError`."""
+    seq = tmp_path / "gt" / "seq-a"
+    (seq / "gt").mkdir(parents=True)
+    (tmp_path / "pred").mkdir()
+    (seq / "gt" / "gt.txt").write_bytes(b"1,1,0,0,10,10,1,1,1\n2,1,0,0,10,10,1,1,\xff\n")
+    (seq / "seqinfo.ini").write_text("[Sequence]\nseqLength=3\n")
+    (tmp_path / "pred" / "seq-a.txt").write_text("1,1,0,0,10,10,0.9\n")
+    with pytest.raises(ValueError, match="gt.txt"):
+        TrackingEval().update_folders(tmp_path / "gt", tmp_path / "pred")
+
+
+@pytest.mark.parametrize("shape", [(2**32 + 5, 0), (0, 2**32 + 7), (2**32 + 5, 0, 2)])
+def test_a_mask_side_no_rle_size_holds_is_a_value_error(shape):
+    """An RLE ``size`` is two 32-bit sides. Cast, a longer side came back as the
+    side modulo 2**32 on a mask of no pixels, where pycocotools keeps it."""
+    from hotcoco import mask as hm
+
+    with pytest.raises(ValueError, match=r"2\*\*32 - 1"):
+        hm.encode(np.zeros(shape, np.uint8, order="F"))
+
+
+def test_the_tracking_error_raised_is_the_first_failing_sequences(tmp_path):
+    """Sequences are evaluated in parallel, but the error raised is the first
+    failing sequence's in name order, every run: collected straight into a
+    result, it was whichever worker failed first, and its kind varied."""
+    gt_rows = "".join(f"{f},1,0,0,10,10,1,1,1\n" for f in range(1, 30_001))
+    for name, gt_text in [("seq-a", gt_rows), ("seq-b", "1,1,0,0,10,10,1,1,1\nx\n")]:
+        seq = tmp_path / "gt" / name
+        (seq / "gt").mkdir(parents=True)
+        (seq / "gt" / "gt.txt").write_text(gt_text)
+        (seq / "seqinfo.ini").write_text("[Sequence]\nseqLength=30000\n")
+    (tmp_path / "pred").mkdir()
+    (tmp_path / "pred" / "seq-b.txt").write_text("1,1,0,0,10,10,0.9\n")
+    raised = set()
+    for _ in range(30):
+        with pytest.raises(OSError) as caught:
+            TrackingEval().update_folders(tmp_path / "gt", tmp_path / "pred")
+        raised.add((type(caught.value), str(caught.value)))
+    ((kind, message),) = raised
+    assert kind is FileNotFoundError and "seq-a" in message

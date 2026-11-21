@@ -51,6 +51,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
@@ -405,6 +407,7 @@ impl PanopticEval {
         // of finishing the corpus to report it.
         let per_image: Vec<ImageCounts> = pairs
             .par_iter()
+            .fork_safe()
             .map(|(gt_ann, pred_ann)| eval_image(gt_ann, pred_ann, &ctx))
             .collect::<crate::error::Result<_>>()?;
 

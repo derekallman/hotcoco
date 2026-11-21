@@ -51,7 +51,7 @@ yet. This page is the signatures and return shapes.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `update(name, gt, pred, *, num_frames)` | `None` | Evaluate one sequence and keep its result. `gt` and `pred` are 2-D arrays of MOTChallenge rows, `frame, id, x, y, w, h, conf, class, visibility`, as a numpy array of any integer or float dtype or a list of rows. Ground truth needs 8 columns with a benchmark and 6 without; predictions need 6. Frames run from 1 to `num_frames`. The rows are copied and evaluated without the GIL. `ValueError`, naming the sequence, on a name already evaluated, too few columns, a frame outside `1..num_frames`, a fractional or negative frame or id, a box or confidence that is not finite, a track id twice in one frame, or a benchmark's class rule; nothing is kept then. `TypeError` for an array that is not 2-D |
+| `update(name, gt, pred, *, num_frames)` | `None` | Evaluate one sequence and keep its result. `gt` and `pred` are 2-D arrays of MOTChallenge rows, `frame, id, x, y, w, h, conf, class, visibility`, as a numpy array of any integer or float dtype or a list of rows. Ground truth needs 8 columns with a benchmark and 6 without; predictions need 6. Frames run from 1 to `num_frames`. The rows are copied and evaluated without the GIL. `ValueError`, naming the sequence, on a name already evaluated, too few columns, a frame outside `1..num_frames`, a `num_frames` too large to index, a fractional or negative frame or id, a box or confidence that is not finite, a box whose far edge or area passes the largest float, a track id twice in one frame, or a benchmark's class rule; nothing is kept then. `TypeError` for an array that is not 2-D |
 | `update_folders(gt_folder, pred_folder, *, seqmap=None)` | `int` | Evaluate every sequence of a benchmark in TrackEval's layout, in parallel; returns how many. Sequence `s` is `{gt_folder}/{s}/gt/gt.txt` with the `seqLength` of `{gt_folder}/{s}/seqinfo.ini`, against `{pred_folder}/{s}.txt`. The sequences are those `seqmap` names after its header line, or every folder in `gt_folder` not starting with a dot. `FileNotFoundError` naming a missing folder or file; `ValueError` for a line that is not numbers, a `seqinfo.ini` with no `seqLength`, a sequence already evaluated, or anything `update` refuses. Nothing is kept then |
 | `merge(other)` | `None` | Add another evaluator's sequences — the shards of a distributed run. `ValueError` if the two differ in benchmark or thresholds, share a sequence, or are the same evaluator |
 | `results()` | `dict` | The combined run; see [`results()`](#results) |
@@ -70,7 +70,9 @@ yet. This page is the signatures and return shapes.
 pickles; `pickle.loads(pickle.dumps(ev))` carries the configuration and every
 sequence's result.
 
-In Rust the same names return `Result` where Python raises. `update` takes
+In Rust the same names return `Result` where Python raises, except
+`summarize_lines()` and `sequence_results()`, which are empty before the first
+sequence. `update` takes
 each side as a row-major `&[f64]` with its column count,
 `update(name, gt, gt_ncols, pred, pred_ncols, num_frames)`; `update_folders`
 takes `&Path`s and an `Option<&Path>` seqmap; `results()` returns a

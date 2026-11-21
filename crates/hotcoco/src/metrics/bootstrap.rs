@@ -58,6 +58,8 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use serde::Serialize;
 
 /// Bootstrap confidence interval for a single statistic.
@@ -128,6 +130,7 @@ where
 
     let all_samples: Vec<Vec<f64>> = (0..n_samples)
         .into_par_iter()
+        .fork_safe()
         .map(|i| {
             // Seeded per sample, so the draw does not depend on thread scheduling.
             let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(i as u64));

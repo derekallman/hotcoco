@@ -7,12 +7,14 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::ann_index::{AnnIndex, Duplicates, IdIndex};
 use crate::error::Error;
 use crate::mask;
-use crate::metrics::counts::descending_score_key;
+use crate::primitives::greedy::descending_score_key;
 use crate::primitives::sim::worth_parallel;
 use crate::types::{Annotation, Category, Dataset, Image, Rle, Segmentation, bbox_within_image};
 
@@ -109,6 +111,37 @@ fn detection_category(row: &[f64], ncols: usize) -> u64 {
     if ncols == 7 { row[6] as u64 } else { 1 }
 }
 
+/// A fraction-of-the-images argument of [`COCO::split`] or [`COCO::sample`]:
+/// in `[0, 1]`, which NaN is not.
+fn fraction(name: &str, value: f64) -> crate::error::Result<()> {
+    if (0.0..=1.0).contains(&value) {
+        return Ok(());
+    }
+    Err(Error::InvalidInput(format!(
+        "{name} must be between 0 and 1, got {value}"
+    )))
+}
+
+/// Ground-truth annotations as columns, for [`COCO::from_arrays`]: parallel,
+/// one entry per annotation, each optional column defaulted when `None`.
+#[derive(Debug, Clone, Default)]
+pub struct AnnotationColumns {
+    /// The image each annotation is on.
+    pub image_ids: Vec<u64>,
+    /// The category of each annotation.
+    pub category_ids: Vec<u64>,
+    /// COCO `[x, y, w, h]` boxes.
+    pub boxes: Vec<[f64; 4]>,
+    /// Annotation ids. Default: `1` to `n`.
+    pub ids: Option<Vec<u64>>,
+    /// Areas. Default: each box's `w * h`. Required with `segmentation`.
+    pub area: Option<Vec<f64>>,
+    /// Crowd flags. Default: all false.
+    pub iscrowd: Option<Vec<bool>>,
+    /// An RLE or polygon segmentation per annotation.
+    pub segmentation: Option<Vec<Segmentation>>,
+}
+
 /// How many rows of `ncols` columns `rows` holds.
 ///
 /// # Panics
@@ -193,7 +226,7 @@ impl Drop for COCO {
     fn drop(&mut self) {
         if self.dataset.annotations.len() >= BACKGROUND_DROP {
             let annotations = std::mem::take(&mut self.dataset.annotations);
-            rayon::spawn(move || drop(annotations));
+            crate::primitives::sim::drop_in_background(annotations);
         }
     }
 }
@@ -277,6 +310,84 @@ impl COCO {
         };
         coco.create_index();
         coco
+    }
+
+    /// Build a ground-truth dataset from columns, one entry per annotation,
+    /// with no record built until the end: the Rust side of Python's
+    /// `COCO.from_arrays`. The result equals [`from_dataset`](Self::from_dataset)
+    /// over the same annotations, built one by one.
+    ///
+    /// Each annotation gets the id `ids[i]`, or `i + 1` without `ids`; the
+    /// area `area[i]`, or its box's `w * h` without `area`; and `iscrowd[i]`,
+    /// or false without `iscrowd`.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` for a column whose length differs from `image_ids`', and
+    /// for `segmentation` without `area`, because the box area would not
+    /// match the mask.
+    pub fn from_arrays(
+        images: Vec<Image>,
+        categories: Vec<Category>,
+        columns: AnnotationColumns,
+    ) -> crate::error::Result<COCO> {
+        let AnnotationColumns {
+            image_ids,
+            category_ids,
+            boxes,
+            ids,
+            area,
+            iscrowd,
+            segmentation,
+        } = columns;
+        let n = image_ids.len();
+        let same_length = |name: &str, len: usize| {
+            if len == n {
+                Ok(())
+            } else {
+                Err(Error::InvalidInput(format!(
+                    "from_arrays: {name} has {len} entries but image_ids has {n}"
+                )))
+            }
+        };
+        same_length("category_ids", category_ids.len())?;
+        same_length("boxes", boxes.len())?;
+        for (name, len) in [
+            ("ids", ids.as_ref().map(Vec::len)),
+            ("area", area.as_ref().map(Vec::len)),
+            ("iscrowd", iscrowd.as_ref().map(Vec::len)),
+            ("segmentation", segmentation.as_ref().map(Vec::len)),
+        ] {
+            if let Some(len) = len {
+                same_length(name, len)?;
+            }
+        }
+        if segmentation.is_some() && area.is_none() {
+            return Err(Error::InvalidInput(
+                "from_arrays: area is required with segmentation, because the box \
+                 area would not match the mask"
+                    .into(),
+            ));
+        }
+        let mut segmentation = segmentation.map(Vec::into_iter);
+        let annotations = (0..n)
+            .map(|i| Annotation {
+                id: ids.as_ref().map_or(i as u64 + 1, |ids| ids[i]),
+                image_id: image_ids[i],
+                category_id: category_ids[i],
+                bbox: Some(boxes[i]),
+                area: Some(area.as_ref().map_or(boxes[i][2] * boxes[i][3], |a| a[i])),
+                iscrowd: iscrowd.as_ref().is_some_and(|c| c[i]),
+                segmentation: segmentation.as_mut().and_then(Iterator::next),
+                ..Default::default()
+            })
+            .collect();
+        Ok(COCO::from_dataset(Dataset {
+            images,
+            annotations,
+            categories,
+            ..Default::default()
+        }))
     }
 
     /// This `COCO` over a replaced dataset, re-indexed, with the rest of its
@@ -711,16 +822,14 @@ impl COCO {
     /// integral, naming the first such row: cast to an integer, NaN and
     /// negatives would saturate to 0, which is a real id in some datasets, and
     /// `1.5` would silently become id 1. pycocotools' `int()` raises on NaN.
-    ///
-    /// # Panics
-    ///
-    /// If `ncols` is not 6 or 7, or `rows` is not a whole number of rows.
+    /// Also `ncols` other than 6 or 7, or `rows` that is not a whole number
+    /// of rows.
     pub fn detections_from_rows(
         rows: &[f64],
         ncols: usize,
     ) -> crate::error::Result<Vec<Annotation>> {
         Self::check_detection_rows(rows, ncols)?;
-        let parallel = worth_parallel(detection_row_count(rows, ncols));
+        let parallel = worth_parallel(rows.len() / ncols);
         let detection = |row: &[f64]| Annotation {
             image_id: row[0] as u64,
             category_id: detection_category(row, ncols),
@@ -729,16 +838,31 @@ impl COCO {
             ..Default::default()
         };
         Ok(if parallel {
-            rows.par_chunks_exact(ncols).map(detection).collect()
+            rows.par_chunks_exact(ncols)
+                .fork_safe()
+                .map(detection)
+                .collect()
         } else {
             rows.chunks_exact(ncols).map(detection).collect()
         })
     }
 
     /// [`detections_from_rows`](Self::detections_from_rows)' check of the
-    /// rows' ids, which [`DetectionColumns::check_rows`] runs too.
+    /// rows' shape and ids, which [`DetectionColumns::check_rows`] runs too.
     fn check_detection_rows(rows: &[f64], ncols: usize) -> crate::error::Result<()> {
-        let n = detection_row_count(rows, ncols);
+        if ncols != 6 && ncols != 7 {
+            return Err(Error::InvalidInput(format!(
+                "detections must have 6 or 7 columns \
+                 [image_id, x, y, w, h, score[, category_id]], got {ncols}"
+            )));
+        }
+        if rows.len() % ncols != 0 {
+            return Err(Error::InvalidInput(format!(
+                "detections: {} values is not a whole number of {ncols}-column rows",
+                rows.len()
+            )));
+        }
+        let n = rows.len() / ncols;
         let valid = |v: f64| crate::types::id_from_f64(v).is_some();
         // Ids are checked in a read of the rows first, so the records can be
         // written straight into the result: collecting a fallible map in
@@ -758,6 +882,7 @@ impl COCO {
         if parallel
             && rows
                 .par_chunks_exact(ncols)
+                .fork_safe()
                 .enumerate()
                 .all(|row| first_bad(row).is_none())
         {
@@ -765,6 +890,7 @@ impl COCO {
         }
         let bad = if parallel {
             rows.par_chunks_exact(ncols)
+                .fork_safe()
                 .enumerate()
                 .find_map_first(first_bad)
         } else {
@@ -814,7 +940,7 @@ impl COCO {
             }
         };
         if matches!(kind, Some(ResultKind::Segm)) || worth_parallel(anns.len()) {
-            anns.par_iter_mut().enumerate().for_each(fill);
+            anns.par_iter_mut().fork_safe().enumerate().for_each(fill);
         } else {
             anns.iter_mut().enumerate().for_each(fill);
         }
@@ -902,6 +1028,7 @@ impl COCO {
         let ([first_nan, first_img, first_cat], (n, m)) = if worth_parallel(n) {
             (0..n)
                 .into_par_iter()
+                .fork_safe()
                 .fold(
                     || (none, None),
                     |(acc, mut memo), i| {
@@ -976,6 +1103,7 @@ impl COCO {
         // Usually none: every evaluator runs this over both datasets.
         let missing: Vec<usize> = if worth_parallel(anns.len()) {
             anns.par_iter()
+                .fork_safe()
                 .positions(|ann| ann.area.is_none())
                 .collect()
         } else {
@@ -1011,7 +1139,7 @@ impl COCO {
             Some((i, area))
         };
         if worth_parallel(missing.len()) {
-            missing.par_iter().filter_map(derive).collect()
+            missing.par_iter().fork_safe().filter_map(derive).collect()
         } else {
             missing.iter().filter_map(derive).collect()
         }
@@ -1143,7 +1271,7 @@ impl COCO {
         // the shared threshold, still naming the first offender.
         let is_nan = |ann: &Annotation| ann.score.is_some_and(f64::is_nan);
         let first = if worth_parallel(anns.len()) {
-            anns.par_iter().position_first(is_nan)
+            anns.par_iter().fork_safe().position_first(is_nan)
         } else {
             anns.iter().position(is_nan)
         };
@@ -1621,14 +1749,30 @@ impl COCO {
     ///
     /// Images are shuffled deterministically using `seed`, then partitioned.
     /// All splits share the full category list.
+    ///
+    /// # Errors
+    ///
+    /// A fraction outside `[0, 1]` (NaN included), or `val_frac + test_frac`
+    /// over 1. Neither is clamped: clamping makes `val_frac = -1` an empty
+    /// validation set and `0.9 + 0.9` a test set of a tenth.
     pub fn split(
         &self,
         val_frac: f64,
         test_frac: Option<f64>,
         seed: u64,
-    ) -> (Dataset, Dataset, Option<Dataset>) {
+    ) -> crate::error::Result<(Dataset, Dataset, Option<Dataset>)> {
         use rand::SeedableRng;
         use rand::seq::SliceRandom;
+
+        fraction("val_frac", val_frac)?;
+        if let Some(test_frac) = test_frac {
+            fraction("test_frac", test_frac)?;
+            if val_frac + test_frac > 1.0 {
+                return Err(Error::InvalidInput(format!(
+                    "val_frac + test_frac must be at most 1, got {val_frac} + {test_frac}"
+                )));
+            }
+        }
 
         let mut img_ids: Vec<u64> = self.dataset.images.iter().map(|img| img.id).collect();
         let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
@@ -1653,16 +1797,29 @@ impl COCO {
         let val = self.subset_by_img_ids(val_ids);
         let test = test_ids.map(|ids| self.subset_by_img_ids(ids));
 
-        (train, val, test)
+        Ok((train, val, test))
     }
 
     /// Sample a random subset of images (with their annotations).
     ///
     /// Provide either `n` (exact count) or `frac` (fraction of images).
     /// The sample is deterministic given the same `seed`.
-    pub fn sample(&self, n: Option<usize>, frac: Option<f64>, seed: u64) -> Dataset {
+    ///
+    /// # Errors
+    ///
+    /// A `frac` outside `[0, 1]`, NaN included.
+    pub fn sample(
+        &self,
+        n: Option<usize>,
+        frac: Option<f64>,
+        seed: u64,
+    ) -> crate::error::Result<Dataset> {
         use rand::SeedableRng;
         use rand::seq::SliceRandom;
+
+        if let Some(frac) = frac {
+            fraction("frac", frac)?;
+        }
 
         let total = self.dataset.images.len();
         let count = match (n, frac) {
@@ -1677,7 +1834,7 @@ impl COCO {
         let mut rng = rand::rngs::SmallRng::seed_from_u64(seed);
         img_ids.shuffle(&mut rng);
 
-        self.subset_by_img_ids(&img_ids[..count])
+        Ok(self.subset_by_img_ids(&img_ids[..count]))
     }
 
     /// Run a health check on this dataset.
@@ -1734,11 +1891,8 @@ impl DetectionColumns {
     ///
     /// # Errors
     ///
-    /// An `image_id` or `category_id` that is not a non-negative integer.
-    ///
-    /// # Panics
-    ///
-    /// `ncols` not 6 or 7, or a partial row.
+    /// `ncols` not 6 or 7, a partial row, or an `image_id` or `category_id`
+    /// that is not a non-negative integer.
     pub fn check_rows(rows: &[f64], ncols: usize) -> crate::error::Result<()> {
         COCO::check_detection_rows(rows, ncols)
     }
@@ -1782,7 +1936,7 @@ impl DetectionColumns {
         });
         let fields = |row: &[f64]| ([row[1], row[2], row[3], row[4]], row[5]);
         let (boxes, scores): (Vec<[f64; 4]>, Vec<f64>) = if worth_parallel(n) {
-            rows.par_chunks_exact(ncols).map(fields).unzip()
+            rows.par_chunks_exact(ncols).fork_safe().map(fields).unzip()
         } else {
             rows.chunks_exact(ncols).map(fields).unzip()
         };

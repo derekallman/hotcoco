@@ -32,8 +32,10 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use crate::metrics::counts::descending_score_key;
+use crate::primitives::sim::ForkSafe;
+
 use crate::params::Params;
+use crate::primitives::greedy::descending_score_key;
 use crate::primitives::greedy::{GreedyMatches, GroupOfBoxes, GtMasks, ThreshMatrix};
 
 use super::iou::AnnIds;
@@ -288,7 +290,11 @@ impl Cells {
                 })
         };
         let runs: Vec<(usize, usize, usize)> = match run_len {
-            Some(run_len) => pairs.par_chunks(run_len).map(count_run).collect(),
+            Some(run_len) => pairs
+                .par_chunks(run_len)
+                .fork_safe()
+                .map(count_run)
+                .collect(),
             None => vec![count_run(pairs)],
         };
         let (n_pairs, n_scores, n_words) =
@@ -299,8 +305,9 @@ impl Cells {
         // element by element on one thread, and at a detector's pair count
         // they are megabytes.
         let headers = if run_len.is_some() {
-            (0..=n_pairs)
+            (0..n_pairs + 1)
                 .into_par_iter()
+                .fork_safe()
                 .map(|_| PairHeader::default())
                 .collect()
         } else {
@@ -360,7 +367,8 @@ impl Cells {
         match run_len {
             Some(run_len) => writers
                 .par_iter_mut()
-                .zip(pairs.par_chunks(run_len))
+                .fork_safe()
+                .zip(pairs.par_chunks(run_len).fork_safe())
                 .for_each(write),
             None => write((&mut writers[0], pairs)),
         }

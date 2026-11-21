@@ -64,7 +64,7 @@ signatures and return shapes.
 | `confusion()` | `ndarray[uint64]` | The `(num_classes, num_classes)` matrix behind every number but boundary IoU: row the ground-truth class, column the predicted class |
 | `summarize()` | `None` | Print one row per class with IoU, Acc, Dice, and BIoU in percent, then the six means |
 | `summary_lines()` | `list[str]` | The same table as strings, without printing |
-| `stats` | `list[float]` | The six means as fractions, in `METRIC_NAMES` order; `-1.0` for `mBIoU` when boundary IoU is off |
+| `stats` | `list[float]` | The six means as fractions, in `METRIC_NAMES` order; `-1.0` where nothing was counted, and for `mBIoU` when boundary IoU is off |
 | `class_names`, `num_classes`, `n_images` | | The configuration and how many updates were counted: one per `update` call, so an `(N, H, W)` batch is one, and one per PNG pair |
 | `results()` | `dict` | The results shape, below |
 | `report()` | `dict` | The [`EvalReport`](cocoeval.md#report) every family produces |
@@ -75,7 +75,9 @@ signatures and return shapes.
 `RuntimeError` before the first update. An evaluator pickles; `pickle.loads(pickle.dumps(ev))` carries the
 configuration, the matrix, and the boundary counts, which is what
 `torch.distributed`'s `all_gather_object` needs. In Rust the same names
-return `Result` where Python raises, `update` is generic over any integer
+return `Result` where Python raises on bad input; the readers do not check for
+an update, and before one give the `-1.0` means and an empty table, so check
+`n_images()` first. `update` is generic over any integer
 slice type on either side and takes the map's height and width (a batch is
 several maps one after another), `update_maps` takes two `LabelMap`s of
 run-time width, `results()` returns a `SemanticResults` with `to_json()` and

@@ -114,7 +114,7 @@ just build
 uv run python -c "import hotcoco"
 ```
 
-Then run `uv run pytest tests/test_stubs.py`. The four hand-written `.pyi` files
+Then run `uv run pytest tests/test_stubs.py`. The eight hand-written `.pyi` files
 don't update themselves, and the test compares them against the extension in **both**
 directions — a member the stub omits is invisible to autocomplete, and one the stub
 invents is worse, because an IDE offers it and the call fails at runtime.
@@ -180,6 +180,7 @@ scripts regenerate them. What each reference comparison checks:
 | `test_parity_panoptic.py` | panopticapi, run live on synthetic label maps: per-category counts exactly, PQ/SQ/RQ to 1e-9, and the PNG-free mask path against the PNG path, numbers and `eval_imgs` records both |
 | `test_parity_semantic.py`, `crates/hotcoco/tests/semantic.rs` | frozen output of mmsegmentation `IoUMetric`, torchmetrics, and detectron2 `SemSegEvaluator` on synthetic label maps (`just gen-semantic-fixtures` regenerates it; needs torch): mmseg to 1e-9, torchmetrics to 1e-6, and detectron2 differing exactly where its convention does |
 | `test_parity_tracking.py`, `crates/hotcoco/tests/tracking.rs` | frozen output of TrackEval's HOTA, CLEAR, Identity, and Count on synthetic MOTChallenge sequences (`just gen-tracking-fixtures` regenerates it, in its own `.venv-trackeval`, since TrackEval needs numpy below 1.24): every field, per sequence and combined, integers exactly and floats to the bit, from arrays and from the folder layout, and every input TrackEval refuses is refused here too, except the two accepted by design |
+| `test_image_dims.py` | Pillow's `Image.size`, for the image sizes `from_yolo`, `from_dota`, and `from_oid` read from `images_dir`: every format the converters look for, written by Pillow |
 | `test_obb_eval.py` | IoU worked out by hand, for oriented-box evaluation at the 0.50 threshold |
 | `test_composed_metrics.py` | the family drivers, with `==`: PQ written in Python from `primitives.segment_overlaps`, `match_segments`, and `metrics.panoptic_quality` against `PanopticEval` on `test_parity_panoptic.py`'s cases, and `primitives.greedy_match` against every match in `COCOeval`'s `evalImgs` and the counts `accumulate()` takes from them |
 | `test_build_your_own_metric.py` | the family drivers, running the code on `docs/guide/custom-metrics.md` itself: every `python` block on the page runs in order, then its precision/recall counts against `COCOeval`'s `evalImgs`, its confusion table against `COCOeval.confusion_matrix()`, and its PQ against `PanopticEval`. Edit the page and this test runs the edit |

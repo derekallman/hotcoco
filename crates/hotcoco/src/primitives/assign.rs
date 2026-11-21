@@ -18,6 +18,8 @@
 //! - the `remaining` scan order (`nc-1 .. 0`, with swap-removal) is part of the
 //!   contract, so it is reproduced exactly.
 
+use crate::error::Error;
+
 const NONE: usize = usize::MAX;
 
 /// Scratch state for one solve. Holding the working buffers on a struct keeps the
@@ -167,23 +169,21 @@ impl<'a> Solver<'a> {
 ///
 /// # Panics
 ///
-/// If `cost.len() != nr * nc`, or if the matrix is infeasible (which for this
-/// solver means non-finite entries). Both are asserted rather than left to
-/// produce a downstream index panic. [`try_lsap`] returns the second as an
-/// error instead.
+/// If `cost.len() != nr * nc`, or on any matrix [`try_lsap`] returns an error
+/// for: one holding NaN, or with no assignment of finite total cost. Both are
+/// asserted rather than left to produce a downstream index panic.
 pub fn lsap(cost: &[f64], nr: usize, nc: usize, maximize: bool) -> (Vec<usize>, Vec<usize>) {
-    match try_lsap(cost, nr, nc, maximize) {
-        Some(assignment) => assignment,
-        None => {
-            panic!("lsap: cost matrix is infeasible — it likely contains NaN or infinite entries")
-        }
-    }
+    try_lsap(cost, nr, nc, maximize).unwrap_or_else(|e| panic!("lsap: {e}"))
 }
 
-/// [`lsap`] for costs that may not be finite: `None` for an infeasible
-/// matrix — no complete assignment of finite total cost — which is a
-/// `ValueError` from scipy and a panic from `lsap`. A matrix with some
-/// infinite entries is still solved when a finite assignment exists.
+/// [`lsap`] for costs that may not be finite. A matrix with some infinite
+/// entries is still solved when a finite assignment exists.
+///
+/// # Errors
+///
+/// `InvalidInput` for a matrix holding NaN, whose assignment is undefined,
+/// and for one whose infinite entries leave no complete assignment of finite
+/// total cost, which is a `ValueError` from scipy too.
 ///
 /// # Panics
 ///
@@ -193,15 +193,16 @@ pub fn try_lsap(
     nr: usize,
     nc: usize,
     maximize: bool,
-) -> Option<(Vec<usize>, Vec<usize>)> {
+) -> crate::error::Result<(Vec<usize>, Vec<usize>)> {
     if nr == 0 || nc == 0 {
-        return Some((Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new()));
     }
     assert_eq!(
         cost.len(),
         nr * nc,
         "lsap: cost must be nr*nc row-major ({nr}x{nc})"
     );
+    crate::primitives::greedy::check_no_nan(cost, "cost", "the assignment")?;
 
     // Work on rows <= cols; transpose the cost matrix if the input is tall.
     let transpose = nc < nr;
@@ -228,7 +229,10 @@ pub fn try_lsap(
 
     let mut solver = Solver::new(c, rn, cn);
     if !solver.solve() {
-        return None;
+        return Err(Error::InvalidInput(
+            "cost has no assignment of finite total cost: its infinite entries block every one"
+                .into(),
+        ));
     }
     let col4row = solver.col4row;
 
@@ -249,7 +253,7 @@ pub fn try_lsap(
             col_ind.push(c4r);
         }
     }
-    Some((row_ind, col_ind))
+    Ok((row_ind, col_ind))
 }
 
 #[cfg(test)]
@@ -412,34 +416,48 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "infeasible")]
+    #[should_panic(expected = "no assignment of finite total cost")]
     fn all_non_finite_row_reports_infeasible_not_index_oob() {
         // A row with no finite entry leaves the shortest-path scan stuck at
         // INFINITY, so no sink is found. Before this was a real assert, the
         // augmentation then indexed `path[usize::MAX]` and panicked out of bounds
-        // with no clue as to the cause. A single NaN is *not* enough — any finite
-        // entry in the row still yields a reachable column.
-        lsap(&[1.0, 2.0, f64::NAN, f64::NAN], 2, 2, false);
+        // with no clue as to the cause.
+        lsap(&[1.0, 2.0, f64::INFINITY, f64::INFINITY], 2, 2, false);
     }
 
-    /// `try_lsap` reports the same matrices as `None`, either direction, and
-    /// still solves one whose infinite entries leave a finite assignment.
     #[test]
-    fn try_lsap_returns_none_for_an_infeasible_matrix() {
+    #[should_panic(expected = "NaN")]
+    fn a_nan_cost_panics_naming_it() {
+        // One NaN beside finite entries would still reach a column, and the
+        // solver would return an assignment that means nothing.
+        lsap(&[1.0, f64::NAN, 2.0, 3.0], 2, 2, false);
+    }
+
+    /// `try_lsap` reports the same matrices as an error, either direction,
+    /// and still solves one whose infinite entries leave a finite assignment.
+    #[test]
+    fn try_lsap_returns_an_error_for_an_infeasible_matrix() {
         let inf = f64::INFINITY;
         for (cost, maximize) in [
             ([inf, inf, inf, inf], false),
             ([-inf, 1.0, 1.0, 2.0], false),
             ([inf, 1.0, 1.0, 2.0], true),
         ] {
-            assert_eq!(
-                try_lsap(&cost, 2, 2, maximize),
-                None,
+            assert!(
+                matches!(try_lsap(&cost, 2, 2, maximize), Err(Error::InvalidInput(m)) if m.contains("finite")),
                 "{cost:?} maximize={maximize}"
             );
         }
-        let solved = try_lsap(&[inf, 1.0, 1.0, inf], 2, 2, false);
-        assert_eq!(solved, Some((vec![0, 1], vec![1, 0])));
+        let solved =
+            try_lsap(&[inf, 1.0, 1.0, inf], 2, 2, false).expect("a finite assignment exists");
+        assert_eq!(solved, (vec![0, 1], vec![1, 0]));
+        // NaN anywhere is its own error, before the solver runs.
+        for maximize in [false, true] {
+            assert!(matches!(
+                try_lsap(&[1.0, f64::NAN, 2.0, 3.0], 2, 2, maximize),
+                Err(Error::InvalidInput(m)) if m.contains("NaN")
+            ));
+        }
     }
 
     #[test]

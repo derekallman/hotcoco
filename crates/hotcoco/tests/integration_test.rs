@@ -991,7 +991,7 @@ fn test_split_coverage() {
     let coco = COCO::new(&gt_path).expect("Failed to load GT");
 
     // 3 images, val_frac=0.33 → 1 val, 2 train (round(3*0.33)=1)
-    let (train, val, test) = coco.split(0.33, None, 42);
+    let (train, val, test) = coco.split(0.33, None, 42).unwrap();
     assert!(test.is_none());
 
     let all_ids: HashSet<u64> = coco.dataset.images.iter().map(|i| i.id).collect();
@@ -1021,8 +1021,8 @@ fn test_split_determinism() {
     let gt_path = fixtures_dir().join("gt.json");
     let coco = COCO::new(&gt_path).expect("Failed to load GT");
 
-    let (train1, val1, _) = coco.split(0.33, None, 42);
-    let (train2, val2, _) = coco.split(0.33, None, 42);
+    let (train1, val1, _) = coco.split(0.33, None, 42).unwrap();
+    let (train2, val2, _) = coco.split(0.33, None, 42).unwrap();
 
     let train1_ids: Vec<u64> = {
         let mut v: Vec<u64> = train1.images.iter().map(|i| i.id).collect();
@@ -1057,7 +1057,7 @@ fn test_split_determinism() {
     let images: Vec<Image> = (1..=12).map(img).collect();
     let big = COCO::from_dataset(dataset(images, vec![cat(1, "thing")], vec![]));
     let val_ids = |seed: u64| -> HashSet<u64> {
-        let (_, val, _) = big.split(0.5, None, seed);
+        let (_, val, _) = big.split(0.5, None, seed).unwrap();
         val.images.iter().map(|i| i.id).collect()
     };
     let baseline = val_ids(0);
@@ -1072,7 +1072,7 @@ fn test_sample_n() {
     let gt_path = fixtures_dir().join("gt.json");
     let coco = COCO::new(&gt_path).expect("Failed to load GT");
 
-    let sampled = coco.sample(Some(2), None, 42);
+    let sampled = coco.sample(Some(2), None, 42).unwrap();
     assert_eq!(sampled.images.len(), 2);
 
     // All annotations belong to sampled images
@@ -1145,8 +1145,8 @@ fn test_sample_determinism() {
     let gt_path = fixtures_dir().join("gt.json");
     let coco = COCO::new(&gt_path).expect("Failed to load GT");
 
-    let s1 = coco.sample(Some(2), None, 42);
-    let s2 = coco.sample(Some(2), None, 42);
+    let s1 = coco.sample(Some(2), None, 42).unwrap();
+    let s2 = coco.sample(Some(2), None, 42).unwrap();
 
     let ids1: HashSet<u64> = s1.images.iter().map(|i| i.id).collect();
     let ids2: HashSet<u64> = s2.images.iter().map(|i| i.id).collect();
@@ -1167,7 +1167,7 @@ fn ten_image_coco() -> COCO {
 #[test]
 fn test_split_three_way() {
     let coco = ten_image_coco();
-    let (train, val, test) = coco.split(0.2, Some(0.3), 7);
+    let (train, val, test) = coco.split(0.2, Some(0.3), 7).unwrap();
     let test = test.expect("test_frac requested a third split");
 
     // 10 images: round(10·0.2) = 2 val, round(10·0.3) = 3 test, 5 train.
@@ -1198,7 +1198,7 @@ fn test_split_three_way() {
 fn test_sample_frac() {
     let coco = ten_image_coco();
 
-    let half = coco.sample(None, Some(0.5), 42);
+    let half = coco.sample(None, Some(0.5), 42).unwrap();
     assert_eq!(half.images.len(), 5);
     let img_ids: HashSet<u64> = half.images.iter().map(|i| i.id).collect();
     for a in &half.annotations {
@@ -1207,14 +1207,49 @@ fn test_sample_frac() {
     assert_eq!(half.categories.len(), coco.dataset.categories.len());
 
     // The count truncates: 10 · 0.35 = 3.5 → 3 images.
-    assert_eq!(coco.sample(None, Some(0.35), 42).images.len(), 3);
+    assert_eq!(coco.sample(None, Some(0.35), 42).unwrap().images.len(), 3);
     // ...a whole product a float falls just short of is not truncated away:
     // 10 · 0.7 is 7, though the product is 7.000000000000001 or 6.999….
     for (frac, n) in [(0.7, 7), (0.3, 3), (0.6, 6), (0.29, 2)] {
-        assert_eq!(coco.sample(None, Some(frac), 42).images.len(), n, "{frac}");
+        assert_eq!(
+            coco.sample(None, Some(frac), 42).unwrap().images.len(),
+            n,
+            "{frac}"
+        );
     }
-    // A fraction over 1.0 clamps to the whole dataset.
-    assert_eq!(coco.sample(None, Some(1.5), 42).images.len(), 10);
+    assert_eq!(coco.sample(None, Some(1.0), 42).unwrap().images.len(), 10);
+}
+
+/// A fraction outside `[0, 1]` is an error from core, never clamped: clamping
+/// makes `val_frac = -1` an empty validation set and `0.9 + 0.9` a test set of
+/// a tenth. The Python binding raises these errors as they are.
+#[test]
+fn split_and_sample_refuse_fractions_outside_zero_to_one() {
+    let coco = ten_image_coco();
+    let says = |r: hotcoco::error::Result<()>, what: &str| match r {
+        Err(hotcoco::Error::InvalidInput(m)) => assert!(m.contains(what), "{m}"),
+        other => panic!("{what}: {other:?}"),
+    };
+    for bad in [-0.1, 1.5, f64::NAN] {
+        says(
+            coco.sample(None, Some(bad), 0).map(|_| ()),
+            "frac must be between 0 and 1",
+        );
+        says(
+            coco.split(bad, None, 0).map(|_| ()),
+            "val_frac must be between 0 and 1",
+        );
+        says(
+            coco.split(0.1, Some(bad), 0).map(|_| ()),
+            "test_frac must be between 0 and 1",
+        );
+    }
+    says(
+        coco.split(0.9, Some(0.9), 0).map(|_| ()),
+        "val_frac + test_frac must be at most 1",
+    );
+    assert!(coco.split(0.5, Some(0.5), 0).is_ok());
+    assert!(coco.split(0.0, Some(0.0), 0).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -5929,6 +5964,31 @@ fn fractional_detection_row_id_is_rejected() {
     }
 }
 
+/// Rows of the wrong width, or a partial row, are an input error from both
+/// readers of detection rows, not a panic: the Python binding raises this
+/// error as the `ValueError` it shows.
+#[test]
+fn detection_rows_of_the_wrong_shape_are_an_error() {
+    let ok = [1.0, 10.0, 10.0, 50.0, 50.0, 0.9];
+    let cases: [(&[f64], usize, &str); 4] = [
+        (&ok[..5], 5, "6 or 7 columns"),
+        (&ok, 0, "6 or 7 columns"),
+        (&[1.0; 8], 8, "6 or 7 columns"),
+        (&ok[..5], 6, "whole number"),
+    ];
+    for (rows, ncols, says) in cases {
+        for result in [
+            COCO::detections_from_rows(rows, ncols).map(|_| ()),
+            hotcoco::DetectionColumns::check_rows(rows, ncols),
+        ] {
+            match result {
+                Err(hotcoco::Error::InvalidInput(m)) => assert!(m.contains(says), "{m}"),
+                other => panic!("{ncols} columns over {} values: {other:?}", rows.len()),
+            }
+        }
+    }
+}
+
 /// `load_res_anns` warns once per mismatch kind, not once per offending
 /// annotation.
 ///
@@ -7549,4 +7609,150 @@ fn streaming_matches_batch_on_keypoints() {
         IouType::Keypoints,
     );
     assert_streams_like_batch(&gt_ds, &dt_ds, batch);
+}
+
+/// `COCO::from_arrays` builds what `from_dataset` builds over the same
+/// annotations one by one, defaults included: ids `1..=n`, areas `w * h`, no
+/// crowd. A column of the wrong length, or masks without areas, is an input
+/// error, which the Python binding raises as `ValueError`.
+#[test]
+fn from_arrays_equals_from_dataset_and_checks_its_columns() {
+    use hotcoco::AnnotationColumns;
+    let images: Vec<Image> = (1..=2)
+        .map(|id| Image {
+            id,
+            height: 100,
+            width: 100,
+            ..Default::default()
+        })
+        .collect();
+    let categories = vec![Category {
+        id: 7,
+        name: "a".into(),
+        ..Default::default()
+    }];
+    let boxes = vec![
+        [1.0, 2.0, 10.0, 20.0],
+        [5.0, 5.0, 3.0, 4.0],
+        [0.0, 0.0, 1.0, 1.0],
+    ];
+    let columns = AnnotationColumns {
+        image_ids: vec![1, 2, 2],
+        category_ids: vec![7, 7, 7],
+        boxes: boxes.clone(),
+        ..Default::default()
+    };
+    let got = COCO::from_arrays(images.clone(), categories.clone(), columns.clone()).unwrap();
+    let records: Vec<Annotation> = (0..3)
+        .map(|i| Annotation {
+            id: i as u64 + 1,
+            image_id: [1, 2, 2][i],
+            category_id: 7,
+            bbox: Some(boxes[i]),
+            area: Some(boxes[i][2] * boxes[i][3]),
+            ..Default::default()
+        })
+        .collect();
+    let want = COCO::from_dataset(Dataset {
+        images: images.clone(),
+        categories: categories.clone(),
+        annotations: records,
+        ..Default::default()
+    });
+    let json = |d: &Dataset| serde_json::to_value(d).unwrap();
+    assert_eq!(json(&got.dataset), json(&want.dataset));
+
+    let rle = Segmentation::UncompressedRle {
+        size: [100, 100],
+        counts: vec![10, 5, 9985],
+    };
+    let given = COCO::from_arrays(
+        images.clone(),
+        categories.clone(),
+        AnnotationColumns {
+            ids: Some(vec![30, 10, 20]),
+            area: Some(vec![1.0, 2.0, 3.0]),
+            iscrowd: Some(vec![false, true, false]),
+            segmentation: Some(vec![rle.clone(), rle.clone(), rle.clone()]),
+            ..columns.clone()
+        },
+    )
+    .unwrap();
+    let anns = &given.dataset.annotations;
+    assert_eq!(anns.iter().map(|a| a.id).collect::<Vec<_>>(), [30, 10, 20]);
+    assert_eq!(
+        anns.iter().map(|a| a.area).collect::<Vec<_>>(),
+        [Some(1.0), Some(2.0), Some(3.0)]
+    );
+    assert_eq!(
+        anns.iter().map(|a| a.iscrowd).collect::<Vec<_>>(),
+        [false, true, false]
+    );
+    let seg_json = serde_json::to_value(&rle).unwrap();
+    assert!(anns.iter().all(|a| {
+        a.segmentation
+            .as_ref()
+            .map(|s| serde_json::to_value(s).unwrap())
+            == Some(seg_json.clone())
+    }));
+
+    let refused = |c: AnnotationColumns, says: &str| match COCO::from_arrays(
+        images.clone(),
+        categories.clone(),
+        c,
+    ) {
+        Err(hotcoco::Error::InvalidInput(m)) => assert!(m.contains(says), "{m}"),
+        other => panic!("{says}: {:?}", other.map(|c| c.dataset.annotations.len())),
+    };
+    let short = |c: &AnnotationColumns| AnnotationColumns { ..c.clone() };
+    refused(
+        AnnotationColumns {
+            category_ids: vec![7],
+            ..short(&columns)
+        },
+        "category_ids has 1 entries but image_ids has 3",
+    );
+    refused(
+        AnnotationColumns {
+            boxes: vec![],
+            ..short(&columns)
+        },
+        "boxes has 0 entries",
+    );
+    refused(
+        AnnotationColumns {
+            ids: Some(vec![1]),
+            ..short(&columns)
+        },
+        "ids has 1 entries",
+    );
+    refused(
+        AnnotationColumns {
+            area: Some(vec![1.0; 4]),
+            ..short(&columns)
+        },
+        "area has 4 entries",
+    );
+    refused(
+        AnnotationColumns {
+            iscrowd: Some(vec![]),
+            ..short(&columns)
+        },
+        "iscrowd has 0 entries",
+    );
+    refused(
+        AnnotationColumns {
+            area: Some(vec![1.0; 3]),
+            segmentation: Some(vec![rle.clone()]),
+            ..short(&columns)
+        },
+        "segmentation has 1 entries",
+    );
+    refused(
+        AnnotationColumns {
+            segmentation: Some(vec![rle.clone(), rle.clone(), rle]),
+            ..short(&columns)
+        },
+        "area is required with segmentation",
+    );
 }

@@ -18,7 +18,7 @@
 
 use rustc_hash::FxHashMap;
 
-use crate::metrics::sum::pairwise_sum;
+use crate::metrics::sum::buffered_pairwise_sum;
 use crate::metrics::tracking::{
     AssociationScores, ClearCounts, ClearResult, CountResult, HotaResult, IdentityCounts,
     IdentityResult, NUM_ALPHAS, association_scores, fragmentations, hota_alphas, track_coverage,
@@ -132,8 +132,10 @@ impl Tracks {
 
 /// HOTA's first pass over one frame: each similarity normalized by
 /// `sim / (column sum + row sum − sim)` where that is above `ε`, added to its
-/// track pair's soft count. Row sums are numpy's pairwise sums along a row,
-/// column sums its serial ones down a column.
+/// track pair's soft count. Row sums are numpy 1.23's reductions of a
+/// contiguous row; column sums are its serial ones down a column, except in a
+/// frame with one prediction, where numpy drops the length-1 axis and reduces
+/// the one column as it reduces a row.
 fn add_soft_matches(
     sim: &[f64],
     gids: &[usize],
@@ -142,13 +144,18 @@ fn add_soft_matches(
     soft: &mut [f64],
 ) {
     let np = pids.len();
-    let row_sums: Vec<f64> = sim.chunks_exact(np).map(pairwise_sum).collect();
-    let mut col_sums = vec![0.0f64; np];
-    for row in sim.chunks_exact(np) {
-        for (c, &s) in col_sums.iter_mut().zip(row) {
-            *c += s;
+    let row_sums: Vec<f64> = sim.chunks_exact(np).map(buffered_pairwise_sum).collect();
+    let col_sums = if np == 1 {
+        vec![buffered_pairwise_sum(sim)]
+    } else {
+        let mut col_sums = vec![0.0f64; np];
+        for row in sim.chunks_exact(np) {
+            for (c, &s) in col_sums.iter_mut().zip(row) {
+                *c += s;
+            }
         }
-    }
+        col_sums
+    };
     for (i, &gt_track) in gids.iter().enumerate() {
         for (j, &pred_track) in pids.iter().enumerate() {
             let s = sim[i * np + j];
@@ -415,6 +422,7 @@ fn identity(tracks: &Tracks, id_matches: &[u64], n_gt: u64) -> IdentityResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metrics::sum::pairwise_sum;
 
     /// HOTA's first pass against TrackEval's lines run under numpy 1.23.5 on
     /// a 3 × 12 frame: row sums are pairwise along a row, and a serial row
@@ -446,6 +454,47 @@ mod tests {
             "the frame no longer tells pairwise row sums from serial ones"
         );
     }
+
+    /// The same pass on a 12 × 1 frame, one prediction: numpy drops the
+    /// length-1 axis of `similarity.sum(0)` and sums the column pairwise, as
+    /// it sums a row, where a serial column sum lands every one of these
+    /// cells on other bits.
+    #[test]
+    fn a_one_prediction_frame_sums_its_column_as_numpy_does() {
+        let ng = 12;
+        let sim: Vec<f64> = (0..ng).map(|i| ((i * 37) % 97 + 1) as f64 / 97.0).collect();
+        let tracks = Tracks {
+            gt_dets: vec![1; ng],
+            pred_dets: vec![1],
+        };
+        let gids: Vec<usize> = (0..ng).collect();
+        let mut soft = vec![0.0; tracks.cells()];
+        add_soft_matches(&sim, &gids, &[0], &tracks, &mut soft);
+        let bits: Vec<u64> = soft.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(bits, NUMPY_1_23_ONE_COLUMN_SIM_IOU);
+        let serial = sim.iter().fold(0.0, |s, &v| s + v);
+        assert_ne!(
+            serial,
+            pairwise_sum(&sim),
+            "the frame no longer tells a pairwise column sum from a serial one"
+        );
+    }
+
+    /// `sim_iou` of that frame from the same loop under numpy 1.23.5.
+    const NUMPY_1_23_ONE_COLUMN_SIM_IOU: [u64; 12] = [
+        0x3f5fe01fe01fe01e,
+        0x3fb2ed12ed12ed12,
+        0x3fc2ad52ad52ad52,
+        0x3f9de21de21de21d,
+        0x3fb9e619e619e619,
+        0x3fc629d629d629d5,
+        0x3face31ce31ce31c,
+        0x3fc06f906f906f90,
+        0x3f87e817e817e817,
+        0x3fb56a956a956a94,
+        0x3fc3ec13ec13ec13,
+        0x3fa3ec13ec13ec13,
+    ];
 
     /// `sim_iou` from `trackeval/metrics/hota.py`'s first loop, as hex.
     const NUMPY_1_23_SIM_IOU: [u64; 36] = [

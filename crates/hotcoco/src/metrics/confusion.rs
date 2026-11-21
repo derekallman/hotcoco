@@ -54,15 +54,62 @@
 ///
 /// # Panics
 ///
-/// If `gt_labels` and `dt_labels` have different lengths.
+/// If `gt_labels` and `dt_labels` have different lengths, or on a class count
+/// [`check_num_classes`] refuses.
 pub fn confusion_matrix(
     gt_labels: &[Option<usize>],
     dt_labels: &[Option<usize>],
     num_classes: usize,
 ) -> Vec<u64> {
+    assert_num_classes(num_classes, "confusion_matrix");
     let mut matrix = vec![0u64; (num_classes + 1) * (num_classes + 1)];
     accumulate_confusion(&mut matrix, gt_labels, dt_labels, num_classes);
     matrix
+}
+
+/// Whether a confusion matrix for `num_classes` classes can be built: its
+/// largest form, `(num_classes + 1)²` `u64` cells with a background row and
+/// column (or the semantic family's unlabeled column), must fit in one
+/// allocation the system grants. Past `isize::MAX` bytes the cell count wraps
+/// in release builds, and the matrix built is too small for the first count
+/// written to it; below that, an allocation the system refuses aborts the
+/// process when the matrix is built, so the check asks for it first.
+///
+/// Every constructor of a confusion matrix checks this and panics on a count
+/// it refuses. A caller that sizes something else by the class count first,
+/// as `SemanticEval::new` names each class, or one that wants the error
+/// instead, checks up front.
+///
+/// # Errors
+///
+/// `InvalidInput` naming the count, when the matrix would not fit.
+pub fn check_num_classes(num_classes: usize) -> crate::error::Result<()> {
+    let too_many = || {
+        crate::error::Error::InvalidInput(format!(
+            "{num_classes} is too many classes for a confusion matrix"
+        ))
+    };
+    let cells = num_classes
+        .checked_add(1)
+        .and_then(|side| side.checked_mul(side))
+        .filter(|cells| {
+            cells
+                .checked_mul(size_of::<u64>())
+                .is_some_and(|bytes| isize::try_from(bytes).is_ok())
+        })
+        .ok_or_else(too_many)?;
+    // Reserved and released at once: no page is touched, and a refusal here
+    // is an error where the same refusal in `vec!` would be an abort.
+    Vec::<u64>::new()
+        .try_reserve_exact(cells)
+        .map_err(|_| too_many())
+}
+
+/// [`check_num_classes`] as the panic a constructor documents, naming `who`.
+pub(crate) fn assert_num_classes(num_classes: usize, who: &str) {
+    if let Err(e) = check_num_classes(num_classes) {
+        panic!("{who}: {e}");
+    }
 }
 
 /// Add label pairs into an existing confusion matrix.
@@ -409,5 +456,38 @@ mod tests {
     fn oversized_matrix_panics_too() {
         let mut too_big = vec![0u64; 25]; // needs (3+1)² = 16
         accumulate_confusion(&mut too_big, &[Some(0)], &[Some(0)], 3);
+    }
+
+    #[test]
+    fn check_num_classes_refuses_a_matrix_past_one_allocation() {
+        for fine in [0, 1, 80, 1000] {
+            assert!(check_num_classes(fine).is_ok(), "{fine}");
+        }
+        // `(n + 1)²` wraps, or its bytes pass `isize::MAX`, or (`1 << 28`,
+        // about 2⁵⁹ bytes) no system grants the allocation, which `vec!`
+        // would answer with an abort.
+        for too_many in [1 << 28, 1 << 30, 1 << 32, usize::MAX - 1, usize::MAX] {
+            match check_num_classes(too_many) {
+                Err(crate::error::Error::InvalidInput(m)) => {
+                    assert!(
+                        m.contains("too many classes") && m.contains(&too_many.to_string()),
+                        "{m}"
+                    );
+                }
+                other => panic!("{too_many}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "too many classes")]
+    fn confusion_matrix_panics_on_too_many_classes() {
+        confusion_matrix(&[], &[], 1 << 32);
+    }
+
+    #[test]
+    #[should_panic(expected = "too many classes")]
+    fn pixel_confusion_panics_on_too_many_classes() {
+        crate::metrics::semantic::PixelConfusion::new(1 << 32);
     }
 }

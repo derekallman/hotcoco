@@ -4,7 +4,7 @@
 
 Five libraries evaluate COCO-format detections from Python; three of them are
 Rust engines. Versions: pycocotools 2.0.11, faster-coco-eval 1.8.0,
-ultrafast-pycocotools 0.1.13, vernier 0.5.4, hotcoco `main` (1.3 development).
+ultrafast-pycocotools 0.1.14, vernier 0.6.0, hotcoco `main` (1.5 development).
 
 | Feature | pycocotools | faster-coco-eval | ultrafast-pycocotools | vernier | hotcoco |
 |---------|-------------|------------------|-----------------------|---------|---------|
@@ -13,6 +13,7 @@ ultrafast-pycocotools 0.1.13, vernier 0.5.4, hotcoco `main` (1.3 development).
 | **LVIS evaluation** | No | Yes — via `lvis_style=True` flag | Yes — via `lvis_style=True` flag | Yes — federated AP | Yes — 13 metrics, `LVISeval` class, `init_as_lvis()` |
 | **Open Images, oriented boxes** | No | No | No | No | Yes — Challenge protocol with group-of; OBB IoU |
 | **Panoptic, semantic** | No | No | No | Yes — PQ, mIoU | PQ/SQ/RQ matching panopticapi ([parity](#panoptic)), from PNG files or from masks with no PNG files; mIoU/fwIoU/mAcc/aAcc matching mmsegmentation ([parity](#semantic)), from arrays or PNG label maps |
+| **Tracking** | No | No | No | No | HOTA, CLEAR, and Identity on MOTChallenge boxes, matching TrackEval ([parity](#tracking)) |
 | **TIDE error analysis** | No | No | No | Yes | Yes — 6 error types, ΔAP per type |
 | **Confusion matrix** | No | No | Yes | Yes | Yes — cross-category, configurable threshold |
 | **Calibration** | No | No | No | Yes — ECE/MCE | Yes — ECE/MCE, reliability curve |
@@ -68,7 +69,7 @@ Peak resident memory, same runs (MB):
 | segm      | 756 | 717 | 121 | 159 | 142 |
 | keypoints | 324 | 319 | 112 | 144 | 106 |
 
-The three Rust engines are 34–134× ahead of pycocotools, and hotcoco is
+The three Rust engines are 34–133× ahead of pycocotools, and hotcoco is
 fastest on every row. On memory it sits below vernier and within about 1.25×
 of ultrafast-pycocotools, which parses detections straight into columnar
 arrays while hotcoco materializes one annotation record per detection.

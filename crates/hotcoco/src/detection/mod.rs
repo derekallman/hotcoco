@@ -56,8 +56,8 @@ use std::sync::Arc;
 use crate::coco::{AreaRule, COCO};
 use crate::detection::hierarchy::Hierarchy;
 use crate::error::Error;
-use crate::metrics::counts::score_order;
 use crate::params::{IouType, Params};
+use crate::primitives::greedy::score_order;
 
 /// The category key of the one pooled cell per image under `use_cats = false`:
 /// a value no real category id takes, so the pooled cell cannot collide with
@@ -91,7 +91,7 @@ pub(in crate::detection) fn sorted_unique(mut ids: Vec<u64>) -> Vec<u64> {
 
 /// How many of `n` items each parallel run takes, at least one.
 fn run_len(n: usize) -> usize {
-    n.div_ceil(crate::RUNS_PER_THREAD * rayon::current_num_threads())
+    n.div_ceil(crate::RUNS_PER_THREAD * crate::primitives::sim::pool_threads())
         .max(1)
 }
 
@@ -271,7 +271,7 @@ impl Drop for COCOeval {
                 std::mem::take(&mut self.default_eval_imgs),
                 self.segm_rles.take(),
             );
-            rayon::spawn(move || drop(state));
+            crate::primitives::sim::drop_in_background(state);
         }
     }
 }

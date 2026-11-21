@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use rustc_hash::FxHashMap;
 
 use crate::ann_index::AnnIndex;
@@ -93,6 +95,7 @@ impl SegmRles {
     pub(super) fn prepare(coco_gt: &COCO, coco_dt: &COCO, gt_ids: &[u64], dt_ids: &[u64]) -> Self {
         let convert = |coco: &COCO, ids: &[u64]| -> FxHashMap<u64, Rle> {
             ids.par_iter()
+                .fork_safe()
                 .filter_map(|&id| Some((id, coco.ann_to_rle(coco.get_ann(id)?)?)))
                 .collect()
         };

@@ -73,8 +73,6 @@ enough to verify against exists, the same bar every other family clears.
   stay a dict and `curves` stay arrays; neither is a table.
 - **CrowdPose** — crowded-scene keypoint evaluation with the modified OKS
   crowd factor.
-- **Per-sequence video breakdowns** — per-clip metric trends, following the
-  tracking release's video model.
 
 ## Not planned
 

@@ -317,3 +317,35 @@ def test_summary_tables(capsys):
     assert sum(line.startswith("COMBINED") for line in lines) == 4
     ev.summarize()
     assert capsys.readouterr().out.splitlines() == lines
+
+
+def test_a_one_prediction_frame_matches_trackeval():
+    """Frame 1 has one prediction against nine ground truths. numpy drops the
+    length-1 axis of HOTA's `similarity.sum(0)` and sums that column pairwise,
+    not serially as it sums the columns of a wider frame. A serial sum moved
+    the soft counts by an ulp, and frame 2's near-tie went to the other
+    prediction. The expected values are TrackEval 12c8791's, under numpy
+    1.23.5, on these rows."""
+    gt_boxes = [
+        [9.2, 9.05, 20, 40],
+        [22.9, -4.35, 27.26, 26.98],
+        [21.38, 6.42, 10.58, 59.56],
+        [-1.49, -18.58, 26.02, 33.04],
+        [-4.05, -19.27, 18.14, 24.22],
+        [5.57, 21.19, 29.02, 31.74],
+        [12.27, 22.25, 25.89, 39.74],
+        [18.73, 7.71, 24.86, 45.38],
+        [8.94, 32.22, 16.25, 34.37],
+    ]
+    gt = [[1, i + 1, *box, 1, 1, 1.0] for i, box in enumerate(gt_boxes)]
+    gt.append([2, 1, 10, 10, 20, 40, 1, 1, 1.0])
+    pred = [
+        [1, 101, 10, 10, 20, 40, 0.9, -1, -1, -1],
+        [2, 101, 9.9, 7.37, 20, 40, 0.9, -1, -1, -1],
+        [2, 102, 10.09558742317469, 10, 20, 40, 0.9, -1, -1, -1],
+    ]
+    ev = TrackingEval(None)
+    ev.update("s", gt, pred, num_frames=2)
+    results = ev.results()
+    assert results["HOTA"] == float.fromhex("0x1.86ac6941a781fp-2")
+    assert results["AssA"] == float.fromhex("0x1.ca1af286bca1bp-1")

@@ -175,7 +175,10 @@ the report's provenance is `"extension"`.
 Under every setting, predictions may have 6 columns, where TrackEval needs 7,
 and malformed rows raise `ValueError`, naming the sequence, where TrackEval
 truncates them or crashes: a fractional or negative frame or id, NaN in a box
-or a confidence, or an unknown benchmark name. A frame outside
+or a confidence, a box whose far edge or area passes the largest float, or an
+unknown benchmark name. A box TrackEval would score is refused too: one that is
+not finite, or reaches past the largest float, scores IoU 0 there against an
+ordinary box, and TrackEval raises only on the NaN IoU two of them make. A frame outside
 `1..num_frames` and the same track id twice in one frame are `ValueError`s
 too, as they are errors in TrackEval.
 

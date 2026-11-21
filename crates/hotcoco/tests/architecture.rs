@@ -272,6 +272,83 @@ fn exactly_one_min_parallel_work_constant() {
     );
 }
 
+/// Every use of rayon's thread pool asks `primitives::sim` whether the pool
+/// can run it.
+///
+/// A child that `fork()` makes inherits the pool but none of its threads, so
+/// a fan-out there waits forever. `sim::pool_usable` spots such a child, but
+/// only for a fan-out that asks it: while only the mask fan-outs asked, a
+/// forked child hung in `accumulate()`, `tide_errors()`, and
+/// `confusion_matrix()`. So every parallel-iterator method (`par_iter`,
+/// `into_par_iter`, `par_chunks`, ...) is followed by `.fork_safe()`, and any
+/// other `rayon::` path (`join`, `spawn`, the thread count) appears only in
+/// `sim.rs`, behind the same check. A method with nothing to call
+/// `fork_safe` on, such as `par_sort` or `par_extend`, fails here too: write
+/// it as a `fork_safe` iterator instead.
+#[test]
+fn every_fan_out_asks_whether_the_pool_survived_a_fork() {
+    const SIM: &str = "crates/hotcoco/src/primitives/sim.rs";
+    let mut found = Vec::new();
+    for file in sources() {
+        let mut code = String::new();
+        let mut line_at = Vec::new();
+        for (n, line) in &file.lines {
+            line_at.push((code.len(), *n));
+            code.push_str(line);
+            code.push('\n');
+        }
+        let line_of = |at: usize| line_at[line_at.partition_point(|&(start, _)| start <= at) - 1].1;
+        for (at, _) in code.match_indices('.') {
+            let name: String = code[at + 1..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !(name.starts_with("par_") || name == "into_par_iter") {
+                continue;
+            }
+            let open = at + 1 + name.len();
+            if !code[open..].starts_with('(') {
+                continue;
+            }
+            let mut depth = 0;
+            let close = code[open..]
+                .char_indices()
+                .find_map(|(i, c)| {
+                    depth += match c {
+                        '(' => 1,
+                        ')' => -1,
+                        _ => 0,
+                    };
+                    (depth == 0).then_some(open + i + 1)
+                })
+                .expect("balanced parentheses");
+            if !code[close..].trim_start().starts_with(".fork_safe()") {
+                found.push(format!("{}:{}  .{name}(...)", file.path, line_of(at)));
+            }
+        }
+        if file.path != SIM {
+            for (at, _) in code.match_indices("rayon::") {
+                if !code[at..].starts_with("rayon::prelude::*") {
+                    let line = line_of(at);
+                    found.push(format!(
+                        "{}:{line}  {}",
+                        file.path,
+                        code[at..].lines().next().unwrap_or("")
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "fan-outs that skip the fork check, so a forked child would hang in them:\n  {}\n\n\
+         Follow a parallel iterator with `.fork_safe()` \
+         (`use crate::primitives::sim::ForkSafe;`), and reach `join`, `spawn`, and the \
+         thread count through `sim::join`, `sim::drop_in_background`, and `sim::pool_threads`.",
+        found.join("\n  ")
+    );
+}
+
 /// The detection cap is derived in `Params::max_det()` — nowhere else.
 ///
 /// Five sites derived it independently: four spelled `max_dets.last()` and one
@@ -489,6 +566,10 @@ fn metrics_allowed() -> Vec<&'static str> {
             // `primitives`); what the allowlist forbids is a second formula,
             // which `iou_formula_only_in_primitives_sim` would also catch.
             "crate::primitives::sim",
+            // The detection ranking, which the matcher and the accumulation
+            // share: `score_order` and its sort key live with the matcher,
+            // whose order they are.
+            "crate::primitives::greedy",
         ],
     ]
     .concat()
@@ -502,6 +583,10 @@ fn primitives_allowed() -> Vec<&'static str> {
     [
         NEUTRAL,
         &[
+            // The crate's Result type, as `metrics` has it: a kernel that
+            // refuses its input (NaN costs, counts past 64 bits) names the
+            // error's kind, which an `Option` cannot.
+            "crate::error",
             "crate::primitives::sim",
             "crate::primitives::greedy",
             "crate::primitives::assign",

@@ -27,7 +27,7 @@
 
 use crate::error::{Error, Result};
 use crate::primitives::assign::lsap;
-use crate::primitives::sim::bbox_iou_corners_flat;
+use crate::primitives::sim::{bbox_iou_corners_flat, corner_area};
 use crate::table::{TrackRow, TrackTable};
 use crate::types::id_from_f64;
 
@@ -76,7 +76,7 @@ pub(super) fn read_rows(
 ) -> Result<TrackTable> {
     let bad = |msg: String| Error::InvalidInput(format!("sequence {seq}: {} {msg}", side.name()));
     if values.is_empty() {
-        return Ok(TrackTable::new(num_frames, &[]));
+        return table(seq, num_frames, &[]);
     }
     let min = match (side, benchmark) {
         (Side::GroundTruth, Some(_)) => 8,
@@ -120,6 +120,16 @@ pub(super) fn read_rows(
         if let Some(v) = xywh.iter().find(|v| !v.is_finite()) {
             return Err(at(format!("box value {v} is not a finite number")));
         }
+        // Finite values whose far edge or area is not, the area taken from
+        // the corners as the IoU kernel takes it: two such boxes make an IoU
+        // of inf / inf, NaN, which the assignment refuses. Refused here, as a
+        // box that is not finite is; TrackEval raises on the NaN only.
+        if !corner_area(xywh).is_finite() {
+            let [x, y, w, h] = xywh;
+            return Err(at(format!(
+                "box [{x:?}, {y:?}, {w:?}, {h:?}] reaches past the largest float, so its IoU is not a number"
+            )));
+        }
         let conf = match row.get(6) {
             Some(&c) if !c.is_finite() => {
                 return Err(at(format!("confidence {c} is not a finite number")));
@@ -144,7 +154,17 @@ pub(super) fn read_rows(
             conf,
         });
     }
-    Ok(TrackTable::new(num_frames, &rows))
+    table(seq, num_frames, &rows)
+}
+
+/// [`TrackTable::new`], or the error for a frame count no memory holds: one
+/// past `usize`, or one whose frame offsets the system will not allocate.
+fn table(seq: &str, num_frames: usize, rows: &[TrackRow]) -> Result<TrackTable> {
+    TrackTable::new(num_frames, rows).ok_or_else(|| {
+        Error::InvalidInput(format!(
+            "sequence {seq}: {num_frames} frames are more than memory can index"
+        ))
+    })
 }
 
 /// TrackEval's `_check_unique_ids`: an error naming the sequence, the frame,
@@ -362,6 +382,46 @@ mod tests {
             ))
             .contains("confidence NaN")
         );
+    }
+
+    #[test]
+    fn a_box_past_the_largest_float_is_an_error() {
+        for b in [
+            [1e308, 0.0, 1e308, 1.0],
+            [0.0, -1e308, 1.0, -1e308],
+            [0.0, 0.0, 1e200, 1e200],
+            // `x + w` and `w * h` are finite, but `(x + w) - x` rounds up an
+            // ulp and the corner area the IoU kernel divides by is not: the
+            // NaN reached the assignment, which panicked.
+            [-2.040552280408471e307, 0.0, 8.988465674311579e307, 2.0],
+            [-3.0 * 2f64.powi(970), 0.0, f64::MAX, 1.0],
+        ] {
+            let m = err(read_rows(
+                "s",
+                Side::GroundTruth,
+                &rows(&[row(1.0, 1.0, b, 1.0, 1.0)]),
+                9,
+                1,
+                None,
+            ));
+            assert!(m.contains("past the largest float"), "{b:?}: {m}");
+        }
+        // `w * h` overflows, but `x + w` rounds back to `x`: the corner area
+        // is 0, an IoU of 0 with any box, as TrackEval scores it.
+        for big in [[1e300, 1e300, 1e7, 1e7], [1e300, 0.0, 1e200, 1e200]] {
+            assert!(
+                read_rows(
+                    "s",
+                    Side::GroundTruth,
+                    &rows(&[row(1.0, 1.0, big, 1.0, 1.0)]),
+                    9,
+                    1,
+                    None
+                )
+                .is_ok(),
+                "{big:?}"
+            );
+        }
     }
 
     #[test]

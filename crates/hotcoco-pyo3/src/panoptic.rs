@@ -227,6 +227,9 @@ the counts beside it are all zero either way. Also carries ``provenance``,
 ``reference_deviations`` and ``hotcoco_version``. Raises ``RuntimeError``
 before ``evaluate()``."]
     fn results(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        // Checked here too, for the message every reader gives: core's names
+        // Rust's `run()`, which in Python also prints the summary.
+        self.check_evaluated("results()")?;
         let results = self.inner.results().map_err(to_pyerr)?;
         let dict = serde_to_py(py, &results)?;
         let dict = dict.bind(py).cast::<PyDict>()?;
@@ -249,6 +252,7 @@ name for evaluable categories, and IoU, Acc, and Dice where computed), ``per_gro
 (``all``, ``things``, ``stuff`` with their ``n``), ``curves`` (empty) and
 ``params``. Raises ``RuntimeError`` before ``evaluate()``."]
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.check_evaluated("report()")?;
         let report = self.inner.report().map_err(to_pyerr)?;
         serde_to_py(py, &report)
     }

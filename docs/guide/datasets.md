@@ -200,7 +200,7 @@ from hotcoco import COCO
 coco = COCO("instances_val2017.json")
 coco.to_yolo("labels/val2017/")   # one .txt per image + data.yaml
 
-# Round-trip — images_dir lets Pillow restore real image dimensions
+# Round-trip — images_dir restores real image dimensions, read from the image files
 coco2 = COCO.from_yolo("labels/val2017/", images_dir="images/val2017/")
 coco2.save("reconstructed.json")
 ```

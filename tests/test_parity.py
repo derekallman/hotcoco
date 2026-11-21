@@ -257,14 +257,14 @@ def _tie_heavy_dataset():
 
 
 def _accumulated_arrays(
-    gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec_thrs=None, use_cats=True, cat_ids=None
+    gt, dts, max_dets, acc_max_dets=None, iou_thrs=None, rec_thrs=None, use_cats=True, cat_ids=None, area_rng=None
 ):
     """Run evaluate + accumulate through both tools and return the two ``eval``
     dicts. ``acc_max_dets`` re-assigns the caps between the two calls — the
     pycocotools ``accumulate(p)`` idiom, which leaves cells holding more
     detections than the current cap. ``iou_thrs`` and ``rec_thrs`` replace the
-    default grids in both tools, and ``use_cats`` and ``cat_ids`` the category
-    settings."""
+    default grids in both tools, ``area_rng`` the area ranges, and ``use_cats``
+    and ``cat_ids`` the category settings."""
     from pycocotools.coco import COCO as PyCOCO  # noqa: PLC0415
     from pycocotools.cocoeval import COCOeval as PyCOCOeval  # noqa: PLC0415
 
@@ -280,6 +280,8 @@ def _accumulated_arrays(
                 py_ev.params.iouThrs = np.array(iou_thrs)
             if rec_thrs is not None:
                 py_ev.params.recThrs = np.array(rec_thrs)
+            if area_rng is not None:
+                py_ev.params.areaRng = [list(r) for r in area_rng]
             py_ev.evaluate()
             if acc_max_dets is not None:
                 py_ev.params.maxDets = list(acc_max_dets)
@@ -295,6 +297,8 @@ def _accumulated_arrays(
             rs_ev.params.iou_thrs = list(iou_thrs)
         if rec_thrs is not None:
             rs_ev.params.rec_thrs = list(rec_thrs)
+        if area_rng is not None:
+            rs_ev.params.areaRng = [list(r) for r in area_rng]
         rs_ev.evaluate()
         if acc_max_dets is not None:
             rs_ev.params.max_dets = list(acc_max_dets)
@@ -465,6 +469,58 @@ def test_float32_grids_match_pycocotools_bit_for_bit():
     for key in ("precision", "recall"):
         assert not np.array_equal(py_eval[key], py_default[key]), f"fixture must make the float32 grid move {key}"
     _assert_arrays_bit_equal(py_eval, rs_eval, "float32 grids")
+
+
+_SHUFFLED = np.linspace(0.0, 1.0, 101)[np.random.default_rng(0).permutation(101)].tolist()
+
+
+def _recall_order_dataset():
+    """Four ground truths and six detections ranked TP, FP, TP, FP, TP, TP, so
+    precision falls as recall rises and the rank a threshold is read at moves
+    the number. The last two true positives overlap at IoU 0.8 and 0.6, so
+    recall reaches 1 at the low IoU thresholds and stops short at the high
+    ones, where a threshold of 1 is never reached."""
+    boxes = [[0.0, 0.0, 20.0, 20.0], [40.0, 0.0, 20.0, 20.0], [80.0, 0.0, 20.0, 20.0], [120.0, 0.0, 20.0, 20.0]]
+    anns = [_make_bbox_ann(i + 1, bbox=b) for i, b in enumerate(boxes)]
+    dts = [
+        _make_bbox_det(bbox=boxes[0], score=0.9),
+        _make_bbox_det(bbox=[300.0, 300.0, 20.0, 20.0], score=0.8),
+        _make_bbox_det(bbox=boxes[1], score=0.7),
+        _make_bbox_det(bbox=[300.0, 200.0, 20.0, 20.0], score=0.6),
+        _make_bbox_det(bbox=[80.0, 0.0, 20.0, 16.0], score=0.5),
+        _make_bbox_det(bbox=[120.0, 0.0, 20.0, 12.0], score=0.4),
+    ]
+    return _make_minimal_gt("bbox", images=[_img(1)], categories=[_cat(1, "a")], annotations=anns), dts
+
+
+@pytest.mark.parametrize(
+    "rec_thrs",
+    [
+        pytest.param(np.linspace(0.0, 1.0, 101)[::-1].tolist(), id="descending"),
+        pytest.param(_SHUFFLED, id="shuffled"),
+        pytest.param([0.5, 1.0, 0.0, 0.25], id="unreached-in-the-middle"),
+        pytest.param([0.5, float("nan"), 0.1], id="nan"),
+        pytest.param([0.5, 0.5, 0.1, 0.0], id="repeated"),
+    ],
+)
+def test_unordered_recall_thresholds_match_pycocotools(rec_thrs):
+    """pycocotools looks each recall threshold up on its own and stops at the
+    first one, in list order, that a curve never reaches: that one and every
+    later one keep precision 0. A NaN is never reached."""
+    gt, dts = _recall_order_dataset()
+    py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100], rec_thrs=rec_thrs)
+    _assert_arrays_bit_equal(py_eval, rs_eval, f"recThrs={rec_thrs[:6]}")
+
+
+def test_an_area_range_listed_twice_reads_its_own_block():
+    """Each listing of a range fills its own slot, as pycocotools reads block
+    ``n`` for slot ``n``; before, the first listing stayed empty and every
+    metric over it was -1."""
+    gt, dts = _rank_filler_dataset()
+    area_rng = [[0, 1e10], [0, 1e10], [0, 32**2], [32**2, 96**2]]
+    py_eval, rs_eval = _accumulated_arrays(gt, dts, [1, 10, 100], area_rng=area_rng)
+    assert (np.asarray(py_eval["precision"])[..., 0, :] > -1).any(), "fixture must have ground truth"
+    _assert_arrays_bit_equal(py_eval, rs_eval, f"areaRng={area_rng}")
 
 
 @pytest.mark.parametrize("n_thrs", [65, 91])

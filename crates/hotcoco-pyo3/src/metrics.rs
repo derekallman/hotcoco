@@ -239,11 +239,10 @@ fn confusion_matrix(
     num_classes: usize,
 ) -> PyResult<Py<PyAny>> {
     check_parallel(gt.len(), dt.len(), "gt", "dt")?;
-    // One past `num_classes` for the background row and column.
-    let side = num_classes.saturating_add(1);
-    crate::convert::square_cells(side, format_args!("num_classes={num_classes}"))?;
+    rconf::check_num_classes(num_classes)
+        .map_err(|e| crate::convert::with_context(py, "num_classes", to_pyerr(e)))?;
     let flat = rconf::confusion_matrix(&gt, &dt, num_classes);
-    confusion_counts_to_py(py, flat, side)
+    confusion_counts_to_py(py, flat, num_classes + 1)
 }
 
 #[pyfunction]
@@ -320,10 +319,12 @@ fn pixel_confusion(
 ) -> PyResult<Py<PyAny>> {
     let (g, p) = label_pair_or_lists(gt, pred)?;
     let (gt, pred) = (g.map(), p.map());
-    crate::convert::square_cells(num_classes, format_args!("num_classes={num_classes}"))?;
+    rconf::check_num_classes(num_classes)
+        .map_err(|e| crate::convert::with_context(py, "num_classes", to_pyerr(e)))?;
     let mut m = PixelConfusion::new(num_classes);
-    py.detach(|| m.update_maps(&gt, &pred, ignore_index))
-        .map_err(to_pyerr)?;
+    // The maps may be numpy's memory, so they are read under the GIL — see
+    // the GIL rule in `mask.rs`.
+    m.update_maps(&gt, &pred, ignore_index).map_err(to_pyerr)?;
     confusion_counts_to_py(py, m.into_counts(), num_classes)
 }
 
@@ -354,17 +355,6 @@ fn mean_iou(py: Python<'_>, confusion: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>>
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "confusion must be square, got {rows}×{cols}"
         )));
-    }
-    // Every score divides sums of these cells, and the sums are `u64` too:
-    // past that they wrap, and the answer is `-1.0` or a wrong ratio.
-    if counts
-        .iter()
-        .try_fold(0u64, |sum, &c| sum.checked_add(c))
-        .is_none()
-    {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "confusion counts more pixels than 2**64 - 1",
-        ));
     }
     let m = PixelConfusion::from_counts(rows, counts).map_err(to_pyerr)?;
     let s = m.scores();

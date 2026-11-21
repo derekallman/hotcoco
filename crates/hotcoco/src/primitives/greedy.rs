@@ -53,6 +53,8 @@
 //! `sim::tests::bbox_iou_algebraic_properties` and
 //! `sim::tests::self_iou_degrades_for_subpixel_boxes`.
 
+use crate::error::Error;
+
 /// pycocotools' match floor for an IoU threshold: `min(t, 1 - 1e-10)`.
 ///
 /// The canonical definition of the clamp described in the [module
@@ -69,6 +71,39 @@
 #[inline]
 pub fn coco_match_floor(iou_thr: f64) -> f64 {
     iou_thr.min(1.0 - 1e-10)
+}
+
+/// The key the detection ranking sorts on: its integer order is the reverse of
+/// `score`'s for every score but NaN, so keys sorted ascending put scores in
+/// descending order, and a stable sort keeps tied scores in input order, as
+/// pycocotools' mergesort does. `-0.0` and `0.0` compare equal as scores, so
+/// they share a key. Otherwise the order is reversed [`f64::total_cmp`]:
+/// positive `NaN` above every number, negative `NaN` below.
+pub(crate) fn descending_score_key(score: f64) -> u64 {
+    // `-0.0 + 0.0` is `0.0`.
+    let bits = (score + 0.0).to_bits();
+    // Ascending order: flip every bit of a negative, only the sign of the rest.
+    let ascending = if bits >> 63 == 1 {
+        !bits
+    } else {
+        bits | 1 << 63
+    };
+    !ascending
+}
+
+/// The detection ranking: indices of `scores`, highest score first, tied
+/// scores in input order — pycocotools' stable sort, and the order `COCOeval`
+/// matches and accumulates in. [`greedy_match`] ranks its rows with this,
+/// and a caller of [`greedy_match_masked`] ranks them with it first.
+///
+/// ```
+/// # use hotcoco::primitives::greedy::score_order;
+/// assert_eq!(score_order(&[0.5, 0.9, 0.5, -0.0, 0.0]), vec![1, 0, 2, 3, 4]);
+/// ```
+pub fn score_order(scores: &[f64]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..scores.len()).collect();
+    order.sort_by_key(|&i| descending_score_key(scores[i]));
+    order
 }
 
 /// Index of the best-scoring eligible candidate at or above `floor`.
@@ -263,10 +298,11 @@ pub struct GtMasks<'a> {
     pub phase2_eligible: Option<&'a [bool]>,
 }
 
-/// Greedy-match detections to ground-truths, pycocotools-exact.
-///
-/// The canonical entry point. The detection driver calls the same matcher
-/// through `greedy_match_into`, which reuses the result's buffers.
+/// Greedy-match detections to ground-truths, pycocotools-exact, on input
+/// already in the matcher's order: the kernel behind [`greedy_match`], which
+/// makes that order from input in any order. The detection driver calls the
+/// same matcher through `greedy_match_into`, which reuses the result's
+/// buffers.
 ///
 /// # Caller ordering contract
 /// - Detections are ordered **score-descending** — matching iterates in this order.
@@ -554,9 +590,371 @@ pub fn match_group_of(
     }
 }
 
+/// The arrays [`greedy_match`] matches, each in the caller's own order.
+#[derive(Debug, Clone, Copy)]
+pub struct GreedyInput<'a> {
+    /// The similarity of each detection to each ground truth, `num_dt ×
+    /// num_gt`, row-major: `sim[d * num_gt + g]`.
+    pub sim: &'a [f64],
+    /// The detections: `sim`'s rows.
+    pub num_dt: usize,
+    /// The ground truths: `sim`'s columns.
+    pub num_gt: usize,
+    /// One per detection. Detections take turns from the highest score down,
+    /// tied scores in row order, as [`score_order`] ranks them.
+    pub scores: &'a [f64],
+    /// The thresholds, one row of the result each, each matched at its
+    /// [`coco_match_floor`].
+    pub iou_thrs: &'a [f64],
+    /// One per ground truth, all false when `None`. An ignored ground truth is
+    /// a candidate only when no other one clears the threshold, and the
+    /// detection that matches it is ignored too.
+    pub gt_ignore: Option<&'a [bool]>,
+    /// One per ground truth, all false when `None`: a crowd region, ignored,
+    /// which any number of detections may match.
+    pub iscrowd: Option<&'a [bool]>,
+    /// One per ground truth, all false when `None`: an Open Images group-of
+    /// box, held out of the greedy phases and matched in its own pass after
+    /// them ([`match_group_of`]).
+    pub group_of: Option<&'a [bool]>,
+    /// One per detection, all false when `None`: whether a detection that
+    /// matches nothing is ignored, as `COCOeval` seeds `dtIgnore` from the
+    /// area range.
+    pub dt_ignore: Option<&'a [bool]>,
+}
+
+/// [`greedy_match`]'s result: one row per threshold, and in each row one
+/// entry per detection or ground truth in the caller's order.
+#[derive(Debug, Clone)]
+pub struct GreedyOutput {
+    /// The ground truth each detection matched, or `None`.
+    pub dt_matches: ThreshMatrix<Option<usize>>,
+    /// The detection each ground truth kept, or `None`. A crowd region keeps
+    /// the last detection to match it, and a group-of box the one credited
+    /// with it.
+    pub gt_matches: ThreshMatrix<Option<usize>>,
+    /// Whether each detection is ignored: matched to an ignored ground truth
+    /// (a group-of box's credited detection excepted), or unmatched and
+    /// flagged in `dt_ignore`.
+    pub dt_ignore: ThreshMatrix<bool>,
+}
+
+/// COCO's greedy matching on input in any order, pycocotools-exact: the
+/// matcher behind `COCOeval.evaluate()` on arrays the caller supplies, and the
+/// Python `primitives.greedy_match`.
+///
+/// It makes the order [`greedy_match_masked`] takes the way `COCOeval` makes
+/// it: detections ranked by [`score_order`], and ground truths stably
+/// partitioned with the ignored ones (`gt_ignore`, `iscrowd`, or `group_of`)
+/// last. Then it runs that kernel, and [`match_group_of`] when any ground
+/// truth is a group-of box, and maps the result back to the caller's order.
+///
+/// # Errors
+///
+/// `InvalidInput` when `sim` is not `num_dt × num_gt`, when `scores` or a flag
+/// slice has the wrong length, or when `sim`, `scores`, or `iou_thrs` holds
+/// NaN, which leaves the matching undefined.
+pub fn greedy_match(input: &GreedyInput<'_>) -> crate::error::Result<GreedyOutput> {
+    let GreedyInput {
+        sim,
+        num_dt: d,
+        num_gt: g,
+        scores,
+        iou_thrs,
+        ..
+    } = *input;
+    if d.checked_mul(g) != Some(sim.len()) {
+        return Err(Error::InvalidInput(format!(
+            "sim has {} entries, not {d} detections × {g} ground truths",
+            sim.len()
+        )));
+    }
+    check_no_nan(sim, "sim", "the matching")?;
+    check_same_length(scores.len(), d, "scores", "sim's rows")?;
+    check_no_nan(scores, "scores", "the matching order")?;
+    check_no_nan(iou_thrs, "iou_thrs", "the matching")?;
+    // A given column is borrowed; only a missing one is filled.
+    fn flags<'a>(
+        given: Option<&'a [bool]>,
+        name: &str,
+        n: usize,
+        of: &str,
+    ) -> crate::error::Result<std::borrow::Cow<'a, [bool]>> {
+        match given {
+            Some(flags) => check_same_length(flags.len(), n, name, of)
+                .map(|()| std::borrow::Cow::Borrowed(flags)),
+            None => Ok(std::borrow::Cow::Owned(vec![false; n])),
+        }
+    }
+    let iscrowd = flags(input.iscrowd, "iscrowd", g, "sim's columns")?;
+    let gt_ignore = flags(input.gt_ignore, "gt_ignore", g, "sim's columns")?;
+    let group_of = flags(input.group_of, "group_of", g, "sim's columns")?;
+    let dt_seed = flags(input.dt_ignore, "dt_ignore", d, "sim's rows")?;
+
+    // A group-of box is ignored for the greedy phases and held out of the
+    // second; its own pass is the one route to it, as in the detection driver.
+    let ignored: Vec<bool> = (0..g)
+        .map(|i| gt_ignore[i] || iscrowd[i] || group_of[i])
+        .collect();
+    let any_group_of = group_of.contains(&true);
+    let t = iou_thrs.len();
+
+    // Detections by score, ties in row order; ground truths stably
+    // partitioned non-ignored first.
+    let dt_order = score_order(scores);
+    let gt_order: Vec<usize> = (0..g)
+        .filter(|&i| !ignored[i])
+        .chain((0..g).filter(|&i| ignored[i]))
+        .collect();
+    let num_not_ignored = ignored.iter().filter(|&&x| !x).count();
+    let mut ranked = Vec::with_capacity(sim.len());
+    for &di in &dt_order {
+        let row = &sim[di * g..(di + 1) * g];
+        ranked.extend(gt_order.iter().map(|&gi| row[gi]));
+    }
+    let crowd_ranked: Vec<bool> = gt_order.iter().map(|&gi| iscrowd[gi]).collect();
+    let floors: Vec<f64> = iou_thrs.iter().map(|&t| coco_match_floor(t)).collect();
+    // Open Images only: the group-of columns in rank order, their inverse for
+    // the matcher's second phase, and which of them the count keeps.
+    let group_of_ranked: Vec<bool> = gt_order.iter().map(|&gi| group_of[gi]).collect();
+    let not_group_of: Vec<bool> = group_of_ranked.iter().map(|&x| !x).collect();
+    let counted: Vec<bool> = gt_order.iter().map(|&gi| !gt_ignore[gi]).collect();
+    let masks = GtMasks {
+        rematchable: Some(&crowd_ranked),
+        phase2_eligible: any_group_of.then_some(not_group_of.as_slice()),
+    };
+    let mut m = greedy_match_masked(&ranked, d, g, num_not_ignored, masks, &floors);
+    let mut credited = ThreshMatrix::default();
+    if any_group_of {
+        let boxes = GroupOfBoxes {
+            group_of: &group_of_ranked,
+            counted: &counted,
+        };
+        match_group_of(&ranked, d, g, boxes, &floors, &mut m, &mut credited);
+    }
+
+    let mut out = GreedyOutput {
+        dt_matches: ThreshMatrix::new(t, d, None),
+        gt_matches: ThreshMatrix::new(t, g, None),
+        // Seeded per threshold, as `COCOeval` seeds `dtIgnore`; a match
+        // overwrites it with the ground truth's flag.
+        dt_ignore: ThreshMatrix::repeat_row(t, &dt_seed),
+    };
+    for (ti, row) in m.dt_gt.iter_rows().enumerate() {
+        for (rank, (&di, &matched)) in dt_order.iter().zip(row).enumerate() {
+            let Some(pos) = matched else {
+                continue;
+            };
+            let gi = gt_order[pos];
+            out.dt_matches[(ti, di)] = Some(gi);
+            let credited_here = any_group_of && credited[(ti, rank)];
+            out.dt_ignore[(ti, di)] = pos >= num_not_ignored && !credited_here;
+            // Rank order, so a crowd ground truth keeps the last detection;
+            // a group-of box keeps the one credited with it.
+            if credited_here || !group_of_ranked[pos] {
+                out.gt_matches[(ti, gi)] = Some(di);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The error for a kernel input holding NaN, which leaves `what` undefined:
+/// [`greedy_match`]'s and [`try_lsap`](crate::primitives::assign::try_lsap)'s.
+pub(crate) fn check_no_nan(values: &[f64], name: &str, what: &str) -> crate::error::Result<()> {
+    if values.iter().any(|v| v.is_nan()) {
+        return Err(Error::InvalidInput(format!(
+            "{name} contains NaN; {what} is undefined"
+        )));
+    }
+    Ok(())
+}
+
+/// The error for two inputs to [`greedy_match`] that must be parallel.
+fn check_same_length(a: usize, b: usize, name_a: &str, name_b: &str) -> crate::error::Result<()> {
+    if a != b {
+        return Err(Error::InvalidInput(format!(
+            "{name_a} and {name_b} must have the same length, got {a} and {b}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `greedy_match` on rows and columns in any order gives the kernel's
+    /// answer on the same input sorted, mapped back: shuffling the rows and
+    /// columns moves the matches with them and changes nothing else.
+    #[test]
+    fn greedy_match_takes_rows_and_columns_in_any_order() {
+        // Rows score-descending, columns non-ignored first: the kernel's order.
+        let (d, g) = (4, 3);
+        let sim = [
+            0.9, 0.2, 0.6, //
+            0.8, 0.7, 0.0, //
+            0.1, 0.55, 0.0, //
+            0.0, 0.0, 0.95,
+        ];
+        let scores = [0.9, 0.8, 0.7, 0.6];
+        let gt_ignore = [false, false, true];
+        let thrs = [0.5, 0.75];
+        fn input<'a>(sim: &'a [f64], scores: &'a [f64], gt_ignore: &'a [bool]) -> GreedyInput<'a> {
+            GreedyInput {
+                sim,
+                num_dt: 4,
+                num_gt: 3,
+                scores,
+                iou_thrs: &[0.5, 0.75],
+                gt_ignore: Some(gt_ignore),
+                iscrowd: None,
+                group_of: None,
+                dt_ignore: None,
+            }
+        }
+        let sorted = greedy_match(&input(&sim, &scores, &gt_ignore)).expect("valid input");
+        let kernel = greedy_match_masked(&sim, d, g, 2, GtMasks::default(), &thrs);
+        assert_eq!(sorted.dt_matches.row(0), kernel.dt_gt.row(0));
+        assert_eq!(sorted.dt_matches.row(1), kernel.dt_gt.row(1));
+        assert_eq!(sorted.dt_ignore.row(0), [false, false, false, true]);
+
+        // Rows reversed, columns rotated: row i of `shuffled` is row 3 - i,
+        // column j is column (j + 1) % 3.
+        let rows = [3, 2, 1, 0];
+        let cols = [1, 2, 0];
+        let mut shuffled = [0.0; 12];
+        for (r, &from_r) in rows.iter().enumerate() {
+            for (c, &from_c) in cols.iter().enumerate() {
+                shuffled[r * g + c] = sim[from_r * g + from_c];
+            }
+        }
+        let scores_s = rows.map(|r| scores[r]);
+        let ignore_s = cols.map(|c| gt_ignore[c]);
+        let got = greedy_match(&input(&shuffled, &scores_s, &ignore_s)).expect("valid input");
+        let col_of = |orig: usize| cols.iter().position(|&c| c == orig).expect("a permutation");
+        for t in 0..2 {
+            for (r, &from_r) in rows.iter().enumerate() {
+                assert_eq!(
+                    got.dt_matches[(t, r)],
+                    sorted.dt_matches[(t, from_r)].map(col_of),
+                    "t{t} row {r}"
+                );
+                assert_eq!(
+                    got.dt_ignore[(t, r)],
+                    sorted.dt_ignore[(t, from_r)],
+                    "t{t} row {r}"
+                );
+            }
+            for (c, &from_c) in cols.iter().enumerate() {
+                let want = sorted.gt_matches[(t, from_c)]
+                    .map(|di| rows.iter().position(|&r| r == di).expect("a permutation"));
+                assert_eq!(got.gt_matches[(t, c)], want, "t{t} column {c}");
+            }
+        }
+    }
+
+    /// A crowd region keeps the last detection to match it, and a detection
+    /// that matches nothing keeps its `dt_ignore` seed.
+    #[test]
+    fn greedy_match_crowd_keeps_the_last_detection_and_seeds_dt_ignore() {
+        let out = greedy_match(&GreedyInput {
+            sim: &[0.9, 0.8, 0.0],
+            num_dt: 3,
+            num_gt: 1,
+            scores: &[0.5, 0.9, 0.1],
+            iou_thrs: &[0.5],
+            gt_ignore: None,
+            iscrowd: Some(&[true]),
+            group_of: None,
+            dt_ignore: Some(&[false, false, true]),
+        })
+        .expect("valid input");
+        assert_eq!(out.dt_matches.row(0), [Some(0), Some(0), None]);
+        // Score order is row 1, row 0: row 0 matches the crowd last.
+        assert_eq!(out.gt_matches.row(0), [Some(0)]);
+        assert_eq!(out.dt_ignore.row(0), [true, true, true]);
+    }
+
+    #[test]
+    fn greedy_match_refuses_nan_and_lengths_that_disagree() {
+        let ok = GreedyInput {
+            sim: &[0.9, 0.1],
+            num_dt: 1,
+            num_gt: 2,
+            scores: &[0.5],
+            iou_thrs: &[0.5],
+            gt_ignore: None,
+            iscrowd: None,
+            group_of: None,
+            dt_ignore: None,
+        };
+        assert!(greedy_match(&ok).is_ok());
+        let says = |input: GreedyInput<'_>, what: &str| match greedy_match(&input) {
+            Err(Error::InvalidInput(m)) => assert!(m.contains(what), "{m}"),
+            other => panic!("{what}: {other:?}"),
+        };
+        says(
+            GreedyInput {
+                sim: &[0.9, f64::NAN],
+                ..ok
+            },
+            "sim contains NaN",
+        );
+        says(
+            GreedyInput {
+                scores: &[f64::NAN],
+                ..ok
+            },
+            "scores contains NaN",
+        );
+        says(
+            GreedyInput {
+                iou_thrs: &[0.5, f64::NAN],
+                ..ok
+            },
+            "iou_thrs contains NaN",
+        );
+        says(
+            GreedyInput { sim: &[0.9], ..ok },
+            "sim has 1 entries, not 1 detections × 2 ground truths",
+        );
+        says(
+            GreedyInput {
+                scores: &[0.5, 0.4],
+                ..ok
+            },
+            "scores and sim's rows must have the same length, got 2 and 1",
+        );
+        says(
+            GreedyInput {
+                iscrowd: Some(&[false]),
+                ..ok
+            },
+            "iscrowd and sim's columns",
+        );
+        says(
+            GreedyInput {
+                gt_ignore: Some(&[false; 3]),
+                ..ok
+            },
+            "gt_ignore and sim's columns",
+        );
+        says(
+            GreedyInput {
+                group_of: Some(&[]),
+                ..ok
+            },
+            "group_of and sim's columns",
+        );
+        says(
+            GreedyInput {
+                dt_ignore: Some(&[true, true]),
+                ..ok
+            },
+            "dt_ignore and sim's rows",
+        );
+    }
 
     /// The group-of pass on one cell: two detections inside one group-of box,
     /// a third on a plain ground truth, a fourth inside a group-of box the

@@ -62,6 +62,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
@@ -359,7 +361,13 @@ impl Tally {
 
 /// The semantic segmentation evaluator: one confusion matrix, the boundary
 /// counts beside it, and the rules that fill them.
+///
+/// Deserializing checks what the constructors and builders hold to: the
+/// rules, a square matrix (see [`PixelConfusion::from_counts`]) with one row
+/// per class name, and boundary counts exactly when boundary IoU is on, at
+/// the rules' band, one per class. An edited pickle is refused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "SemanticEvalState")]
 pub struct SemanticEval {
     class_names: Vec<String>,
     #[serde(flatten)]
@@ -369,10 +377,63 @@ pub struct SemanticEval {
     n_images: usize,
 }
 
+/// A [`SemanticEval`] as serialized, before its checks.
+#[derive(Deserialize)]
+struct SemanticEvalState {
+    class_names: Vec<String>,
+    #[serde(flatten)]
+    rules: LabelRules,
+    #[serde(flatten)]
+    tally: Tally,
+    n_images: usize,
+}
+
+impl TryFrom<SemanticEvalState> for SemanticEval {
+    type Error = Error;
+
+    fn try_from(state: SemanticEvalState) -> crate::error::Result<Self> {
+        state.rules.check()?;
+        let n = state.class_names.len();
+        let confusion = &state.tally.confusion;
+        if confusion.num_classes() != n || confusion.unlabeled_pred().is_some() {
+            return Err(Error::InvalidInput(format!(
+                "a SemanticEval of {n} classes holds a {}-class confusion matrix",
+                confusion.num_classes()
+            )));
+        }
+        let boundary = state.tally.boundary.as_ref();
+        let consistent = match (state.rules.boundary_dilation, boundary) {
+            (None, None) => true,
+            (Some(ratio), Some(b)) => {
+                b.dilation_ratio().to_bits() == ratio.to_bits() && b.num_classes() == n
+            }
+            _ => false,
+        };
+        if !consistent {
+            return Err(Error::InvalidInput(format!(
+                "a SemanticEval's boundary counts must match boundary_dilation {:?} and its {n} classes",
+                state.rules.boundary_dilation
+            )));
+        }
+        Ok(SemanticEval {
+            class_names: state.class_names,
+            rules: state.rules,
+            tally: state.tally,
+            n_images: state.n_images,
+        })
+    }
+}
+
 impl SemanticEval {
     /// An evaluator for classes `0..num_classes`, named `class_<id>`, with
     /// the ignore index `255` and boundary IoU at the paper's band.
+    ///
+    /// # Panics
+    ///
+    /// On a class count [`check_num_classes`](crate::metrics::confusion::check_num_classes)
+    /// refuses, before naming any class.
     pub fn new(num_classes: usize) -> Self {
+        crate::metrics::confusion::assert_num_classes(num_classes, "SemanticEval");
         Self::with_class_names((0..num_classes).map(|c| format!("class_{c}")).collect())
     }
 
@@ -564,6 +625,7 @@ impl SemanticEval {
         // splits meet in cannot change the counts.
         let total = pairs
             .par_iter()
+            .fork_safe()
             .try_fold(fresh, |mut acc, (gt, pred)| {
                 rules.count_png_into(&mut acc, gt, pred)?;
                 Ok::<_, crate::error::Error>(acc)

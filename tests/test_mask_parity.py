@@ -126,6 +126,29 @@ class TestDecode:
         dh = hm.decode(rles)
         assert dh.shape == (10, 10, 2)
 
+    def test_empty_list_is_an_empty_stack(self):
+        """hotcoco's own answer, not compared: pycocotools reads the size of an
+        empty list from a zero-length allocation, which glibc does not zero."""
+        dh = hm.decode([])
+        assert dh.shape == (0, 0, 0)
+        assert dh.dtype == np.uint8 and dh.flags.f_contiguous
+
+    @pytest.mark.parametrize(
+        "sizes",
+        [[(2, 3), (3, 2)], [(4, 4), (2, 3)], [(2, 3), (4, 4)], [(5, 5), (5, 5), (5, 4)]],
+        ids=lambda sizes: "+".join(f"{h}x{w}" for h, w in sizes),
+    )
+    def test_masks_of_different_sizes_raise(self, sizes):
+        """A deliberate deviation. pycocotools stacks every mask at the first
+        one's size: a 3×2 mask after a 2×3 one comes back scrambled into 2×3,
+        a smaller mask after a larger one is padded with background, and a
+        larger one after a smaller one raises only when its runs overrun the
+        stack's end. Every one of those is a wrong array, so hotcoco raises."""
+        rles = [pm.encode(np.asfortranarray(np.eye(h, w, dtype=np.uint8))) for h, w in sizes]
+        bad = next(i for i, (h, w) in enumerate(sizes) if (h, w) != sizes[0])
+        with pytest.raises(ValueError, match=rf"RLE {bad} is .* same size"):
+            hm.decode(rles)
+
 
 # ---------------------------------------------------------------------------
 # area
@@ -445,6 +468,25 @@ class TestIou:
         assert isinstance(iou_h, np.ndarray)
         assert iou_h.shape == (2, 2)
         assert iou_h.dtype == np.float64
+
+    @pytest.mark.parametrize("crowd", [False, True])
+    def test_masks_of_different_sizes_are_minus_one_only_where_boxes_overlap(self, crowd):
+        """pycocotools' box IoU gates every pair before the sizes are compared,
+        so masks of different sizes whose boxes are apart, or empty, score 0."""
+
+        def block(side, y, x):
+            m = np.zeros((side, side), np.uint8, order="F")
+            m[y : y + 3, x : x + 3] = 1
+            return m
+
+        dt = [block(10, 0, 0), np.zeros((10, 10), np.uint8, order="F"), block(10, 7, 7)]
+        gt = [block(12, 8, 8)]
+        dt_p = [pm.encode(np.asfortranarray(m)) for m in dt]
+        gt_p = [pm.encode(np.asfortranarray(m)) for m in gt]
+        want = pm.iou(dt_p, gt_p, [crowd])
+        got = hm.iou(dt_p, gt_p, [crowd])
+        np.testing.assert_array_equal(got, want)
+        assert want.ravel().tolist() == [0.0, 0.0, -1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +869,10 @@ class TestEncodeScan:
             assert norm_rle(hm.encode(np.asfortranarray(m))) == ref[i]
             assert norm_rle(hm.encode(m)) == ref[i]
         assert [norm_rle(r) for r in hm.encode(batch.transpose(1, 2, 0))] == ref
+        # Decoded back as one stack, large enough that core decodes it in parallel.
+        decoded = hm.decode(reference_rle(stack))
+        assert decoded.flags.f_contiguous
+        np.testing.assert_array_equal(decoded, pm.decode(reference_rle(stack)))
 
     def test_stack_encoded_without_the_gil_matches_pycocotools(self):
         """Stacks that take long enough are copied out of numpy and the rest encoded with

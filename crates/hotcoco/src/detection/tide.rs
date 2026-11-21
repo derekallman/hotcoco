@@ -2,6 +2,8 @@ use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use serde::Serialize;
 
 use crate::metrics::counts::{ApScratch, average_precision_ranked_into};
@@ -174,7 +176,7 @@ impl CatData {
     /// is exactly the permutation `average_precision` computes, and stably sorting
     /// an already-sorted array is the identity.
     fn rank_by_score_desc(&mut self) {
-        let order = crate::metrics::counts::score_order(&self.scores);
+        let order = crate::primitives::greedy::score_order(&self.scores);
         self.scores = order.iter().map(|&i| self.scores[i]).collect();
         self.matched = order.iter().map(|&i| self.matched[i]).collect();
         self.ignored = order.iter().map(|&i| self.ignored[i]).collect();
@@ -375,6 +377,7 @@ impl COCOeval {
         evaluated
             .img_ids
             .par_iter()
+            .fork_safe()
             .map(|&img_id| {
                 let mut dt_max_cross: HashMap<u64, (f64, Option<u64>)> = HashMap::new();
 
@@ -457,6 +460,7 @@ impl COCOeval {
         // cell, which the error's own cell cannot see.
         let usable_gts: HashMap<u64, u64> = cells
             .par_iter()
+            .fork_safe()
             .flat_map_iter(|eval_img| {
                 eval_img
                     .gt_ids
@@ -471,6 +475,7 @@ impl COCOeval {
 
         let mut classified = cells
             .par_iter()
+            .fork_safe()
             .fold(Classified::default, |mut acc, eval_img| {
                 let img_id = eval_img.image_id;
                 let cat_id = eval_img.category_id;
@@ -614,6 +619,7 @@ impl COCOeval {
 
         let per_cat: Vec<Option<CatDeltas>> = cat_ids
             .par_iter()
+            .fork_safe()
             .map(|&cat_id| {
                 let data = match cat_data.get(&cat_id) {
                     Some(d) if d.num_gt > 0 => d,
@@ -843,7 +849,7 @@ fn resolve_fixes(cat_data: &mut HashMap<u64, CatData>) -> HashSet<u64> {
     for (cat_id, mut scores) in incoming {
         // Every incoming entry is a TP, so the order among equal scores is
         // immaterial; descending is what the merge in `fix_fp` needs.
-        scores.sort_by_key(|&s| crate::metrics::counts::descending_score_key(s));
+        scores.sort_by_key(|&s| crate::primitives::greedy::descending_score_key(s));
         cat_data
             .entry(cat_id)
             .or_insert_with(CatData::new)
@@ -868,6 +874,7 @@ fn resolve_fixes(cat_data: &mut HashMap<u64, CatData>) -> HashSet<u64> {
 fn count_misses(cells: &[&EvalImg], covered_gts: &HashSet<u64>, t_idx: usize) -> MissCounts {
     cells
         .par_iter()
+        .fork_safe()
         .fold(MissCounts::default, |mut counts, eval_img| {
             let (mut n_miss, mut n_fn) = (0usize, 0usize);
             for (gi, &gt_id) in eval_img.gt_ids.iter().enumerate() {

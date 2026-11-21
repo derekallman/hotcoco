@@ -219,6 +219,11 @@ impl BoundaryCounts {
         self.dilation_ratio
     }
 
+    /// How many classes the counts cover.
+    pub fn num_classes(&self) -> usize {
+        self.classes.len()
+    }
+
     /// The counts of class `c`.
     pub fn class_counts(&self, c: usize) -> ClassCounts {
         self.classes[c]

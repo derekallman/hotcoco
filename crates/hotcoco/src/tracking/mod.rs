@@ -66,6 +66,8 @@ use std::path::Path;
 use std::str::FromStr;
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -465,22 +467,26 @@ impl TrackingEval {
             self.check_new(&s.name)?;
         }
         let config = self.config;
-        let results = sequences
-            .par_iter()
-            .map(|s| {
-                let gt = folders::read_rows_file(&s.gt, "ground-truth")?;
-                let pred = folders::read_rows_file(&s.pred, "prediction")?;
-                let num_frames = folders::seq_length(&s.seqinfo)?;
-                config.evaluate(&SequenceRows {
-                    name: &s.name,
-                    gt: &gt.values,
-                    gt_ncols: gt.ncols,
-                    pred: &pred.values,
-                    pred_ncols: pred.ncols,
-                    num_frames,
-                })
+        let one = |s: &folders::SequenceFiles| {
+            let gt = folders::read_rows_file(&s.gt, "ground-truth")?;
+            let pred = folders::read_rows_file(&s.pred, "prediction")?;
+            let num_frames = folders::seq_length(&s.seqinfo)?;
+            config.evaluate(&SequenceRows {
+                name: &s.name,
+                gt: &gt.values,
+                gt_ncols: gt.ncols,
+                pred: &pred.values,
+                pred_ncols: pred.ncols,
+                num_frames,
             })
-            .collect::<Result<Vec<_>>>()?;
+        };
+        // Each sequence's result kept in order, so the error raised is the
+        // first failing sequence's: collected straight into a `Result`, rayon
+        // returns whichever worker fails first, and the kind varied from run
+        // to run.
+        let results: Vec<Result<(TrackingResult, bool)>> =
+            sequences.par_iter().fork_safe().map(one).collect();
+        let results = results.into_iter().collect::<Result<Vec<_>>>()?;
         let n = sequences.len();
         for (s, (result, kept_zero_marked)) in sequences.into_iter().zip(results) {
             self.sequences.insert(s.name, result);

@@ -259,8 +259,15 @@ pub struct ClassCounts {
 impl ClassCounts {
     /// IoU, or `None` when the class appears on neither side.
     pub fn iou(&self) -> Option<f64> {
-        (self.gt_area + self.pred_area > 0)
+        self.on_either_side()
             .then(|| iou_from_counts(self.tp, self.gt_area, self.pred_area))
+    }
+
+    /// Whether the class has a pixel on either side. Not `gt_area +
+    /// pred_area > 0`: the two areas share the diagonal, so their sum can
+    /// pass `u64::MAX` when the matrix's total does not, and wrap to 0.
+    fn on_either_side(&self) -> bool {
+        self.gt_area > 0 || self.pred_area > 0
     }
 
     /// Per-class accuracy — recall over the class's pixels — or `None` when
@@ -272,8 +279,11 @@ impl ClassCounts {
     /// Dice — `2 TP / (2 TP + FP + FN)`, mmseg's `mDice` per class — or
     /// `None` when the class appears on neither side.
     pub fn dice(&self) -> Option<f64> {
-        let both = self.gt_area + self.pred_area;
-        (both > 0).then(|| 2.0 * self.tp as f64 / both as f64)
+        // Summed wide, for the reason `on_either_side` gives; the same bits
+        // wherever the `u64` sum fits.
+        let both = u128::from(self.gt_area) + u128::from(self.pred_area);
+        self.on_either_side()
+            .then(|| 2.0 * self.tp as f64 / both as f64)
     }
 }
 
@@ -356,13 +366,33 @@ impl SemanticScores {
 /// the void of a panoptic output — which counts as a miss for its
 /// ground-truth class and a false positive for none. That column is not a
 /// class: it has no row, no scores, and no place in any mean.
+///
+/// Deserializing runs [`from_counts`](Self::from_counts)' checks, so an
+/// edited pickle is refused rather than read past its cells.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PixelConfusionState")]
 pub struct PixelConfusion {
     num_classes: usize,
     unlabeled_pred: bool,
     counts: Vec<u64>,
     #[serde(skip)]
     scratch: LaneScratch,
+}
+
+/// A [`PixelConfusion`] as serialized, before its checks.
+#[derive(Deserialize)]
+struct PixelConfusionState {
+    num_classes: usize,
+    unlabeled_pred: bool,
+    counts: Vec<u64>,
+}
+
+impl TryFrom<PixelConfusionState> for PixelConfusion {
+    type Error = Error;
+
+    fn try_from(state: PixelConfusionState) -> crate::error::Result<Self> {
+        PixelConfusion::checked(state.num_classes, state.unlabeled_pred, state.counts)
+    }
 }
 
 /// Buffers a counter keeps between the images it counts, which are not its
@@ -402,7 +432,13 @@ type LaneScratch = Scratch<Vec<u64>>;
 
 impl PixelConfusion {
     /// An all-zero `num_classes × num_classes` matrix.
+    ///
+    /// # Panics
+    ///
+    /// On a class count [`check_num_classes`](crate::metrics::confusion::check_num_classes)
+    /// refuses.
     pub fn new(num_classes: usize) -> Self {
+        crate::metrics::confusion::assert_num_classes(num_classes, "PixelConfusion");
         PixelConfusion {
             num_classes,
             unlabeled_pred: false,
@@ -413,7 +449,13 @@ impl PixelConfusion {
 
     /// An all-zero `num_classes × (num_classes + 1)` matrix whose last column
     /// is a prediction that names no class — see the type docs.
+    ///
+    /// # Panics
+    ///
+    /// On a class count [`check_num_classes`](crate::metrics::confusion::check_num_classes)
+    /// refuses.
     pub fn with_unlabeled_pred(num_classes: usize) -> Self {
+        crate::metrics::confusion::assert_num_classes(num_classes, "PixelConfusion");
         PixelConfusion {
             num_classes,
             unlabeled_pred: true,
@@ -426,18 +468,50 @@ impl PixelConfusion {
     ///
     /// # Errors
     ///
-    /// If `counts` is not `num_classes²` long.
+    /// If `counts` is not `num_classes²` long, or sums past `u64::MAX`: every
+    /// score divides sums of these cells, which are `u64` too, and past that
+    /// they wrap, which reads as a missing score or a wrong ratio.
     pub fn from_counts(num_classes: usize, counts: Vec<u64>) -> crate::error::Result<Self> {
-        if counts.len() != num_classes * num_classes {
+        Self::checked(num_classes, false, counts)
+    }
+
+    /// [`from_counts`](Self::from_counts) with the unlabeled column or
+    /// without: `num_classes` rows of `num_classes` cells, one more with it.
+    fn checked(
+        num_classes: usize,
+        unlabeled_pred: bool,
+        counts: Vec<u64>,
+    ) -> crate::error::Result<Self> {
+        // Checked: `num_classes²` wraps in release builds, and a wrapped size
+        // that matched would build a matrix with too few cells to read.
+        let columns = num_classes + usize::from(unlabeled_pred);
+        let cells = num_classes.checked_mul(columns);
+        if cells != Some(counts.len()) {
             return Err(Error::InvalidInput(format!(
                 "a confusion matrix for {num_classes} classes has {} cells, got {}",
-                num_classes * num_classes,
+                cells.map_or_else(
+                    || if unlabeled_pred {
+                        format!("{num_classes}×{columns}")
+                    } else {
+                        format!("{num_classes}²")
+                    },
+                    |n| n.to_string()
+                ),
                 counts.len()
             )));
         }
+        if counts
+            .iter()
+            .try_fold(0u64, |sum, &c| sum.checked_add(c))
+            .is_none()
+        {
+            return Err(Error::InvalidInput(
+                "confusion counts more pixels than 2**64 - 1".into(),
+            ));
+        }
         Ok(PixelConfusion {
             num_classes,
-            unlabeled_pred: false,
+            unlabeled_pred,
             counts,
             scratch: LaneScratch::default(),
         })
@@ -1026,9 +1100,37 @@ mod tests {
         assert_eq!(a, whole);
     }
 
+    /// A total that fits in 64 bits, which `from_counts` accepts, can still
+    /// give a class whose `gt_area + pred_area` does not: the two share the
+    /// diagonal. Summed in `u64`, class 0's wrapped to 0 and its IoU and Dice
+    /// read as "not computed".
+    #[test]
+    fn a_class_whose_two_areas_pass_64_bits_still_scores() {
+        let m = PixelConfusion::from_counts(2, vec![1 << 62, 1 << 62, 1 << 62, (1 << 62) - 1])
+            .expect("the total is 2⁶⁴ − 1");
+        let s = m.scores();
+        for (c, class) in s.per_class.iter().enumerate() {
+            assert!(
+                (class.iou - 1.0 / 3.0).abs() < 1e-12,
+                "class {c}: {class:?}"
+            );
+            assert!((class.dice - 0.5).abs() < 1e-12, "class {c}: {class:?}");
+        }
+        assert!((s.fwiou - 1.0 / 3.0).abs() < 1e-12, "{s:?}");
+    }
+
     #[test]
     fn from_counts_checks_the_size() {
         assert!(PixelConfusion::from_counts(2, vec![1, 2, 3]).is_err());
+        // `(2³²)²` wraps to 0 in release builds, which an empty count matched.
+        let wrapped = PixelConfusion::from_counts(1 << 32, Vec::new());
+        assert!(
+            matches!(&wrapped, Err(Error::InvalidInput(m)) if m.contains("4294967296²")),
+            "{wrapped:?}"
+        );
+        let wraps = PixelConfusion::from_counts(2, vec![1 << 62; 4]);
+        assert!(matches!(wraps, Err(Error::InvalidInput(m)) if m.contains("more pixels")));
+        assert!(PixelConfusion::from_counts(2, vec![u64::MAX, 0, 0, 0]).is_ok());
         let m = PixelConfusion::from_counts(2, vec![3, 1, 0, 2]).expect("square");
         assert_eq!(m.get(0, 1), 1);
         assert_eq!(m.class_counts(1).gt_area, 2);

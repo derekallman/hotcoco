@@ -54,6 +54,16 @@ pub(crate) fn pairwise_sum(values: &[f64]) -> f64 {
 /// numpy's default buffer size in elements, `np.getbufsize()`.
 const NUMPY_BUFSIZE: usize = 8192;
 
+/// `np.sum` of a contiguous 1-D `f64` array as numpy 1.23 reduces it: its
+/// buffered iterator hands the reduction runs of [`NUMPY_BUFSIZE`] values,
+/// each summed by [`pairwise_sum`], and adds the runs left to right. The
+/// dense form of [`grid_sum`]; up to 8192 values it is `pairwise_sum`.
+pub(crate) fn buffered_pairwise_sum(values: &[f64]) -> f64 {
+    values
+        .chunks(NUMPY_BUFSIZE)
+        .fold(0.0, |total, run| total + pairwise_sum(run))
+}
+
 /// `np.sum` of a whole C-ordered 2-D `f64` array of `len` cells, in the order
 /// numpy 1.23 adds it, from the array's non-zero cells alone: `cells` holds
 /// `(flat index, value)` pairs in ascending index order.

@@ -16,6 +16,8 @@
 //! document why.
 //!
 
+use crate::primitives::greedy::score_order;
+
 /// One sampled point on a precision-recall curve.
 ///
 /// Named fields rather than a `(usize, f64, usize)` tuple: the two `usize` are
@@ -44,31 +46,13 @@ pub(crate) fn coco_precision(tp: f64, fp: f64) -> f64 {
     tp / (tp + fp + f64::EPSILON)
 }
 
-/// The key the detection ranking sorts on: its integer order is the reverse of
-/// `score`'s for every score but NaN, so keys sorted ascending put scores in
-/// descending order, and a stable sort keeps tied scores in input order, as
-/// pycocotools' mergesort does. `-0.0` and `0.0` compare equal as scores, so
-/// they share a key. Otherwise the order is reversed [`f64::total_cmp`]:
-/// positive `NaN` above every number, negative `NaN` below.
-pub(crate) fn descending_score_key(score: f64) -> u64 {
-    // `-0.0 + 0.0` is `0.0`.
-    let bits = (score + 0.0).to_bits();
-    // Ascending order: flip every bit of a negative, only the sign of the rest.
-    let ascending = if bits >> 63 == 1 {
-        !bits
-    } else {
-        bits | 1 << 63
-    };
-    !ascending
-}
-
 /// Sort `(key, position)` pairs ascending by key, ties by position, as
 /// `sort_unstable` on the pairs does — for pairs whose positions ascend in
 /// slice order, which makes it the stable sort by key that ranks detections.
 ///
 /// A least-significant-digit radix sort on the key's bytes, skipping the ones
 /// every key shares: a pass per byte is stable, so position order survives
-/// every tie. [`descending_score_key`] keys of scores in `[0, 1]` share their
+/// every tie. [`descending_score_key`](crate::primitives::greedy::descending_score_key) keys of scores in `[0, 1]` share their
 /// top byte, and scores that came from `float32` their low three, so a
 /// detector's ranking is about four passes over the pairs where a comparison
 /// sort is `log2 n`. A short slice goes to the comparison sort. `scratch` is
@@ -112,22 +96,6 @@ pub(crate) fn sort_score_keyed(items: &mut Vec<(u64, u32)>, scratch: &mut Vec<(u
         }
         std::mem::swap(items, scratch);
     }
-}
-
-/// The detection ranking: indices of `scores`, highest score first, tied
-/// scores in input order — pycocotools' stable sort, and the order `COCOeval`
-/// matches and accumulates in. A caller of
-/// [`primitives::greedy`](crate::primitives::greedy) ranks its rows with
-/// this.
-///
-/// ```
-/// # use hotcoco::metrics::counts::score_order;
-/// assert_eq!(score_order(&[0.5, 0.9, 0.5, -0.0, 0.0]), vec![1, 0, 2, 3, 4]);
-/// ```
-pub fn score_order(scores: &[f64]) -> Vec<usize> {
-    let mut order: Vec<usize> = (0..scores.len()).collect();
-    order.sort_by_key(|&i| descending_score_key(scores[i]));
-    order
 }
 
 /// Precision interpolated at fixed recall thresholds, from cumulative TP/FP.
@@ -914,6 +882,7 @@ pub fn max_f_beta(precisions: &[f64], recalls: &[f64], beta: f64) -> Option<f64>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::greedy::descending_score_key;
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 

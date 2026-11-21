@@ -16,6 +16,8 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
+use crate::primitives::sim::ForkSafe;
+
 use crate::coco::box_area;
 use crate::primitives::sim::worth_parallel;
 use crate::types::Annotation;
@@ -107,21 +109,33 @@ pub(crate) struct TrackTable {
 impl TrackTable {
     /// The table of `rows` over `num_frames` frames, every row's frame below
     /// `num_frames`. A stable grouping: rows of one frame keep their order.
-    pub(crate) fn new(num_frames: usize, rows: &[TrackRow]) -> Self {
-        let mut frame_start = vec![0usize; num_frames + 1];
+    ///
+    /// `None` when the `num_frames + 1` frame offsets cannot be allocated:
+    /// the frame count is a caller's, and `vec!` answers a size past `usize`
+    /// by wrapping, and one the system refuses by aborting.
+    pub(crate) fn new(num_frames: usize, rows: &[TrackRow]) -> Option<Self> {
+        let offsets = |len: usize| {
+            let mut v: Vec<usize> = Vec::new();
+            v.try_reserve_exact(len).ok().map(|()| v)
+        };
+        let mut frame_start = offsets(num_frames.checked_add(1)?)?;
+        frame_start.resize(num_frames + 1, 0);
         for r in rows {
             frame_start[r.frame + 1] += 1;
         }
         for f in 0..num_frames {
             frame_start[f + 1] += frame_start[f];
         }
-        let mut next = frame_start.clone();
+        let mut next = offsets(frame_start.len())?;
+        next.extend_from_slice(&frame_start);
         let mut order = vec![0usize; rows.len()];
         for (i, r) in rows.iter().enumerate() {
             order[next[r.frame]] = i;
             next[r.frame] += 1;
         }
-        Self::from_order(rows.len(), frame_start, |k| rows[order[k]])
+        Some(Self::from_order(rows.len(), frame_start, |k| {
+            rows[order[k]]
+        }))
     }
 
     /// The rows where `keep` is true, still grouped by frame, renumbered
@@ -282,7 +296,7 @@ impl DetectionTable {
     pub(crate) fn from_boxes(xywh: Vec<[f64; 4]>, score: Vec<f64>) -> Self {
         debug_assert_eq!(xywh.len(), score.len());
         let area = if worth_parallel(xywh.len()) {
-            xywh.par_iter().map(box_area).collect()
+            xywh.par_iter().fork_safe().map(box_area).collect()
         } else {
             xywh.iter().map(box_area).collect()
         };
@@ -421,7 +435,7 @@ fn collect<A: Send, B: Send>(
     fields: impl Fn(&Annotation) -> (A, B) + Sync + Send,
 ) -> (Vec<A>, Vec<B>) {
     if worth_parallel(anns.len()) {
-        anns.par_iter().map(fields).unzip()
+        anns.par_iter().fork_safe().map(fields).unzip()
     } else {
         anns.iter().map(fields).unzip()
     }
@@ -507,7 +521,8 @@ mod tests {
             class: 1,
             conf: 1.0,
         };
-        let t = TrackTable::new(3, &[row(2, 40, 0.0), row(0, 7, 1.0), row(2, 7, 2.0)]);
+        let t = TrackTable::new(3, &[row(2, 40, 0.0), row(0, 7, 1.0), row(2, 7, 2.0)])
+            .expect("four frame offsets");
         assert_eq!((t.len(), t.num_frames(), t.num_tracks()), (3, 3, 2));
         assert_eq!((t.frame(0), t.frame(1), t.frame(2)), (0..1, 1..1, 1..3));
         assert_eq!(t.tracks(0..3), &[0, 1, 0]);

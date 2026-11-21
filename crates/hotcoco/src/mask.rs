@@ -14,6 +14,8 @@
 
 use rayon::prelude::*;
 
+use crate::primitives::sim::ForkSafe;
+
 use crate::error::Error;
 use crate::primitives::sim::worth_parallel;
 use crate::types::Rle;
@@ -303,26 +305,188 @@ pub fn encode_each(
     };
     let bytes = masks.len().saturating_mul(h as usize * w as usize);
     if worth_parallel(bytes / MASK_BYTES_PER_WORK) {
-        masks.par_iter().map(one).collect()
+        masks.par_iter().fork_safe().map(one).collect()
     } else {
         masks.iter().map(one).collect()
     }
 }
 
+/// A C-order `(h, w, n)` stack, numpy's default layout for a stack of masks,
+/// whose masks interleave byte by byte, rewritten as the `n` masks back to
+/// back, each column-major: the same stack in Fortran order, ready for
+/// [`encode_each`] with [`Order::ColumnMajor`].
+///
+/// # Errors
+///
+/// If `stack` is not `h * w * n` bytes.
+pub fn to_fortran_stack(stack: &[u8], h: u32, w: u32, n: usize) -> crate::error::Result<Vec<u8>> {
+    let (h, w) = (h as usize, w as usize);
+    let hw = h * w;
+    if hw.checked_mul(n) != Some(stack.len()) {
+        return Err(Error::InvalidInput(format!(
+            "to_fortran_stack: {} bytes, expected h * w * n = {h} * {w} * {n}",
+            stack.len()
+        )));
+    }
+    let mut out = vec![0; stack.len()];
+    if out.is_empty() {
+        return Ok(out);
+    }
+    // For each column `x`, the `(h, n)` matrix of `(y, i)` bytes sits at
+    // `x * n` with row stride `w * n`, and its transpose belongs at `x * h`
+    // with row stride `h * w`: slice `i`'s column `x`.
+    for x in 0..w {
+        transpose_into(&stack[x * n..], w * n, &mut out[x * h..], hw, h, n);
+    }
+    Ok(out)
+}
+
+/// Write the `rows × cols` byte matrix `src` into `dst` transposed: element
+/// `(r, c)`, read from `src[r * src_stride + c]`, lands at
+/// `dst[c * dst_stride + r]`.
+///
+/// Works in 8×8 blocks, eight 8-byte rows in and eight 8-byte columns out, so
+/// both sides move a word at a time and the destination's cache lines are
+/// reused by the next block down instead of each byte landing on its own
+/// line. A stack of C-order masks reads every byte from a different line
+/// otherwise, which made it about 7× slower than a Fortran-order stack. The
+/// ragged right and bottom edges go byte by byte.
+fn transpose_into(
+    src: &[u8],
+    src_stride: usize,
+    dst: &mut [u8],
+    dst_stride: usize,
+    rows: usize,
+    cols: usize,
+) {
+    let (rows8, cols8) = (rows - rows % 8, cols - cols % 8);
+    for r0 in (0..rows8).step_by(8) {
+        for c0 in (0..cols8).step_by(8) {
+            let mut block = [0u64; 8];
+            for (i, row) in block.iter_mut().enumerate() {
+                let at = (r0 + i) * src_stride + c0;
+                *row = word(&src[at..at + 8]);
+            }
+            for (j, col) in transpose_8x8(block).into_iter().enumerate() {
+                let at = (c0 + j) * dst_stride + r0;
+                dst[at..at + 8].copy_from_slice(&col.to_le_bytes());
+            }
+        }
+        for c in cols8..cols {
+            for r in r0..r0 + 8 {
+                dst[c * dst_stride + r] = src[r * src_stride + c];
+            }
+        }
+    }
+    for r in rows8..rows {
+        for c in 0..cols {
+            dst[c * dst_stride + r] = src[r * src_stride + c];
+        }
+    }
+}
+
+/// Transpose an 8×8 byte matrix held as eight little-endian rows.
+///
+/// Three swap rounds, each exchanging the off-diagonal blocks of every
+/// diagonal block pair: 4×4 blocks, then 2×2, then single bytes.
+fn transpose_8x8(mut m: [u64; 8]) -> [u64; 8] {
+    for (shift, mask) in [
+        (32, 0x0000_0000_FFFF_FFFF_u64),
+        (16, 0x0000_FFFF_0000_FFFF),
+        (8, 0x00FF_00FF_00FF_00FF),
+    ] {
+        let step = shift / 8;
+        for i in (0..8).filter(|i| i & step == 0) {
+            let t = ((m[i] >> shift) ^ m[i + step]) & mask;
+            m[i] ^= t << shift;
+            m[i + step] ^= t;
+        }
+    }
+    m
+}
+
 /// Decode an RLE to a column-major binary mask of size `h * w`.
 pub fn decode(rle: &Rle) -> Vec<u8> {
-    let n = (rle.h as usize) * (rle.w as usize);
-    let mut mask = vec![0u8; n];
-    let mut idx = 0usize;
-    let mut v = 0u8;
-    for &c in &rle.counts {
-        let c = c as usize;
-        let end = (idx.saturating_add(c)).min(n);
-        mask[idx..end].fill(v);
-        idx = end;
-        v = 1 - v;
-    }
+    let mut mask = vec![0u8; rle.h as usize * rle.w as usize];
+    decode_into(rle, &mut mask);
     mask
+}
+
+/// [`decode`] into `mask`, `h * w` bytes of background: only the foreground
+/// runs are written, and a run past the end stops there.
+fn decode_into(rle: &Rle, mask: &mut [u8]) {
+    let n = mask.len();
+    let mut at = 0usize;
+    for (i, &c) in rle.counts.iter().enumerate() {
+        let end = at.saturating_add(c as usize).min(n);
+        if i % 2 == 1 {
+            mask[at..end].fill(1);
+        }
+        at = end;
+    }
+}
+
+/// Decode an RLE to a row-major binary mask of size `h * w`: pixel (x, y) at
+/// index `x + w * y`, the order numpy's C layout and torch store a mask in.
+/// The mirror of [`encode_rows`].
+pub fn decode_rows(rle: &Rle) -> Vec<u8> {
+    let (h, w) = (rle.h as usize, rle.w as usize);
+    let columns = decode(rle);
+    let mut rows = vec![0u8; h * w];
+    // The column-major mask is a row-major `w × h` matrix, a row per column.
+    transpose_into(&columns, h, &mut rows, w, w, h);
+    rows
+}
+
+/// Decode RLEs of one size into one buffer: the masks back to back, each
+/// column-major, which is the `(h, w, n)` Fortran-order array
+/// `pycocotools.mask.decode` returns for a list. An empty list is an empty
+/// buffer. A large stack decodes in parallel.
+///
+/// # Errors
+///
+/// An RLE whose size differs from the first one's, naming it. pycocotools
+/// reads the size off the first RLE alone and returns a scrambled or padded
+/// array instead. Also a stack too large to address.
+pub fn decode_stack(rles: &[Rle]) -> crate::error::Result<Vec<u8>> {
+    let Some(first) = rles.first() else {
+        return Ok(Vec::new());
+    };
+    let (h, w) = (first.h, first.w);
+    if let Some((i, other)) = rles.iter().enumerate().find(|(_, r)| (r.h, r.w) != (h, w)) {
+        return Err(Error::InvalidInput(format!(
+            "RLE {i} is {}×{}, but RLE 0 is {h}×{w}; masks in one stack must be the same size",
+            other.h, other.w
+        )));
+    }
+    let hw = h as usize * w as usize;
+    // Past `isize::MAX` bytes `vec!` panics on the capacity; `vec!` stays,
+    // since its zeroed allocation costs no pass over the stack.
+    let bytes = hw
+        .checked_mul(rles.len())
+        .filter(|&bytes| isize::try_from(bytes).is_ok())
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "{} masks of {h}×{w} are more bytes than one buffer can hold",
+                rles.len()
+            ))
+        })?;
+    let mut stack = vec![0u8; bytes];
+    if hw == 0 {
+        return Ok(stack);
+    }
+    if worth_parallel(bytes / MASK_BYTES_PER_WORK) {
+        stack
+            .par_chunks_mut(hw)
+            .fork_safe()
+            .zip(rles)
+            .for_each(|(mask, rle)| decode_into(rle, mask));
+    } else {
+        for (mask, rle) in stack.chunks_mut(hw).zip(rles) {
+            decode_into(rle, mask);
+        }
+    }
+    Ok(stack)
 }
 
 /// Compute the area (number of foreground pixels) of an RLE mask.
@@ -1286,7 +1450,7 @@ pub fn bboxes(rles: &[RleRef<'_>]) -> Vec<crate::error::Result<[f64; 4]>> {
 /// threshold, since each mask decodes on its own.
 fn each<I: Sync, T: Send>(items: &[I], f: impl Fn(&I) -> T + Sync + Send) -> Vec<T> {
     if worth_parallel(items.len()) {
-        items.par_iter().map(f).collect()
+        items.par_iter().fork_safe().map(f).collect()
     } else {
         items.iter().map(f).collect()
     }
@@ -1748,6 +1912,133 @@ mod tests {
             );
         }
         assert!(encode_each(&[], 3, 3, Order::RowMajor).is_empty());
+    }
+
+    /// Random column-major masks: a noisy corner block each, so runs start
+    /// and end everywhere.
+    fn random_masks(h: usize, w: usize, n: usize, seed: u64) -> Vec<Vec<u8>> {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+        (0..n)
+            .map(|_| {
+                let (y0, x0) = (rng.random_range(0..h.max(1)), rng.random_range(0..w.max(1)));
+                (0..h * w)
+                    .map(|i| {
+                        u8::from(i % h.max(1) >= y0 && i / h.max(1) >= x0 && rng.random_bool(0.9))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_decode_stack_matches_decode_one_at_a_time() {
+        // One stack small enough for one thread and one large enough to fan out.
+        for (h, w, n) in [(5, 7, 4), (426, 640, 12), (0, 3, 2), (3, 0, 2)] {
+            let masks = random_masks(h, w, n, 0xDEC0);
+            let rles: Vec<Rle> = masks
+                .iter()
+                .map(|m| encode(m, h as u32, w as u32).unwrap())
+                .collect();
+            assert_eq!(decode_stack(&rles).unwrap(), masks.concat(), "{h}x{w}x{n}");
+        }
+        assert_eq!(decode_stack(&[]).unwrap(), Vec::<u8>::new());
+        // A run past the end stops there, as in `decode`.
+        let long = Rle {
+            h: 2,
+            w: 2,
+            counts: vec![1, 9],
+        };
+        assert_eq!(
+            decode_stack(std::slice::from_ref(&long)).unwrap(),
+            decode(&long)
+        );
+        assert_eq!(decode(&long), vec![0, 1, 1, 1]);
+    }
+
+    #[test]
+    fn test_decode_stack_refuses_a_stack_too_large_to_address() {
+        // About 2⁶⁴ bytes: past `isize::MAX`, where `vec!` panicked on the
+        // capacity the error promises to refuse.
+        let huge = Rle {
+            h: u32::MAX,
+            w: u32::MAX,
+            counts: vec![],
+        };
+        let refused = decode_stack(&[huge]);
+        assert!(
+            matches!(&refused, Err(Error::InvalidInput(m)) if m.contains("more bytes")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn test_decode_stack_refuses_masks_of_different_sizes() {
+        let rle = |h, w| encode(&vec![1; (h * w) as usize], h, w).unwrap();
+        for (rles, bad) in [
+            (vec![rle(2, 3), rle(3, 2)], "RLE 1 is 3×2, but RLE 0 is 2×3"),
+            (
+                vec![rle(4, 4), rle(4, 4), rle(2, 3)],
+                "RLE 2 is 2×3, but RLE 0 is 4×4",
+            ),
+        ] {
+            match decode_stack(&rles) {
+                Err(Error::InvalidInput(m)) => {
+                    assert!(m.contains(bad) && m.contains("same size"), "{m}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_decode_rows_is_decode_in_row_major_order() {
+        for (h, w) in [
+            (1, 1),
+            (3, 5),
+            (8, 8),
+            (9, 17),
+            (16, 3),
+            (0, 4),
+            (4, 0),
+            (426, 640),
+        ] {
+            for (i, rows) in random_masks(h, w, 3, 0xD0E5).iter().enumerate() {
+                let rle = encode(&transposed(rows, h, w), h as u32, w as u32).unwrap();
+                assert_eq!(&decode_rows(&rle), rows, "{h}x{w} mask {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_to_fortran_stack_matches_a_naive_transpose() {
+        // Sizes on and off the 8×8 blocks along every axis, and empty ones.
+        for (h, w, n) in [
+            (1, 1, 1),
+            (3, 5, 8),
+            (8, 8, 8),
+            (9, 7, 17),
+            (16, 3, 9),
+            (0, 4, 9),
+            (4, 0, 9),
+            (4, 4, 0),
+        ] {
+            let c_order: Vec<u8> = (0..h * w * n).map(|i| (i * 37 % 251) as u8).collect();
+            let mut want = vec![0; h * w * n];
+            for y in 0..h {
+                for x in 0..w {
+                    for i in 0..n {
+                        want[i * h * w + x * h + y] = c_order[(y * w + x) * n + i];
+                    }
+                }
+            }
+            let got = to_fortran_stack(&c_order, h as u32, w as u32, n).unwrap();
+            assert_eq!(got, want, "{h}x{w}x{n}");
+        }
+        assert!(matches!(
+            to_fortran_stack(&[0; 5], 2, 3, 1),
+            Err(Error::InvalidInput(m)) if m.contains("5 bytes")
+        ));
     }
 
     #[test]

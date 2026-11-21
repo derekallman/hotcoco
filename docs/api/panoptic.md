@@ -68,7 +68,9 @@ signatures and return shapes.
 `stats`, `eval_imgs`, `summarize()`, `summary_lines()`, `results()`, and
 `report()` raise `RuntimeError` before `evaluate()`.
 
-In Rust the same names return `Result` where Python raises: `results()`
+In Rust the same names return `Result` where Python raises on bad input;
+before `run()`, `results()` and `report()` are `Error::InvalidState`, and
+`eval_imgs()` and `summarize_lines()` are empty, as `result()` is `None`. `results()`
 returns a `PanopticResults` with `to_json()` and `save()`, `result()` exposes
 the raw `PanopticResult` counts behind it, and `summary_lines()` is spelled
 `summarize_lines()`. `PanopticResult.pixels` is the category confusion matrix

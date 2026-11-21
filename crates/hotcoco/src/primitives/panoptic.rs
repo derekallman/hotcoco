@@ -128,14 +128,28 @@ impl Overlaps {
     /// [`compute`](Self::compute) returns for maps with those counts.
     ///
     /// The way in for a histogram built elsewhere — panopticapi's
-    /// `gt_pred_map`, or one read back from a file. The counts must sum to
-    /// at most `u64::MAX`, as the pixels of any pair of label maps do.
-    pub fn from_counts(counts: impl IntoIterator<Item = (u32, u32, u64)>) -> Self {
+    /// `gt_pred_map`, or one read back from a file.
+    ///
+    /// # Errors
+    ///
+    /// If the counts sum past `u64::MAX`, more pixels than any pair of label
+    /// maps holds: every area the matcher takes is a sum of these counts, so
+    /// a total that fits keeps each one exact.
+    pub fn from_counts(
+        counts: impl IntoIterator<Item = (u32, u32, u64)>,
+    ) -> crate::error::Result<Self> {
         let mut builder = OverlapsBuilder::default();
+        let mut total = 0u64;
         for (g, p, n) in counts {
+            total = total.checked_add(n).ok_or_else(|| {
+                crate::error::Error::InvalidInput(
+                    "overlaps counts more pixels than 2**64 - 1, more than any pair of label maps holds"
+                        .into(),
+                )
+            })?;
             builder.add(pair_key(g, p), n);
         }
-        builder.finish()
+        Ok(builder.finish())
     }
 
     /// Pixels carrying `gt` in the ground-truth map and `pred` in the
@@ -455,9 +469,20 @@ mod tests {
             (2, 5, 1),
             (1, 5, 1),
             (3, 3, 0),
-        ]);
+        ])
+        .expect("counts fit in 64 bits");
         assert_eq!(given, computed);
-        assert_eq!(Overlaps::from_counts([]), Overlaps::compute(&[], &[]));
+        assert_eq!(
+            Overlaps::from_counts([]).expect("no counts"),
+            Overlaps::compute(&[], &[])
+        );
+        // A total past 64 bits, though each count fits.
+        let wraps = Overlaps::from_counts([(1, 1, u64::MAX), (0, 1, 5)]);
+        assert!(
+            matches!(&wraps, Err(crate::error::Error::InvalidInput(m)) if m.contains("more pixels")),
+            "{wraps:?}"
+        );
+        assert!(Overlaps::from_counts([(1, 1, u64::MAX)]).is_ok());
     }
 
     /// A repeated label is one segment, as the reference's dict holds it: the

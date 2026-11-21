@@ -38,6 +38,8 @@ use std::io::{self, Cursor, Read};
 use std::path::Path;
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use serde::de::{DeserializeOwned, IgnoredAny};
 
 use crate::error::Error;
@@ -180,7 +182,7 @@ impl<'a> Source<'a> {
             ..
         } = self;
         let buf: &Vec<u8> = buf;
-        rayon::join(
+        crate::primitives::sim::join(
             || parse(buf),
             || {
                 spare.clear();
@@ -495,7 +497,7 @@ fn results_whole(bytes: &[u8]) -> serde_json::Result<Vec<Annotation>> {
 /// How many runs to cut `len` bytes of array into: none below one chunk's
 /// worth, and no more than a few per thread.
 fn chunk_count(len: usize) -> usize {
-    (len / MIN_CHUNK_BYTES).min(crate::RUNS_PER_THREAD * rayon::current_num_threads())
+    (len / MIN_CHUNK_BYTES).min(crate::RUNS_PER_THREAD * crate::primitives::sim::pool_threads())
 }
 
 /// Below this many bytes per chunk, cutting the array up costs more than the
@@ -529,6 +531,7 @@ fn parse_span<T: DeserializeOwned + Send>(
     starts.dedup();
     let runs: Vec<_> = (0..starts.len())
         .into_par_iter()
+        .fork_safe()
         .map(|i| parse_run(bytes, starts[i], starts.get(i + 1).copied().or(stop)))
         .collect();
     let mut kept = Vec::with_capacity(runs.len());

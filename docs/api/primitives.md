@@ -193,19 +193,30 @@ COCO's greedy matching of detections to ground truths, pycocotools-exact.
 === "Rust"
 
     ```rust
+    primitives::greedy::greedy_match(input: &GreedyInput<'_>) -> Result<GreedyOutput>
+    ```
+
+    The Python function, with the same arguments as fields of `GreedyInput`
+    (`sim` flat, `num_dt × num_gt` row-major; each flag slice an `Option`)
+    and the same three results as `ThreshMatrix` rows, `None` for no match.
+    NaN in `sim`, `scores`, or `iou_thrs`, and slices of the wrong length,
+    are `Error::InvalidInput`.
+
+    Underneath is the kernel, which takes its input already ordered:
+
+    ```rust
     primitives::greedy::greedy_match_masked(
         iou_flat: &[f64], d: usize, g: usize, num_gt_not_ignored: usize,
         masks: GtMasks<'_>, iou_thrs: &[f64],
     ) -> GreedyMatches
     ```
 
-    The kernel takes its input already ordered: rows score-descending, columns
-    non-ignored first, thresholds already clamped with `coco_match_floor`. The
-    Python function does that ordering for you, with
-    `metrics::counts::score_order` and `params::default_iou_thrs` — the
-    ranking and thresholds `COCOeval` uses. `greedy::match_group_of` is the
-    Open Images pass that follows it, on the same inputs plus the group-of
-    flags, and the detection driver runs the same two functions.
+    Rows score-descending, columns non-ignored first, thresholds already
+    clamped with `coco_match_floor`. `greedy_match` makes that order with
+    `greedy::score_order`, the ranking `COCOeval` uses.
+    `greedy::match_group_of` is the Open Images pass that follows it, on the
+    same inputs plus the group-of flags, and the detection driver runs the
+    same two functions.
 
 At each threshold, detections take turns from the highest score down, tied
 scores in row order as pycocotools' stable sort leaves them. Each takes the
@@ -308,7 +319,7 @@ Pixel counts of every `(gt_id, pred_id)` pair in two panoptic label maps.
 
     ```rust
     primitives::panoptic::Overlaps::compute(gt: &[u32], pred: &[u32]) -> Overlaps
-    primitives::panoptic::Overlaps::from_counts(counts: impl IntoIterator<Item = (u32, u32, u64)>) -> Overlaps
+    primitives::panoptic::Overlaps::from_counts(counts: impl IntoIterator<Item = (u32, u32, u64)>) -> Result<Overlaps>
     ```
 
 The similarity step of panoptic quality: everything PQ needs about geometry is

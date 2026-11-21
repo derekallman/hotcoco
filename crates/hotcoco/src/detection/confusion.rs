@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
+use crate::primitives::sim::ForkSafe;
+
 use crate::coco::COCO;
 use crate::metrics::confusion;
 use crate::params::IouType;
@@ -268,6 +270,7 @@ impl COCOeval {
         // are appended and summed in cannot change the result.
         let (gt_labels, dt_labels) = img_ids
             .par_iter()
+            .fork_safe()
             .fold(LabelPairs::default, |mut acc: LabelPairs, &img_id| {
                 // Detections arrive score-descending and capped, which is
                 // what the matcher below assumes of its row order.

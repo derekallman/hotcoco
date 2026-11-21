@@ -23,6 +23,11 @@ thiserror = "2"
 memchr = "2.8.3"
 rustc-hash = "2"
 png = "0.18.1"
+# Image sizes for the converters' `images_dir`, read from each file's header:
+# the formats `convert::IMAGE_EXTENSIONS` names, plus the ones Pillow also read
+# when one sits under such an extension. Formats Pillow does not read stay off,
+# and so do those whose weak magic would size a file that is no image.
+imagesize = { version = "0.15.0", default-features = false, features = ["bmp", "dds", "gif", "ico", "jpeg", "png", "pnm", "psd", "qoi", "tga", "tiff", "webp"] }
 
 [dev-dependencies]
 tempfile = "3"

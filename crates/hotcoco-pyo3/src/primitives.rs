@@ -15,13 +15,10 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use hotcoco_core::Rle;
-use hotcoco_core::metrics::counts::score_order;
 use hotcoco_core::metrics::semantic::{Label, LabelMap, LabelPairOp};
 use hotcoco_core::panoptic::{MatchIds, SegmentInfo, labels_from_ids, match_image};
 use hotcoco_core::params::default_iou_thrs;
-use hotcoco_core::primitives::greedy::{
-    self, GroupOfBoxes, GtMasks, ThreshMatrix, coco_match_floor,
-};
+use hotcoco_core::primitives::greedy::{self, ThreshMatrix};
 use hotcoco_core::primitives::panoptic::{Overlaps, Side};
 use hotcoco_core::primitives::{assign, sim};
 
@@ -125,20 +122,6 @@ pub fn mask_iou(
     rle_iou_matrix(py, &dt, &gt, iscrowd)
 }
 
-/// Reject a NaN in `values`, the argument `name`: a NaN cost, similarity, or
-/// score leaves `what` undefined, so it is an error rather than an arbitrary
-/// answer. Whether NaN is meaningful is a property of the problem, not of
-/// extracting an array, so this stays with the matchers rather than living in
-/// the readers.
-fn check_no_nan(values: &[f64], name: &str, what: &str) -> PyResult<()> {
-    if values.iter().any(|v| v.is_nan()) {
-        return Err(pyo3::exceptions::PyValueError::new_err(format!(
-            "{name} contains NaN; {what} is undefined"
-        )));
-    }
-    Ok(())
-}
-
 #[pyfunction]
 #[pyo3(
     signature = (cost, maximize=false),
@@ -180,15 +163,9 @@ Example:
 "]
 fn lsap(py: Python<'_>, cost: &Bound<'_, PyAny>, maximize: bool) -> PyResult<Py<PyAny>> {
     let (flat, nr, nc) = f64_matrix_arg(cost, "cost")?;
-    check_no_nan(&flat, "cost", "the assignment")?;
-
-    // `try_lsap`: an infinite entry can leave no finite assignment, and that
-    // is the caller's matrix, not a bug to panic over.
-    let (rows, cols) = assign::try_lsap(&flat, nr, nc, maximize).ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(
-            "cost has no assignment of finite total cost: its infinite entries block every one",
-        )
-    })?;
+    // `try_lsap`: NaN, or infinite entries that leave no finite assignment,
+    // are the caller's matrix, not a bug to panic over.
+    let (rows, cols) = assign::try_lsap(&flat, nr, nc, maximize).map_err(to_pyerr)?;
     // `usize` implements `numpy::Element`, so these go straight out — remapping to
     // u64 first would allocate two more Vecs per call, and this is the primitive a
     // tracking loop calls once per frame.
@@ -220,10 +197,10 @@ fn thresholds_arg(obj: Option<&Bound<'_, PyAny>>) -> PyResult<(Vec<f64>, bool)> 
 }
 
 /// `greedy_match`'s per-ground-truth flag columns — `iscrowd`, `gt_ignore`,
-/// and `group_of` — each read when given and filled with `false` otherwise,
-/// all of one length: `sim`'s column count, or, when `sim` is `[]` and has
-/// none, the length of the first flag column given. The columns given must
-/// agree with each other and with `sim`.
+/// and `group_of` — each read when given, and the ground-truth count:
+/// `sim`'s column count, or, when `sim` is `[]` and has none, the length of
+/// the first flag column given, which the others must then match. Core
+/// checks every column against the count.
 fn gt_flags_args(
     iscrowd: Option<&Bound<'_, PyAny>>,
     gt_ignore: Option<&Bound<'_, PyAny>>,
@@ -244,26 +221,27 @@ fn gt_flags_args(
         let (first_name, first_flags) = first.expect("a second named flag follows a first");
         check_parallel(flags.len(), first_flags.len(), name, first_name)?;
     }
-    let g = match (sim_shape, first) {
+    // An empty nested list has no columns to count, so the flags size it.
+    let num_gt = match (sim_shape, first) {
         ((0, 0), Some((_, flags))) => flags.len(),
         ((_, g), _) => g,
     };
-    let [iscrowd, gt_ignore, group_of] = given.map(|(name, flags)| match flags {
-        Some(flags) => check_parallel(flags.len(), g, name, "sim's columns").map(|()| flags),
-        None => Ok(vec![false; g]),
-    });
+    let [iscrowd, gt_ignore, group_of] = given.map(|(_, flags)| flags);
     Ok(GtFlags {
-        iscrowd: iscrowd?,
-        gt_ignore: gt_ignore?,
-        group_of: group_of?,
+        iscrowd,
+        gt_ignore,
+        group_of,
+        num_gt,
     })
 }
 
-/// `greedy_match`'s three per-ground-truth flag columns, each of length `g`.
+/// `greedy_match`'s three per-ground-truth flag columns as given, and the
+/// ground-truth count they and `sim` set. Core checks each length.
 struct GtFlags {
-    iscrowd: Vec<bool>,
-    gt_ignore: Vec<bool>,
-    group_of: Vec<bool>,
+    iscrowd: Option<Vec<bool>>,
+    gt_ignore: Option<Vec<bool>>,
+    group_of: Option<Vec<bool>>,
+    num_gt: usize,
 }
 
 /// A flat `[T * n]` buffer as a `(T, n)` array, or as `(n,)` when the caller
@@ -369,99 +347,51 @@ fn greedy_match(
 ) -> PyResult<Py<PyAny>> {
     let py = sim.py();
     let (flat, d, nc) = f64_matrix_arg(sim, "sim")?;
-    check_no_nan(&flat, "sim", "the matching")?;
     let scores = f64_vec(scores, "scores")?;
-    check_parallel(scores.len(), d, "scores", "sim's rows")?;
-    check_no_nan(&scores, "scores", "the matching order")?;
     let (thrs, scalar) = thresholds_arg(iou_thrs)?;
-    check_no_nan(&thrs, "iou_thrs", "the matching")?;
     let GtFlags {
         iscrowd,
         gt_ignore,
         group_of,
+        num_gt,
     } = gt_flags_args(iscrowd, gt_ignore, group_of, (d, nc))?;
-    let g = gt_ignore.len();
-    let dt_seed = match dt_ignore {
-        Some(obj) => {
-            let flags = flag_vec(obj, "dt_ignore")?;
-            check_parallel(flags.len(), d, "dt_ignore", "sim's rows")?;
-            flags
-        }
-        None => vec![false; d],
+    let dt_ignore = dt_ignore
+        .map(|obj| flag_vec(obj, "dt_ignore"))
+        .transpose()?;
+    let input = greedy::GreedyInput {
+        sim: &flat,
+        num_dt: d,
+        num_gt,
+        scores: &scores,
+        iou_thrs: &thrs,
+        gt_ignore: gt_ignore.as_deref(),
+        iscrowd: iscrowd.as_deref(),
+        group_of: group_of.as_deref(),
+        dt_ignore: dt_ignore.as_deref(),
     };
-    // A group-of box is ignored for the greedy phases and held out of the
-    // second; its own pass is the one route to it, as in the detection driver.
-    let ignored: Vec<bool> = (0..g)
-        .map(|i| gt_ignore[i] || iscrowd[i] || group_of[i])
-        .collect();
-    let any_group_of = group_of.contains(&true);
+    let out = py
+        .detach(|| greedy::greedy_match(&input))
+        .map_err(to_pyerr)?;
+    // `-1` for no match, as `COCOeval.evalImgs` writes it.
+    let index = |m: &ThreshMatrix<Option<usize>>| -> Vec<i64> {
+        m.iter_rows()
+            .flatten()
+            .map(|v| v.map_or(-1, |i| i as i64))
+            .collect()
+    };
     let t = thrs.len();
-
-    let (dt_matches, gt_matches, dt_ignore) = py.detach(|| {
-        // The order the matcher's contract asks for, made the way COCOeval
-        // makes it: detections ranked by score with ties kept in row order,
-        // ground truths stably partitioned non-ignored first.
-        let dt_order = score_order(&scores);
-        let gt_order: Vec<usize> = (0..g)
-            .filter(|&i| !ignored[i])
-            .chain((0..g).filter(|&i| ignored[i]))
-            .collect();
-        let num_not_ignored = ignored.iter().filter(|&&x| !x).count();
-        let mut ranked = Vec::with_capacity(d * g);
-        for &di in &dt_order {
-            let row = &flat[di * g..(di + 1) * g];
-            ranked.extend(gt_order.iter().map(|&gi| row[gi]));
-        }
-        let crowd_ranked: Vec<bool> = gt_order.iter().map(|&gi| iscrowd[gi]).collect();
-        let floors: Vec<f64> = thrs.iter().map(|&t| coco_match_floor(t)).collect();
-        // Open Images only: the group-of columns in rank order, their inverse
-        // for the matcher's second phase, and which of them the count keeps.
-        let group_of_ranked: Vec<bool> = gt_order.iter().map(|&gi| group_of[gi]).collect();
-        let not_group_of: Vec<bool> = group_of_ranked.iter().map(|&x| !x).collect();
-        let counted: Vec<bool> = gt_order.iter().map(|&gi| !gt_ignore[gi]).collect();
-        let masks = GtMasks {
-            rematchable: Some(&crowd_ranked),
-            phase2_eligible: any_group_of.then_some(not_group_of.as_slice()),
-        };
-        let mut m = greedy::greedy_match_masked(&ranked, d, g, num_not_ignored, masks, &floors);
-        let mut credited = ThreshMatrix::default();
-        if any_group_of {
-            let boxes = GroupOfBoxes {
-                group_of: &group_of_ranked,
-                counted: &counted,
-            };
-            greedy::match_group_of(&ranked, d, g, boxes, &floors, &mut m, &mut credited);
-        }
-
-        let mut dt_matches = vec![-1i64; t * d];
-        let mut gt_matches = vec![-1i64; t * g];
-        // Seeded per threshold, as COCOeval seeds `dtIgnore`; a match
-        // overwrites it with the ground truth's flag.
-        let mut dt_ignore = dt_seed.repeat(t);
-        for (ti, row) in m.dt_gt.iter_rows().enumerate() {
-            for (rank, (&di, &matched)) in dt_order.iter().zip(row).enumerate() {
-                let Some(pos) = matched else {
-                    continue;
-                };
-                let gi = gt_order[pos];
-                dt_matches[ti * d + di] = gi as i64;
-                let credited_here = any_group_of && credited[(ti, rank)];
-                dt_ignore[ti * d + di] = pos >= num_not_ignored && !credited_here;
-                // Rank order, so a crowd ground truth keeps the last detection;
-                // a group-of box keeps the one credited with it.
-                if credited_here || !group_of_ranked[pos] {
-                    gt_matches[ti * g + gi] = di as i64;
-                }
-            }
-        }
-        (dt_matches, gt_matches, dt_ignore)
-    });
-
-    let out = PyDict::new(py);
-    out.set_item("dt_matches", per_threshold(py, dt_matches, t, d, scalar)?)?;
-    out.set_item("gt_matches", per_threshold(py, gt_matches, t, g, scalar)?)?;
-    out.set_item("dt_ignore", per_threshold(py, dt_ignore, t, d, scalar)?)?;
-    Ok(out.into_any().unbind())
+    let flags: Vec<bool> = out.dt_ignore.iter_rows().flatten().copied().collect();
+    let dict = PyDict::new(py);
+    dict.set_item(
+        "dt_matches",
+        per_threshold(py, index(&out.dt_matches), t, d, scalar)?,
+    )?;
+    dict.set_item(
+        "gt_matches",
+        per_threshold(py, index(&out.gt_matches), t, num_gt, scalar)?,
+    )?;
+    dict.set_item("dt_ignore", per_threshold(py, flags, t, d, scalar)?)?;
+    Ok(dict.into_any().unbind())
 }
 
 /// A label as a 32-bit segment id, or `None` when it is negative or wider.
@@ -524,10 +454,10 @@ fn segment_overlaps(
     pred: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     let (g, p) = label_pair_or_lists(gt, pred)?;
-    let (gt, pred) = (g.map(), p.map());
-    let overlaps = py
-        .detach(|| LabelMap::with_pair(&gt, &pred, CountOverlaps))
-        .map_err(|(side, i, value)| {
+    // The maps may be numpy's memory, so they are read under the GIL — see
+    // the GIL rule in `mask.rs`.
+    let overlaps =
+        LabelMap::with_pair(&g.map(), &p.map(), CountOverlaps).map_err(|(side, i, value)| {
             pyo3::exceptions::PyValueError::new_err(match value {
                 Some(v) => {
                     format!("{side} pixel {i} has label {v}; segment ids must fit in 32 bits")
@@ -565,18 +495,7 @@ fn overlaps_arg(obj: &Bound<'_, PyAny>) -> PyResult<Overlaps> {
         })?;
         counts.push(entry);
     }
-    // Every area the matcher takes is a sum of these counts, so a total that
-    // fits in 64 bits keeps every one of them exact.
-    if counts
-        .iter()
-        .try_fold(0u64, |total, &(_, _, n)| total.checked_add(n))
-        .is_none()
-    {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "overlaps counts more pixels than 2**64 - 1, more than any pair of label maps holds",
-        ));
-    }
-    Ok(Overlaps::from_counts(counts))
+    Overlaps::from_counts(counts).map_err(to_pyerr)
 }
 
 /// A `segments_info` list: a list or tuple of dicts, each read by the record

@@ -8,12 +8,13 @@
 
 use std::path::PathBuf;
 
+use numpy::{PyArrayDescrMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use hotcoco_core::tracking::{Benchmark, METRIC_NAMES, TrackingEval, TrackingResult};
 
-use crate::convert::{extract_int, f64_matrix_arg, with_context};
+use crate::convert::{extract_int, f64_matrix_arg, is_bool, with_context};
 use crate::{ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
 
 /// A result's [`METRIC_NAMES`] values, plus `Frames` for one sequence, under
@@ -110,11 +111,12 @@ a frame with no boxes still counts. An empty array is a side with no boxes.
 
 The rows are copied, and the evaluation runs without the GIL. Raises
 ``ValueError``, naming the sequence, for a name already evaluated, too few
-columns, a frame outside ``1..num_frames``, a frame or track id that is
-fractional or negative, a box or confidence that is not finite, a track id
-twice in one frame, or a benchmark's class rule: a prediction class above 1,
-or a ground-truth class outside 1..13 in a frame with predictions. Nothing is
-kept then."]
+columns, a frame outside ``1..num_frames``, a ``num_frames`` too large to
+index, a frame or track id that is fractional or negative, a box or confidence
+that is not finite, a box whose far edge or area passes the largest float, a
+track id twice in one frame, or a benchmark's class rule: a prediction class
+above 1, or a ground-truth class outside 1..13 in a frame with predictions.
+Nothing is kept then."]
     #[pyo3(signature = (name, gt, pred, *, num_frames))]
     fn update(
         &mut self,
@@ -126,8 +128,8 @@ kept then."]
     ) -> PyResult<()> {
         let num_frames: usize =
             extract_int(num_frames).map_err(|e| with_context(py, "num_frames", e))?;
-        let (gt, _, gt_ncols) = f64_matrix_arg(gt, "gt")?;
-        let (pred, _, pred_ncols) = f64_matrix_arg(pred, "pred")?;
+        let (gt, gt_ncols) = track_rows(gt, "gt")?;
+        let (pred, pred_ncols) = track_rows(pred, "pred")?;
         let inner = &mut self.inner;
         py.detach(|| inner.update(name, &gt, gt_ncols, &pred, pred_ncols, num_frames))
             .map_err(to_pyerr)
@@ -335,6 +337,37 @@ TrackEval drops such a row even with its clean-up off."]
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(())
     }
+}
+
+/// MOTChallenge rows as `(values, ncols)`, read as `f64_matrix_arg` reads a
+/// matrix, but with a bool refused: a row is a record, and a bool is no
+/// frame, id, or number in any record. The first bool cell of a list, or of
+/// a bool or object array, is a `ValueError` naming it; a numeric array
+/// holds none.
+fn track_rows(obj: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<f64>, usize)> {
+    let (values, _, ncols) = f64_matrix_arg(obj, name)?;
+    let numeric = obj
+        .cast::<numpy::PyUntypedArray>()
+        .is_ok_and(|a| matches!(a.dtype().kind(), b'i' | b'u' | b'f'));
+    if !numeric {
+        for (i, row) in obj.try_iter()?.enumerate() {
+            for (j, cell) in row?.try_iter()?.enumerate() {
+                let cell = cell?;
+                if is_bool(&cell) {
+                    let err = pyo3::exceptions::PyValueError::new_err(format!(
+                        "expected a number, got {}",
+                        cell.repr()?
+                    ));
+                    return Err(with_context(
+                        obj.py(),
+                        format_args!("{name}[{i}][{j}]"),
+                        err,
+                    ));
+                }
+            }
+        }
+    }
+    Ok((values, ncols))
 }
 
 pub fn register(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {

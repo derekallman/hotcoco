@@ -27,12 +27,13 @@ pub struct Dataset {
 /// records, each with its mask string, is the slow part of that copy.
 impl Clone for Dataset {
     fn clone(&self) -> Self {
+        use crate::primitives::sim::ForkSafe;
         use rayon::prelude::*;
         Dataset {
             info: self.info.clone(),
             images: self.images.clone(),
             annotations: if crate::primitives::sim::worth_parallel(self.annotations.len()) {
-                self.annotations.par_iter().cloned().collect()
+                self.annotations.par_iter().fork_safe().cloned().collect()
             } else {
                 self.annotations.clone()
             },

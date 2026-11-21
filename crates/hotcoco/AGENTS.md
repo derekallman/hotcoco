@@ -30,8 +30,12 @@ tracking's `TrackTable` lives in). `metrics` may reach `primitives::sim` for the
 count-based IoU kernel (`iou_from_counts`, which semantic IoU and HOTA's AssA both
 call); a second IoU formula anywhere else still fails the build, which is why
 TrackEval's box IoU (`bbox_iou_corners`) and HOTA's soft-count IoU
-(`iou_from_weights`) are kernels in `sim` too. Concepts will be a further sibling,
-composing the same two layers, with an allowlist entry of its own.
+(`iou_from_weights`) are kernels in `sim` too. It may also reach `primitives::greedy`
+for the detection ranking, `score_order` and its sort key, which the matcher and the
+accumulation share and which lives with the matcher. `primitives` may name
+`crate::error`: a kernel that refuses its input returns an error with a kind, not
+an `Option`. Concepts will be a further sibling, composing the same two layers,
+with an allowlist entry of its own.
 
 Detection keeps what is genuinely detection-shaped: TIDE's Cls/Loc/Both/Dupe/Bkg
 taxonomy is about box localization vs classification, and `image_diagnostics` reports
@@ -64,7 +68,10 @@ a new table.
 
 `crates/hotcoco/tests/architecture.rs` fails the build on: a second IoU formula, a
 second greedy matcher, a second `MIN_PARALLEL_WORK`, direct access to the
-whole-dataset `ious` cache, and layer violations.
+whole-dataset `ious` cache, layer violations, and a fan-out that skips the fork
+check — a parallel iterator without `.fork_safe()`, or any other `rayon::` path
+outside `primitives/sim.rs` (a child that `fork()` makes after the pool started has
+the pool but none of its threads, and waits forever; `sim::pool_usable` spots it).
 
 **Never weaken these to make a build pass.** The layering checks are *allowlists* on
 purpose. Banning `crate::detection` was tried twice and was worthless both times: the

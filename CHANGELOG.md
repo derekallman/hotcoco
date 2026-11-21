@@ -47,8 +47,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `encode_rows` encodes a row-major mask, or a crop's rows, with no transposed
   copy; `encode_each` encodes a batch of masks of one size in either order, in
   parallel past about 1 MiB of pixels.
+- **Rust: `mask::decode_stack`, `mask::decode_rows`, and `mask::to_fortran_stack`**:
+  RLEs of one size decoded into one `(h, w, n)` buffer, in parallel past about
+  1 MiB; a row-major decode; and a C-order stack rewritten in Fortran order. Python's
+  `mask.decode` runs on the first: 100 masks of 426×640 decode in about 0.5 ms,
+  from 1.8 ms (M1).
+- **Rust: `primitives::greedy::greedy_match`**, with `GreedyInput` and
+  `GreedyOutput`: COCO's greedy matching on rows and columns in any order, which
+  until now only the Python `primitives.greedy_match` did.
+- **Rust: `COCO::from_arrays` and `AnnotationColumns`**, ground truth built from
+  columns, as Python's `COCO.from_arrays`, which now builds through it.
+- **Rust: `convert::read_image_dims`**, each image's size read from its file
+  header, for the YOLO, DOTA, and Open Images importers. Python's `images_dir`
+  uses it, so those conversions no longer need Pillow.
+- **Rust: `metrics::confusion::check_num_classes`**, the class-count check every
+  confusion-matrix constructor now runs; a count whose matrix cannot fit panics
+  naming it, where it wrapped or ran out of memory.
 
 ### Changed
+
+- **Breaking (Rust): `COCO::split`, `COCO::sample`, and `Overlaps::from_counts`
+  return `Result`.** The checks the Python binding made are in core now: a fraction
+  outside `[0, 1]`, and counts past `u64::MAX`. `assign::try_lsap`, new in this
+  release, returns an error for NaN costs, where it returned an assignment. Python
+  raises the same `ValueError`s.
+- **Rust: detection rows that are not 6 or 7 columns are an error** from
+  `COCO::detections_from_rows` and `DetectionColumns::check_rows`, where they
+  panicked, and `PixelConfusion::from_counts` refuses counts past `u64::MAX`.
+- **Breaking (Rust): `metrics::counts::score_order` is `primitives::greedy::score_order`**,
+  beside the matcher whose order it is.
+- **`from_yolo`, `from_dota`, and `from_oid` read image sizes from file headers**
+  instead of opening each image with Pillow. A file in `images_dir` whose header is
+  no image raises `ValueError` naming it, as a bad label file does; Pillow raised
+  `OSError`.
 
 - **Breaking: `PanopticEval` and `SemanticEval` readers raise `RuntimeError` before
   there is a result**, as `TrackingEval`'s and `COCOeval.results()` do. `stats`,
@@ -88,6 +119,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   UTF-8 on the worker threads, raising the same errors in the same order.
 
 ### Fixed
+
+- **A process forked after hotcoco started its thread pool runs on one thread** instead
+  of hanging: it inherits the pool but none of its threads. A Linux PyTorch `DataLoader`
+  worker hung in `mask.decode`, and a forked child in `accumulate()`, `tide_errors()`,
+  `confusion_matrix()`, or a large `COCO(file)`. hotcoco spots the child by process id,
+  so no fork hook is needed; a child forked before the pool started keeps its threads.
+
+- **An area range listed twice in `areaRng` fills both its slots**, as in pycocotools.
+  The first listing stayed empty, so AP over it read `-1`. Wrong since 1.1.
+
+- **`recThrs` out of ascending order is read as pycocotools reads it**: each threshold
+  looked up on its own, and precision 0 from the first one, in list order, that a curve
+  never reaches. A NaN threshold is never reached.
+
+- **Unpickling a `SemanticEval` checks its state** as the constructors do: an edited
+  pickle raises `ValueError` where it gave wrapped numbers or a `PanicException`.
+
+- **`SemanticEval.update`, `metrics.pixel_confusion`, and `primitives.segment_overlaps`
+  hold the GIL while they count.** They read the arrays in place, and another Python
+  thread writing one mid-count could raise a `PanicException`.
+
+- **`mask.iou` of masks of different sizes is `0` where their boxes do not
+  overlap**, as in pycocotools, whose box IoU gates the size check; it was `-1`
+  for every such pair.
+
+- **Tracking: a box whose far edge or area passes the largest float raises
+  `ValueError`**, as a box that is not finite does. Two such boxes make a NaN
+  IoU, which TrackEval's assignment raises on and hotcoco's panicked on; the area
+  is the IoU kernel's, from the corners. Beside an ordinary box, TrackEval scores
+  such a box IoU 0.
+
+- **`mask.decode` raises `ValueError` for RLEs of different sizes.** It stacked
+  every mask at the first one's size, as pycocotools does, so a 3×2 mask after a
+  2×3 one came back scrambled with no error. A deliberate deviation, pinned in
+  `tests/test_mask_parity.py`. `mask.decode([])` is a `(0, 0, 0)` array where it
+  raised; pycocotools' shape for it is undefined.
 
 - **`evalImgs` is pycocotools' `K * A * I` list**, with `None` where an image has
   nothing of a category, as the docs said. It held only the non-empty records,
@@ -135,7 +202,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the annotation list was reordered or shortened through a kept reference, the edit
   overwrote another annotation's dict or raised `IndexError`.
 - **Arguments no matrix can hold raise `ValueError`.** `primitives.lsap` panicked on
-  infinite costs with no finite assignment (Rust: `assign::try_lsap` returns `None`);
+  infinite costs with no finite assignment (Rust: `assign::try_lsap` returns an error);
   `metrics.confusion_matrix`, `pixel_confusion`, and `SemanticEval` panicked on a
   class count whose square overflows; `metrics.mean_iou` returned `-1.0` for counts
   summing past 2⁶⁴. `SemanticEval.merge(self)` raised a borrow error.

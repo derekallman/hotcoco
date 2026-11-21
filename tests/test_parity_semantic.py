@@ -251,6 +251,42 @@ def test_shards_merge_and_pickle():
     assert merged.report() == whole.report()
 
 
+def _edited(change):
+    ev = semantic.SemanticEval(3)
+    ev.update(np.array([[0, 1]], dtype=np.uint8), np.array([[0, 2]], dtype=np.uint8))
+    state = json.loads(ev.__getstate__())
+    change(state)
+    return json.dumps(state).encode()
+
+
+EDITED_STATES = {
+    "too few cells": lambda s: s["confusion"]["counts"].pop(),
+    "counts past 2**64 - 1": lambda s: s["confusion"]["counts"].__setitem__(slice(0, 2), [2**63, 2**63]),
+    "a class name too many": lambda s: s["class_names"].append("extra"),
+    "an unlabeled column": lambda s: s["confusion"].update(unlabeled_pred=True),
+    "boundary counts with boundary IoU off": lambda s: s.update(boundary_dilation=None),
+    "boundary counts at another band": lambda s: s["boundary"].update(dilation_ratio=0.5),
+    "boundary counts for fewer classes": lambda s: s["boundary"]["classes"].pop(),
+    "a negative band": lambda s: (s.update(boundary_dilation=-1.0), s["boundary"].update(dilation_ratio=-1.0)),
+    "reduce_zero_label without ignore 255": lambda s: s.update(reduce_zero_label=True, ignore_index=0),
+}
+
+
+@pytest.mark.parametrize("change", EDITED_STATES.values(), ids=EDITED_STATES.keys())
+def test_an_edited_pickle_is_refused(change):
+    """Unpickling runs the constructors' checks, so an edited state raises
+    instead of reading past the matrix or wrapping its sums."""
+    ev = semantic.SemanticEval(3)
+    with pytest.raises(ValueError):
+        ev.__setstate__(_edited(change))
+
+
+def test_an_unedited_pickle_loads():
+    ev = semantic.SemanticEval(3)
+    ev.__setstate__(_edited(lambda _: None))
+    assert ev.n_images == 1
+
+
 def test_report_contract():
     ev = semantic.SemanticEval(["road", "sky", "void"])
     ev.update(np.array([[0, 0], [1, 255]], dtype=np.uint8), np.array([[0, 1], [1, 1]], dtype=np.uint8))

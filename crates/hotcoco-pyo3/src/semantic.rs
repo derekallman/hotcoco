@@ -72,9 +72,8 @@ fn evaluator_for(classes: &Bound<'_, PyAny>) -> PyResult<SemanticEval> {
     if !is_bool(classes)
         && let Ok(n) = classes.extract::<usize>()
     {
-        // One past `n`: the matrix keeps a column for predictions that name
-        // no class.
-        crate::convert::square_cells(n.saturating_add(1), format_args!("classes={n}"))?;
+        hotcoco_core::metrics::confusion::check_num_classes(n)
+            .map_err(|e| crate::convert::with_context(classes.py(), "classes", to_pyerr(e)))?;
         return Ok(SemanticEval::new(n));
     }
     if let Ok(names) = classes.extract::<Vec<String>>()
@@ -127,15 +126,11 @@ C-contiguous, aligned ``uint8``, ``uint16``, ``uint64``, ``int32``, or
 ``int64`` array is read in place; any other array is one numpy copy,
 ``uint64`` for an unsigned dtype and ``int64`` otherwise, contiguous and
 aligned.
-The counting itself releases the GIL. Raises
+The counting holds the GIL: an array read in place is numpy's memory, which
+another Python thread could write mid-count. Raises
 ``ValueError`` on a shape mismatch or a label out of range; nothing from the
 pair is counted then."]
-    fn update(
-        &mut self,
-        py: Python<'_>,
-        gt: &Bound<'_, PyAny>,
-        pred: &Bound<'_, PyAny>,
-    ) -> PyResult<()> {
+    fn update(&mut self, gt: &Bound<'_, PyAny>, pred: &Bound<'_, PyAny>) -> PyResult<()> {
         let (g, p) = label_pair(gt, pred)?;
         // The last two axes are the map; a 1-D array is one row.
         let (h, w) = match g.shape() {
@@ -143,9 +138,10 @@ pair is counted then."]
             [n] => (1, *n),
             [] => (1, 1),
         };
-        let (gt, pred) = (g.map(), p.map());
-        let inner = &mut self.inner;
-        py.detach(|| inner.update_maps(&gt, &pred, h, w))
+        // The maps may be numpy's memory, so they are read under the GIL —
+        // see the GIL rule in `mask.rs`.
+        self.inner
+            .update_maps(&g.map(), &p.map(), h, w)
             .map_err(to_pyerr)
     }
 

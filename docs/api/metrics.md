@@ -229,6 +229,10 @@ Confusion counts over matched ground-truth/prediction pairs.
     ) -> Vec<u64>
     ```
 
+    A class count whose matrix would not fit in memory panics.
+    `metrics::confusion::check_num_classes(num_classes)` returns that error
+    instead, for a caller that wants to check first.
+
 `sklearn.metrics.confusion_matrix` assumes every sample has both a true and a
 predicted label. Detection and tracking don't: a prediction can match nothing,
 and a ground truth can go unpredicted. So this takes **optional** labels and

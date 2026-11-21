@@ -24,17 +24,6 @@ use crate::primitives::{box_iou_matrix, rle_iou_matrix};
 use crate::to_pyerr;
 use std::time::{Duration, Instant};
 
-/// Transpose between row-major (numpy) and column-major (hotcoco) mask layouts.
-///
-/// With `(h, w)`: reads row-major `src[y * w + x]` → writes column-major `dst[y + h * x]`.
-/// For the reverse direction (column-major → row-major), swap the arguments: call with `(w, h)`.
-pub(crate) fn transpose_mask(src: &[u8], h: usize, w: usize) -> Vec<u8> {
-    debug_assert_eq!(src.len(), h * w);
-    let mut dst = vec![0u8; h * w];
-    transpose_into(src, w, &mut dst, h, h, w);
-    dst
-}
-
 /// One argument under either of its two names: hotcoco's, which is also the
 /// positional slot, or the keyword `pycocotools.mask` gives it
 /// (`decode(rleObjs=...)`). Both spellings reach the same code, so a script
@@ -166,77 +155,6 @@ fn col_major(view: ArrayView2<'_, u8>) -> Vec<u8> {
         .map_or_else(|| std.iter().copied().collect(), <[u8]>::to_vec)
 }
 
-/// Write the `rows × cols` byte matrix `src` into `dst` transposed: element
-/// `(r, c)`, read from `src[r * src_stride + c]`, lands at
-/// `dst[c * dst_stride + r]`.
-///
-/// Works in 8×8 blocks — eight 8-byte rows in, eight 8-byte columns out — so
-/// both sides move a word at a time and the destination's cache lines are
-/// reused by the next block down instead of each byte landing on its own
-/// line. A stack of C-order masks reads every byte from a different line
-/// otherwise, which made it about 7× slower than a Fortran-order stack. The
-/// ragged right and bottom edges go byte by byte.
-fn transpose_into(
-    src: &[u8],
-    src_stride: usize,
-    dst: &mut [u8],
-    dst_stride: usize,
-    rows: usize,
-    cols: usize,
-) {
-    let (rows8, cols8) = (rows - rows % 8, cols - cols % 8);
-    for r0 in (0..rows8).step_by(8) {
-        for c0 in (0..cols8).step_by(8) {
-            let mut block = [0u64; 8];
-            for (i, row) in block.iter_mut().enumerate() {
-                let at = (r0 + i) * src_stride + c0;
-                *row = load_le(&src[at..at + 8]);
-            }
-            for (j, col) in transpose_8x8(block).into_iter().enumerate() {
-                let at = (c0 + j) * dst_stride + r0;
-                dst[at..at + 8].copy_from_slice(&col.to_le_bytes());
-            }
-        }
-        for c in cols8..cols {
-            for r in r0..r0 + 8 {
-                dst[c * dst_stride + r] = src[r * src_stride + c];
-            }
-        }
-    }
-    for r in rows8..rows {
-        for c in 0..cols {
-            dst[c * dst_stride + r] = src[r * src_stride + c];
-        }
-    }
-}
-
-/// Eight bytes as a word, first byte in the low bits on every platform.
-fn load_le(bytes: &[u8]) -> u64 {
-    let mut word = [0; 8];
-    word.copy_from_slice(bytes);
-    u64::from_le_bytes(word)
-}
-
-/// Transpose an 8×8 byte matrix held as eight little-endian rows.
-///
-/// Three swap rounds, each exchanging the off-diagonal blocks of every
-/// diagonal block pair: 4×4 blocks, then 2×2, then single bytes.
-fn transpose_8x8(mut m: [u64; 8]) -> [u64; 8] {
-    for (shift, mask) in [
-        (32, 0x0000_0000_FFFF_FFFF_u64),
-        (16, 0x0000_FFFF_0000_FFFF),
-        (8, 0x00FF_00FF_00FF_00FF),
-    ] {
-        let step = shift / 8;
-        for i in (0..8).filter(|i| i & step == 0) {
-            let t = ((m[i] >> shift) ^ m[i + step]) & mask;
-            m[i] ^= t << shift;
-            m[i + step] ^= t;
-        }
-    }
-    m
-}
-
 // The GIL rule for the encoders below: whatever reads numpy memory holds the
 // GIL, because a buffer read without it can be written by another Python
 // thread mid-scan. That covers every 2-D mask, a strided stack, a
@@ -300,8 +218,21 @@ fn encode_view(view: ArrayView2<'_, u8>) -> hotcoco_core::error::Result<hotcoco_
     }
 }
 
+/// The error for a mask side an RLE's `size` cannot hold, as decoding such a
+/// `size` raises it; cast to `u32` it was the side modulo 2³², and a mask of
+/// no pixels came back with that size.
+fn check_sides(shape: &[usize]) -> PyResult<()> {
+    if shape.iter().all(|&side| u32::try_from(side).is_ok()) {
+        return Ok(());
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "a mask of shape {shape:?} has a side past 2**32 - 1, which no RLE 'size' holds"
+    )))
+}
+
 fn encode_2d(py: Python<'_>, mask: &Bound<'_, PyArray2<u8>>) -> PyResult<Py<PyAny>> {
     let arr = mask.readonly();
+    check_sides(&mask.shape()[..2])?;
     let rle = encode_view(arr.as_array()).map_err(to_pyerr)?;
     rle_to_coco_py(py, &rle)
 }
@@ -310,30 +241,26 @@ fn encode_3d(py: Python<'_>, mask: &Bound<'_, PyArray3<u8>>) -> PyResult<Py<PyAn
     let arr = mask.readonly();
     let view = arr.as_array();
     let (h, w, n) = view.dim();
-    let hw = h * w;
+    check_sides(&[h, w])?;
     let counts = if let Some(stack) = view.reversed_axes().to_slice() {
         // Fortran order: slice `i` is the contiguous block `i * h * w ..`,
         // already column-major. ndarray counts every zero-size array as
-        // contiguous, so those all land here and the C-order offsets below
-        // never index an empty buffer.
+        // contiguous, so those all land here.
         encode_fortran_stack(py, stack, h, w, n)
-    } else if let Some(row_major) = view.to_slice().filter(|_| n >= 8) {
-        // C order: one blocked pass to Fortran order. For each column `x`,
-        // the `(h, n)` matrix of `(y, i)` bytes sits at `x * n` with row
-        // stride `w * n`, and its transpose belongs at `x * h` with row stride
-        // `h * w` — slice `i`'s column `x`. With fewer than eight slices there
-        // is no 8×8 block along `n`, every byte would take the ragged-edge
-        // loop, and slice by slice below is faster: the lone slice of an
-        // `(h, w, 1)` stack is C-contiguous, so it is read row by row.
-        let mut stack = vec![0; hw * n];
-        for x in 0..w {
-            transpose_into(&row_major[x * n..], w * n, &mut stack[x * h..], hw, h, n);
-        }
-        if stack.len() >= DETACH_MIN_BYTES {
-            py.detach(|| encode_slices(&stack, h, w, n))
-        } else {
-            encode_slices(&stack, h, w, n)
-        }
+    } else if let Some(c_order) = view.to_slice().filter(|_| n >= 8) {
+        // C order: core rewrites the stack in Fortran order, under the GIL
+        // since it reads numpy memory, and the copy encodes without it once
+        // it is large. Core's transpose moves 8×8 blocks; with fewer than
+        // eight slices there is no block along `n`, and slice by slice below
+        // is faster: the lone slice of an `(h, w, 1)` stack is C-contiguous,
+        // so it is read row by row.
+        rmask::to_fortran_stack(c_order, h as u32, w as u32, n).and_then(|stack| {
+            if stack.len() >= DETACH_MIN_BYTES {
+                py.detach(|| encode_slices(&stack, h, w, n))
+            } else {
+                encode_slices(&stack, h, w, n)
+            }
+        })
     } else if let Some(slices) = (0..n)
         .map(|i| view.index_axis(Axis(2), i).to_slice())
         .collect::<Option<Vec<&[u8]>>>()
@@ -460,30 +387,18 @@ pub fn decode(
         let arr2d = flat.reshape_with_order([h, w], numpy::npyffi::NPY_ORDER::NPY_FORTRANORDER)?;
         Ok(arr2d.into_any().unbind())
     } else {
-        // List of RLEs → (H, W, N) Fortran-order
+        // List of RLEs → (H, W, N) Fortran-order; an empty list is
+        // pycocotools' (0, 0, 0).
         let list: Vec<Bound<'_, PyAny>> = rle.extract()?;
-        if list.is_empty() {
-            return Err(pyo3::exceptions::PyValueError::new_err("empty RLE list"));
-        }
         let rles: Vec<hotcoco_core::Rle> = list
             .iter()
             .map(|item| extract_coco_rle(item))
             .collect::<PyResult<_>>()?;
-
-        let h = rles[0].h as usize;
-        let w = rles[0].w as usize;
+        let (h, w) = rles
+            .first()
+            .map_or((0, 0), |r| (r.h as usize, r.w as usize));
         let n = rles.len();
-
-        // Build (H, W, N) Fortran-order: for each slice, decode gives
-        // column-major data. In Fortran order for 3D, axis 0 varies fastest,
-        // so memory layout is: all (h*w) of slice 0, then slice 1, etc.
-        let data = py.detach(|| {
-            let mut data = Vec::with_capacity(h * w * n);
-            for r in &rles {
-                data.extend_from_slice(&rmask::decode(r));
-            }
-            data
-        });
+        let data = py.detach(|| rmask::decode_stack(&rles)).map_err(to_pyerr)?;
         let flat = PyArray1::from_vec(py, data);
         let arr3d =
             flat.reshape_with_order([h, w, n], numpy::npyffi::NPY_ORDER::NPY_FORTRANORDER)?;

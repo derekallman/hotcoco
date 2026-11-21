@@ -118,15 +118,17 @@ class TestFromArrays:
         assert by_arrays.dataset == COCO(dict_dataset(area=area, segmentation=polygons)).dataset
 
     def test_segmentation_without_area_raises(self):
+        rles = [{"size": [100, 100], "counts": [10000]}] * 4
         with pytest.raises(ValueError, match="area is required with segmentation"):
-            COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, segmentation=[{}] * 4)
+            COCO.from_arrays(IMAGES, CATEGORIES, IMAGE_IDS, CATEGORY_IDS, BOXES, segmentation=rles)
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),
         [
             ({"category_ids": CATEGORY_IDS[:3]}, "category_ids has 3 entries but image_ids has 4"),
             ({"boxes": BOXES[:, :3]}, r"boxes must have shape \(4, 4\)"),
-            ({"boxes": BOXES[:3]}, r"boxes must have shape \(4, 4\)"),
+            ({"boxes": BOXES[:3]}, "boxes has 3 entries but image_ids has 4"),
+            ({"boxes": []}, "boxes has 0 entries but image_ids has 4"),
             ({"image_ids": np.array([1, 2, 2, -3])}, "negative"),
         ],
     )

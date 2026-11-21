@@ -432,7 +432,10 @@ type:
     **NumPy array** — shape `(N, 7)` with columns `[image_id, x, y, w, h, score, category_id]`,
     or `(N, 6)` with `category_id` defaulting to `1`, of any integer or float dtype,
     `float32` straight from a detector included (a `float32` id is exact only up to
-    2^24, a property of the array, not of the parser).
+    2^24, a property of the array, not of the parser). A box's area is its
+    `w × h` in `float64`, as pycocotools computes it for the same boxes as Python
+    floats; its `loadRes` of a `float32` array keeps the `float32` product instead
+    (see [Known differences](../getting-started/migration.md#known-differences)).
     An `image_id` or `category_id` that is NaN, negative, or not a whole number
     raises `ValueError`; so does a NaN score.
     Matches pycocotools `loadNumpyAnnotations` convention:
@@ -530,6 +533,27 @@ same annotations.
 
     ```python
     gt = COCO.from_arrays(images, categories, image_ids, category_ids, boxes)
+    ```
+
+=== "Rust"
+
+    ```rust
+    fn from_arrays(
+        images: Vec<Image>,
+        categories: Vec<Category>,
+        columns: AnnotationColumns,
+    ) -> Result<COCO>
+    ```
+
+    `AnnotationColumns` holds `image_ids`, `category_ids`, and `boxes`
+    (`Vec<[f64; 4]>`), and the optional `ids`, `area`, `iscrowd`, and
+    `segmentation`, with the defaults above. A column of the wrong length, or
+    `segmentation` without `area`, is `Error::InvalidInput`.
+
+    ```rust
+    let gt = COCO::from_arrays(images, categories, AnnotationColumns {
+        image_ids, category_ids, boxes, ..Default::default()
+    })?;
     ```
 
 ---
@@ -954,11 +978,14 @@ category list.
         val_frac: f64,
         test_frac: Option<f64>,
         seed: u64,
-    ) -> (Dataset, Dataset, Option<Dataset>)
+    ) -> Result<(Dataset, Dataset, Option<Dataset>)>
     ```
 
+    A fraction outside `[0, 1]`, or `val_frac + test_frac` over 1, is
+    `Error::InvalidInput`.
+
     ```rust
-    let (train, val, _) = coco.split(0.2, None, 42);
+    let (train, val, _) = coco.split(0.2, None, 42)?;
     let train = COCO::from_dataset(train);
     ```
 
@@ -995,11 +1022,11 @@ for the same seed.
 === "Rust"
 
     ```rust
-    fn sample(&self, n: Option<usize>, frac: Option<f64>, seed: u64) -> Dataset
+    fn sample(&self, n: Option<usize>, frac: Option<f64>, seed: u64) -> Result<Dataset>
     ```
 
     ```rust
-    let subset = COCO::from_dataset(coco.sample(Some(500), None, 0));
+    let subset = COCO::from_dataset(coco.sample(Some(500), None, 0)?);
     ```
 
 ---
@@ -1118,7 +1145,7 @@ Load a YOLO label directory as a COCO dataset. Class method.
     | Parameter | Type | Default | Description |
     |-----------|------|---------|-------------|
     | `yolo_dir` | `str` | *required* | Directory containing `.txt` label files and `data.yaml` |
-    | `images_dir` | <code>str &#124; None</code> | `None` | Source image directory; used by Pillow to read `width`/`height`. Requires `pip install Pillow`. |
+    | `images_dir` | <code>str &#124; None</code> | `None` | Source image directory. Each image's `width`/`height` is read from its file header, the format told by the content as Pillow tells it. |
 
     ```python
     coco = COCO.from_yolo("labels/val2017/", images_dir="images/val2017/")
@@ -1129,18 +1156,18 @@ Load a YOLO label directory as a COCO dataset. Class method.
     (`names: [a, b]`), the block list, and the Ultralytics index-keyed dict
     (`names:\n  0: person`).
 
-    Raises `ValueError` for an image whose dimensions cannot be determined — see
-    the [converter contract](#convert). Raises `ImportError` if `images_dir` is
-    given but Pillow is not installed.
+    Raises `ValueError` for an image whose dimensions cannot be determined,
+    including a file in `images_dir` whose header is no image — see the
+    [converter contract](#convert).
 
 === "Rust"
 
     ```rust
-    use hotcoco::convert::yolo_to_coco;
-    use std::collections::HashMap;
+    use hotcoco::convert::{read_image_dims, yolo_to_coco};
     use std::path::Path;
 
-    let dims: HashMap<String, (u32, u32)> = HashMap::new(); // or populate from image headers
+    // (width, height) by file stem, read from each image's header.
+    let dims = read_image_dims(Path::new("images/"))?;
     let dataset = yolo_to_coco(Path::new("labels/"), &dims)?;
     let coco = hotcoco::COCO::from_dataset(dataset);
     ```

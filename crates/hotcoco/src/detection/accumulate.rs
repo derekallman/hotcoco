@@ -2,13 +2,15 @@ use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};
 
 use rayon::prelude::*;
+
+use crate::primitives::sim::ForkSafe;
 use rustc_hash::FxHashMap;
 
 use super::COCOeval;
 use super::EvalMode;
 use super::matching::{Block, CellRef, arena_index};
-use crate::metrics::counts::descending_score_key;
 use crate::params::Params;
+use crate::primitives::greedy::descending_score_key;
 
 /// The key two area ranges are compared on: bit equality of both bounds.
 /// `[0, 1e5**2]` and `[0, 1e10]` are the same range only if they are the same
@@ -38,9 +40,9 @@ pub(super) struct EvalGrouping<'a> {
     /// what [`image_mask`](Self::image_mask) indexes.
     pairs: Vec<(u32, u32)>,
     k_starts: Vec<usize>,
-    /// For each slot of `params.area_ranges`, the evaluate-time area indices
-    /// whose cells land in it, in evaluate-time order.
-    area_cells: Vec<Vec<usize>>,
+    /// For each slot of `params.area_ranges`, the evaluate-time area index
+    /// whose cells it reads, or `None` for a range `evaluate()` never saw.
+    area_cells: Vec<Option<usize>>,
     /// Distinct `image_id` -> dense slot, over every pair in `pairs`.
     img_slots: FxHashMap<u64, u32>,
     /// For each threshold of the T axis, its row in the grid the cells were
@@ -72,31 +74,32 @@ impl<'a> EvalGrouping<'a> {
 
         // Area-range keys as bit-exact f64 pairs. The range values are copied verbatim
         // from `params`, so bit equality is the right test. A linear scan over the
-        // handful of ranges beats hashing a 16-byte key; `rposition` makes a range
-        // listed twice fill its last slot only.
-        let area_keys: Vec<[u64; 2]> = params
-            .area_ranges
-            .iter()
-            .map(|ar| area_key(ar.range))
-            .collect();
+        // handful of ranges beats hashing a 16-byte key.
         // Evaluate-time axis resolution. The cells were matched under the
         // params `evaluate()` saw; the axes `accumulate()` fills are `params` as
         // they stand now. Each axis is resolved by value, once per grouping —
         // not per cell, and not per `accumulate_impl` call, which bootstrap
         // resamples make 2·n times.
         //
-        // Area ranges: where each evaluate-time range now sits in
-        // `params.area_ranges`. The same range listed twice fills its last
-        // slot only, and a range no longer listed is skipped. Every pair's
-        // `areas` is indexed by the evaluate-time position.
-        let mut area_cells: Vec<Vec<usize>> = vec![Vec::new(); area_keys.len()];
-        if let Some(inputs) = ev.eval_inputs.as_ref() {
-            for (at_eval, ar) in inputs.params.area_ranges.iter().enumerate() {
-                if let Some(a_idx) = area_keys.iter().rposition(|key| *key == area_key(ar.range)) {
-                    area_cells[a_idx].push(at_eval);
-                }
-            }
-        }
+        // Area ranges: for each slot of `params.area_ranges`, the
+        // evaluate-time block of the same range. A range listed twice fills
+        // both its slots, as pycocotools' does, from one block: two blocks of
+        // one range hold the same matches. A range `evaluate()` never saw
+        // stays empty. Every pair's `areas` is indexed by the evaluate-time
+        // position.
+        let evaluated: Vec<[u64; 2]> = ev.eval_inputs.as_ref().map_or_else(Vec::new, |inputs| {
+            inputs
+                .params
+                .area_ranges
+                .iter()
+                .map(|ar| area_key(ar.range))
+                .collect()
+        });
+        let area_cells: Vec<Option<usize>> = params
+            .area_ranges
+            .iter()
+            .map(|ar| evaluated.iter().position(|key| *key == area_key(ar.range)))
+            .collect();
         // IoU thresholds: the opposite direction — for each threshold of the T
         // axis, its row in the evaluate-time grid. The T axis is
         // `params.iou_thrs` as it stands, since `summarize()`, `report()`, and
@@ -128,7 +131,7 @@ impl<'a> EvalGrouping<'a> {
         const OUT_OF_SCOPE: u32 = u32::MAX;
         let cells = &ev.cells;
         // With no area range in scope every bucket is empty, so no pair is.
-        let n_pairs = if area_cells.iter().any(|at| !at.is_empty()) {
+        let n_pairs = if area_cells.iter().any(Option::is_some) {
             cells.len()
         } else {
             0
@@ -139,7 +142,11 @@ impl<'a> EvalGrouping<'a> {
                 .map_or(OUT_OF_SCOPE, |&k_idx| arena_index(k_idx))
         };
         let k_of: Vec<u32> = if crate::primitives::sim::worth_parallel(n_pairs) {
-            (0..n_pairs).into_par_iter().map(k_of_pair).collect()
+            (0..n_pairs)
+                .into_par_iter()
+                .fork_safe()
+                .map(k_of_pair)
+                .collect()
         } else {
             (0..n_pairs).map(k_of_pair).collect()
         };
@@ -254,6 +261,7 @@ pub(super) fn accumulate_impl(
     let t = params.iou_thrs.len();
     let t_rows = &grouping.t_rows;
     let r = params.rec_thrs.len();
+    let grid = RecallGrid::new(&params.rec_thrs);
     let k = if params.use_cats {
         params.cat_ids.len()
     } else {
@@ -278,6 +286,53 @@ pub(super) fn accumulate_impl(
     // floating-point sum is reassociated and the slots can write the output
     // arrays in place: each stages its writes on its thread, then takes the
     // lock once to apply them.
+
+    /// The recall grid every curve is sampled on, and where each of
+    /// `params.rec_thrs` reads it.
+    ///
+    /// pycocotools looks each threshold up on its own (`np.searchsorted`)
+    /// and stops at the first one, in list order, that the curve never
+    /// reaches: that threshold and every one after it keep precision 0. The
+    /// curves here sample an ascending grid in one forward pass, which is the
+    /// same lookup when the list is ascending. Any other list, reordered or
+    /// holding a NaN, is sampled in ascending order and put back in list
+    /// order with the same stop.
+    struct RecallGrid<'p> {
+        /// The thresholds the curves sample: ascending, NaN left out.
+        sorted: std::borrow::Cow<'p, [f64]>,
+        /// For a list that is not ascending, the list position of each of
+        /// `sorted`, and `stop[n]`: with the first `n` of `sorted` reached,
+        /// the first list position pycocotools leaves at 0, or the list's
+        /// length when there is none.
+        unsorted: Option<(Vec<usize>, Vec<usize>)>,
+    }
+
+    impl<'p> RecallGrid<'p> {
+        fn new(rec_thrs: &'p [f64]) -> Self {
+            if rec_thrs.is_sorted() {
+                return RecallGrid {
+                    sorted: std::borrow::Cow::Borrowed(rec_thrs),
+                    unsorted: None,
+                };
+            }
+            let mut positions: Vec<usize> = (0..rec_thrs.len())
+                .filter(|&i| !rec_thrs[i].is_nan())
+                .collect();
+            positions.sort_by(|&i, &j| rec_thrs[i].total_cmp(&rec_thrs[j]).then(i.cmp(&j)));
+            // A NaN is never reached: `np.searchsorted` places it past the end.
+            let never = (0..rec_thrs.len())
+                .find(|&i| rec_thrs[i].is_nan())
+                .unwrap_or(rec_thrs.len());
+            let mut stop = vec![never; positions.len() + 1];
+            for n in (0..positions.len()).rev() {
+                stop[n] = stop[n + 1].min(positions[n]);
+            }
+            RecallGrid {
+                sorted: positions.iter().map(|&i| rec_thrs[i]).collect(),
+                unsorted: Some((positions, stop)),
+            }
+        }
+    }
 
     /// One `(k, a)` slab of every output, staged on its thread until the
     /// slot is done.
@@ -326,19 +381,31 @@ pub(super) fn accumulate_impl(
         }
 
         /// Threshold `t_idx` at cap `m_idx`: its final recall and all-points
-        /// AP, and the curve's `points` over the ranks `inds` of `ranked` —
-        /// none for a cap that keeps no detection.
+        /// AP, and the curve's `points` on `grid` over the ranks `inds` of
+        /// `ranked` — none for a cap that keeps no detection.
         fn record(
             &mut self,
             (m_idx, t_idx): (usize, usize),
             recall_ap: (f64, f64),
-            points: &[(usize, f64, usize)],
+            (points, grid): (&[(usize, f64, usize)], &RecallGrid<'_>),
             ranked: &Ranked,
             inds: &[u32],
         ) {
             let (t, r) = (self.t, self.r);
             self.recall[m_idx * t + t_idx] = recall_ap;
-            for &(r_idx, pr_val, rc_ptr) in points {
+            // The curve reaches a prefix of the sorted grid, one point each.
+            let stop = grid
+                .unsorted
+                .as_ref()
+                .map_or(r, |(_, stop)| stop[points.len()]);
+            for &(s, pr_val, rc_ptr) in points {
+                let r_idx = grid
+                    .unsorted
+                    .as_ref()
+                    .map_or(s, |(positions, _)| positions[s]);
+                if r_idx >= stop {
+                    continue;
+                }
                 let i = (m_idx * t + t_idx) * r + r_idx;
                 self.precision[i] = pr_val;
                 let (_, at) = ranked.keyed[inds[rc_ptr] as usize];
@@ -524,9 +591,6 @@ pub(super) fn accumulate_impl(
     #[derive(Default)]
     struct Swept {
         evals: Vec<CellRef>,
-        /// The slot's own ranking, for a slot that reads more than one
-        /// evaluate-time block and so gathers each pair more than once.
-        own: Ranked,
         /// Per rank, the detection's matched and ignore flags at up to 64
         /// thresholds, one bit each.
         matched_bits: Vec<u64>,
@@ -551,10 +615,11 @@ pub(super) fn accumulate_impl(
     #[derive(Default)]
     struct Fused {
         /// The area slots with ground truth, and each lane's `num_gt`.
-        active: Vec<usize>,
+        /// Each area slot with ground truth, with the evaluate-time block it reads.
+        active: Vec<(usize, usize)>,
         lane_gts: Vec<usize>,
         /// Per rank, every active area range's matched and ignore flags at
-        /// every threshold: area slot `active[s]` in lanes `s * t..(s + 1) * t`.
+        /// every threshold: area slot `active[s].0` in lanes `s * t..(s + 1) * t`.
         matched: Vec<u64>,
         ignore: Vec<u64>,
         lanes: crate::metrics::counts::LaneCurves,
@@ -570,7 +635,7 @@ pub(super) fn accumulate_impl(
     // threshold, since `-1.0` is not the zero a fresh page holds.
     let filled = |len: usize| -> Vec<f64> {
         if crate::primitives::sim::worth_parallel(len) {
-            (0..len).into_par_iter().map(|_| -1.0).collect()
+            (0..len).into_par_iter().fork_safe().map(|_| -1.0).collect()
         } else {
             vec![-1.0; len]
         }
@@ -604,56 +669,41 @@ pub(super) fn accumulate_impl(
         // Independent of `max_det` — the cap truncates detections, never
         // ground truth — so it is summed once for the whole M axis.
         num_gts.clear();
-        num_gts.extend(grouping.area_cells.iter().map(|at_evals| {
-            pairs
-                .iter()
-                .flat_map(|&pair| {
-                    at_evals
-                        .iter()
-                        .map(move |&at| cells.num_gt(CellRef::new(pair as usize, at)) as usize)
-                })
-                .sum::<usize>()
+        num_gts.extend(grouping.area_cells.iter().map(|at_eval| {
+            at_eval.map_or(0, |at| {
+                pairs
+                    .iter()
+                    .map(|&pair| cells.num_gt(CellRef::new(pair as usize, at)) as usize)
+                    .sum()
+            })
         }));
         if num_gts.iter().all(|&n| n == 0) {
             return;
         }
-        // The ranking every slot reading one evaluate-time block shares.
-        let shares = grouping
-            .area_cells
-            .iter()
-            .zip(num_gts.iter())
-            .any(|(at_evals, &n)| at_evals.len() == 1 && n > 0);
-        if shares {
-            rank_gather(
-                cells,
-                cap,
-                &params.max_dets,
-                pairs.iter().map(|&p| p as usize),
-                shared,
-            );
-        }
+        // The ranking every slot shares: each reads one block per pair.
+        rank_gather(
+            cells,
+            cap,
+            &params.max_dets,
+            pairs.iter().map(|&p| p as usize),
+            shared,
+        );
         let (pairs, shared, num_gts) = (&*pairs, &*shared, &*num_gts);
 
         // Every area range in one walk of the cells and one curve pass per
         // cap, `t` lanes a range, rather than a walk per range and a pass per
         // range and cap — on COCO's four ranges, a quarter of the walks and
-        // passes. It needs every range with ground truth to read one
-        // evaluate-time block, so all share the ranking; curves with no
-        // cumulative arrays, which only Open Images wants; and lanes that
-        // fit a word. Otherwise each range is swept on its own, below. The
-        // two produce the same slabs.
+        // passes. It needs curves with no cumulative arrays, which only Open
+        // Images wants, and lanes that fit a word. Otherwise each range is
+        // swept on its own, below. The two produce the same slabs.
         fused.active.clear();
-        fused
-            .active
-            .extend((0..a).filter(|&a_idx| num_gts[a_idx] > 0));
-        if !want_all_points
-            && t > 0
-            && t * fused.active.len() <= 64
-            && fused
-                .active
-                .iter()
-                .all(|&a_idx| grouping.area_cells[a_idx].len() == 1)
-        {
+        // A slot with ground truth read an evaluate-time block: `(a_idx, at)`.
+        fused.active.extend((0..a).filter_map(|a_idx| {
+            grouping.area_cells[a_idx]
+                .filter(|_| num_gts[a_idx] > 0)
+                .map(|at| (a_idx, at))
+        }));
+        if !want_all_points && t > 0 && t * fused.active.len() <= 64 {
             let Fused {
                 active,
                 lane_gts,
@@ -674,9 +724,9 @@ pub(super) fn accumulate_impl(
                 let pair = pair as usize;
                 blocks.clear();
                 blocks.extend(
-                    active.iter().map(|&a_idx| {
-                        cells.block(CellRef::new(pair, grouping.area_cells[a_idx][0]))
-                    }),
+                    active
+                        .iter()
+                        .map(|&(_, at)| cells.block(CellRef::new(pair, at))),
                 );
                 for d in 0..cells.scores(pair).len().min(cap) {
                     let (mut m_word, mut i_word) = (0u64, 0u64);
@@ -697,7 +747,7 @@ pub(super) fn accumulate_impl(
                 slab.reset(t_rows, m, r);
             }
             lane_gts.clear();
-            for &a_idx in active.iter() {
+            for &(a_idx, _) in active.iter() {
                 lane_gts.extend(std::iter::repeat_n(num_gts[a_idx], t));
             }
             // The ranks the last curves were computed over: a cap that keeps
@@ -712,7 +762,7 @@ pub(super) fn accumulate_impl(
                         ignore,
                         lane_gts,
                         t,
-                        &params.rec_thrs,
+                        &grid.sorted,
                         lanes,
                     );
                     computed = Some(inds);
@@ -729,14 +779,20 @@ pub(super) fn accumulate_impl(
                             let lane = s * t + t_idx;
                             (lanes.final_recall[lane], &lanes.points[lane][..])
                         };
-                        slab.record((m_idx, t_idx), (recall, -1.0), points, shared, inds);
+                        slab.record(
+                            (m_idx, t_idx),
+                            (recall, -1.0),
+                            (points, &grid),
+                            shared,
+                            inds,
+                        );
                     }
                 }
             }
 
             // A poisoned lock means another item panicked, which rayon propagates.
             let mut out = outputs.lock().unwrap_or_else(PoisonError::into_inner);
-            for (slab, &a_idx) in staged.iter().zip(active.iter()) {
+            for (slab, &(a_idx, _)) in staged.iter().zip(active.iter()) {
                 slab.write_out(&mut out, k_idx, a_idx);
             }
             return;
@@ -746,173 +802,176 @@ pub(super) fn accumulate_impl(
         // fresh one per (K, A) item was an allocation round trip per item
         // for buffers that only grow.
         swepts.resize_with(a, Swept::default);
-        swepts.par_iter_mut().enumerate().for_each(|(a_idx, s)| {
-            let num_gt = num_gts[a_idx];
-            if num_gt == 0 {
-                return;
-            }
-            let Swept {
-                evals,
-                own,
-                matched_bits,
-                ignore_bits,
-                lanes,
-                lane_gts,
-                matched,
-                ignore,
-                tp,
-                fp,
-                pr_scratch,
-                curve,
-                staged,
-            } = s;
-            let at_evals = &grouping.area_cells[a_idx];
-            evals.clear();
-            evals.extend(pairs.iter().flat_map(|&pair| {
-                at_evals
-                    .iter()
-                    .map(move |&at| CellRef::new(pair as usize, at))
-            }));
-            let ranked: &Ranked = if at_evals.len() == 1 {
-                shared
-            } else {
-                rank_gather(
-                    cells,
-                    cap,
-                    &params.max_dets,
-                    evals.iter().map(|c| c.pair()),
-                    own,
-                );
-                own
-            };
-            let n_gathered = ranked.scores.len();
-            let inds_of =
-                |m_idx: usize| -> &[u32] { ranked.kept(params.max_dets[m_idx], cap, m_idx) };
+        swepts
+            .par_iter_mut()
+            .fork_safe()
+            .enumerate()
+            .for_each(|(a_idx, s)| {
+                let num_gt = num_gts[a_idx];
+                // A slot with ground truth read an evaluate-time block.
+                let Some(at) = grouping.area_cells[a_idx].filter(|_| num_gt > 0) else {
+                    return;
+                };
+                let Swept {
+                    evals,
+                    matched_bits,
+                    ignore_bits,
+                    lanes,
+                    lane_gts,
+                    matched,
+                    ignore,
+                    tp,
+                    fp,
+                    pr_scratch,
+                    curve,
+                    staged,
+                } = s;
+                evals.clear();
+                evals.extend(pairs.iter().map(|&pair| CellRef::new(pair as usize, at)));
+                let ranked: &Ranked = shared;
+                let n_gathered = ranked.scores.len();
+                let inds_of =
+                    |m_idx: usize| -> &[u32] { ranked.kept(params.max_dets[m_idx], cap, m_idx) };
 
-            staged.reset(t_rows, m, r);
+                staged.reset(t_rows, m, r);
 
-            // Each detection's matched and ignore flags at up to 64 thresholds
-            // at a time, as one bit per threshold, at its rank: one walk over
-            // the cells per 64 thresholds, rather than one per threshold.
-            for (chunk_idx, chunk) in t_rows.chunks(64).enumerate() {
-                for bits in [&mut *matched_bits, &mut *ignore_bits] {
-                    bits.clear();
-                    bits.resize(n_gathered, 0);
-                }
-                let run = consecutive(chunk);
-                let mut at = 0;
-                for &cell in evals.iter() {
-                    let block = cells.block(cell);
-                    for d in 0..cells.scores(cell.pair()).len().min(cap) {
-                        let (m_flags, i_flags) = flags_at(&block, d, chunk, run.as_ref());
-                        let rank = ranked.rank_of[at] as usize;
-                        matched_bits[rank] = m_flags;
-                        ignore_bits[rank] = i_flags;
-                        at += 1;
+                // Each detection's matched and ignore flags at up to 64 thresholds
+                // at a time, as one bit per threshold, at its rank: one walk over
+                // the cells per 64 thresholds, rather than one per threshold.
+                for (chunk_idx, chunk) in t_rows.chunks(64).enumerate() {
+                    for bits in [&mut *matched_bits, &mut *ignore_bits] {
+                        bits.clear();
+                        bits.resize(n_gathered, 0);
                     }
-                }
-
-                if !want_all_points {
-                    // Caps outside, every threshold of the chunk in one pass
-                    // over the cap's ranks. Same curves as the per-threshold
-                    // branch below, which only Open Images takes.
-                    let mut computed: Option<&[u32]> = None;
-                    for m_idx in 0..m {
-                        let inds = inds_of(m_idx);
-                        if !inds.is_empty() && !computed.is_some_and(|c| std::ptr::eq(c, inds)) {
-                            lane_gts.clear();
-                            lane_gts.resize(chunk.len(), num_gt);
-                            crate::metrics::counts::precision_recall_curves_of_lanes_into(
-                                inds.iter().map(|&i| i as usize),
-                                matched_bits,
-                                ignore_bits,
-                                lane_gts,
-                                chunk.len(),
-                                &params.rec_thrs,
-                                lanes,
-                            );
-                            computed = Some(inds);
+                    let run = consecutive(chunk);
+                    let mut at = 0;
+                    for &cell in evals.iter() {
+                        let block = cells.block(cell);
+                        for d in 0..cells.scores(cell.pair()).len().min(cap) {
+                            let (m_flags, i_flags) = flags_at(&block, d, chunk, run.as_ref());
+                            let rank = ranked.rank_of[at] as usize;
+                            matched_bits[rank] = m_flags;
+                            ignore_bits[rank] = i_flags;
+                            at += 1;
                         }
-                        for (bit, row) in chunk.iter().enumerate() {
-                            if row.is_none() {
-                                continue;
+                    }
+
+                    if !want_all_points {
+                        // Caps outside, every threshold of the chunk in one pass
+                        // over the cap's ranks. Same curves as the per-threshold
+                        // branch below, which only Open Images takes.
+                        let mut computed: Option<&[u32]> = None;
+                        for m_idx in 0..m {
+                            let inds = inds_of(m_idx);
+                            if !inds.is_empty() && !computed.is_some_and(|c| std::ptr::eq(c, inds))
+                            {
+                                lane_gts.clear();
+                                lane_gts.resize(chunk.len(), num_gt);
+                                crate::metrics::counts::precision_recall_curves_of_lanes_into(
+                                    inds.iter().map(|&i| i as usize),
+                                    matched_bits,
+                                    ignore_bits,
+                                    lane_gts,
+                                    chunk.len(),
+                                    &grid.sorted,
+                                    lanes,
+                                );
+                                computed = Some(inds);
                             }
-                            // GT exists but no detections: recall 0.0, as below.
-                            let (recall, points) = if inds.is_empty() {
-                                (0.0, &[][..])
-                            } else {
-                                (lanes.final_recall[bit], &lanes.points[bit][..])
-                            };
-                            let t_idx = chunk_idx * 64 + bit;
-                            staged.record((m_idx, t_idx), (recall, -1.0), points, ranked, inds);
+                            for (bit, row) in chunk.iter().enumerate() {
+                                if row.is_none() {
+                                    continue;
+                                }
+                                // GT exists but no detections: recall 0.0, as below.
+                                let (recall, points) = if inds.is_empty() {
+                                    (0.0, &[][..])
+                                } else {
+                                    (lanes.final_recall[bit], &lanes.points[bit][..])
+                                };
+                                let t_idx = chunk_idx * 64 + bit;
+                                staged.record(
+                                    (m_idx, t_idx),
+                                    (recall, -1.0),
+                                    (points, &grid),
+                                    ranked,
+                                    inds,
+                                );
+                            }
                         }
-                    }
-                    continue;
-                }
-
-                // Open Images: thresholds outside, caps inside, one
-                // threshold's flags unpacked at a time.
-                for (bit, &row) in chunk.iter().enumerate() {
-                    let t_idx = chunk_idx * 64 + bit;
-                    if row.is_none() {
                         continue;
                     }
-                    matched.clear();
-                    matched.extend(matched_bits.iter().map(|&w| w >> bit & 1 == 1));
-                    ignore.clear();
-                    ignore.extend(ignore_bits.iter().map(|&w| w >> bit & 1 == 1));
 
-                    for m_idx in 0..m {
-                        let inds = inds_of(m_idx);
-                        if inds.is_empty() {
-                            // GT exists but no detections — recall and AP are 0.0, not -1.0
-                            // "missing". The metric *is* computable here and the answer is that
-                            // nothing was found; reporting "not computed" would drop the
-                            // category from the mean and quietly raise mAP.
-                            staged.record((m_idx, t_idx), (0.0, 0.0), &[], ranked, inds);
+                    // Open Images: thresholds outside, caps inside, one
+                    // threshold's flags unpacked at a time.
+                    for (bit, &row) in chunk.iter().enumerate() {
+                        let t_idx = chunk_idx * 64 + bit;
+                        if row.is_none() {
                             continue;
                         }
+                        matched.clear();
+                        matched.extend(matched_bits.iter().map(|&w| w >> bit & 1 == 1));
+                        ignore.clear();
+                        ignore.extend(ignore_bits.iter().map(|&w| w >> bit & 1 == 1));
 
-                        // `metrics::counts` owns the TP/FP classification and the
-                        // curve. The all-points AP is the exact area under the same
-                        // envelope the grid samples and needs the cumulative `tp`/`fp`
-                        // arrays, score-ordered — it cannot be recovered from the 101
-                        // samples afterwards — so Open Images materializes them and
-                        // reads the curve from them.
-                        crate::metrics::counts::cumulative_tp_fp(
-                            inds.iter().map(|&i| i as usize),
-                            matched,
-                            Some(ignore),
-                            tp,
-                            fp,
-                        );
-                        let final_recall = crate::metrics::counts::precision_recall_curve_into(
-                            tp,
-                            fp,
-                            num_gt,
-                            &params.rec_thrs,
-                            pr_scratch,
-                            curve,
-                        );
-                        let all_points_ap =
-                            crate::metrics::counts::average_precision_all_points(tp, fp, num_gt);
-                        staged.record(
-                            (m_idx, t_idx),
-                            (final_recall, all_points_ap),
-                            curve,
-                            ranked,
-                            inds,
-                        );
+                        for m_idx in 0..m {
+                            let inds = inds_of(m_idx);
+                            if inds.is_empty() {
+                                // GT exists but no detections — recall and AP are 0.0, not -1.0
+                                // "missing". The metric *is* computable here and the answer is that
+                                // nothing was found; reporting "not computed" would drop the
+                                // category from the mean and quietly raise mAP.
+                                staged.record(
+                                    (m_idx, t_idx),
+                                    (0.0, 0.0),
+                                    (&[], &grid),
+                                    ranked,
+                                    inds,
+                                );
+                                continue;
+                            }
+
+                            // `metrics::counts` owns the TP/FP classification and the
+                            // curve. The all-points AP is the exact area under the same
+                            // envelope the grid samples and needs the cumulative `tp`/`fp`
+                            // arrays, score-ordered — it cannot be recovered from the 101
+                            // samples afterwards — so Open Images materializes them and
+                            // reads the curve from them.
+                            crate::metrics::counts::cumulative_tp_fp(
+                                inds.iter().map(|&i| i as usize),
+                                matched,
+                                Some(ignore),
+                                tp,
+                                fp,
+                            );
+                            let final_recall = crate::metrics::counts::precision_recall_curve_into(
+                                tp,
+                                fp,
+                                num_gt,
+                                &grid.sorted,
+                                pr_scratch,
+                                curve,
+                            );
+                            let all_points_ap =
+                                crate::metrics::counts::average_precision_all_points(
+                                    tp, fp, num_gt,
+                                );
+                            staged.record(
+                                (m_idx, t_idx),
+                                (final_recall, all_points_ap),
+                                (curve, &grid),
+                                ranked,
+                                inds,
+                            );
+                        }
                     }
                 }
-            }
 
-            // A poisoned lock means another item panicked, which rayon propagates.
-            let mut out = outputs.lock().unwrap_or_else(PoisonError::into_inner);
-            staged.write_out(&mut out, k_idx, a_idx);
-        });
+                // A poisoned lock means another item panicked, which rayon propagates.
+                let mut out = outputs.lock().unwrap_or_else(PoisonError::into_inner);
+                staged.write_out(&mut out, k_idx, a_idx);
+            });
     };
-    (0..k).into_par_iter().for_each(|k_idx| {
+    (0..k).into_par_iter().fork_safe().for_each(|k_idx| {
         let taken = pool.lock().unwrap_or_else(PoisonError::into_inner).pop();
         let mut scratch = taken.unwrap_or_default();
         work(&mut scratch, k_idx);
@@ -1076,12 +1135,6 @@ mod tests {
         } else {
             std::iter::once((crate::detection::POOLED_CAT, 0usize)).collect()
         };
-        let area_rng_to_idx: HashMap<[u64; 2], usize> = params
-            .area_ranges
-            .iter()
-            .enumerate()
-            .map(|(i, ar)| (area_key(ar.range), i))
-            .collect();
         let evaluated_ranges = &ev
             .eval_inputs
             .as_ref()
@@ -1093,8 +1146,12 @@ mod tests {
             let Some(&k_idx) = cat_id_to_k_idx.get(&ev.cells.ids(pair).1) else {
                 continue;
             };
-            for (at_eval, ar) in evaluated_ranges.iter().enumerate() {
-                let Some(&a_idx) = area_rng_to_idx.get(&area_key(ar.range)) else {
+            for (a_idx, ar) in params.area_ranges.iter().enumerate() {
+                // The first evaluate-time block of the slot's range.
+                let Some(at_eval) = evaluated_ranges
+                    .iter()
+                    .position(|e| area_key(e.range) == area_key(ar.range))
+                else {
                     continue;
                 };
                 grouped[k_idx * a + a_idx].push((pair, at_eval, ev.cells.ids(pair).0));
@@ -1226,6 +1283,14 @@ mod tests {
             .collect()
     }
 
+    /// One bucket's cells as `(pair, evaluate-time area)`.
+    fn cells_of(g: &EvalGrouping<'_>, k_idx: usize, a_idx: usize) -> Vec<(usize, usize)> {
+        bucket(g, k_idx, a_idx)
+            .iter()
+            .map(|(cell, _)| (cell.pair(), cell.area()))
+            .collect()
+    }
+
     /// Every bucket, indexed `k_idx * a + a_idx` as the reference walk is.
     fn buckets(g: &EvalGrouping<'_>) -> Vec<Vec<(CellRef, u32)>> {
         let k = g.k_starts.len() - 1;
@@ -1296,8 +1361,8 @@ mod tests {
         ev.params.cat_ids = vec![3, 1];
         assert_same_grouping(&ev, "cat_ids = [3, 1]");
 
-        // Area subset, reordered, one range listed twice: a repeated range fills its
-        // last slot only, and the dropped ranges skip.
+        // Area subset, reordered, one range listed twice: a repeated range fills
+        // both its slots from the one block, and the dropped ranges skip.
         ev.params.area_ranges = vec![
             area("large", 6400.0, 1e10),
             area("all", 0.0, 1e10),
@@ -1311,8 +1376,9 @@ mod tests {
         );
         for k_idx in 0..ev.params.cat_ids.len() {
             assert!(
-                bucket(&g, k_idx, 1).is_empty() && !bucket(&g, k_idx, 2).is_empty(),
-                "a repeated area range must fill its last slot only"
+                !bucket(&g, k_idx, 1).is_empty()
+                    && cells_of(&g, k_idx, 1) == cells_of(&g, k_idx, 2),
+                "a repeated area range must fill both its slots"
             );
         }
 

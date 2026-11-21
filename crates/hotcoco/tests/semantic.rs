@@ -791,3 +791,11 @@ fn a_truncated_label_map_is_bad_input() {
     let err = SemanticEval::new(2).update_png(&gt, &pred).unwrap_err();
     assert!(matches!(err, hotcoco::Error::InvalidInput(_)), "{err}");
 }
+
+/// A class count whose confusion matrix cannot be built panics naming it, and
+/// before `new` names `usize::MAX` classes, which would never finish.
+#[test]
+#[should_panic(expected = "too many classes")]
+fn new_panics_on_too_many_classes_before_naming_them() {
+    SemanticEval::new(usize::MAX);
+}

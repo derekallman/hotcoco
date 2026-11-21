@@ -1324,7 +1324,7 @@ def main():
         "--images-dir",
         dest="images_dir",
         default=None,
-        help="directory of images (YOLO/DOTA/Open Images → COCO; read image dimensions via Pillow)",
+        help="directory of images (YOLO/DOTA/Open Images → COCO; image sizes are read from the file headers)",
     )
     convert_parser.add_argument(
         "--class-descriptions",

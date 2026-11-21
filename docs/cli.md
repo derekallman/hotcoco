@@ -488,7 +488,7 @@ coco convert --from oid --to coco --input <boxes.csv> --output <annotations.json
 | `--to` | Target format: `coco`, `yolo`, `voc`, `cvat`, `dota`, or `oid` |
 | `--input` | Input path — JSON file (COCO), CSV file (Open Images), XML file (CVAT), or label directory (YOLO, VOC, DOTA) |
 | `--output` | Output path — JSON file (COCO), CSV file (Open Images), XML file (CVAT), or label directory (YOLO, VOC, DOTA) |
-| `--images-dir` | *(YOLO, DOTA, Open Images → COCO)* Directory of source images, read by Pillow for `width`/`height` — which formats need it and why is in [Format conversion](api/coco.md#convert). Requires `pip install Pillow`. |
+| `--images-dir` | *(YOLO, DOTA, Open Images → COCO)* Directory of source images, whose file headers give `width`/`height` — which formats need it and why is in [Format conversion](api/coco.md#convert). |
 | `--class-descriptions` | *(Open Images → COCO only)* Path to `class-descriptions-boxable.csv`; see [`from_oid`](api/coco.md#from_oid). |
 | `--json` | Conversion stats as JSON |
 
