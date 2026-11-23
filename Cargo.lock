@@ -298,7 +298,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hotcoco"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "imagesize",
  "memchr",
@@ -315,7 +315,7 @@ dependencies = [
 
 [[package]]
 name = "hotcoco-cli"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "hotcoco-pyo3"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "hotcoco",
  "numpy",

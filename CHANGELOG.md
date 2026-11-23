@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [1.5.0] - 2026-11-23
+
+### Added
+
 - **Multi-object tracking — the fourth metric family.** `hotcoco.tracking.TrackingEval`
   scores HOTA, CLEAR (MOTA, MOTP), and Identity (IDF1) on MOTChallenge 2D boxes, from
   arrays or a benchmark's folders, under TrackEval's field names, and matches TrackEval
