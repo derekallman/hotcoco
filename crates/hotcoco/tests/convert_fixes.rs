@@ -530,10 +530,12 @@ fn exporters_reject_unknown_category_ids() {
 /// Names that need escaping in XML. quick-xml hands text over in pieces split
 /// at each entity reference, and the readers kept the last piece: `salt &
 /// pepper` came back from its own export as a new category `pepper`, with the
-/// annotations moved onto it.
-fn awkward_names() -> Dataset {
+/// annotations moved onto it. `file_name` names a file only in VOC, which
+/// writes one XML file per image, so that test passes one every OS allows: a
+/// `"` is not a Windows file name character.
+fn awkward_names(file_name: &str) -> Dataset {
     one_image_dataset(
-        "R&D \"x\".jpg",
+        file_name,
         &["salt & pepper", "a<b"],
         &[(1, [10.0, 20.0, 30.0, 40.0]), (2, [50.0, 60.0, 30.0, 40.0])],
     )
@@ -549,7 +551,7 @@ fn names_and_labels(ds: &Dataset) -> (String, Vec<String>, Vec<u64>) {
 
 #[test]
 fn voc_round_trips_names_that_need_escaping() {
-    let dataset = awkward_names();
+    let dataset = awkward_names("R&D 'x'.jpg");
     let dir = tempfile::tempdir().expect("tempdir");
     coco_to_voc(&dataset, dir.path()).expect("coco_to_voc");
     let recovered = voc_to_coco(dir.path()).expect("voc_to_coco");
@@ -558,7 +560,7 @@ fn voc_round_trips_names_that_need_escaping() {
 
 #[test]
 fn cvat_round_trips_names_that_need_escaping() {
-    let dataset = awkward_names();
+    let dataset = awkward_names("R&D \"x\".jpg");
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("annotations.xml");
     hotcoco::convert::coco_to_cvat(&dataset, &path).expect("coco_to_cvat");

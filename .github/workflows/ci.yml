@@ -55,8 +55,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo deny check
 
+      # `--no-fail-fast`: one failing test binary stopped the rest, so a Windows-only
+      # failure in `convert_fixes` hid every binary after it from 1.4.1 to 1.5.0.
       - name: Tests
-        run: cargo test -p hotcoco -p hotcoco-cli
+        run: cargo test -p hotcoco -p hotcoco-cli --no-fail-fast
 
       # The 1.0 reorganization moves nearly every type between modules while
       # promising the crate-root paths keep resolving. Reading lib.rs is not
