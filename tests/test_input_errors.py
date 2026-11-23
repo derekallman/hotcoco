@@ -751,7 +751,7 @@ def test_a_call_before_the_step_it_needs_is_a_runtime_error():
     with pytest.raises(RuntimeError, match=r"^evaluate\(\) must be called before results\(\)"):
         panoptic.PanopticEval(gt, gt).results()
     with pytest.raises(RuntimeError, match="update"):
-        TrackingEval().results()
+        TrackingEval().compute()
 
 
 # --------------------------------------------- what the rules must not catch

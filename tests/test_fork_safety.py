@@ -99,7 +99,7 @@ SETUP = textwrap.dedent(
     def tracking_run():
         ev = tracking.TrackingEval("MOT17")
         ev.update_folders(tmp / "mot" / "gt", tmp / "mot" / "pred")
-        ev.results()
+        ev.compute()
 
     def semantic_run():
         ev = semantic.SemanticEval(["a", "b", "c"])

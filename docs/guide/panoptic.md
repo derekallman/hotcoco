@@ -44,7 +44,8 @@ put them:
 from hotcoco import panoptic
 
 ev = panoptic.PanopticEval("panoptic_val2017.json", "predictions.json")
-ev.run()
+report = ev.compute()
+print(report)
 ```
 
 ```
@@ -57,8 +58,8 @@ Stuff     |  65.6   93.9   69.9    53
 
 Pass `gt_folder=` and `pred_folder=` when the PNG files live elsewhere. The
 predictions' `categories` are ignored; the ground truth's are scored, as in
-panopticapi. `evaluate()` and `summarize()` are the two halves of `run()`
-when you want the numbers without the table.
+panopticapi. `compute()` evaluates and returns the numbers;
+`print(report)` is the table.
 
 ### Drop-in for `pq_compute`
 
@@ -105,22 +106,23 @@ stuff) for the things and stuff splits. Without it a category is scored in
 panopticapi would not have evaluated the file at all — see
 [provenance](results.md#check-provenance-before-you-publish-a-number).
 
-## Results and the report
+## The report
 
-`results()` is panopticapi's dict with the counts added; `report()` is the
-family-neutral form:
+`compute()` returns a [`Report`](../api/report.md), the result every family
+returns; `results()` is panopticapi's dict with the counts added:
 
 ```python
-r = ev.report()
-r["metrics"]["PQ"], r["metrics"]["PQ_th"], r["metrics"]["PQ_st"]
-r["per_class"]["person"]           # {"PQ": ..., "SQ": ..., "RQ": ...}
-r["per_group"]["stuff"]["n"]       # categories averaged into the stuff split
-r["provenance"]                    # "parity_verified"
+report = ev.compute()
+report.metrics["PQ"], report.metrics["PQ_th"], report.metrics["PQ_st"]
+report.per_class["person"]         # {"PQ": ..., "SQ": ..., "RQ": ...}
+report.per_group["stuff"]["n"]     # categories averaged into the stuff split
+report.provenance                  # "parity_verified"
 ```
 
-`ev.stats` holds the nine headline values in `panoptic.METRIC_NAMES` order
-— `PQ, SQ, RQ, PQ_th, SQ_th, RQ_th, PQ_st, SQ_st, RQ_st`, fractions in
-`[0, 1]` — which is what detection frameworks log, usually multiplied by 100.
+The nine headline values are `PQ, SQ, RQ, PQ_th, SQ_th, RQ_th, PQ_st, SQ_st,
+RQ_st`, fractions in `[0, 1]`, which is what detection frameworks log, usually
+multiplied by 100. A split with no categories, such as stuff in a things-only
+dataset, is `None`.
 
 ### Per-image matches
 

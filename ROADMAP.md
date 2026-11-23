@@ -11,6 +11,12 @@ are planned; a version number is assigned when one is ready to ship.
 
 ## Near term
 
+- **2.0: one native API** — `Dataset` and `Predictions` that load the community
+  formats and what models return in memory, every evaluator with `update`, `merge`,
+  and `compute()`, and the pycocotools and lvis-api surfaces rebuilt on them. The
+  hotcoco extras on those surfaces warn for a release, then go; see
+  [Stability and versions](https://derekallman.github.io/hotcoco/getting-started/stability/).
+
 - **HTML evaluation report** — one self-contained HTML file per eval run:
   headline metrics, provenance, PR curves, and error impact at a glance, with
   a sortable per-category table and hover detail below the fold.
@@ -65,9 +71,9 @@ enough to verify against exists, the same bar every other family clears.
 - **Browse enhancements** — model A/B overlay toggle, failure clustering by
   TIDE error type, PR-curve click-through, aggregate → category → image
   drill-down.
-- **Report tables as DataFrames** — `report()`'s `per_class` and `per_group`
+- **Report tables as DataFrames** — a `Report`'s `per_class` and `per_group`
   are tables in disguise (rows are categories or groups, columns are the
-  metrics), and the idiom today is `pd.DataFrame(report["per_class"]).T`. A
+  metrics), and the idiom today is `pd.DataFrame(report.per_class).T`. A
   helper that returns those two as frames, pandas optional, the way sklearn's
   `classification_report(output_dict=True)` is used. The headline `metrics`
   stay a dict and `curves` stay arrays; neither is a table.

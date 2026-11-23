@@ -679,8 +679,12 @@ impl TrackingEval {
     pub fn report(&self) -> Result<EvalReport> {
         let combined = self.results()?;
         let named = |stats: [f64; 44]| METRIC_NAMES.into_iter().zip(stats);
+        // TrackEval's values as they are: MOTA and its kin can be negative, and
+        // nothing here is "not computed", so none goes through the sentinel.
         let mut report = EvalReport::new("tracking", self.provenance())
             .with_metrics(named(combined.stats()))
+            .with_deviations(self.reference_deviations())
+            .with_summary(self.summarize_lines())
             .with_params(serde_json::json!({
                 "benchmark": self.config.benchmark,
                 "clear_threshold": self.config.clear_threshold,
@@ -694,6 +698,9 @@ impl TrackingEval {
         for (seq, r) in &self.sequences {
             for (metric, v) in named(r.stats()) {
                 report = report.with_group_metric(seq.clone(), metric, v);
+            }
+            if let Some(frames) = r.count.frames {
+                report = report.with_group_metric(seq.clone(), "Frames", frames as f64);
             }
         }
         Ok(report)

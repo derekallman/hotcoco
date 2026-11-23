@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import warnings
 
+import hotcoco
 import numpy as np
 import pytest
 from hotcoco import COCO, COCOeval, __version__, panoptic, semantic, tracking
@@ -86,8 +87,9 @@ RESULT_READERS = {
     "detection": ["results", "report", "save_results"],
     "panoptic": ["stats", "results", "report", "summarize", "summary_lines", "eval_imgs"],
     "semantic": ["stats", "results", "report", "summarize", "summary_lines"],
-    "tracking": ["stats", "results", "report", "summarize", "summary_lines", "sequence_results", "curves"],
+    "tracking": ["compute", "sequence_curves"],
 }
+RESULT_READERS["semantic"].append("compute")
 
 # ``COCOeval`` members that answer before a run the way pycocotools' do, or
 # with an empty value and a ``CallOrderWarning``; ``tests/test_run_state.py``
@@ -145,17 +147,11 @@ NOT_RESULT_READERS = {
         "num_classes",
         "class_names",
     },
-    "tracking": {
-        "update",
-        "update_folders",
-        "merge",
-        "provenance",
-        "reference_deviations",
-        "benchmark",
-        "clear_threshold",
-        "identity_threshold",
-    },
+    "tracking": {"update", "update_folders", "merge", "benchmark", "clear_threshold", "identity_threshold"},
 }
+# Panoptic's `compute()` evaluates first when `evaluate()` has not run, so it
+# is a step, not a reader that raises.
+NOT_RESULT_READERS["panoptic"].add("compute")
 
 
 def _read(ev, name, tmp_path):
@@ -164,6 +160,8 @@ def _read(ev, name, tmp_path):
         return member
     if name == "save_results":
         return member(str(tmp_path / "results.json"))
+    if name == "sequence_curves":
+        return member("seq")
     return member()
 
 
@@ -199,7 +197,7 @@ def test_every_reader_has_a_row(family):
     assert known - public == set(), "a row names a member that is gone"
 
 
-@pytest.mark.parametrize("family", FAMILIES)
+@pytest.mark.parametrize("family", ["detection", "panoptic", "semantic"])
 def test_results_carries_the_same_three_keys(family):
     make, step = FAMILIES[family]
     ev = make()
@@ -216,9 +214,10 @@ def test_the_three_keys_report_a_deviation():
     gt = np.array([[1, 1, 0, 0, 10, 10, 0, 1, 1]], dtype=np.float64)
     pred = np.array([[1, 5, 0, 0, 10, 10, 0.9]], dtype=np.float64)
     ev.update("seq", gt, pred, num_frames=1)
-    results = ev.results()
-    assert results["provenance"] == "extension"
-    assert len(results["reference_deviations"]) == 1
+    with pytest.warns(hotcoco.ReferenceDeviationWarning, match="conf"):
+        report = ev.compute()
+    assert report.provenance == "extension"
+    assert len(report.deviations) == 1
 
     gt = _gt()
     det = COCOeval(gt, gt.load_res([DT]), "bbox")
@@ -229,3 +228,112 @@ def test_the_three_keys_report_a_deviation():
     results = det.results()
     assert results["provenance"] == "extension"
     assert results["reference_deviations"] == det.reference_deviations() != []
+
+
+# ---------------------------------------------------------------------------
+# compute() returns one Report, the same shape in every family
+# ---------------------------------------------------------------------------
+
+REPORT_MEMBERS = {
+    "task",
+    "provenance",
+    "hotcoco_version",
+    "deviations",
+    "metrics",
+    "per_class",
+    "per_group",
+    "curves",
+    "params",
+    "to_dict",
+    "save",
+    "load",
+}
+COMPUTING = ["panoptic", "semantic", "tracking"]
+
+
+def _computed(family):
+    make, step = FAMILIES[family]
+    ev = make()
+    step(ev)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", hotcoco.ReferenceDeviationWarning)
+        return ev, ev.compute()
+
+
+@pytest.mark.parametrize("family", COMPUTING)
+def test_compute_returns_the_one_report(family):
+    ev, report = _computed(family)
+    assert type(report) is hotcoco.Report
+    assert {n for n in dir(report) if not n.startswith("_")} == REPORT_MEMBERS
+    assert report.task == family
+    assert report.hotcoco_version == __version__
+    assert report.metrics is report.metrics, "the same dict on every read"
+    assert all(v is None or isinstance(v, float) for v in report.metrics.values())
+    assert all(isinstance(c, np.ndarray) and c.dtype == np.float64 for c in report.curves.values())
+
+
+@pytest.mark.parametrize("family", ["panoptic", "semantic"])
+def test_a_report_agrees_with_the_readers_it_replaces(family):
+    """`compute()` is the readers in one object: the table `summary_lines()` gives,
+    the deviations, and `report()`'s metrics with None for its -1."""
+    ev, report = _computed(family)
+    assert str(report).splitlines() == ev.summary_lines()
+    assert report.deviations == ev.reference_deviations()
+    assert report.provenance == ev.provenance()
+    legacy = ev.report()
+    assert report.metrics == {k: (None if v == -1.0 else v) for k, v in legacy["metrics"].items()}
+
+
+def test_not_computed_is_none_in_a_report_and_minus_one_in_report():
+    """An empty stuff split is "not computed". `report()` keeps the -1 it always
+    returned; the Report says None, which fails loudly when averaged."""
+    ev = _panoptic()
+    ev.evaluate()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", hotcoco.ReferenceDeviationWarning)
+        report = ev.compute()
+    assert ev.report()["metrics"]["PQ_st"] == -1.0
+    assert report.metrics["PQ_st"] is None
+    assert report.metrics["PQ_th"] is not None
+
+
+def test_a_negative_mota_stays_a_number():
+    """MOTA can be negative; "not computed" is decided where a family makes its
+    numbers, never by the sign, so a negative MOTA is not None."""
+    ev = tracking.TrackingEval()
+    gt = np.array([[1, 1, 0, 0, 10, 10, 1, 1, 1]], dtype=np.float64)
+    pred = np.array([[1, k, 50 * k, 50 * k, 10, 10, 0.9] for k in range(2, 6)], dtype=np.float64)
+    ev.update("seq", gt, pred, num_frames=1)
+    report = ev.compute()
+    assert report.metrics["MOTA"] is not None and report.metrics["MOTA"] < 0
+    assert report.per_group["seq"]["MOTA"] == report.metrics["MOTA"]
+
+
+@pytest.mark.parametrize("family", COMPUTING)
+def test_a_report_round_trips(family, tmp_path):
+    import pickle
+
+    _, report = _computed(family)
+    path = tmp_path / "report.json"
+    report.save(path)
+    loaded = hotcoco.Report.load(path)
+    assert loaded.to_dict() == report.to_dict()
+    assert str(loaded) == str(report)
+    assert pickle.loads(pickle.dumps(report)).to_dict() == report.to_dict()
+
+
+def test_a_report_has_no_public_constructor():
+    """Provenance is the producer's: a caller cannot make a Report that claims a
+    parity check nobody ran."""
+    with pytest.raises(TypeError):
+        hotcoco.Report()
+
+
+def test_report_keeps_its_shape_through_1_5():
+    """`report()` returns the dict it always did, -1 included, so a caller does not
+    see a value change type under the same name. It is deprecated in 1.6."""
+    ev = _detection()
+    _run_detection(ev)
+    legacy = ev.report()
+    assert set(legacy) == {"task", "provenance", "metrics", "per_class", "per_group", "curves", "params"}
+    assert legacy["metrics"]["APl"] == -1.0

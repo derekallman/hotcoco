@@ -167,7 +167,7 @@ fn a_report_never_mixes_two_runs() {
 
     ev.summarize_lines();
     let report = ev.report().unwrap();
-    assert_eq!(report.metrics["AP"], report.per_class["cat_1"]["AP"]);
+    assert_eq!(report.metric("AP"), Some(report.per_class["cat_1"]["AP"]));
     assert!(!report.per_class.contains_key("cat_2"));
 }
 

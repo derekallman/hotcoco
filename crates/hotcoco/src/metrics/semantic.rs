@@ -340,7 +340,12 @@ impl SemanticScores {
         mut report: EvalReport,
         class_names: impl IntoIterator<Item = S>,
     ) -> EvalReport {
-        report = report.with_metrics(METRIC_NAMES.iter().copied().zip(self.stats()));
+        report = report.with_metrics(
+            METRIC_NAMES
+                .iter()
+                .copied()
+                .zip(self.stats().into_iter().map(super::computed)),
+        );
         for (name, s) in class_names.into_iter().zip(&self.per_class) {
             let name = name.into();
             for (metric, value) in [("IoU", s.iou), ("Acc", s.acc), ("Dice", s.dice)] {

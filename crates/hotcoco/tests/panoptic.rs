@@ -434,9 +434,13 @@ fn a_dataset_without_isthing_is_an_extension() {
         "no sentinel groups in a report"
     );
     assert_eq!(
-        report.metric("PQ_st"),
-        Some(-1.0),
-        "headline keeps the sentinel"
+        report.metrics["PQ_st"], None,
+        "a headline nothing was computed for is None"
+    );
+    assert_eq!(
+        report.legacy_value().expect("serializes")["metrics"]["PQ_st"],
+        -1.0,
+        "the pre-1.5 shape keeps the sentinel"
     );
     assert!(ev.summarize_lines()[4].starts_with("Stuff     |     -      -      -     0"));
 }

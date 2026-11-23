@@ -77,7 +77,8 @@ ev = semantic.SemanticEval(19)                      # Cityscapes train ids
 for images, gt in val_loader:
     pred = model(images).argmax(1)
     ev.update(gt.numpy(), pred.numpy())
-ev.summarize()
+report = ev.compute()
+print(report)
 ```
 
 ```
@@ -110,7 +111,7 @@ if dist.get_rank() == 0:
     total = gathered[0]
     for shard in gathered[1:]:
         total.merge(shard)
-    total.report()
+    total.compute()
 ```
 
 The merged result equals the single-process one exactly: the counts are
@@ -125,7 +126,7 @@ each folder are paired by file name:
 ```python
 ev = semantic.SemanticEval(150, reduce_zero_label=True)       # ADE20K
 ev.update_folders("ADEChallengeData2016/annotations/validation", "predictions/")
-ev.report()["metrics"]["mIoU"]
+ev.compute().metrics["mIoU"]
 ```
 
 Cityscapes keeps a folder per city and several files per frame, told apart by
@@ -162,17 +163,20 @@ space. mmseg hardcodes that `255`, so the rule needs `ignore_index=255`, the
 default; any other value is refused rather than given a meaning the reference
 does not have.
 
-## Results, the report, and the confusion matrix
+## The report and the confusion matrix
 
 ```python
-r = ev.report()
-r["metrics"]                        # {"mIoU", "fwIoU", "mAcc", "aAcc", "mDice", "mBIoU"}, fractions in [0, 1]
-r["per_class"]["road"]              # {"IoU", "Acc", "Dice", "BIoU"}, computed values only
-r["provenance"]                     # "parity_verified"
+report = ev.compute()
+report.metrics                      # {"mIoU", "fwIoU", "mAcc", "aAcc", "mDice", "mBIoU"}, fractions in [0, 1]
+report.per_class["road"]            # {"IoU", "Acc", "Dice", "BIoU"}, computed values only
+report.provenance                   # "parity_verified"
 
 ev.results()["per_class"][0]        # {"name", "IoU", "Acc", "Dice", "BIoU", "tp", "gt_area", "pred_area"}
-ev.stats                            # the six means in semantic.METRIC_NAMES order
 ```
+
+`compute()` returns a [`Report`](../api/report.md), the result every family
+returns; a mean nothing was counted for is `None`. `results()` keeps the pixel
+counts per class.
 
 `confusion()` returns the matrix itself as a `uint64` array, row the
 ground-truth class, column the predicted class. It is the diagnostic this

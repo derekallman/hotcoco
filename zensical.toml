@@ -13,6 +13,7 @@ nav = [
     { "Quick start" = "getting-started/quickstart.md" },
     { "The COCO format" = "getting-started/coco-format.md" },
     { "Migrating from pycocotools" = "getting-started/migration.md" },
+    { "Stability and versions" = "getting-started/stability.md" },
     { "Troubleshooting" = "getting-started/troubleshooting.md" },
   ] },
   { "User guide" = [
@@ -35,6 +36,7 @@ nav = [
     { "COCO" = "api/coco.md" },
     { "COCOeval" = "api/cocoeval.md" },
     { "Params" = "api/params.md" },
+    { "Report" = "api/report.md" },
     { "panoptic" = "api/panoptic.md" },
     { "semantic" = "api/semantic.md" },
     { "tracking" = "api/tracking.md" },

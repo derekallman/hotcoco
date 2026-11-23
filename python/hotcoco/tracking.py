@@ -17,8 +17,9 @@ sequence's frame count::
     gt = np.loadtxt("MOT17-02-FRCNN/gt/gt.txt", delimiter=",", ndmin=2)
     pred = np.loadtxt("MyTracker/data/MOT17-02-FRCNN.txt", delimiter=",", ndmin=2)
     ev.update("MOT17-02-FRCNN", gt, pred, num_frames=600)
-    ev.summarize()                                  # TrackEval's HOTA, CLEAR, Identity, Count tables
-    ev.results()["HOTA"]
+    report = ev.compute()
+    print(report)                                   # TrackEval's HOTA, CLEAR, Identity, Count tables
+    report.metrics["HOTA"]
 
 Or a whole benchmark in the folder layout TrackEval reads::
 

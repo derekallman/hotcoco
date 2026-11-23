@@ -183,8 +183,7 @@ carry masks, with no PNG files at all:
 from hotcoco import panoptic
 
 ev = panoptic.PanopticEval("panoptic_val2017.json", "predictions.json")
-ev.run()
-ev.report()["metrics"]["PQ"]
+ev.compute().metrics["PQ"]
 ```
 
 See the [panoptic guide](guide/panoptic.md).
@@ -203,7 +202,7 @@ from hotcoco import semantic
 ev = semantic.SemanticEval(19)
 for gt, pred in loader:
     ev.update(gt, pred)
-ev.report()["metrics"]["mIoU"]
+ev.compute().metrics["mIoU"]
 ```
 
 See the [semantic guide](guide/semantic.md).
@@ -220,7 +219,7 @@ from hotcoco.tracking import TrackingEval
 
 ev = TrackingEval("MOT17")
 ev.update_folders("gt/mot_challenge/MOT17-train", "trackers/mot_challenge/MOT17-train/MyTracker/data")
-ev.results()["HOTA"]
+ev.compute().metrics["HOTA"]
 ```
 
 See the [tracking guide](guide/tracking.md), which also lists what is not

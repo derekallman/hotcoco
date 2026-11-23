@@ -111,6 +111,16 @@ pub fn or_missing(v: Option<f64>) -> f64 {
     v.unwrap_or(-1.0)
 }
 
+/// The inverse of [`or_missing`]: a value that carries the sentinel as
+/// `None`, the form [`EvalReport::metrics`](crate::EvalReport::metrics) holds.
+///
+/// Only for values the sentinel convention covers. A family whose metrics can
+/// be negative — tracking's MOTA — never passes them through here.
+#[inline]
+pub fn computed(v: f64) -> Option<f64> {
+    is_computed(v).then_some(v)
+}
+
 /// A running mean over the per-class values that were computed: the sum of
 /// the values seen and how many there were. The accumulator behind every
 /// family's `np.nanmean`-style average, so [`mean_or_missing`] is called

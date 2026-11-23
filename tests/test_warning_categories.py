@@ -44,6 +44,7 @@ LIVE_RS = "crates/hotcoco-pyo3/src/live.rs"
 PANOPTIC_RS = "crates/hotcoco-pyo3/src/panoptic.rs"
 SEMANTIC_RS = "crates/hotcoco-pyo3/src/semantic.rs"
 TRACKING_RS = "crates/hotcoco-pyo3/src/tracking.rs"
+REPORT_RS = "crates/hotcoco-pyo3/src/report.rs"
 INTEGRATIONS_PY = "python/hotcoco/integrations.py"
 
 IMAGES = [{"id": 1, "width": 100, "height": 100}]
@@ -238,11 +239,11 @@ SITES = [
         id="coco-evaluator-summarize",
     ),
     pytest.param(
-        lambda _: _tracking_keeping_a_zero_confidence_row().summarize(),
+        lambda _: _tracking_keeping_a_zero_confidence_row().compute(),
         ReferenceDeviationWarning,
         "confidence is 0",
-        TRACKING_RS,
-        id="tracking-zero-confidence-kept",
+        REPORT_RS,
+        id="compute-deviation",
     ),
 ]
 
@@ -397,24 +398,27 @@ def test_tracking_deviates_only_by_keeping_a_zero_confidence_row(capsys):
     for benchmark, gt in [("MOT17", row), ("MOT17", zero), ("MOT15", zero), (None, row), (None, [r[:6] for r in row])]:
         ev = tracking.TrackingEval(benchmark)
         ev.update("seq-a", gt, row, num_frames=1)
-        assert ev.reference_deviations() == [], (benchmark, gt)
-        assert ev.provenance() == "parity_verified"
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            ev.summarize()
-        assert "COMBINED" in capsys.readouterr().out
+            report = ev.compute()
+        assert report.deviations == [], (benchmark, gt)
+        assert report.provenance == "parity_verified"
+        assert "COMBINED" in str(report)
 
     ev = _tracking_keeping_a_zero_confidence_row()
-    assert len(ev.reference_deviations()) == 1
-    assert ev.provenance() == "extension"
-    assert ev.report()["provenance"] == "extension"
-    assert ev.results()["GT_Dets"] == 1
+    with pytest.warns(ReferenceDeviationWarning, match="confidence is 0"):
+        report = ev.compute()
+    assert len(report.deviations) == 1
+    assert report.provenance == "extension"
+    assert report.metrics["GT_Dets"] == 1
     # The flag travels with a pickle and through a merge.
-    assert pickle.loads(pickle.dumps(ev)).reference_deviations() == ev.reference_deviations()
+    with pytest.warns(ReferenceDeviationWarning):
+        assert pickle.loads(pickle.dumps(ev)).compute().deviations == report.deviations
     whole = tracking.TrackingEval()
     whole.update("seq-b", row, row, num_frames=1)
     whole.merge(ev)
-    assert whole.provenance() == "extension"
+    with pytest.warns(ReferenceDeviationWarning):
+        assert whole.compute().provenance == "extension"
 
 
 LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning, DatasetWarning, DropInWarning)

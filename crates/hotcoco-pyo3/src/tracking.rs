@@ -12,28 +12,11 @@ use numpy::{PyArrayDescrMethods, PyUntypedArrayMethods};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use hotcoco_core::tracking::{Benchmark, METRIC_NAMES, TrackingEval, TrackingResult};
+use hotcoco_core::tracking::{Benchmark, METRIC_NAMES, TrackingEval};
 
 use crate::convert::{extract_int, f64_matrix_arg, is_bool, with_context};
-use crate::{ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
-
-/// A result's [`METRIC_NAMES`] values, plus `Frames` for one sequence, under
-/// TrackEval's names. A count is a Python `int`: whatever the core serializes
-/// as an integer, so the binding keeps no list of which fields are counts.
-fn summary_dict<'py>(py: Python<'py>, r: &TrackingResult) -> PyResult<Bound<'py, PyDict>> {
-    let fields = serde_json::to_value(r).map_err(|e| to_pyerr(hotcoco_core::Error::Json(e)))?;
-    let d = PyDict::new(py);
-    for (name, value) in METRIC_NAMES.iter().zip(r.stats()) {
-        match fields.get(name).and_then(serde_json::Value::as_u64) {
-            Some(count) => d.set_item(name, count)?,
-            None => d.set_item(name, value)?,
-        }
-    }
-    if let Some(frames) = r.count.frames {
-        d.set_item("Frames", frames)?;
-    }
-    Ok(d)
-}
+use crate::report::PyReport;
+use crate::to_pyerr;
 
 #[doc = "Multi-object tracking evaluation: HOTA, CLEAR (MOTA, MOTP), and Identity
 (IDF1) against TrackEval, on MOTChallenge 2D boxes.
@@ -197,124 +180,40 @@ added then."]
         self.inner.identity_threshold()
     }
 
-    #[getter]
-    #[doc = "The combined run's 44 values as floats, in ``tracking.METRIC_NAMES``
-order: ``results()`` without the names. Raises ``RuntimeError`` before any
-sequence is added."]
-    fn stats(&self) -> PyResult<Vec<f64>> {
-        Ok(self.inner.stats().map_err(to_pyerr)?.to_vec())
-    }
-
-    #[doc = "Print TrackEval's four tables — HOTA, CLEAR, Identity, and Count — with a
-row per sequence and a ``COMBINED`` row, scores in percent. Each entry of
-``reference_deviations()`` is emitted first as a ``ReferenceDeviationWarning``.
-Raises ``RuntimeError`` before any sequence is added."]
-    fn summarize(&self, py: Python<'_>) -> PyResult<()> {
+    #[doc = "The run as a ``Report``: the combined run's 44 values under TrackEval's
+field names in ``metrics``, each sequence's values and ``Frames`` under its
+name in ``per_group``, HOTA's per-threshold values in ``curves`` with their
+``alphas`` axis, and TrackEval's four tables as ``print(report)`` shows them.
+Each of the report's ``deviations`` is emitted first as a
+``ReferenceDeviationWarning``. Raises ``RuntimeError`` before any sequence is
+added."]
+    fn compute(&self, py: Python<'_>) -> PyResult<PyReport> {
         self.check_updated()?;
-        for w in self.inner.reference_deviations() {
-            warn::<ReferenceDeviationWarning>(py, &w)?;
-        }
-        print_lines(py, &self.inner.summarize_lines())
+        PyReport::computed(py, &self.inner.report().map_err(to_pyerr)?)
     }
 
-    #[doc = "The tables as a list of strings, without printing them. Raises
-``RuntimeError`` before any sequence is added."]
-    fn summary_lines(&self) -> PyResult<Vec<String>> {
+    #[doc = "HOTA's per-threshold values for the sequence named: ``alphas``, the 19
+localization thresholds from 0.05 to 0.95 as TrackEval builds them, and one value
+per threshold for ``HOTA``, ``DetA``, ``AssA``, ``DetRe``, ``DetPr``, ``AssRe``,
+``AssPr``, ``LocA``, ``OWTA``, and the counts ``HOTA_TP``, ``HOTA_FN``, and
+``HOTA_FP``, as floats. The combined run's are ``compute().curves``. Raises
+``RuntimeError`` before any sequence is added, and ``KeyError`` for a sequence
+that was not."]
+    fn sequence_curves<'py>(&self, py: Python<'py>, name: &str) -> PyResult<Bound<'py, PyDict>> {
         self.check_updated()?;
-        Ok(self.inner.summarize_lines())
-    }
-
-    #[doc = "The combined run, TrackEval's ``COMBINED_SEQ``, as a flat dict:
-``hotcoco_version``, ``provenance``, and ``reference_deviations``, as every
-family's ``results()`` carries them, then the 44 values under TrackEval's
-field names, in ``METRIC_NAMES`` order.
-
-``HOTA``, ``DetA``, ``AssA``, ``DetRe``, ``DetPr``, ``AssRe``, ``AssPr``,
-``LocA``, and ``OWTA`` are the mean over HOTA's 19 localization thresholds,
-as TrackEval's summary takes them; ``curves()`` has the values at each
-threshold. Then ``HOTA(0)``, ``LocA(0)``, and ``HOTALocA(0)``, the CLEAR
-fields (``MOTA``, ``MOTP``, ... ``IDSW``, ``Frag``), the Identity fields
-(``IDF1``, ``IDR``, ``IDP``, ``IDTP``, ``IDFN``, ``IDFP``), and the Count
-fields (``Dets``, ``GT_Dets``, ``IDs``, ``GT_IDs``). Scores are fractions
-and counts are ints. Raises ``RuntimeError`` before any sequence is added."]
-    fn results<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let metrics = summary_dict(py, &self.inner.results().map_err(to_pyerr)?)?;
+        let curves = self
+            .inner
+            .sequence_results()
+            .get(name)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyKeyError::new_err(format!("no sequence {name:?} was evaluated"))
+            })?
+            .curves();
         let d = PyDict::new(py);
-        d.set_item("hotcoco_version", env!("CARGO_PKG_VERSION"))?;
-        d.set_item("provenance", provenance_str(self.inner.provenance())?)?;
-        d.set_item("reference_deviations", self.inner.reference_deviations())?;
-        d.update(metrics.as_mapping())?;
-        Ok(d)
-    }
-
-    #[doc = "Each sequence's result by name, in name order: the 44 values of
-``results()`` plus ``Frames``, the sequence's frame count. A sequence with no
-ground truth or no predictions left after clean-up has TrackEval's
-early-return row: the CLEAR scores are 0 but ``MLR`` is 1 and ``CLR_Frames``
-is 0, and ``LocA`` is 1. Raises ``RuntimeError`` before any sequence is added."]
-    fn sequence_results<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        self.check_updated()?;
-        let d = PyDict::new(py);
-        for (name, r) in self.inner.sequence_results() {
-            d.set_item(name, summary_dict(py, r)?)?;
+        for (curve, values) in curves {
+            d.set_item(curve, values)?;
         }
         Ok(d)
-    }
-
-    #[doc = "HOTA's per-threshold values, for the combined run or for the sequence
-named: ``alphas``, the 19 localization thresholds from 0.05 to 0.95 as
-TrackEval builds them, and one value per threshold for ``HOTA``, ``DetA``,
-``AssA``, ``DetRe``, ``DetPr``, ``AssRe``, ``AssPr``, ``LocA``, ``OWTA``, and
-the counts ``HOTA_TP``, ``HOTA_FN``, and ``HOTA_FP``, as floats. Raises
-``RuntimeError`` before any sequence is added, and ``KeyError`` for a
-sequence that was not."]
-    #[pyo3(signature = (sequence=None))]
-    fn curves<'py>(&self, py: Python<'py>, sequence: Option<&str>) -> PyResult<Bound<'py, PyDict>> {
-        let curves = match sequence {
-            None => self.inner.curves().map_err(to_pyerr)?,
-            Some(name) => {
-                self.check_updated()?;
-                self.inner
-                    .sequence_results()
-                    .get(name)
-                    .ok_or_else(|| {
-                        pyo3::exceptions::PyKeyError::new_err(format!(
-                            "no sequence {name:?} was evaluated"
-                        ))
-                    })?
-                    .curves()
-            }
-        };
-        let d = PyDict::new(py);
-        for (name, values) in curves {
-            d.set_item(name, values)?;
-        }
-        Ok(d)
-    }
-
-    #[doc = "The run as the ``EvalReport`` dict every hotcoco family produces:
-``task`` (``\"tracking\"``), ``provenance``, ``metrics`` (``results()``, every
-value a float), ``per_class`` (empty), ``per_group`` (each sequence's
-``METRIC_NAMES`` values under its name), ``curves`` (``curves()`` of the
-combined run) and ``params`` (``benchmark``, ``clear_threshold``,
-``identity_threshold``, ``n_sequences``, ``num_alphas``). Raises
-``RuntimeError`` before any sequence is added."]
-    fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        serde_to_py(py, &self.inner.report().map_err(to_pyerr)?)
-    }
-
-    #[doc = "Ways this run departs from what TrackEval would compute. Empty means the
-numbers are comparable to the reference: each benchmark is TrackEval's
-clean-up for it, and the two thresholds are TrackEval options. The one entry:
-with no benchmark, a ground-truth row whose ``conf`` is 0 is evaluated, and
-TrackEval drops such a row even with its clean-up off."]
-    fn reference_deviations(&self) -> Vec<String> {
-        self.inner.reference_deviations()
-    }
-
-    #[doc = "``'parity_verified'`` or ``'extension'`` — see ``reference_deviations()``."]
-    fn provenance(&self) -> PyResult<String> {
-        provenance_str(self.inner.provenance())
     }
 
     /// Pickle and `copy.deepcopy`, the way a DDP loop gathers shards: the

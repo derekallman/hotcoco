@@ -16,6 +16,7 @@ use hotcoco_core::metrics::semantic::boundary::DEFAULT_DILATION_RATIO;
 use hotcoco_core::semantic::{FolderPairing, METRIC_NAMES, SemanticEval};
 
 use crate::convert::{confusion_counts_to_py, is_bool, label_pair};
+use crate::report::PyReport;
 use crate::{ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn};
 
 #[doc = "Semantic segmentation evaluation: mIoU, fwIoU, mAcc, aAcc, and mDice
@@ -257,6 +258,16 @@ before the first update."]
         print_lines(py, &self.inner.summarize_lines())
     }
 
+    #[doc = "The run as a ``Report``: mIoU, fwIoU, mAcc, aAcc, mDice, and mBIoU in
+``metrics`` (``None`` where nothing was computed), each class's IoU, Acc, Dice,
+and BIoU in ``per_class``, and the table ``summarize()`` prints as
+``print(report)``. Each of the report's ``deviations`` is emitted first as a
+``ReferenceDeviationWarning``. Raises ``RuntimeError`` before the first update."]
+    fn compute(&self, py: Python<'_>) -> PyResult<PyReport> {
+        self.check_updated("compute()")?;
+        PyReport::computed(py, &self.inner.report())
+    }
+
     #[doc = "The table as a list of strings, without printing it. Raises
 ``RuntimeError`` before the first update."]
     fn summary_lines(&self) -> PyResult<Vec<String>> {
@@ -282,7 +293,7 @@ name, computed values only), ``per_group`` (empty), ``curves`` (empty) and
 ``params``. Raises ``RuntimeError`` before the first update."]
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.check_updated("report()")?;
-        serde_to_py(py, &self.inner.report())
+        serde_to_py(py, &self.inner.report().legacy_value().map_err(to_pyerr)?)
     }
 
     #[doc = "Ways this run departs from what mmsegmentation would compute. Empty

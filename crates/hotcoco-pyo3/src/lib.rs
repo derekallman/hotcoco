@@ -14,6 +14,7 @@ mod mask;
 mod metrics;
 mod panoptic;
 mod primitives;
+mod report;
 mod semantic;
 mod tracking;
 
@@ -2819,7 +2820,7 @@ dict
     Metrics, breakdowns, curves, provenance, and parameters."]
     fn report(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let report = self.with_params(py, |ev| ev.report()).map_err(to_pyerr)?;
-        serde_to_py(py, &report)
+        serde_to_py(py, &report.legacy_value().map_err(to_pyerr)?)
     }
 
     #[doc = "Return this run's provenance without building a full report.
@@ -4228,6 +4229,7 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStreamingEval>()?;
     m.add_class::<PyParams>()?;
     m.add_class::<PyHierarchy>()?;
+    m.add_class::<report::PyReport>()?;
     m.add_function(wrap_pyfunction!(init_as_pycocotools, m)?)?;
     m.add_function(wrap_pyfunction!(init_as_lvis, m)?)?;
     m.add_function(wrap_pyfunction!(compare, m)?)?;

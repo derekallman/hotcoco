@@ -835,6 +835,8 @@ impl SemanticEval {
             report = b.add_to_report(report, self.class_names.iter().cloned());
         }
         report
+            .with_deviations(self.reference_deviations())
+            .with_summary(self.summarize_lines())
     }
 }
 

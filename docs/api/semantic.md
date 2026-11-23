@@ -62,6 +62,7 @@ signatures and return shapes.
 | `update_folders(gt_folder, pred_folder, *, recursive=False, gt_suffix=".png", pred_suffix=".png")` | `int` | Count every ground-truth file under `gt_folder` against its prediction under `pred_folder`, in parallel; returns the pairs counted. A ground-truth file is one at the top of the folder, or anywhere below it with `recursive`, whose name ends in `gt_suffix`; its key is the name minus the suffix, and its prediction is `key + pred_suffix` anywhere in the prediction tree under the same walk. The defaults pair the `.png` files at the top of each folder by name. `OSError` for a folder that cannot be listed; `ValueError` if no ground-truth file ends in the suffix, if one has no prediction, or if two predictions share a key; or whatever `update_png` raises on the first pair it rejects. Nothing is counted then |
 | `merge(other)` | `None` | Add another evaluator's counts — the shards of a distributed run. `ValueError` if it was built with different classes or options, `boundary_dilation` included |
 | `confusion()` | `ndarray[uint64]` | The `(num_classes, num_classes)` matrix behind every number but boundary IoU: row the ground-truth class, column the predicted class |
+| `compute()` | `Report` | The run as a [`Report`](report.md): the six means in `metrics`, `None` where nothing was counted and for `mBIoU` when boundary IoU is off; IoU, Acc, Dice, and BIoU per class; the table as `print(report)` |
 | `summarize()` | `None` | Print one row per class with IoU, Acc, Dice, and BIoU in percent, then the six means |
 | `summary_lines()` | `list[str]` | The same table as strings, without printing |
 | `stats` | `list[float]` | The six means as fractions, in `METRIC_NAMES` order; `-1.0` where nothing was counted, and for `mBIoU` when boundary IoU is off |
@@ -71,8 +72,11 @@ signatures and return shapes.
 | `reference_deviations()` | `list[str]` | Why this run is not comparable to mmseg; empty today, since every option is a reference option |
 | `provenance()` | `str` | `"parity_verified"` or `"extension"` |
 
-`stats`, `summarize()`, `summary_lines()`, `results()`, and `report()` raise
-`RuntimeError` before the first update. An evaluator pickles; `pickle.loads(pickle.dumps(ev))` carries the
+`compute()`, `stats`, `summarize()`, `summary_lines()`, `results()`, and `report()`
+raise `RuntimeError` before the first update. `compute()` replaces the readers
+among them: `summarize()`, `summary_lines()`, `stats`, `report()`,
+`reference_deviations()`, and `provenance()` keep working through 1.5 and warn
+from 1.6. An evaluator pickles; `pickle.loads(pickle.dumps(ev))` carries the
 configuration, the matrix, and the boundary counts, which is what
 `torch.distributed`'s `all_gather_object` needs. In Rust the same names
 return `Result` where Python raises on bad input; the readers do not check for

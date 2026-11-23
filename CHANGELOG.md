@@ -12,8 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Multi-object tracking — the fourth metric family.** `hotcoco.tracking.TrackingEval`
   scores HOTA, CLEAR (MOTA, MOTP), and Identity (IDF1) on MOTChallenge 2D boxes, from
   arrays or a benchmark's folders, under TrackEval's field names, and matches TrackEval
-  to the bit on synthetic sequences. MOTS, COCO-video, and a CLI are not covered yet. See
-  [Multi-object tracking](https://derekallman.github.io/hotcoco/guide/tracking/).
+  to the bit on synthetic sequences. `update`, `merge`, `compute()`, and
+  `sequence_curves()`; see [Multi-object tracking](https://derekallman.github.io/hotcoco/guide/tracking/).
+- **`hotcoco.Report` and `compute()`**: one result for every family.
+  `SemanticEval.compute()`, `TrackingEval.compute()`, and `PanopticEval.compute()`
+  return it: `metrics` with `None` where nothing was computed, `per_class`,
+  `per_group`, `curves`, `provenance`, `deviations`, `print(report)` for the table,
+  and `save()`/`load()`. See [Report](https://derekallman.github.io/hotcoco/api/report/).
+- **[Stability and versions](https://derekallman.github.io/hotcoco/getting-started/stability/)**:
+  what the native API, the shims, and the extras on the shims each promise, and
+  what a minor release may change.
 - **Rust: `tracking::{TrackingEval, Benchmark, TrackingResult}`**, and the HOTA, CLEAR,
   and Identity formulas in `metrics::tracking`.
 - **Rust: `COCOeval::check_accumulated()` and `check_summarized()`**, the reason
@@ -77,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `load_res` still takes one, as `loadRes` does.
 - **Breaking (Rust): `COCOeval::confusion_matrix` returns `Result`**, with the score
   check `evaluate()` runs.
+- **Breaking (Rust): `EvalReport.metrics` holds `Option<f64>`**, `None` where a family
+  computed nothing, set where it makes the number, so tracking's negative MOTA stays a
+  number. `EvalReport` gains `deviations`, `summary`, and `hotcoco_version`, and
+  `save()`/`load()`; a curve point not computed is `null` in its JSON.
+  `legacy_value()` is the pre-1.5 shape the Python `report()` methods still return.
 - **The printed summary is pycocotools' text**: `Average Precision  (AP)` with two
   spaces, `Average Recall     (AR)`, and the IoU sweep labeled with its first and last
   thresholds rather than always `0.50:0.95`, so a log parser written for pycocotools

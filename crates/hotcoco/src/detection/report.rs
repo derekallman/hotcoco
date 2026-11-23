@@ -232,7 +232,16 @@ impl COCOeval {
             &self.coco_gt.dataset.categories,
             &metrics,
         );
+        let lines = self.summary_text(eval, &stats);
+        self.stats = Some(stats);
+        self.advance_to(Stage::Summarized);
+        lines
+    }
 
+    /// The printed table for `stats`, summarized from `eval`: pycocotools'
+    /// lines, or one `KEY = value` line per metric for LVIS and Open Images.
+    fn summary_text(&self, eval: &AccumulatedEval, stats: &[f64]) -> Vec<String> {
+        let metrics = build_metric_defs(&eval.params, self.eval_mode);
         let mut lines = Vec::with_capacity(metrics.len() + 1);
         let sweep = iou_sweep_label(&eval.params.iou_thrs);
 
@@ -260,9 +269,6 @@ impl COCOeval {
                 ));
             }
         }
-
-        self.stats = Some(stats);
-        self.advance_to(Stage::Summarized);
         lines
     }
 
@@ -560,7 +566,11 @@ impl COCOeval {
             provenance: report.provenance,
             reference_deviations: self.reference_deviations(),
             params: EvalParams::from_eval(self),
-            metrics: report.metrics.into_iter().collect(),
+            metrics: report
+                .metrics
+                .into_iter()
+                .map(|(k, v)| (k, crate::metrics::or_missing(v)))
+                .collect(),
             per_class: per_class_map,
         })
     }
@@ -613,8 +623,14 @@ impl COCOeval {
 
         let keys = self.metric_keys();
         let mut report = EvalReport::new("detection", provenance)
-            .with_metrics(keys.iter().copied().zip(stats.iter().copied()))
-            .with_params(serde_json::to_value(EvalParams::from_eval(self))?);
+            .with_metrics(
+                keys.iter()
+                    .copied()
+                    .zip(stats.iter().map(|&v| crate::metrics::computed(v))),
+            )
+            .with_params(serde_json::to_value(EvalParams::from_eval(self))?)
+            .with_deviations(self.reference_deviations())
+            .with_summary(self.summary_text(eval, stats));
 
         // Per-class AP. Categories with no valid precision anywhere report -1.0
         // and are omitted rather than recorded as a real score.
@@ -628,7 +644,7 @@ impl COCOeval {
         // to discover that a grouping exists.
         if self.eval_mode == EvalMode::Lvis {
             for (group, key) in [("rare", "APr"), ("common", "APc"), ("frequent", "APf")] {
-                if let Some(v) = report.metrics.get(key).copied() {
+                if let Some(v) = report.metric(key) {
                     report = report.with_group_metric(group, "AP", v);
                 }
             }

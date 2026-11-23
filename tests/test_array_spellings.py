@@ -371,7 +371,7 @@ TRACK_PRED = np.array(
 def tracked(gt, pred):
     ev = tracking.TrackingEval("MOT17")
     ev.update("seq-a", gt, pred, num_frames=4)
-    return ev.sequence_results()
+    return ev.compute().per_group
 
 
 def test_the_track_rows_read_every_column():
@@ -470,4 +470,4 @@ def test_a_numpy_scalar_option_reads_as_the_int(value):
 def test_a_numpy_scalar_frame_count_reads_as_the_int(value):
     ev = tracking.TrackingEval()
     ev.update("seq-a", [[1, 1, 0, 0, 5, 5]], [[1, 1, 0, 0, 5, 5]], num_frames=value)
-    assert ev.sequence_results()["seq-a"]["Frames"] == 1
+    assert ev.compute().per_group["seq-a"]["Frames"] == 1

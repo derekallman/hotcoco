@@ -591,7 +591,14 @@ impl PanopticEval {
             })
             .collect();
         let mut report = EvalReport::new("panoptic", self.provenance())
-            .with_metrics(METRIC_NAMES.iter().copied().zip(result.stats()))
+            .with_metrics(
+                METRIC_NAMES
+                    .iter()
+                    .copied()
+                    .zip(result.stats().into_iter().map(crate::metrics::computed)),
+            )
+            .with_deviations(self.reference_deviations())
+            .with_summary(self.summarize_lines())
             .with_params(serde_json::json!({
                 "n_images": result.n_images,
                 "n_categories": result.per_category.len(),

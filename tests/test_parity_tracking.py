@@ -10,8 +10,10 @@ checks the same numbers through the bindings and the two input paths they add:
 - `update_folders` on the MOTChallenge folder layout, written to a temp dir.
 
 Every field TrackEval reports, combined and per sequence, is held to exact
-equality: integers as ints, floats to the bit. The per-threshold fields are read
-from `curves()`, the rest from `results()` and `sequence_results()`.
+equality, floats to the bit. A `Report` holds every value as a float, counts
+included, and a float holds each of these counts exactly. The per-threshold
+fields are read from `compute().curves` and `sequence_curves()`, the rest from
+`compute().metrics` and `compute().per_group`.
 
     uv run pytest tests/test_parity_tracking.py -v
 """
@@ -49,16 +51,19 @@ def evaluator(case, sequences=None, rows=np.asarray):
     return ev
 
 
-# What every family's `results()` carries beside its numbers
-# (`tests/test_family_contract.py`); TrackEval has no such fields.
-INFO_KEYS = ("hotcoco_version", "provenance", "reference_deviations")
-
-
 def metrics(ev):
-    """``results()`` without the keys TrackEval does not report."""
-    results = ev.results()
-    assert tuple(results)[:3] == INFO_KEYS
-    return {k: v for k, v in results.items() if k not in INFO_KEYS}
+    """The combined run's values."""
+    return dict(ev.compute().metrics)
+
+
+def curves(ev):
+    """The combined run's per-threshold values, as lists."""
+    return {name: values.tolist() for name, values in ev.compute().curves.items()}
+
+
+def per_sequence(ev):
+    """Each sequence's values and ``Frames``, by name."""
+    return ev.compute().per_group
 
 
 def mismatches(at, scalars, curves, want):
@@ -72,11 +77,11 @@ def mismatches(at, scalars, curves, want):
             same = g is not None and len(g) == len(w) and all(a == b for a, b in zip(g, w))
         else:
             g = scalars.get(field)
-            # An int is an int and a float a float: `1 == 1.0`, so check the type too.
-            same = type(g) is type(w) and g == w
+            # A count is a float holding the int exactly, so `==` is exact here.
+            same = isinstance(g, float) and g == w
         if not same:
             found.append(f"{at} {field}: {g!r}, expected {w!r}")
-    ours = (set(scalars) | set(curves)) - {"alphas"}
+    ours = (set(scalars) | set(curves)) - {"alphas", "Frames"}
     found += [f"{at}: {field} is not a field TrackEval reports" for field in sorted(ours - set(want))]
     return found
 
@@ -84,47 +89,49 @@ def mismatches(at, scalars, curves, want):
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["name"])
 def test_matches_trackeval_on_every_field(case):
     ev = evaluator(case)
-    found = mismatches("combined", metrics(ev), ev.curves(), case["expected"]["combined"])
-    per_sequence = ev.sequence_results()
-    assert list(per_sequence) == list(case["expected"]["per_sequence"])
+    found = mismatches("combined", metrics(ev), curves(ev), case["expected"]["combined"])
+    rows = per_sequence(ev)
+    assert sorted(rows) == sorted(case["expected"]["per_sequence"])
     for seq, want in case["expected"]["per_sequence"].items():
-        found += mismatches(seq, per_sequence[seq], ev.curves(seq), want)
+        found += mismatches(seq, rows[seq], ev.sequence_curves(seq), want)
+        if "Frames" in want:
+            assert rows[seq]["Frames"] == want["Frames"], seq
     assert not found, "\n".join(found)
 
 
 def test_the_comparison_tells_a_wrong_number_apart():
-    """The gate is only as strong as its comparison: a float off by one ulp, an
-    int returned as a float, and a field TrackEval does not have must each show."""
+    """The gate is only as strong as its comparison: a float off by one ulp, a
+    count off by one, and a field TrackEval does not have must each show."""
     case = CASES[0]
     ev = evaluator(case)
     want = case["expected"]["combined"]
-    scalars, curves = metrics(ev), ev.curves()
-    assert mismatches("c", scalars, curves, want) == []
-    assert mismatches("c", {**scalars, "MOTA": np.nextafter(scalars["MOTA"], 2.0)}, curves, want)
-    assert mismatches("c", {**scalars, "IDSW": float(scalars["IDSW"])}, curves, want)
-    assert mismatches("c", {**scalars, "extra": 1.0}, curves, want)
-    bumped = {**curves, "HOTA": [*curves["HOTA"][:-1], np.nextafter(curves["HOTA"][-1], 2.0)]}
+    scalars, lines = metrics(ev), curves(ev)
+    assert mismatches("c", scalars, lines, want) == []
+    assert mismatches("c", {**scalars, "MOTA": np.nextafter(scalars["MOTA"], 2.0)}, lines, want)
+    assert mismatches("c", {**scalars, "IDSW": scalars["IDSW"] + 1}, lines, want)
+    assert mismatches("c", {**scalars, "extra": 1.0}, lines, want)
+    bumped = {**lines, "HOTA": [*lines["HOTA"][:-1], np.nextafter(lines["HOTA"][-1], 2.0)]}
     assert mismatches("c", scalars, bumped, want)
 
 
 def test_alphas_are_trackevals():
     ev = evaluator(CASES[0])
-    assert ev.curves()["alphas"] == FIXTURE["alphas"]
-    for seq in ev.sequence_results():
-        assert ev.curves(seq)["alphas"] == FIXTURE["alphas"]
+    assert curves(ev)["alphas"] == FIXTURE["alphas"]
+    for seq in per_sequence(ev):
+        assert ev.sequence_curves(seq)["alphas"] == FIXTURE["alphas"]
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["name"])
 def test_the_headline_is_the_mean_over_thresholds(case):
     """TrackEval's summary prints ``mean(HOTA)``, not ``sqrt(mean DetA * mean AssA)``."""
-    results = evaluator(case).results()
+    results = metrics(evaluator(case))
     for field in ("HOTA", "DetA", "AssA", "DetRe", "DetPr", "AssRe", "AssPr", "LocA", "OWTA"):
         assert results[field] == float(np.mean(case["expected"]["combined"][field])), field
 
 
 def test_lists_score_as_arrays_do():
     for case in CASES:
-        assert evaluator(case, rows=list).sequence_results() == evaluator(case).sequence_results(), case["name"]
+        assert per_sequence(evaluator(case, rows=list)) == per_sequence(evaluator(case)), case["name"]
 
 
 @pytest.mark.parametrize("case", ERROR_CASES, ids=lambda c: c["name"])
@@ -172,9 +179,7 @@ def test_folders_score_as_the_arrays_do(tmp_path, name):
     ev = TrackingEval(case["benchmark"])
     assert ev.update_folders(gt_root, pred_root) == len(case["sequences"])
     arrays = evaluator(case)
-    assert ev.sequence_results() == arrays.sequence_results()
-    assert ev.results() == arrays.results()
-    assert ev.curves() == arrays.curves()
+    assert ev.compute().to_dict() == arrays.compute().to_dict()
 
 
 def test_a_seqmap_picks_the_sequences(tmp_path):
@@ -185,11 +190,11 @@ def test_a_seqmap_picks_the_sequences(tmp_path):
     seqmap.write_text(f"name\n{first['name']}\n")
     ev = TrackingEval(case["benchmark"])
     assert ev.update_folders(str(gt_root), str(pred_root), seqmap=str(seqmap)) == 1
-    assert ev.sequence_results() == evaluator(case, [first]).sequence_results()
+    assert per_sequence(ev) == per_sequence(evaluator(case, [first]))
     # The sequence is now evaluated, so adding the whole benchmark is refused, and nothing is added.
     with pytest.raises(ValueError, match=first["name"]):
         ev.update_folders(gt_root, pred_root)
-    assert list(ev.sequence_results()) == [first["name"]]
+    assert list(per_sequence(ev)) == [first["name"]]
 
 
 def test_a_missing_folder_or_file_is_file_not_found_naming_it(tmp_path):
@@ -218,10 +223,7 @@ def test_shards_merge_to_the_whole():
     merged = shards[-1]
     for shard in shards[:-1]:
         merged.merge(shard)
-    assert merged.sequence_results() == whole.sequence_results()
-    assert merged.results() == whole.results()
-    assert merged.curves() == whole.curves()
-    assert merged.report() == whole.report()
+    assert merged.compute().to_dict() == whole.compute().to_dict()
 
 
 def test_merge_refuses_another_configuration_a_shared_sequence_or_itself():
@@ -238,7 +240,7 @@ def test_merge_refuses_another_configuration_a_shared_sequence_or_itself():
         ev.merge(evaluator(case, [one]))
     with pytest.raises(ValueError, match="itself"):
         ev.merge(ev)
-    assert list(ev.sequence_results()) == [one["name"]], "nothing added on an error"
+    assert list(per_sequence(ev)) == [one["name"]], "nothing added on an error"
 
 
 def test_an_evaluator_pickles_and_copies():
@@ -248,35 +250,24 @@ def test_an_evaluator_pickles_and_copies():
         ev.update(s["name"], np.asarray(s["gt"]), np.asarray(s["pred"]), num_frames=s["num_frames"])
     for back in (pickle.loads(pickle.dumps(ev)), copy.deepcopy(ev), copy.copy(ev)):
         assert (back.benchmark, back.clear_threshold, back.identity_threshold) == ("MOT20", 0.4, 0.6)
-        assert back.sequence_results() == ev.sequence_results()
-        assert back.results() == ev.results() and back.stats == ev.stats
+        assert back.compute().to_dict() == ev.compute().to_dict()
     empty = pickle.loads(pickle.dumps(TrackingEval("mot15")))
     assert empty.benchmark == "MOT15"
     with pytest.raises(RuntimeError, match="update"):
-        empty.sequence_results()
+        empty.compute()
 
 
 def test_reading_results_before_any_update_is_a_runtime_error():
     ev = TrackingEval()
-    for call in (
-        ev.results,
-        lambda: ev.stats,
-        ev.curves,
-        lambda: ev.curves("seq-a"),
-        ev.report,
-        ev.summarize,
-        ev.summary_lines,
-        ev.sequence_results,
-    ):
+    for call in (ev.compute, lambda: ev.sequence_curves("seq-a")):
         with pytest.raises(RuntimeError, match="update"):
             call()
-    assert ev.reference_deviations() == [] and ev.provenance() == "parity_verified"
 
 
 def test_an_unknown_sequence_is_a_key_error():
     ev = evaluator(case_named("multi_sequence"))
     with pytest.raises(KeyError, match="seq-z"):
-        ev.curves("seq-z")
+        ev.sequence_curves("seq-z")
 
 
 # --- the report and the printed tables ---------------------------------------------
@@ -284,20 +275,17 @@ def test_an_unknown_sequence_is_a_key_error():
 
 def test_report_contract():
     case = case_named("multi_sequence")
-    ev = evaluator(case)
-    report = ev.report()
-    assert report["task"] == "tracking"
-    assert report["provenance"] == "parity_verified"
+    report = evaluator(case).compute()
+    assert report.task == "tracking"
+    assert report.provenance == "parity_verified" and report.deviations == []
     assert len(tracking.METRIC_NAMES) == 44 and tracking.METRIC_NAMES[:3] == ["HOTA", "DetA", "AssA"]
-    assert list(metrics(ev)) == tracking.METRIC_NAMES
-    assert report["metrics"] == {k: float(v) for k, v in metrics(ev).items()}
-    assert ev.stats == [float(v) for v in metrics(ev).values()]
-    assert report["per_class"] == {}
-    assert report["per_group"] == {
-        seq: {k: float(v) for k, v in r.items() if k != "Frames"} for seq, r in ev.sequence_results().items()
-    }
-    assert report["curves"] == ev.curves()
-    assert report["params"] == {
+    assert sorted(report.metrics) == sorted(tracking.METRIC_NAMES)
+    assert report.per_class == {}
+    assert sorted(report.per_group) == sorted(s["name"] for s in case["sequences"])
+    for row in report.per_group.values():
+        assert sorted(row) == sorted([*tracking.METRIC_NAMES, "Frames"])
+    assert {"alphas", "HOTA", "DetA", "AssA", "LocA"} <= set(report.curves)
+    assert report.params == {
         "benchmark": "MOT17",
         "clear_threshold": 0.5,
         "identity_threshold": 0.5,
@@ -308,14 +296,14 @@ def test_report_contract():
 
 def test_summary_tables(capsys):
     case = case_named("multi_sequence")
-    ev = evaluator(case)
-    lines = ev.summary_lines()
+    report = evaluator(case).compute()
+    lines = str(report).splitlines()
     for table in ("HOTA", "CLEAR", "Identity", "Count"):
         assert any(line.split()[0] == table for line in lines if line), table
     for s in case["sequences"]:
         assert any(line.startswith(s["name"]) for line in lines), s["name"]
     assert sum(line.startswith("COMBINED") for line in lines) == 4
-    ev.summarize()
+    print(report)
     assert capsys.readouterr().out.splitlines() == lines
 
 
@@ -346,6 +334,6 @@ def test_a_one_prediction_frame_matches_trackeval():
     ]
     ev = TrackingEval(None)
     ev.update("s", gt, pred, num_frames=2)
-    results = ev.results()
+    results = metrics(ev)
     assert results["HOTA"] == float.fromhex("0x1.86ac6941a781fp-2")
     assert results["AssA"] == float.fromhex("0x1.ca1af286bca1bp-1")

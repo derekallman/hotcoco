@@ -70,7 +70,12 @@ pub struct EvalReport {
     pub provenance: Provenance,
     /// Headline metrics such as `AP`, `AP50`, `ARl`. `BTreeMap` so serialization
     /// is key-ordered and therefore diffable.
-    pub metrics: BTreeMap<String, f64>,
+    ///
+    /// `None` is "not computed for this configuration": an area range with no
+    /// ground truth, an empty panoptic split. The family decides where its
+    /// numbers are made, with [`crate::metrics::computed`] for the families that
+    /// use the `-1.0` sentinel; a value is never `None` because it is negative.
+    pub metrics: BTreeMap<String, Option<f64>>,
     /// Per-class breakdown: class name -> metric name -> value.
     ///
     /// Nested rather than flat `"AP/person"` because families report more than
@@ -80,7 +85,9 @@ pub struct EvalReport {
     /// Per-group breakdown, for whatever grouping the family defines — LVIS
     /// frequency buckets, dataset slices, area ranges.
     pub per_group: BTreeMap<String, BTreeMap<String, f64>>,
-    /// Renderable curves. See the module docs for what belongs here.
+    /// Renderable curves. See the module docs for what belongs here. Every
+    /// point is non-negative or the `-1.0` sentinel for "not computed", which
+    /// serializes as `null`.
     ///
     /// # X-axis convention
     ///
@@ -96,10 +103,23 @@ pub struct EvalReport {
     /// ([`crate::metrics::is_computed`]). Families adding sampled curves
     /// should follow the same pattern: attach the axis as its own named curve
     /// rather than assuming a renderer knows the grid.
+    #[serde(with = "curve_points")]
     pub curves: BTreeMap<String, Vec<f64>>,
     /// The evaluation parameters, as the producer chose to describe them.
     /// Opaque `Value` because each family's parameters differ.
     pub params: serde_json::Value,
+    /// Why the run is not comparable to the reference: the family's
+    /// `reference_deviations()`. Empty when `provenance` is
+    /// [`Provenance::ParityVerified`].
+    #[serde(default)]
+    pub deviations: Vec<String>,
+    /// The family's printed table, one line each: what `summarize()` prints.
+    /// Kept as text so a saved report prints the table it was produced with.
+    #[serde(default)]
+    pub summary: Vec<String>,
+    /// The hotcoco version that produced the report.
+    #[serde(default)]
+    pub hotcoco_version: String,
 }
 
 impl EvalReport {
@@ -116,6 +136,9 @@ impl EvalReport {
             per_group: BTreeMap::new(),
             curves: BTreeMap::new(),
             params: serde_json::Value::Null,
+            deviations: Vec::new(),
+            summary: Vec::new(),
+            hotcoco_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 
@@ -128,18 +151,33 @@ impl EvalReport {
         Self::new(task, Provenance::UserComposed)
     }
 
-    /// Add headline metrics.
+    /// Add headline metrics: a plain `f64` is computed, an `Option<f64>`
+    /// carries "not computed" as `None`.
     ///
     /// **Extends** the map rather than replacing it, like every other `with_*`
     /// builder here, so chaining two calls keeps both sets. A repeated key takes
     /// the later value, the usual map-insert rule.
     #[must_use]
-    pub fn with_metrics<K: Into<String>>(
+    pub fn with_metrics<K: Into<String>, V: Into<Option<f64>>>(
         mut self,
-        metrics: impl IntoIterator<Item = (K, f64)>,
+        metrics: impl IntoIterator<Item = (K, V)>,
     ) -> Self {
         self.metrics
-            .extend(metrics.into_iter().map(|(k, v)| (k.into(), v)));
+            .extend(metrics.into_iter().map(|(k, v)| (k.into(), v.into())));
+        self
+    }
+
+    /// Record why the run is not comparable to the reference.
+    #[must_use]
+    pub fn with_deviations(mut self, deviations: Vec<String>) -> Self {
+        self.deviations = deviations;
+        self
+    }
+
+    /// Record the family's printed table.
+    #[must_use]
+    pub fn with_summary(mut self, lines: Vec<String>) -> Self {
+        self.summary = lines;
         self
     }
 
@@ -187,14 +225,101 @@ impl EvalReport {
         self
     }
 
-    /// Look up a headline metric.
+    /// Look up a headline metric: `None` when it is absent or not computed.
     pub fn metric(&self, name: &str) -> Option<f64> {
-        self.metrics.get(name).copied()
+        self.metrics.get(name).copied().flatten()
+    }
+
+    /// The report in the shape `report()` returned before 1.5: the seven
+    /// fields, with a metric that was not computed as the `-1.0` sentinel. The
+    /// families' `report()` keep returning it until they are retired.
+    ///
+    /// # Errors
+    ///
+    /// If `params` cannot be serialized, which a family's params never fail.
+    pub fn legacy_value(&self) -> crate::error::Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Legacy<'a> {
+            task: &'a str,
+            provenance: Provenance,
+            metrics: BTreeMap<&'a str, f64>,
+            per_class: &'a BTreeMap<String, BTreeMap<String, f64>>,
+            per_group: &'a BTreeMap<String, BTreeMap<String, f64>>,
+            curves: &'a BTreeMap<String, Vec<f64>>,
+            params: &'a serde_json::Value,
+        }
+        Ok(serde_json::to_value(Legacy {
+            task: &self.task,
+            provenance: self.provenance,
+            metrics: self
+                .metrics
+                .iter()
+                .map(|(k, &v)| (k.as_str(), crate::metrics::or_missing(v)))
+                .collect(),
+            per_class: &self.per_class,
+            per_group: &self.per_group,
+            curves: &self.curves,
+            params: &self.params,
+        })?)
     }
 
     /// Serialize to pretty-printed JSON.
     pub fn to_json(&self) -> crate::error::Result<String> {
         Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Write the report to `path` as JSON, the file [`load`](Self::load) reads.
+    ///
+    /// # Errors
+    ///
+    /// [`save_json`]'s.
+    pub fn save(&self, path: &std::path::Path) -> crate::error::Result<()> {
+        save_json(self, path)
+    }
+
+    /// Read a report [`save`](Self::save) wrote. Its provenance is the one
+    /// recorded: a loaded report renders as claimed.
+    ///
+    /// # Errors
+    ///
+    /// An [`Error::Io`](crate::error::Error::Io) naming the path, or an
+    /// [`Error::Json`](crate::error::Error::Json) for a file that is not a report.
+    pub fn load(path: &std::path::Path) -> crate::error::Result<Self> {
+        let text = std::fs::read_to_string(path).map_err(|e| {
+            crate::error::Error::io(e, format_args!("cannot read {}", path.display()))
+        })?;
+        Ok(serde_json::from_str(&text)?)
+    }
+}
+
+/// `curves` in JSON: a point that was not computed is `null`, as a metric is,
+/// and reads back as the `-1.0` sentinel.
+mod curve_points {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::metrics::{computed, or_missing};
+
+    pub(super) fn serialize<S: Serializer>(
+        curves: &BTreeMap<String, Vec<f64>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let points: BTreeMap<&str, Vec<Option<f64>>> = curves
+            .iter()
+            .map(|(name, values)| (name.as_str(), values.iter().map(|&v| computed(v)).collect()))
+            .collect();
+        points.serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<String, Vec<f64>>, D::Error> {
+        let points = BTreeMap::<String, Vec<Option<f64>>>::deserialize(deserializer)?;
+        Ok(points
+            .into_iter()
+            .map(|(name, values)| (name, values.into_iter().map(or_missing).collect()))
+            .collect())
     }
 }
 

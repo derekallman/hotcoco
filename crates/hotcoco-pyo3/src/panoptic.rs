@@ -15,6 +15,7 @@ use crate::convert::{
     py_to_dataset, py_to_panoptic_dataset, record_list, set_segment_matches, type_name,
     with_context,
 };
+use crate::report::PyReport;
 use crate::{
     PyCOCO, ReferenceDeviationWarning, print_lines, provenance_str, serde_to_py, to_pyerr, warn,
 };
@@ -170,6 +171,18 @@ before ``evaluate()``."]
         print_lines(py, &self.inner.summarize_lines())
     }
 
+    #[doc = "The run as a ``Report``, evaluating first if ``evaluate()`` has not run:
+the nine PQ/SQ/RQ values in ``metrics`` (``None`` for an empty things or stuff
+split), PQ, SQ, and RQ per category in ``per_class``, the splits in
+``per_group``, and panopticapi's table as ``print(report)``. Each of the
+report's ``deviations`` is emitted first as a ``ReferenceDeviationWarning``."]
+    fn compute(&mut self, py: Python<'_>) -> PyResult<PyReport> {
+        if self.inner.result().is_none() {
+            self.evaluate(py)?;
+        }
+        PyReport::computed(py, &self.inner.report().map_err(to_pyerr)?)
+    }
+
     #[doc = "The summary table as a list of strings, without printing it. Raises
 ``RuntimeError`` before ``evaluate()``."]
     fn summary_lines(&self) -> PyResult<Vec<String>> {
@@ -254,7 +267,7 @@ name for evaluable categories, and IoU, Acc, and Dice where computed), ``per_gro
     fn report(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.check_evaluated("report()")?;
         let report = self.inner.report().map_err(to_pyerr)?;
-        serde_to_py(py, &report)
+        serde_to_py(py, &report.legacy_value().map_err(to_pyerr)?)
     }
 
     #[doc = "Ways this run departs from what panopticapi would compute. Empty means

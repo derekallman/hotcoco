@@ -70,7 +70,8 @@ pred = np.array([
 
 ev = TrackingEval()                       # no benchmark: every row is evaluated as given
 ev.update("walk-01", gt, pred, num_frames=4)
-ev.summarize()
+report = ev.compute()
+print(report)
 ```
 
 ```
@@ -136,7 +137,7 @@ ev.update_folders(
     "data/gt/mot_challenge/MOT17-train",
     "data/trackers/mot_challenge/MOT17-train/MyTracker/data",
 )
-ev.summarize()
+print(ev.compute())
 ```
 
 Each folder in the ground-truth directory is a sequence, and its frame count
@@ -169,8 +170,8 @@ with two differences on input TrackEval refuses: ground truth may have 6
 columns, and a prediction class above 1 is not an error. TrackEval with its
 clean-up off still drops ground truth whose `conf` is 0; `None` evaluates
 those rows, so drop them first to compare with that setting. A run that kept
-one says so: `reference_deviations()` has an entry, `summarize()` warns, and
-the report's provenance is `"extension"`.
+one says so: the report's `deviations` has an entry, `compute()` warns, and
+its provenance is `"extension"`.
 
 Under every setting, predictions may have 6 columns, where TrackEval needs 7,
 and malformed rows raise `ValueError`, naming the sequence, where TrackEval
@@ -182,25 +183,25 @@ ordinary box, and TrackEval raises only on the NaN IoU two of them make. A frame
 `1..num_frames` and the same track id twice in one frame are `ValueError`s
 too, as they are errors in TrackEval.
 
-## Results and the report
+## The report
 
 ```python
-r = ev.results()                    # the combined run: {"HOTA": 0.5257, "MOTA": 0.5714, "IDF1": 0.6154, "IDSW": 2, ...}
-ev.sequence_results()["walk-01"]    # the same 44 fields for one sequence, plus "Frames"
-ev.curves()                         # {"alphas": [0.05, ..., 0.95], "HOTA": [...], "DetA": [...], ...}
-ev.curves("walk-01")                # one sequence's curves
-ev.stats                            # the 44 values of results(), in tracking.METRIC_NAMES order
-ev.report()                         # metrics, per_group (one entry per sequence), curves, provenance
+report = ev.compute()
+report.metrics                      # the combined run: {"HOTA": 0.5257, "MOTA": 0.5714, "IDF1": 0.6154, "IDSW": 2.0, ...}
+report.per_group["walk-01"]         # the same 44 fields for one sequence, plus "Frames"
+report.curves                       # {"alphas": array([0.05, ..., 0.95]), "HOTA": array([...]), ...}
+ev.sequence_curves("walk-01")       # one sequence's curves
+report.provenance                   # "parity_verified"
 ```
 
-`results()` is TrackEval's `COMBINED_SEQ` row under TrackEval's field names,
-after the three keys every family's `results()` starts with
-(`hotcoco_version`, `provenance`, `reference_deviations`): counts summed over sequences,
-and scores combined as TrackEval combines them — recomputed from the summed
-counts, with `AssA`, `AssRe`, `AssPr`, and `LocA` weighted by each sequence's
-true positives. The HOTA family is the mean over the 19 thresholds, as
-TrackEval's summary prints it; `curves()` has the value at each threshold.
-Scores are fractions and counts are ints.
+`compute()` returns a [`Report`](../api/report.md), the result every family
+returns. Its `metrics` are TrackEval's `COMBINED_SEQ` row under TrackEval's
+field names: counts summed over sequences, and scores combined as TrackEval
+combines them — recomputed from the summed counts, with `AssA`, `AssRe`,
+`AssPr`, and `LocA` weighted by each sequence's true positives. The HOTA family
+is the mean over the 19 thresholds, as TrackEval's summary prints it; `curves`
+has the value at each threshold. Scores are fractions, and every value is a
+float, counts included.
 
 A sequence with no ground truth, or no predictions, left after clean-up gets
 TrackEval's early-return row: every CLEAR score is 0, `MLR` is 1, `CLR_Frames`
@@ -218,7 +219,7 @@ a, b = TrackingEval("MOT17"), TrackingEval("MOT17")
 a.update_folders(gt_root, pred_root, seqmap="half-a.txt")      # on one machine
 b.update_folders(gt_root, pred_root, seqmap="half-b.txt")      # on another, pickled back
 a.merge(b)                          # ValueError on a different benchmark or threshold, or a shared sequence
-a.results()
+a.compute()
 ```
 
 ## What is not covered yet

@@ -11,9 +11,9 @@ defaulting to the JSON path without ``.json`` as panopticapi assumes::
     from hotcoco import panoptic
 
     ev = panoptic.PanopticEval("panoptic_val2017.json", "predictions.json")
-    ev.run()                        # prints the panopticapi table
-    ev.results()["All"]["pq"]       # 0.0 to 1.0
-    ev.report()                     # metrics, per_class, per_group, provenance
+    report = ev.compute()
+    print(report)                   # the panopticapi table
+    report.metrics["PQ"]            # 0.0 to 1.0
 
 Or, with no PNG files at all, from detection-style datasets whose annotations
 carry RLE or polygon masks, one annotation per segment::

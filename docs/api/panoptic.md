@@ -55,6 +55,7 @@ signatures and return shapes.
 | Method | Returns | Description |
 |--------|---------|-------------|
 | `evaluate()` | `None` | Score every ground-truth image against its prediction, in parallel. Raises `ValueError` on the inputs panopticapi rejects |
+| `compute()` | `Report` | The run as a [`Report`](report.md), evaluating first if `evaluate()` has not run: the nine headline values in `metrics`, `None` for an empty things or stuff split; PQ, SQ, and RQ per category; the splits in `per_group`; panopticapi's table as `print(report)` |
 | `summarize()` | `None` | Print the table — PQ, SQ, RQ, N for All, Things, Stuff — in percent |
 | `summary_lines()` | `list[str]` | The same table as strings, without printing |
 | `run()` | `None` | `evaluate()` then `summarize()` |
@@ -66,7 +67,10 @@ signatures and return shapes.
 | `provenance()` | `str` | `"parity_verified"` or `"extension"` |
 
 `stats`, `eval_imgs`, `summarize()`, `summary_lines()`, `results()`, and
-`report()` raise `RuntimeError` before `evaluate()`.
+`report()` raise `RuntimeError` before `evaluate()`. `compute()` replaces the
+readers among them: `summarize()`, `summary_lines()`, `stats`, `report()`,
+`reference_deviations()`, and `provenance()` keep working through 1.5 and warn
+from 1.6.
 
 In Rust the same names return `Result` where Python raises on bad input;
 before `run()`, `results()` and `report()` are `Error::InvalidState`, and

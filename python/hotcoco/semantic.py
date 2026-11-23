@@ -17,8 +17,9 @@ maps. Each call takes a ground-truth map and a prediction of the same shape,
     ev = semantic.SemanticEval(19)                  # Cityscapes train ids; 255 is ignored
     for gt, logits in loader:
         ev.update(gt.numpy(), logits.argmax(1).numpy())
-    ev.summarize()                                  # per-class IoU, Acc, Dice, BIoU, then the means
-    ev.report()["metrics"]["mIoU"]
+    report = ev.compute()
+    print(report)                                   # per-class IoU, Acc, Dice, BIoU, then the means
+    report.metrics["mIoU"]
 
 Or from saved predictions — PNG files named like the ground truth's, with the
 class id as the pixel value or the palette index::

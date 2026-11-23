@@ -316,7 +316,7 @@ impl BoundaryScores {
         mut report: EvalReport,
         class_names: impl IntoIterator<Item = S>,
     ) -> EvalReport {
-        report = report.with_metrics([("mBIoU", self.mbiou)]);
+        report = report.with_metrics([("mBIoU", crate::metrics::computed(self.mbiou))]);
         for (name, biou) in class_names.into_iter().zip(&self.per_class) {
             if is_computed(*biou) {
                 report = report.with_class_metric(name, "BIoU", *biou);

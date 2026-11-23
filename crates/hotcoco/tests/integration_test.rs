@@ -5214,8 +5214,8 @@ fn test_report_and_results_agree_on_metrics() {
     assert_eq!(report.metrics.len(), results.metrics.len());
     for (key, value) in &results.metrics {
         assert_eq!(
-            report.metric(key),
-            Some(*value),
+            hotcoco::metrics::or_missing(report.metrics[key]),
+            *value,
             "metric {key} differs between report() and results()"
         );
     }
@@ -6563,7 +6563,7 @@ fn per_class_metrics_follow_max_det_not_the_last_slot() {
             .collect();
         let f1 = ev.f_scores(1.0).get("F1").copied().unwrap();
         let curve = report.curves["pr@0.50"].clone();
-        (report.metrics["AP"], per_class, f1, curve)
+        (report.metric("AP").unwrap(), per_class, f1, curve)
     };
 
     let (ap_sorted, per_class_sorted, f1_sorted, curve_sorted) = run(vec![1, 10, 100]);

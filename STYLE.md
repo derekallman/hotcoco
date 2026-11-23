@@ -53,6 +53,8 @@ restating it. Before writing a paragraph, check whether its owner already exists
 | Warning categories (`HotcocoWarning` and its subclasses) | `docs/guide/results.md` (Filtering the warnings) | name the category and link |
 | camelCase alias table | `docs/getting-started/migration.md` | one note at the top of an API page, never per-method admonitions |
 | `init_as_pycocotools()` usage | `docs/guide/frameworks.md` | a code snippet is fine in README and quickstart; explanation links |
+| API tiers, deprecation timing, what a minor release may change | `docs/getting-started/stability.md` | link |
+| `Report` attributes and methods | `docs/api/report.md` | each family's API page lists what its `compute()` fills, and links |
 | RLE `counts` bytes-to-str gotcha | `docs/guide/masks.md` | link |
 | LVIS metric key set | `docs/guide/lvis-open-images.md` | link |
 | Repo-checkout workflows (`just download-coco`, build from source, parity scripts) | `CONTRIBUTING.md` and the benchmarks "Reproducing" section | user-facing pages never include them |
