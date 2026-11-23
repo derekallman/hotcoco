@@ -43,15 +43,15 @@ use super::{COCOeval, EvalMode};
 ///
 /// # What the finalized evaluator supports
 ///
-/// `accumulate()`, `summarize()`, `report()`, `results()`, `slice_by()`, and
-/// [`compare`](super::compare) read the lean cells, `params`, and category
-/// names, and work as they do on a batch evaluator.
+/// `accumulate()`, `summarize()`, `report()`, `results()`, `f_scores()`,
+/// `slice_by()`, and [`compare`](super::compare) read the lean cells,
+/// `params`, and category names, and work as they do on a batch evaluator.
 ///
-/// [`COCOeval::eval_imgs`] is empty, and `confusion_matrix()`,
-/// `tide_errors()`, `calibration()`, `f_scores()`, and `image_diagnostics()`
-/// see no cells: they need the full per-image records, which are rebuilt from
-/// the datasets, and a streamed evaluator has none. Build a batch [`COCOeval`]
-/// for those.
+/// [`COCOeval::eval_imgs`] and [`COCOeval::iou_matrices`] are empty, and
+/// `confusion_matrix()`, `tide_errors()`, `calibration()`, and
+/// `image_diagnostics()` return [`Error::InvalidState`](crate::Error::InvalidState):
+/// they read the datasets, which a streamed evaluator does not keep. Build a
+/// batch [`COCOeval`] for those.
 ///
 /// # Restrictions
 ///

@@ -1142,12 +1142,11 @@ Assemble every image seen so far into a `COCOeval`. Consumes the
 The returned evaluator holds the per-cell match results and the category list,
 not the annotations, which is what keeps `finalize()` cheap. It supports
 `accumulate()`, `summarize()`, `report()`, `results()`, `get_results()`,
-`f_scores()`, `slice_by()`, and `compare()`. Its `eval_imgs` is empty. The
-methods that read the datasets raise `RuntimeError`: `evaluate()` and `run()`,
-which would otherwise replace the streamed run with an evaluation of nothing,
-and `tide_errors()`, `calibration()`, and `image_diagnostics()`.
-`confusion_matrix()` returns an empty matrix. Build a batch `COCOeval` for
-those.
+`f_scores()`, `slice_by()`, and `compare()`. Its `eval_imgs` and `ious` are
+empty. The methods that read the datasets raise `RuntimeError`: `evaluate()`
+and `run()`, which would otherwise replace the streamed run with an evaluation
+of nothing, and `tide_errors()`, `calibration()`, `image_diagnostics()`, and
+`confusion_matrix()`. Build a batch `COCOeval` for those.
 
 ---
 

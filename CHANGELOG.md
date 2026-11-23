@@ -147,6 +147,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   see [Known differences](https://derekallman.github.io/hotcoco/getting-started/migration/#known-differences).
 - **`hotcoco.__all__` lists `panoptic`, `semantic`, and `tracking`**, and the package
   and its family modules no longer expose `annotations`, the `__future__` feature.
+- **On the evaluator `StreamingEval.finalize()` returns, `confusion_matrix()` raises
+  `RuntimeError`**, as `tide_errors()` does: it returned an all-zero matrix. Its
+  `ious` is `{}`, where it had a key per cell holding nothing, which read as "no
+  overlaps". See [`finalize`](https://derekallman.github.io/hotcoco/api/cocoeval/#finalize).
 
 - **A process forked after hotcoco started its thread pool runs on one thread** instead
   of hanging: it inherits the pool but none of its threads. A Linux PyTorch `DataLoader`

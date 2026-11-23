@@ -98,9 +98,16 @@ class TestStreamingMatchesBatch:
         assert streamed.get_results(per_class=True) == batch.get_results(per_class=True)
         assert streamed.eval["precision"].tolist() == batch.eval["precision"].tolist()
         assert streamed.eval["scores"].tolist() == batch.eval["scores"].tolist()
+        assert streamed.f_scores() == batch.f_scores()
         # The lean cells are enough for stats; the full per-image records
         # would need the datasets, which a StreamingEval does not keep.
         assert streamed.eval_imgs == [] == streamed.evalImgs
+        # No IoUs either: an empty dict, not a key per cell holding nothing.
+        assert streamed.ious == {}
+        # An analysis that reads the datasets refuses, as TIDE does; the
+        # confusion matrix returned zeros.
+        with pytest.raises(RuntimeError, match="StreamingEval"):
+            streamed.confusion_matrix()
 
     def test_lvis_federated_categories_equal_batch(self):
         cats = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]

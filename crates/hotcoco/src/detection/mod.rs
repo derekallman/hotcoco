@@ -842,7 +842,8 @@ impl COCOeval {
     /// (pycocotools' `maxDets[-1]`; the same on a sorted list); columns are its
     /// ground truths in annotation order. With `use_cats` off there is one
     /// pooled cell per image, keyed by [`POOLED_CAT`]. Empty before
-    /// `evaluate()`, and fixed at that call as pycocotools' attribute is: it
+    /// `evaluate()` and on the evaluator [`StreamingEval::finalize`] returns,
+    /// which keeps no IoUs, and fixed at that call as pycocotools' attribute is: it
     /// reads the params that run resolved, so caps or category settings edited
     /// afterwards for `accumulate()` do not move it. Built from the driver's
     /// cache on every call.
@@ -854,6 +855,12 @@ impl COCOeval {
         let Some(params) = self.eval_inputs.as_ref().map(|inputs| &inputs.params) else {
             return Vec::new();
         };
+        // A key per cell with no matrix in it would read as "nothing
+        // overlapped", where the truth is "nothing was kept", as in
+        // `eval_imgs_grid`.
+        if self.streamed {
+            return Vec::new();
+        }
         let img_ids = sorted_unique(params.img_ids.clone());
         let cat_ids = if params.use_cats {
             sorted_unique(params.cat_ids.clone())

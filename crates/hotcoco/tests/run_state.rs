@@ -544,9 +544,15 @@ fn a_finalized_stream_cannot_be_evaluated_again() {
         invalid_state(ev.tide_errors(0.5, 0.1)),
         invalid_state(ev.calibration(10, 0.5)),
         invalid_state(ev.image_diagnostics(0.5, 0.5)),
+        invalid_state(ev.confusion_matrix(0.5, None, None)),
     ] {
         assert!(msg.contains("StreamingEval"), "{msg}");
     }
+    // No IoUs are kept: empty, as before `evaluate()`, not a key per cell
+    // with nothing in it, which reads as "no overlaps".
+    assert!(ev.iou_matrices().is_empty());
+    // `f_scores` reads the accumulation, which the stream has.
+    assert!(!ev.f_scores(1.0).is_empty());
     assert_eq!(ap(&ev), streamed, "the streamed run is still the run");
 }
 

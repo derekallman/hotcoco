@@ -235,13 +235,18 @@ impl COCOeval {
     ///
     /// [`COCO::check_scores`](crate::COCO::check_scores)'s, the check `evaluate()`
     /// runs first: detections are ranked by score here too, so one with no score
-    /// or a NaN one is refused rather than ranked as 0.
+    /// or a NaN one is refused rather than ranked as 0. An
+    /// [`Error::InvalidState`](crate::Error::InvalidState) on the evaluator
+    /// [`StreamingEval::finalize`](crate::StreamingEval::finalize) returns: the
+    /// matching here reads the datasets, which it does not keep, as
+    /// [`tide_errors`](Self::tide_errors) does.
     pub fn confusion_matrix(
         &self,
         iou_thr: f64,
         max_det: Option<usize>,
         min_score: Option<f64>,
     ) -> crate::error::Result<ConfusionMatrix> {
+        self.needs_datasets("confusion_matrix()")?;
         // Columns were checked by `load_res`, as in `check_inputs`.
         if !self.dt.is_columns() {
             self.unexpanded_dt
