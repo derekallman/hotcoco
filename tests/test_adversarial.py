@@ -24,6 +24,10 @@ import pytest
 from adversarial_harness import compare_eval_imgs, load_fixture, run_hotcoco, run_pycocotools
 from helpers import FIXTURES_DIR, compare_metrics, suppress_output, written_json
 
+# The adversarial fixtures feed what the loader tolerates and warns about,
+# such as an unknown category; this file compares decisions with pycocotools.
+pytestmark = pytest.mark.filterwarnings("ignore::hotcoco.DatasetWarning")
+
 CORPUS = FIXTURES_DIR / "adversarial"
 
 # Level-1 metric tolerance per iou_type. These are the *harness's* documented

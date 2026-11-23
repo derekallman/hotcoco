@@ -38,6 +38,10 @@ from gen_oid_fixtures import MIN_DISCRIMINATING
 from helpers import FIXTURES_DIR, suppress_output
 from hotcoco import COCO, COCOeval
 
+# Every Open Images run warns that the Challenge's image-level-label rule is
+# unimplemented. The numbers are what this file checks.
+pytestmark = pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")
+
 FIXTURES = FIXTURES_DIR / "oid_tf_expected.json"
 TOL = 1e-9
 

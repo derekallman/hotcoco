@@ -31,10 +31,16 @@ GT = {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 20, 20], "area"
 DT = {"image_id": 1, "category_id": 1, "bbox": [10, 10, 20, 20], "score": 0.9}
 MISSING = object()
 
+# Bad input is this file's subject, and the loader warns about much of what it
+# tolerates: an unknown id, a non-finite token. What each case checks is the
+# exception, so those warnings are expected here.
+pytestmark = pytest.mark.filterwarnings("ignore::hotcoco.DatasetWarning")
+
 # Why a path is left out of a row: the row's value is accepted there for a
 # reason that is not the bug this file guards against.
 NAN_TOKEN = "a file's NaN token reads as null, which a list of numbers cannot hold"
 STREAMING_CATS = "StreamingEval is built with its categories, so an unknown one is a KeyError"
+INF_TOKEN = "a file's Infinity token reads as null, which is a missing score; pycocotools reads it as inf"
 
 
 def with_field(record, field, value):
@@ -243,13 +249,13 @@ DT_CASES = [
         {"streaming list": STREAMING_CATS, "streaming array": STREAMING_CATS},
     ),
     ("score=NaN", "score", math.nan, "reject", {}),
-    ("score=inf", "score", math.inf, "accept", {}),
+    ("score=inf", "score", math.inf, "accept", {"json": INF_TOKEN}),
     ("score=-1", "score", -1, "accept", {}),
     ("score='0.9'", "score", "0.9", "reject", {}),
     ("score='NaN'", "score", "NaN", "reject", {}),
     ("score=True", "score", True, "reject", {}),
-    ("score None", "score", None, "accept", {}),
-    ("score missing", "score", MISSING, "accept", {}),
+    ("score None", "score", None, "reject", {}),
+    ("score missing", "score", MISSING, "reject", {}),
     ("bbox of 3", "bbox", [10, 10, 20], "reject", {}),
     ("bbox holding a str", "bbox", ["a", 10, 20, 20], "reject", {}),
     ("bbox holding a bool", "bbox", [True, 10, 20, 20], "reject", {}),
@@ -1025,3 +1031,14 @@ def test_the_tracking_error_raised_is_the_first_failing_sequences(tmp_path):
         raised.add((type(caught.value), str(caught.value)))
     ((kind, message),) = raised
     assert kind is FileNotFoundError and "seq-a" in message
+
+
+@pytest.mark.parametrize("score", [MISSING, None, math.nan], ids=["missing", "None", "NaN"])
+def test_confusion_matrix_checks_scores_as_evaluate_does(score):
+    """`confusion_matrix()` runs without `evaluate()`, so it never reached the
+    score check and ranked a detection with no score, or a NaN one, as 0."""
+    gt = COCO({"images": IMAGES, "annotations": [GT], "categories": CATS})
+    dt = COCO()
+    dt.dataset = {"images": IMAGES, "annotations": [{**with_field(DT, "score", score), "id": 1}], "categories": CATS}
+    with pytest.raises(ValueError, match="score"):
+        COCOeval(gt, dt, "bbox").confusion_matrix()

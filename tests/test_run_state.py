@@ -114,7 +114,11 @@ def test_summarize_warns_about_the_params_it_reports():
     ev.evaluate()
     ev.accumulate()
     ev.params.maxDets = [1, 10, 300]
-    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()) as out:
+    with (
+        pytest.warns(CallOrderWarning, match="reports the last accumulate"),
+        warnings.catch_warnings(),
+        contextlib.redirect_stdout(io.StringIO()) as out,
+    ):
         warnings.simplefilter("error", ReferenceDeviationWarning)
         ev.summarize()
     assert "maxDets=100" in out.getvalue()

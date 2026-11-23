@@ -13,8 +13,6 @@ diagnostics, dataset tools, and metric functions that work on plain arrays.
 Docs: https://derekallman.github.io/hotcoco/
 """
 
-from __future__ import annotations
-
 import operator as _operator
 
 from .hotcoco import (  # noqa: F401
@@ -23,6 +21,7 @@ from .hotcoco import (  # noqa: F401
     COCOeval,
     ConversionWarning,
     DatasetWarning,
+    DropInWarning,
     Hierarchy,
     HotcocoWarning,
     Params,
@@ -126,6 +125,7 @@ __all__ = [
     "CocoEvaluator",
     "ConversionWarning",
     "DatasetWarning",
+    "DropInWarning",
     "Hierarchy",
     "HotcocoWarning",
     "LVIS",
@@ -142,5 +142,8 @@ __all__ = [
     "init_as_pycocotools",
     "mask",
     "metrics",
+    "panoptic",
     "primitives",
+    "semantic",
+    "tracking",
 ]

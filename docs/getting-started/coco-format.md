@@ -50,7 +50,7 @@ dicts) — see [Working with results](../guide/results.md#loading-results).
 | `num_keypoints` | int | no | GT annotations with `num_keypoints == 0` are ignored in keypoint eval. When absent, it is derived from `keypoints` (the count with visibility `> 0`). |
 | `obb` | `[cx, cy, w, h, angle]` | for OBB eval | hotcoco extension; angle in radians. See [OBB evaluation](../guide/evaluation.md#oriented-bounding-box-obb-evaluation). |
 | `is_group_of` | bool | no | Open Images group-of flag — distinct matching semantics from `iscrowd`. |
-| `score` | float | no | Present only in detection results, not ground truth. |
+| `score` | float | in detection results | Detections are ranked by it, so evaluation raises `ValueError` naming one without. Ground truth has none. |
 
 ## `categories`
 
@@ -77,12 +77,12 @@ by_weather = ev.slice_by(lambda img: img["weather"])
 ## Loading quirks worth knowing
 
 - **Non-finite values.** Bare `NaN`/`Infinity` tokens (which Python's `json`
-  module happily writes) are normalized to `null` on load, matching pycocotools.
-  They surface as `None` on fields such as `area` and `score`, and the load
-  notice reports how many were normalized. The exception is a `NaN` detection
-  score in a file passed to `load_res()`: it raises `ValueError` naming the
-  line, as a `NaN` score in a list of dicts does, rather than loading a
-  detection with no score.
+  module happily writes) are normalized to `null` on load, where pycocotools,
+  through `json`, reads them as floats. They surface as `None` on fields such
+  as `area` and `score`, and the load notice reports how many were normalized.
+  A `NaN` detection score in a file passed to `load_res()` raises `ValueError`
+  naming the line, as a `NaN` score in a list of dicts does. An `Infinity`
+  score reads as no score, which evaluation refuses; pycocotools ranks it first.
 - **`info` and `licenses` never fail a load.** Nothing evaluates them, so any
   content is read: a year written as `"2017"` or `2017.0` becomes `2017`, a
   text field written as a number becomes its text, and a field of any other

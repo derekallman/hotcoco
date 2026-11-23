@@ -36,9 +36,10 @@ pub(crate) struct LiveDataset {
     /// Whether `dict` has been handed to Python since the data was last built
     /// from it, and so may carry an edit the data has not seen.
     handed_out: bool,
-    /// `imgToAnns` and `catToImgs`, each kept from its first read until
-    /// the data next changes — see [`index_map`](Self::index_map).
-    index_maps: [Option<Py<PyAny>>; 2],
+    /// `anns`, `imgs`, `cats`, `imgToAnns`, and `catToImgs`, each kept from
+    /// its first read until the data next changes — see
+    /// [`index_map`](Self::index_map).
+    index_maps: [Option<Py<PyAny>>; 5],
 }
 
 /// A wrapper's data: built, or still the columns `load_res` kept for an
@@ -49,13 +50,28 @@ enum Data {
     Columns(Arc<DetectionColumns>),
 }
 
-/// Which of pycocotools' two index maps; the slot in `index_maps`.
+/// Which of pycocotools' index maps; the slot in `index_maps`.
 #[derive(Clone, Copy)]
 pub(crate) enum IndexMap {
+    /// `anns`: annotation id to its dict.
+    Anns,
+    /// `imgs`: image id to its dict.
+    Imgs,
+    /// `cats`: category id to its dict.
+    Cats,
     /// `imgToAnns`: image id to its annotation dicts.
     ImageToAnns,
     /// `catToImgs`: category id to the image id of each of its annotations.
     CategoryToImages,
+}
+
+impl IndexMap {
+    /// Whether the map reads annotations. `imgs` and `cats` do not, so a
+    /// results set still held as the columns `load_res` kept builds no
+    /// records for them.
+    fn reads_annotations(self) -> bool {
+        !matches!(self, IndexMap::Imgs | IndexMap::Cats)
+    }
 }
 
 impl LiveDataset {
@@ -64,7 +80,7 @@ impl LiveDataset {
             data: Data::Built(inner.into()),
             dict: None,
             handed_out: false,
-            index_maps: [None, None],
+            index_maps: Default::default(),
         }
     }
 
@@ -77,7 +93,7 @@ impl LiveDataset {
             data: Data::Columns(columns),
             dict: None,
             handed_out: false,
-            index_maps: [None, None],
+            index_maps: Default::default(),
         }
     }
 
@@ -142,9 +158,14 @@ impl LiveDataset {
     /// by `build` on the first read and the same object on every read after,
     /// as pycocotools' attribute is, until the data changes. Framework loaders
     /// read `coco.imgToAnns[img_id]` once per image, and a map built on every
-    /// read made that loop quadratic (139 ms a read on val2017).
+    /// read made that loop quadratic (139 ms a read on val2017; 86 ms for
+    /// `coco.anns[ann_id]`).
     ///
-    /// Every path that replaces or edits the data drops both maps: `sync`,
+    /// The maps hold copies of the records, not the dict's own objects: an
+    /// edit through one is not read back. Handing out the dict's objects would
+    /// mean a read-back after every read, the cost these maps exist to avoid.
+    ///
+    /// Every path that replaces or edits the data drops every map: `sync`,
     /// `edit`, and `reindex`.
     pub(crate) fn index_map(
         &mut self,
@@ -156,7 +177,12 @@ impl LiveDataset {
         if let Some(map) = &self.index_maps[which as usize] {
             return Ok(map.clone_ref(py));
         }
-        let map = build(self.ready())?;
+        let map = if which.reads_annotations() {
+            build(self.ready())?
+        } else {
+            let data = self.images_and_categories(py)?;
+            build(&data)?
+        };
         self.index_maps[which as usize] = Some(map.clone_ref(py));
         Ok(map)
     }
@@ -171,7 +197,7 @@ impl LiveDataset {
         edit: impl FnOnce(&mut Arc<hotcoco_core::COCO>) -> PyResult<Vec<u64>>,
     ) -> PyResult<()> {
         self.sync(py)?;
-        self.index_maps = [None, None];
+        self.index_maps = Default::default();
         let ids = edit(self.ready())?;
         self.mirror(py, &ids)
     }
@@ -207,7 +233,7 @@ impl LiveDataset {
     /// from before the last call.
     pub(crate) fn reindex(&mut self, py: Python<'_>) -> PyResult<()> {
         self.handed_out = self.dict.is_some();
-        self.index_maps = [None, None];
+        self.index_maps = Default::default();
         self.sync(py)
     }
 
@@ -230,7 +256,7 @@ impl LiveDataset {
         }
         self.data = Data::Built(Arc::new(rebuilt));
         self.handed_out = false;
-        self.index_maps = [None, None];
+        self.index_maps = Default::default();
         Ok(())
     }
 

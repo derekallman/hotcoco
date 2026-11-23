@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import pickle
+import re
 import sys
 
 import hotcoco
@@ -20,24 +21,30 @@ import numpy as np
 import pytest
 
 
+def _ours(name: str) -> bool:
+    return name.split(".")[0] in ("pycocotools", "lvis")
+
+
 @pytest.fixture
-def shims():
-    """Both shims installed, and the real `pycocotools` / `lvis` put back after."""
-
-    def ours(name: str) -> bool:
-        return name.split(".")[0] in ("pycocotools", "lvis")
-
-    saved = {name: mod for name, mod in sys.modules.items() if ours(name)}
+def no_reference_modules():
+    """`pycocotools` and `lvis` out of `sys.modules`, and put back after."""
+    saved = {name: mod for name, mod in sys.modules.items() if _ours(name)}
     for name in saved:
         del sys.modules[name]
-    hotcoco.init_as_pycocotools()
-    hotcoco.init_as_lvis()
     try:
         yield
     finally:
-        for name in [name for name in sys.modules if ours(name)]:
+        for name in [name for name in sys.modules if _ours(name)]:
             del sys.modules[name]
         sys.modules.update(saved)
+
+
+@pytest.fixture
+def shims(no_reference_modules):
+    """Both shims installed, and the real `pycocotools` / `lvis` put back after."""
+    hotcoco.init_as_pycocotools()
+    hotcoco.init_as_lvis()
+    yield
 
 
 def _dataset() -> dict:
@@ -147,6 +154,7 @@ def test_mmdet_coco_wrapper_and_dataset_loading(shims, ann_file):
     assert coco.img_ann_map[3] == []
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # MMDetection's own maxDets
 def test_mmdet_coco_metric(shims, ann_file):
     """`mmdet/evaluation/metrics/coco_metric.py` 413-532."""
     from pycocotools.cocoeval import COCOeval
@@ -243,6 +251,7 @@ def test_detectron2_imports_mask_utils_from_the_evaluator_modules(shims):
     assert COCOeval is hotcoco.COCOeval
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Detectron2's own maxDets
 def test_detectron2_max_dets_summarize(shims, ann_file):
     """`COCOevalMaxDets.summarize`, `detectron2/evaluation/coco_evaluation.py`
     640-717: it indexes `eval` with numpy comparisons against `params.iouThrs`
@@ -539,6 +548,7 @@ def test_an_evaluator_copy_repeats_each_step_under_the_params_it_ran_with(clone,
     assert twin.params.catIds == [2]
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 @pytest.mark.parametrize("clone", CLONES)
 def test_lvis_and_open_images_evaluator_copies(clone, ann_file, lvis_file):
     gt = hotcoco.COCO(lvis_file)
@@ -579,3 +589,40 @@ def test_a_finalized_stream_does_not_copy(clone):
     ev = stream.finalize()
     with pytest.raises(TypeError, match="StreamingEval"):
         clone(ev)
+
+
+@pytest.mark.parametrize(("real", "init"), [("pycocotools.coco", "init_as_pycocotools"), ("lvis", "init_as_lvis")])
+def test_installing_a_shim_after_the_real_import_warns(no_reference_modules, real, init):
+    """A module that imported the real library first keeps it, since the patch
+    only reaches imports made after it. That run is on the reference, not on
+    hotcoco, and nothing said so."""
+    import importlib
+
+    importlib.import_module(real)
+    with pytest.warns(hotcoco.DropInWarning, match=re.escape(real.split(".")[0])):
+        getattr(hotcoco, init)()
+
+
+def test_installing_a_shim_first_is_silent(no_reference_modules):
+    """The documented order, and a second call, say nothing."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for _ in range(2):
+            hotcoco.init_as_pycocotools()
+            hotcoco.init_as_lvis()
+
+
+@pytest.mark.parametrize("name", ["iouThrs", "recThrs"])
+def test_an_in_place_edit_of_a_params_array_raises(name):
+    """`params.iouThrs` is a copy, so `params.iouThrs[0] = 0.4` changed nothing
+    and said nothing. Read-only, the edit raises; an edited copy assigned back
+    is how to change it."""
+    p = hotcoco.Params("bbox")
+    with pytest.raises(ValueError, match="read-only"):
+        getattr(p, name)[0] = 0.4
+    edited = getattr(p, name).copy()
+    edited[0] = 0.4
+    setattr(p, name, edited)
+    assert getattr(p, name)[0] == 0.4

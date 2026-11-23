@@ -37,8 +37,6 @@ where detectron2 differs, and boundary IoU matches the kernel its authors
 published; see the semantic guide.
 """
 
-from __future__ import annotations
-
 from .hotcoco import semantic as _semantic
 
 SemanticEval = _semantic.SemanticEval

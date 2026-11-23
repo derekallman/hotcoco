@@ -1442,7 +1442,7 @@ fn test_confusion_matrix_perfect() {
     ));
 
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    let cm = ev.confusion_matrix(0.5, None, None);
+    let cm = ev.confusion_matrix(0.5, None, None).unwrap();
 
     assert_eq!(cm.num_cats, 2);
     assert_eq!(cm.cat_ids, vec![1, 2]);
@@ -1479,7 +1479,7 @@ fn test_confusion_matrix_class_confusion() {
     ));
 
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    let cm = ev.confusion_matrix(0.5, None, None);
+    let cm = ev.confusion_matrix(0.5, None, None).unwrap();
 
     // GT cat (idx 0) was predicted as dog (idx 1) → off-diagonal confusion
     assert_eq!(cm.get(0, 1), 1, "GT cat predicted as dog should be 1");
@@ -1503,7 +1503,7 @@ fn test_confusion_matrix_fp_background() {
     ));
 
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    let cm = ev.confusion_matrix(0.5, None, None);
+    let cm = ev.confusion_matrix(0.5, None, None).unwrap();
 
     // num_cats=1, k=2: cat=0, background=1
     assert_eq!(cm.num_cats, 1);
@@ -1529,7 +1529,7 @@ fn test_confusion_matrix_fn_missed() {
     let coco_dt = COCO::from_dataset(dataset(vec![img(1)], vec![cat(1, "cat")], vec![]));
 
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
-    let cm = ev.confusion_matrix(0.5, None, None);
+    let cm = ev.confusion_matrix(0.5, None, None).unwrap();
 
     // num_cats=1, k=2: cat=0, background=1
     // FN: cat row (0), background col (1)
@@ -1565,13 +1565,13 @@ fn test_confusion_matrix_iou_threshold() {
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
 
     // At threshold 0.5: IoU (0.5) >= 0.5 → TP
-    let cm_50 = ev.confusion_matrix(0.5, None, None);
+    let cm_50 = ev.confusion_matrix(0.5, None, None).unwrap();
     assert_eq!(cm_50.get(0, 0), 1, "should match at iou_thr=0.5");
     assert_eq!(cm_50.get(0, 1), 0);
     assert_eq!(cm_50.get(1, 0), 0);
 
     // At threshold 0.9: IoU (0.5) < 0.9 → FP + FN
-    let cm_90 = ev.confusion_matrix(0.9, None, None);
+    let cm_90 = ev.confusion_matrix(0.9, None, None).unwrap();
     assert_eq!(cm_90.get(0, 0), 0, "should not match at iou_thr=0.9");
     assert_eq!(cm_90.get(0, 1), 1, "GT should be FN");
     assert_eq!(cm_90.get(1, 0), 1, "DT should be FP");
@@ -1594,12 +1594,12 @@ fn test_confusion_matrix_min_score() {
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
 
     // Without min_score: DT matches GT → TP
-    let cm_no_filter = ev.confusion_matrix(0.5, None, None);
+    let cm_no_filter = ev.confusion_matrix(0.5, None, None).unwrap();
     assert_eq!(cm_no_filter.get(0, 0), 1, "should TP without score filter");
     assert_eq!(cm_no_filter.get(0, 1), 0, "no FN without score filter");
 
     // With min_score=0.5: DT (score=0.3) is dropped → GT missed → FN
-    let cm_filtered = ev.confusion_matrix(0.5, None, Some(0.5));
+    let cm_filtered = ev.confusion_matrix(0.5, None, Some(0.5)).unwrap();
     assert_eq!(
         cm_filtered.get(0, 0),
         0,
@@ -1639,14 +1639,14 @@ fn test_confusion_matrix_max_det() {
     let ev = COCOeval::new(coco_gt, coco_dt, IouType::Bbox);
 
     // max_det=2 (default): both DTs included → both TPs
-    let cm_full = ev.confusion_matrix(0.5, Some(2), None);
+    let cm_full = ev.confusion_matrix(0.5, Some(2), None).unwrap();
     assert_eq!(cm_full.get(0, 0), 1, "cat TP with max_det=2");
     assert_eq!(cm_full.get(1, 1), 1, "dog TP with max_det=2");
     assert_eq!(cm_full.get(0, 2), 0, "no missed cat with max_det=2");
     assert_eq!(cm_full.get(1, 2), 0, "no missed dog with max_det=2");
 
     // max_det=1: only cat DT (score=0.9) kept; dog DT dropped
-    let cm_1det = ev.confusion_matrix(0.5, Some(1), None);
+    let cm_1det = ev.confusion_matrix(0.5, Some(1), None).unwrap();
     // num_cats=2, k=3: cat=0, dog=1, background=2
     assert_eq!(cm_1det.get(0, 0), 1, "cat GT matches cat DT → TP");
     assert_eq!(

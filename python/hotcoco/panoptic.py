@@ -34,8 +34,6 @@ without it ``provenance`` is ``"extension"`` and ``reference_deviations()``
 says why.
 """
 
-from __future__ import annotations
-
 from .hotcoco import panoptic as _panoptic
 
 PanopticEval = _panoptic.PanopticEval

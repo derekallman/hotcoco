@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pickle
 import re
+import sys
 import warnings
 from collections import Counter
 
@@ -29,6 +30,7 @@ from hotcoco import (
     CocoEvaluator,
     ConversionWarning,
     DatasetWarning,
+    DropInWarning,
     HotcocoWarning,
     ReferenceDeviationWarning,
     panoptic,
@@ -121,6 +123,30 @@ def _tracking_keeping_a_zero_confidence_row():
     return ev
 
 
+def _installed_after_the_real_import(real, init):
+    """A trigger that imports the real library, then installs hotcoco's shim
+    over it, with `sys.modules` put back after."""
+
+    def trigger(_):
+        import importlib
+
+        def ours(name):
+            return name.split(".")[0] in ("pycocotools", "lvis")
+
+        saved = {name: mod for name, mod in sys.modules.items() if ours(name)}
+        for name in saved:
+            del sys.modules[name]
+        try:
+            importlib.import_module(real)
+            init()
+        finally:
+            for name in [name for name in sys.modules if ours(name)]:
+                del sys.modules[name]
+            sys.modules.update(saved)
+
+    return trigger
+
+
 def _cvat_import(tmp_path):
     path = tmp_path / "annotations.xml"
     path.write_text(CVAT_WITH_A_POLYLINE)
@@ -135,6 +161,13 @@ SITES = [
         _edit_makes_duplicate_ids, DatasetWarning, "duplicate annotation id", LIVE_RS, id="read-back-duplicate-ids"
     ),
     pytest.param(_cvat_import, ConversionWarning, "skipped 1 unsupported", LIB_RS, id="cvat-skipped-shapes"),
+    pytest.param(
+        _installed_after_the_real_import("pycocotools.coco", hotcoco.init_as_pycocotools),
+        DropInWarning,
+        r"init_as_pycocotools\(\) ran after pycocotools was imported",
+        LIB_RS,
+        id="init-as-pycocotools-late",
+    ),
     pytest.param(
         lambda _: _ev().accumulate(), CallOrderWarning, r"accumulate\(\) called before", LIB_RS, id="accumulate"
     ),
@@ -384,7 +417,7 @@ def test_tracking_deviates_only_by_keeping_a_zero_confidence_row(capsys):
     assert whole.provenance() == "extension"
 
 
-LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning, DatasetWarning)
+LEAVES = (ReferenceDeviationWarning, CallOrderWarning, ConversionWarning, DatasetWarning, DropInWarning)
 
 
 def test_the_categories_nest_under_user_warning():

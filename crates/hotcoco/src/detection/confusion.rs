@@ -230,12 +230,25 @@ impl COCOeval {
     ///   value of `params.max_dets`
     /// - `min_score` — discard DTs below this confidence before the `max_det` truncation;
     ///   `None` keeps all detections
+    ///
+    /// # Errors
+    ///
+    /// [`COCO::check_scores`](crate::COCO::check_scores)'s, the check `evaluate()`
+    /// runs first: detections are ranked by score here too, so one with no score
+    /// or a NaN one is refused rather than ranked as 0.
     pub fn confusion_matrix(
         &self,
         iou_thr: f64,
         max_det: Option<usize>,
         min_score: Option<f64>,
-    ) -> ConfusionMatrix {
+    ) -> crate::error::Result<ConfusionMatrix> {
+        // Columns were checked by `load_res`, as in `check_inputs`.
+        if !self.dt.is_columns() {
+            self.unexpanded_dt
+                .as_ref()
+                .unwrap_or(self.coco_dt())
+                .check_scores()?;
+        }
         // Respect user-set params filters but do not mutate. `resolved_ids` is the
         // owner — the same derivation `evaluate()`'s `resolve_params` writes back
         // — so a standalone `confusion_matrix()` covers exactly the ids an
@@ -357,13 +370,13 @@ impl COCOeval {
             .map(|&id| self.coco_gt.cat_name(id))
             .collect();
 
-        ConfusionMatrix {
+        Ok(ConfusionMatrix {
             matrix,
             num_cats,
             cat_ids: cat_ids.into_owned(),
             cat_names,
             iou_thr,
-        }
+        })
     }
 }
 

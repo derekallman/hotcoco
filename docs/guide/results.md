@@ -382,7 +382,7 @@ See [`get_results`](../api/cocoeval.md#get_results) in the API reference for ful
 
 ## Filtering the warnings
 
-Every warning hotcoco emits through Python's `warnings` module belongs to one of three
+Every warning hotcoco emits through Python's `warnings` module belongs to one of these
 categories, each a subclass of `HotcocoWarning`:
 
 | Category | Emitted when |
@@ -391,6 +391,7 @@ categories, each a subclass of `HotcocoWarning`:
 | `CallOrderWarning` | A method is called before the step it needs, such as `accumulate()` before `evaluate()`. It goes ahead with nothing to work on: what it returns or prints is empty, and a metric computed from it later reads `-1.000`. Also `accumulate()` asked for `params` that `evaluate()` did not run |
 | `ConversionWarning` | A format converter imports part of its input, such as `COCO.from_cvat()` skipping shapes COCO cannot express |
 | `DatasetWarning` | A dataset loads with a problem the loader tolerated: duplicate annotation ids, a category without a name, a non-finite number in a file. The text stays on [`load_warnings`](../api/coco.md#load_warnings) |
+| `DropInWarning` | `init_as_pycocotools()` or `init_as_lvis()` runs after the real library was imported. A module that imported it already keeps the real one; see [Framework integrations](frameworks.md) |
 
 When the configuration is deliberate, such as a training loop that evaluates with
 `max_dets=[1, 10, 500]` every epoch, silence that category and keep the rest:

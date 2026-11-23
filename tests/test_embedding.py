@@ -23,13 +23,19 @@ IOU_F32, REC_F32 = float32_grids()
 
 
 def tie_sensitive_eval(n_gt=20, iou_thrs=None, rec_thrs=None):
-    """``helpers.grid_sensitive_records`` streamed, then accumulated on the given grids."""
-    se = StreamingEval([{"id": 1, "name": "a"}])
+    """``helpers.grid_sensitive_records`` streamed on the given IoU thresholds,
+    then accumulated on the given recall grid.
+
+    The thresholds go in before matching: set after it, they named thresholds
+    no image was matched at, which read as -1, so "the numbers change" held for
+    that reason and not the float32 one."""
+    params = Params()
+    if iou_thrs is not None:
+        params.iou_thrs = iou_thrs
+    se = StreamingEval([{"id": 1, "name": "a"}], params=params)
     images, gts, dts = grid_sensitive_records(n_gt)
     se.update(images, gts, dts)
     ev = se.finalize()
-    if iou_thrs is not None:
-        ev.params.iou_thrs = iou_thrs
     if rec_thrs is not None:
         ev.params.rec_thrs = rec_thrs
     ev.accumulate()

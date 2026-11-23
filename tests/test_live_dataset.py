@@ -191,6 +191,8 @@ class TestEditsReachTheEvaluator:
         coco])`` each read one object twice, after an edit to it."""
         ours, _ = both()
         ours.dataset["annotations"][0]["area"] = 13.0
+        for ann in ours.dataset["annotations"]:
+            ann["score"] = 1.0  # evaluated as detections, each needs a score
         assert stats(ours, ours, "bbox")[0] == 1.0
         assert ours.healthcheck(ours)["errors"] == []
         merged = COCO.merge([ours, ours])
@@ -560,6 +562,46 @@ def test_an_index_map_is_built_once_and_rebuilt_after_an_edit(name):
     # `createIndex()` is how pycocotools rebuilds them.
     coco.createIndex()
     assert getattr(coco, name) is not after_method_edit
+
+
+@pytest.mark.parametrize(("name", "records"), [("anns", "annotations"), ("imgs", "images"), ("cats", "categories")])
+def test_a_record_map_is_built_once_and_rebuilt_after_an_edit(name, records):
+    """`coco.anns[ann_id]` in a loop built the whole map on every read: 86 ms a
+    lookup on val2017, where pycocotools' is a dict lookup. The same object
+    comes back until the data changes, as pycocotools' attribute does, and the
+    map after an edit holds it."""
+    coco = three_annotations()
+    first = getattr(coco, name)
+    assert getattr(coco, name) is first
+    coco.get_ann_ids()  # a read changes nothing
+    assert getattr(coco, name) is first
+
+    # An edit through the dict, read back by the next read.
+    coco.dataset[records][0]["note"] = "edited"
+    after_dict_edit = getattr(coco, name)
+    assert after_dict_edit is not first
+    assert after_dict_edit[1]["note"] == "edited" and "note" not in first[1]
+    assert getattr(coco, name) is after_dict_edit
+
+    # An edit through a method drops every map.
+    coco.update_anns([{"id": 1, "area": 4.0}])
+    after_method_edit = getattr(coco, name)
+    assert after_method_edit is not after_dict_edit
+    if name == "anns":
+        assert after_method_edit[1]["area"] == 4.0
+
+    coco.createIndex()
+    assert getattr(coco, name) is not after_method_edit
+
+
+def test_the_image_map_of_array_results_reads_the_ground_truths():
+    """RF-DETR reads `len(coco_preds.imgs)` before every evaluation. Kept, the map
+    still comes from the ground truth's images, so no annotation records are
+    built for it."""
+    gt, dt = array_results()
+    first = dt.imgs
+    assert dt.imgs is first
+    assert first == gt.imgs
 
 
 def array_results():

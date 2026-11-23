@@ -590,3 +590,29 @@ def test_the_ground_truth_flags_move_the_lvis_numbers():
     assert ap({"ignore": 0}) == plain
     assert ap({"ignore": 1}) != plain
     assert ap({"ignore": 1, "iscrowd": 1}) == ap({"ignore": 1})
+
+
+def test_print_results_is_lvis_apis_text(capsys):
+    """Detectron2's and MMDetection's LVIS evaluators log `print_results()`, and
+    hotcoco printed its own `AP = 1.000` list instead of lvis-api's table."""
+    import contextlib
+    import io
+
+    images = [{"id": 1, "width": 100, "height": 100, "neg_category_ids": [], "not_exhaustive_category_ids": []}]
+    cats = [{"id": 1, "name": "a", "frequency": "f"}, {"id": 2, "name": "b", "frequency": "r"}]
+    anns = [{"id": 1, "image_id": 1, "category_id": 1, "bbox": bbox(10, 10, 20, 20), "area": 400.0}]
+    dts = [{"image_id": 1, "category_id": 1, "bbox": bbox(10, 10, 20, 20), "score": 0.9}]
+    with written_json(make_lvis_gt(images, anns, cats)) as (gt_path,):
+        ref = LVISEval(LVIS(gt_path), LVISResultsRef(LVIS(gt_path), [dict(d) for d in dts]), IOU_TYPE)
+        ref.run()
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            ref.print_results()
+        expected = printed.getvalue().splitlines()
+
+        gt = COCO(gt_path)
+        ev = LVISeval(gt, LVISResults(gt, [dict(d) for d in dts]), IOU_TYPE)
+        ev.run()
+        capsys.readouterr()
+        ev.print_results()
+    assert capsys.readouterr().out.splitlines() == expected

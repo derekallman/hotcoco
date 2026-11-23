@@ -441,6 +441,9 @@ class ConversionWarning(HotcocoWarning):
 class DatasetWarning(HotcocoWarning):
     """A dataset loaded with a problem the loader tolerated; the text is also on ``COCO.load_warnings``."""
 
+class DropInWarning(HotcocoWarning):
+    """A drop-in shim could not take over everything, such as ``init_as_pycocotools()`` after the real import."""
+
 # ---------------------------------------------------------------------------
 # LVIS drop-in surface (lvis-api spellings)
 # ---------------------------------------------------------------------------

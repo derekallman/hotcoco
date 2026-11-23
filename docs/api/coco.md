@@ -118,6 +118,18 @@ last call. Raises what assigning `dataset` raises for the same dict:
 
 ---
 
+### `anns`, `imgs`, and `cats`
+
+Each record by id, as in pycocotools: annotation id to its dict, image id to its
+dict, category id to its dict. Each map is built on its first read and is the same
+object on every read after, until the dataset changes, as
+[`imgToAnns`](#imgtoanns-and-cattoimgs) is.
+
+The dicts are copies, not the objects in [`dataset`](#dataset), so an edit to one
+is not read back. Edit `dataset`, or call [`update_anns`](#update_anns).
+
+---
+
 ### `imgToAnns` and `catToImgs`
 
 The index maps pycocotools builds beside `anns`, each a `defaultdict(list)`.
@@ -133,7 +145,7 @@ after, so `coco.imgToAnns[img_id]` in a loop costs one build. An edit to
 [`dataset`](#dataset), `update_anns`, or `createIndex()` drops both, and the next
 read builds new ones from the dataset as it stands. The annotation dicts are
 the map's own copies, about as much memory again as `dataset["annotations"]`,
-held until the dataset changes.
+held until the dataset changes, and an edit to one is not read back.
 
 ---
 

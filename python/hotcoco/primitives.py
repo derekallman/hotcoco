@@ -32,8 +32,6 @@ Provisional through the 1.x series, like :mod:`hotcoco.metrics`. The IoU kernels
 are the exception: those are frozen, since ``pycocotools`` parity depends on them.
 """
 
-from __future__ import annotations
-
 from .hotcoco import primitives as _primitives
 
 lsap = _primitives.lsap

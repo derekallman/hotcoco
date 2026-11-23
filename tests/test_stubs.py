@@ -453,12 +453,20 @@ def test_lvis_dropin_matches_lvis_api_spelling():
     the canonical import could not use.
     """
 
-    hotcoco.init_as_lvis()
-    from lvis import LVIS, LVISEval, LVISResults
+    saved = {name: mod for name, mod in sys.modules.items() if name.split(".")[0] == "lvis"}
+    for name in saved:
+        del sys.modules[name]  # the documented order: the shim before any import
+    try:
+        hotcoco.init_as_lvis()
+        from lvis import LVIS, LVISEval, LVISResults
 
-    assert LVISEval is hotcoco.LVISeval
-    assert LVIS is hotcoco.COCO
-    assert LVISResults is hotcoco.LVISResults
+        assert LVISEval is hotcoco.LVISeval
+        assert LVIS is hotcoco.COCO
+        assert LVISResults is hotcoco.LVISResults
+    finally:
+        for name in [name for name in sys.modules if name.split(".")[0] == "lvis"]:
+            del sys.modules[name]
+        sys.modules.update(saved)
 
 
 def test_dropin_supports_the_import_as_binding_form():
@@ -475,6 +483,8 @@ def test_dropin_supports_the_import_as_binding_form():
     """
 
     saved = {name: sys.modules.get(name) for name in list(sys.modules) if name.split(".")[0] in ("pycocotools", "lvis")}
+    for name in saved:
+        del sys.modules[name]  # the documented order: the shim before any import
     try:
         hotcoco.init_as_pycocotools()
         import pycocotools.coco as pc
@@ -696,3 +706,37 @@ def test_signature_exceptions_still_differ():
     missing = sorted(SIGNATURE_EXCEPTIONS - pairs.keys())
     assert not stale, f"no longer differ, delete from SIGNATURE_EXCEPTIONS: {stale}"
     assert not missing, f"not found, delete from SIGNATURE_EXCEPTIONS: {missing}"
+
+
+# Set on the package by `init_as_pycocotools()` and `init_as_lvis()` so the
+# `import pycocotools.coco as ...` binding form resolves. They go when the shims
+# get modules of their own.
+SHIM_ALIASES = {"coco", "cocoeval", "maskUtils", "eval", "results"}
+
+
+def test_the_top_level_namespace_is_its_all():
+    """Every public name `import hotcoco` binds is in `__all__`, and `__all__`
+    holds nothing else: `hotcoco.annotations` was the `__future__` feature
+    object, and `panoptic`, `semantic`, and `tracking` were left out."""
+    assert set(hotcoco.__all__) <= vars(hotcoco).keys()
+    assert {"detection", "mask", "metrics", "panoptic", "primitives", "semantic", "tracking"} <= set(hotcoco.__all__)
+    # A submodule binds on its first import (`hotcoco.plot`, the extension
+    # `hotcoco.hotcoco`), so any of those may be present, and nothing else.
+    stray = {
+        n
+        for n, v in vars(hotcoco).items()
+        if not n.startswith("_")
+        and n not in hotcoco.__all__
+        and n not in SHIM_ALIASES
+        and not (isinstance(v, ModuleType) and v.__name__.startswith("hotcoco."))
+    }
+    assert not stray, sorted(stray)
+
+
+@pytest.mark.parametrize("family", ["detection", "metrics", "panoptic", "primitives", "semantic", "tracking"])
+def test_a_family_namespace_is_its_all(family):
+    import importlib
+
+    module = importlib.import_module(f"hotcoco.{family}")
+    public = {n for n in vars(module) if not n.startswith("_")}
+    assert public == set(module.__all__), sorted(public ^ set(module.__all__))

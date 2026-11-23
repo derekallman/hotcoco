@@ -28,7 +28,7 @@ from helpers import (
     suppress_output,
     written_json,
 )
-from hotcoco import COCO, COCOeval, Hierarchy, mask
+from hotcoco import COCO, CallOrderWarning, COCOeval, Hierarchy, mask
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -363,7 +363,8 @@ def test_ious_match_pycocotools(iou_type, max_dets, use_cats, img_ids):
         # after `evaluate()`. `ious` describes the run that happened.
         rs_ev.params.max_dets = [1]
         rs_ev.params.use_cats = not use_cats
-        rs_ev.accumulate()
+        with pytest.warns(CallOrderWarning, match="use_cats"):
+            rs_ev.accumulate()
 
     py_ious, rs_ious = py_ev.ious, rs_ev.ious
     assert list(rs_ious) == list(py_ious)
@@ -701,6 +702,7 @@ def test_unsupported_counts_type_raises():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_basic_hierarchy():
     """Dog detection on Poodle GT: correct at Dog level, wrong at Poodle."""
     hierarchy = Hierarchy.from_parent_map({1: 2, 2: 3})
@@ -729,6 +731,7 @@ def test_basic_hierarchy():
     assert abs(per_class["dog"] - 1.0) < 1e-6, f"Dog AP should be 1.0, got {per_class['dog']}"
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_group_of_scores_one_tp_and_absorbs_the_rest():
     """A group-of box is worth one TP; surplus detections inside it are ignored.
 
@@ -772,6 +775,7 @@ def test_group_of_scores_one_tp_and_absorbs_the_rest():
     assert sum(e["gtInDenominator"]) == 2, "ordinary GT + group-of box = 2 in the denominator"
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_group_of_matches_on_ioa_not_iou():
     """A detection smaller than the group-of box must still be absorbed.
 
@@ -811,6 +815,7 @@ def test_group_of_matches_on_ioa_not_iou():
     assert ev.stats[0] > 0.99, f"detection inside a group-of box must be absorbed, got {ev.stats[0]:.4f}"
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_undetected_group_of_is_a_miss():
     """An undetected group-of box is a single false negative.
 
@@ -843,6 +848,7 @@ def test_undetected_group_of_is_a_miss():
     assert abs(ev.stats[0] - 0.5) < 0.02, f"one of two GTs found -> AP ~0.5, got {ev.stats[0]:.4f}"
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_pre_expanded_idempotent():
     """Pre-expanded GTs should produce same results as unexpanded."""
     hierarchy = Hierarchy.from_parent_map({1: 2})
@@ -883,6 +889,7 @@ def test_pre_expanded_idempotent():
     )
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_dt_expansion():
     """expand_dt=True: Dog prediction gets credit at Animal level."""
     hierarchy = Hierarchy.from_parent_map({1: 2})
@@ -916,6 +923,7 @@ def test_dt_expansion():
     assert ap_expand > ap_no_expand, f"DT expansion should improve AP: {ap_expand:.4f} vs {ap_no_expand:.4f}"
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images: an extension
 def test_virtual_nodes():
     """Supercategory not in categories list: should still work via virtual node."""
     gt = COCO(
@@ -971,6 +979,7 @@ def test_report_dict_shape():
     assert all(isinstance(v, dict) for v in report["per_class"].values())
 
 
+@pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")  # Open Images and oriented boxes
 def test_report_provenance_distinguishes_extension_from_parity():
     """OBB has no reference implementation, so it must not read as leaderboard-comparable."""
     assert _eval_for_report("bbox").report()["provenance"] == "parity_verified"

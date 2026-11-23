@@ -1252,14 +1252,18 @@ impl COCO {
         }
     }
 
-    /// Check that no annotation has a NaN score.
+    /// Check that every annotation has a score, and that none is NaN.
     ///
-    /// [`load_res`](Self::load_res) refuses one, with this error: scores order
-    /// the detection ranking, and NaN makes that order undefined, so AP becomes
-    /// a function of the sort. A results set built another way — a dataset dict
+    /// Scores order the detection ranking. [`load_res`](Self::load_res)
+    /// refuses a NaN one, which makes that order undefined, so AP becomes a
+    /// function of the sort. A results set built another way — a dataset dict
     /// assigned to a `COCO`, [`from_dataset`](Self::from_dataset) — skips the
     /// loader, so [`COCOeval::check_inputs`](crate::COCOeval::check_inputs)
     /// runs this on the detections first.
+    ///
+    /// A missing score is refused here and not by `load_res`, as pycocotools'
+    /// `loadRes` takes one and its `evaluate()` fails on it: ranked as 0, a
+    /// results set without scores evaluated to a plausible number.
     ///
     /// # Errors
     ///
@@ -1269,13 +1273,19 @@ impl COCO {
         // Every `evaluate()` runs this over the whole results set, which at
         // validation scale is a walk over a million records: in parallel past
         // the shared threshold, still naming the first offender.
-        let is_nan = |ann: &Annotation| ann.score.is_some_and(f64::is_nan);
+        let unrankable = |ann: &Annotation| ann.score.is_none_or(f64::is_nan);
         let first = if worth_parallel(anns.len()) {
-            anns.par_iter().fork_safe().position_first(is_nan)
+            anns.par_iter().fork_safe().position_first(unrankable)
         } else {
-            anns.iter().position(is_nan)
+            anns.iter().position(unrankable)
         };
         match first {
+            Some(i) if anns[i].score.is_none() => Err(Error::InvalidInput(format!(
+                "annotation {i} (id {}, image_id {}) has no score. Detections are ranked \
+                 by score, so each needs one: a null, or an Infinity token in a JSON \
+                 file, reads as none.",
+                anns[i].id, anns[i].image_id
+            ))),
             Some(i) => Err(nan_score_error("", i, anns[i].id, anns[i].image_id)),
             None => Ok(()),
         }

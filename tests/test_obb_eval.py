@@ -12,6 +12,10 @@ import math
 import pytest
 from helpers import hotcoco_eval_obb
 
+# Oriented boxes have no reference, so every run warns that it is an
+# extension. The numbers are what this file checks.
+pytestmark = pytest.mark.filterwarnings("ignore::hotcoco.ReferenceDeviationWarning")
+
 GT = (0, 0, 200, 200, 0)
 
 

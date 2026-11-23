@@ -40,6 +40,10 @@ from helpers import (
 )
 from hotcoco import COCO, COCOeval, panoptic
 
+# The page's detections include one of a category the ground truth lacks, a
+# false positive by construction, and load_res warns about it.
+pytestmark = pytest.mark.filterwarnings("ignore::hotcoco.DatasetWarning")
+
 PAGE = WORKSPACE / "docs" / "guide" / "custom-metrics.md"
 CASES = hand_panoptic_cases() + random_panoptic_cases()
 EVERY_AREA, SMALL = (0, 1e10), (0, 32**2)

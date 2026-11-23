@@ -472,7 +472,7 @@ For prefixed and per-class keys and how they feed an experiment tracker, see
 print_results() -> None
 ```
 
-Print a formatted results table to stdout. For LVIS, matches the lvis-api `print_results()` style.
+Print a formatted results table to stdout. For LVIS it is lvis-api's `print_results()` table, line for line; otherwise one `KEY = value` line per metric.
 
 Like [`summarize`](#summarize), it prints through `sys.stdout`, so `contextlib.redirect_stdout`, pytest's `capsys`, and notebook cells capture it. Called before `summarize()`, it prints nothing and emits a [`CallOrderWarning`](../guide/results.md#filtering-the-warnings). In Rust, `print_results_lines()` returns the same lines without printing.
 
@@ -697,7 +697,7 @@ confusion_matrix(
 
 Compute a per-category confusion matrix. Unlike `evaluate()`, this method compares **all** detections in an image against **all** ground truth boxes regardless of category, enabling cross-category confusion analysis.
 
-This method is **standalone** — no `evaluate()` call is needed first.
+This method is **standalone** — no `evaluate()` call is needed first. Like `evaluate()`, it raises `ValueError` for a detection with no score or a NaN one.
 
 **Parameters:**
 

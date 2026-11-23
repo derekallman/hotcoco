@@ -24,8 +24,6 @@ the top level: they exist to mirror ``lvis-api``'s import paths, so moving them
 under a family namespace would defeat their purpose.
 """
 
-from __future__ import annotations
-
 from .hotcoco import COCOeval, Hierarchy, Params, StreamingEval, compare
 
 __all__ = ["COCOeval", "Hierarchy", "Params", "StreamingEval", "compare"]

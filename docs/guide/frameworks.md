@@ -7,7 +7,7 @@ from hotcoco import init_as_pycocotools
 init_as_pycocotools()
 ```
 
-This patches `sys.modules` so that `pycocotools`, `pycocotools.coco`, `pycocotools.cocoeval`, and `pycocotools.mask` all resolve to their hotcoco equivalents. Call it before any import that pulls in pycocotools — the top of your entry point script is the best place.
+This patches `sys.modules` so that `pycocotools`, `pycocotools.coco`, `pycocotools.cocoeval`, and `pycocotools.mask` all resolve to their hotcoco equivalents. Call it before any import that pulls in pycocotools — the top of your entry point script is the best place. Called after one, it emits a [`DropInWarning`](results.md#filtering-the-warnings) naming the modules already loaded, since whatever imported them keeps the real pycocotools. `init_as_lvis()` does the same for lvis-api.
 
 | Framework | Uses | `init_as_pycocotools()` |
 |-----------|------|------------------------|

@@ -673,3 +673,19 @@ fn load_res_box_format_warning_needs_image_sizes() {
         res.load_warnings()
     );
 }
+
+/// A detection with no score ranked as 0, so a results set without scores, or
+/// with one left out, evaluated to a plausible number. pycocotools fails on
+/// `d['score']`; the evaluator refuses it with an error naming the detection.
+#[test]
+fn a_detection_without_a_score_is_refused() {
+    let gt = COCO::from_dataset(gt_dataset());
+    let mut dataset = gt_dataset();
+    dataset.annotations[0].score = None;
+    let dt = COCO::from_dataset(dataset);
+    let mut ev = hotcoco::COCOeval::new(gt, dt, hotcoco::IouType::Bbox);
+    let err = ev.evaluate().unwrap_err();
+    assert!(matches!(err, hotcoco::Error::InvalidInput(_)), "{err:?}");
+    assert!(err.to_string().contains("has no score"), "{err}");
+    assert!(ev.confusion_matrix(0.5, None, None).is_err());
+}

@@ -30,8 +30,6 @@ Only MOTChallenge 2D boxes are covered so far; see the tracking guide for what
 is not.
 """
 
-from __future__ import annotations
-
 from .hotcoco import tracking as _tracking
 
 TrackingEval = _tracking.TrackingEval

@@ -1,8 +1,9 @@
 //! Perception evaluation in pure Rust.
 //!
 //! Detection — bbox, segmentation, keypoints, and oriented boxes across the
-//! COCO, LVIS, and Open Images protocols — and panoptic segmentation, on a
-//! layered engine that the metric families share.
+//! COCO, LVIS, and Open Images protocols — panoptic and semantic segmentation,
+//! and multi-object tracking, on a layered engine that the metric families
+//! share.
 //!
 //! ```no_run
 //! use hotcoco::{COCO, COCOeval, params::IouType};
@@ -29,6 +30,7 @@
 //! | [`report`] | [`EvalReport`] — the shape every metric family reports in. |
 //! | [`detection`] | The detection metric family: AP/AR, LVIS, Open Images, TIDE. |
 //! | [`panoptic`] | The panoptic metric family: PQ, SQ, RQ against panopticapi. |
+//! | [`semantic`] | The semantic segmentation family: mIoU, fwIoU, mAcc, aAcc against mmsegmentation. |
 //! | [`tracking`] | The tracking metric family: HOTA, CLEAR, Identity against TrackEval. |
 //! | [`quality`] | Dataset introspection: health checks and statistics. |
 //! | [`convert`] | YOLO, Pascal VOC, CVAT, DOTA, and Open Images conversion. |

@@ -20,13 +20,11 @@ ground truth; ``metrics.average_precision`` turns that decision into a number.
 Stability
 ---------
 
-Provisional through the 1.x series — public so drivers and users can share them,
-but not frozen until 1.4. Expect additive change rather than reshaping of what is
-here. ``COCOeval`` and the ``pycocotools`` drop-in surface are the permanent,
+Provisional — public so drivers and users can share them, and frozen once the
+metric families have exercised them (see the roadmap). Expect additive change
+rather than reshaping of what is here. ``COCOeval`` and the ``pycocotools`` drop-in surface are the permanent,
 frozen part of the API and are unaffected.
 """
-
-from __future__ import annotations
 
 from .hotcoco import metrics as _metrics
 

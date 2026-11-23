@@ -83,6 +83,14 @@ pyo3::create_exception!(
 );
 pyo3::create_exception!(
     hotcoco,
+    DropInWarning,
+    HotcocoWarning,
+    "A drop-in shim could not take over everything.\n\n\
+     For example, ``init_as_pycocotools()`` called after a module imported \
+     the real pycocotools: that module keeps it."
+);
+pyo3::create_exception!(
+    hotcoco,
     DatasetWarning,
     HotcocoWarning,
     "A dataset loaded with a problem the loader tolerated.\n\n\
@@ -1526,24 +1534,32 @@ impl PyCOCO {
         self.live.dict(py)
     }
 
+    /// Image id to its dict, as pycocotools' attribute. Built on the first
+    /// read and the same object until the dataset changes, as the other index
+    /// maps are; an edit to it is not read back.
     #[getter]
     fn imgs(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let inner = self.live.images_and_categories(py)?;
-        let dict = PyDict::new(py);
-        for img in &inner.dataset.images {
-            dict.set_item(img.id, image_to_py(py, img)?)?;
-        }
-        Ok(dict.into_any().unbind())
+        self.live.index_map(py, live::IndexMap::Imgs, |inner| {
+            let dict = PyDict::new(py);
+            for img in &inner.dataset.images {
+                dict.set_item(img.id, image_to_py(py, img)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        })
     }
 
+    /// Annotation id to its dict, as pycocotools' attribute. Built on the
+    /// first read and the same object until the dataset changes, as the other
+    /// index maps are; an edit to it is not read back.
     #[getter]
     fn anns(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let inner = self.live.get(py)?;
-        let dict = PyDict::new(py);
-        for ann in &inner.dataset.annotations {
-            dict.set_item(ann.id, annotation_to_py(py, ann)?)?;
-        }
-        Ok(dict.into_any().unbind())
+        self.live.index_map(py, live::IndexMap::Anns, |inner| {
+            let dict = PyDict::new(py);
+            for ann in &inner.dataset.annotations {
+                dict.set_item(ann.id, annotation_to_py(py, ann)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        })
     }
 
     /// The index maps pycocotools and lvis-api build beside ``anns``:
@@ -1575,21 +1591,18 @@ impl PyCOCO {
         };
         self.live.index_map(py, which, |inner| {
             let map = default_list_dict(py)?;
-            match which {
-                live::IndexMap::ImageToAnns => {
-                    for img in &inner.dataset.images {
-                        map.set_item(img.id, PyList::empty(py))?;
-                    }
-                    for ann in &inner.dataset.annotations {
-                        map.get_item(ann.image_id)?
-                            .call_method1("append", (annotation_to_py(py, ann)?,))?;
-                    }
+            if matches!(which, live::IndexMap::ImageToAnns) {
+                for img in &inner.dataset.images {
+                    map.set_item(img.id, PyList::empty(py))?;
                 }
-                live::IndexMap::CategoryToImages => {
-                    for ann in &inner.dataset.annotations {
-                        map.get_item(ann.category_id)?
-                            .call_method1("append", (ann.image_id,))?;
-                    }
+                for ann in &inner.dataset.annotations {
+                    map.get_item(ann.image_id)?
+                        .call_method1("append", (annotation_to_py(py, ann)?,))?;
+                }
+            } else {
+                for ann in &inner.dataset.annotations {
+                    map.get_item(ann.category_id)?
+                        .call_method1("append", (ann.image_id,))?;
                 }
             }
             Ok(map.unbind())
@@ -1657,14 +1670,18 @@ impl PyCOCO {
         Ok(())
     }
 
+    /// Category id to its dict, as pycocotools' attribute. Built on the first
+    /// read and the same object until the dataset changes, as the other index
+    /// maps are; an edit to it is not read back.
     #[getter]
     fn cats(&mut self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let inner = self.live.images_and_categories(py)?;
-        let dict = PyDict::new(py);
-        for cat in &inner.dataset.categories {
-            dict.set_item(cat.id, category_to_py(py, cat)?)?;
-        }
-        Ok(dict.into_any().unbind())
+        self.live.index_map(py, live::IndexMap::Cats, |inner| {
+            let dict = PyDict::new(py);
+            for cat in &inner.dataset.categories {
+                dict.set_item(cat.id, category_to_py(py, cat)?)?;
+            }
+            Ok(dict.into_any().unbind())
+        })
     }
 
     /// Launch an interactive dataset browser.
@@ -2117,19 +2134,20 @@ impl PyParams {
     }
     /// pycocotools' name and type: a numpy ``float64`` array, so
     /// ``np.where(0.5 == params.iouThrs)`` works. ``iou_thrs`` is the list.
+    /// Read-only, since it is a copy: an edit in place would change nothing.
     #[getter(iouThrs)]
-    fn iou_thrs_camel<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
-        numpy::PyArray1::from_slice(py, &self.inner.iou_thrs)
+    fn iou_thrs_camel<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+        read_only_array(py, &self.inner.iou_thrs)
     }
     #[setter(iouThrs)]
     fn set_iou_thrs_camel(&mut self, val: Vec<f64>) {
         self.set_iou_thrs(val);
     }
     /// pycocotools' name and type: a numpy ``float64`` array. ``rec_thrs`` is
-    /// the list.
+    /// the list. Read-only, as ``iouThrs`` is.
     #[getter(recThrs)]
-    fn rec_thrs_camel<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray1<f64>> {
-        numpy::PyArray1::from_slice(py, &self.inner.rec_thrs)
+    fn rec_thrs_camel<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+        read_only_array(py, &self.inner.rec_thrs)
     }
     #[setter(recThrs)]
     fn set_rec_thrs_camel(&mut self, val: Vec<f64>) {
@@ -2167,6 +2185,19 @@ impl PyParams {
     fn set_use_cats_camel(&mut self, val: &Bound<'_, PyAny>) -> PyResult<()> {
         self.set_use_cats(val)
     }
+}
+
+/// A `float64` copy of `values` that refuses an edit in place. `params`
+/// hands out copies, so `params.iouThrs[0] = 0.4` changed nothing and said
+/// nothing; read-only, it raises numpy's `ValueError`.
+fn read_only_array<'py>(
+    py: Python<'py>,
+    values: &[f64],
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+    let array = numpy::PyArray1::from_slice(py, values);
+    // `setflags(write=False)`, positionally.
+    array.call_method1(pyo3::intern!(py, "setflags"), (false,))?;
+    Ok(array)
 }
 
 fn parse_iou_type(s: &str) -> PyResult<hotcoco_core::IouType> {
@@ -2724,8 +2755,9 @@ per_class : bool
 
     #[doc = "Print a formatted results table to stdout.
 
-For LVIS, matches the lvis-api ``print_results()`` style. Must be called after
-``summarize()`` (or ``run()``)."]
+For LVIS it is lvis-api's ``print_results()`` table, line for line; otherwise one
+``KEY = value`` line per metric. Must be called after ``summarize()`` (or
+``run()``)."]
     fn print_results(&mut self, py: Python<'_>) -> PyResult<()> {
         // Through Python's `print`, not the core `print_results` — see `print_lines`.
         // Through `with_params`, so a params edit since `accumulate()` retires
@@ -3317,9 +3349,11 @@ Example
                 "iou_thr must be a number, got nan",
             ));
         }
-        let cm = self.with_params(py, |ev| {
-            py.detach(|| ev.confusion_matrix(iou_thr, max_det, min_score))
-        });
+        let cm = self
+            .with_params(py, |ev| {
+                py.detach(|| ev.confusion_matrix(iou_thr, max_det, min_score))
+            })
+            .map_err(to_pyerr)?;
         let k = cm.num_cats + 1;
 
         // normalized: Vec<f64> → numpy float64, reshaped to (k, k)
@@ -3992,6 +4026,45 @@ fn accumulated_eval_to_py(
 // Module
 // ---------------------------------------------------------------------------
 
+/// Warn when a module of the real `library` is already loaded: whatever
+/// imported it keeps it, since patching `sys.modules` reaches only imports
+/// made after. hotcoco's own modules there, from an earlier call, are not the
+/// real one; they are told apart by identity, since `mask`, a PyO3
+/// submodule, is named `mask`.
+fn warn_if_imported(py: Python<'_>, init: &str, library: &str) -> PyResult<()> {
+    let modules = py.import("sys")?.getattr("modules")?;
+    let hotcoco = py.import("hotcoco")?;
+    let ours = [hotcoco.clone().into_any(), hotcoco.getattr("mask")?];
+    let prefix = format!("{library}.");
+    let mut real = Vec::new();
+    for item in modules.call_method0("items")?.try_iter()? {
+        let (name, module): (String, Bound<'_, PyAny>) = item?.extract()?;
+        if name != library && !name.starts_with(&prefix) {
+            continue;
+        }
+        let named_ours = module
+            .getattr(pyo3::intern!(py, "__name__"))
+            .ok()
+            .and_then(|n| n.extract::<String>().ok())
+            .is_some_and(|n| n.starts_with("hotcoco."));
+        if !named_ours && !ours.iter().any(|m| m.is(&module)) {
+            real.push(name);
+        }
+    }
+    if real.is_empty() {
+        return Ok(());
+    }
+    real.sort();
+    warn::<DropInWarning>(
+        py,
+        &format!(
+            "{init}() ran after {library} was imported ({}). A module that imported it \
+             already keeps the real {library}; call {init}() before anything imports it.",
+            real.join(", ")
+        ),
+    )
+}
+
 /// Patch `sys.modules` so that `from pycocotools.coco import COCO` and friends
 /// transparently use hotcoco.
 ///
@@ -4006,6 +4079,7 @@ fn init_as_pycocotools(py: Python<'_>) -> PyResult<()> {
     let modules = sys.getattr("modules")?;
     let hotcoco = py.import("hotcoco")?;
     let mask_mod = hotcoco.getattr("mask")?;
+    warn_if_imported(py, "init_as_pycocotools", "pycocotools")?;
     modules.set_item("pycocotools", &hotcoco)?;
     modules.set_item("pycocotools.coco", &hotcoco)?;
     modules.set_item("pycocotools.cocoeval", &hotcoco)?;
@@ -4038,6 +4112,7 @@ fn init_as_lvis(py: Python<'_>) -> PyResult<()> {
     let sys = py.import("sys")?;
     let modules = sys.getattr("modules")?;
     let hotcoco = py.import("hotcoco")?;
+    warn_if_imported(py, "init_as_lvis", "lvis")?;
     modules.set_item("lvis", &hotcoco)?;
     modules.set_item("lvis.eval", &hotcoco)?;
     modules.set_item("lvis.coco", &hotcoco)?;
@@ -4164,6 +4239,7 @@ fn hotcoco(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CallOrderWarning", py.get_type::<CallOrderWarning>())?;
     m.add("ConversionWarning", py.get_type::<ConversionWarning>())?;
     m.add("DatasetWarning", py.get_type::<DatasetWarning>())?;
+    m.add("DropInWarning", py.get_type::<DropInWarning>())?;
 
     // The functional layer — metric functions and matching kernels, callable
     // without a COCOeval. `__init__.py` also registers these in sys.modules so

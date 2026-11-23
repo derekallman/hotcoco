@@ -63,8 +63,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - **Rust: `metrics::confusion::check_num_classes`**, the class-count check every
   confusion-matrix constructor now runs; a count whose matrix cannot fit panics
   naming it, where it wrapped or ran out of memory.
+- **`DropInWarning`.** `init_as_pycocotools()` and `init_as_lvis()` warn when the
+  real library was imported first, naming its loaded modules: whatever imported it
+  keeps it, so the run was partly on the reference with nothing to say so. See
+  [Framework integrations](https://derekallman.github.io/hotcoco/guide/frameworks/).
 
 ### Changed
+
+- **Breaking: a detection with no score is an error.** `evaluate()` and
+  `confusion_matrix()` raise `ValueError` naming it, where it ranked as 0 and a
+  results set without scores evaluated to a plausible number; pycocotools raises
+  `KeyError`. A `null` score, or an `Infinity` token in a JSON file, reads as none.
+  `load_res` still takes one, as `loadRes` does.
+- **Breaking (Rust): `COCOeval::confusion_matrix` returns `Result`**, with the score
+  check `evaluate()` runs.
+- **The printed summary is pycocotools' text**: `Average Precision  (AP)` with two
+  spaces, `Average Recall     (AR)`, and the IoU sweep labeled with its first and last
+  thresholds rather than always `0.50:0.95`, so a log parser written for pycocotools
+  reads it.
+- **LVIS `print_results()` prints lvis-api's table**, line for line, where it printed
+  `AP = 1.000` lines.
+- **`params.iouThrs` and `params.recThrs` are read-only arrays.** They are copies, so
+  an edit in place changed nothing and said nothing; it now raises `ValueError`.
+  Assign an edited copy back.
 
 - **Breaking (Rust): `COCO::split`, `COCO::sample`, and `Overlaps::from_counts`
   return `Result`.** The checks the Python binding made are in core now: a fraction
@@ -119,6 +140,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   UTF-8 on the worker threads, raising the same errors in the same order.
 
 ### Fixed
+
+- **`coco.anns`, `coco.imgs`, and `coco.cats` are built once per dataset version**,
+  as `imgToAnns` is. Each read rebuilt the whole map, 86 ms a lookup on val2017, so a
+  loop over `coco.anns[ann_id]` took minutes. An edit to one is still not read back;
+  see [Known differences](https://derekallman.github.io/hotcoco/getting-started/migration/#known-differences).
+- **`hotcoco.__all__` lists `panoptic`, `semantic`, and `tracking`**, and the package
+  and its family modules no longer expose `annotations`, the `__future__` feature.
 
 - **A process forked after hotcoco started its thread pool runs on one thread** instead
   of hanging: it inherits the pool but none of its threads. A Linux PyTorch `DataLoader`

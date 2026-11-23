@@ -116,6 +116,7 @@ works, because the setter routes the change back to Rust, but mutating a
 ```python
 ev.params.cat_ids = [1, 2, 3]       # applied — attribute assignment works
 ev.params.maxDets.append(200)       # no-op — mutates a temporary list
+ev.params.iouThrs[0] = 0.4          # ValueError — the array is a read-only copy
 
 md = ev.params.maxDets              # instead: pull, edit, assign back
 md.append(200)
@@ -135,7 +136,9 @@ data without copying it; an edit to that object, through `dataset` or
 | Annotation IDs | Requires unique positive integers | Also accepts 0-based IDs |
 | `getAnnIds(areaRng=...)` on annotations missing `area` | Raises `KeyError` | Excludes them from the query |
 | Evaluating annotations missing `area` | Raises `KeyError` | Derives it in the evaluator's copy: the mask's pixel count, then the box's `w × h`, for ground truth; the box first for detections, as `load_res` does. The dataset keeps its missing areas |
-| Mutating `ev.params` containers in place | Mutates shared state | No-op on a copy — [assign back to apply](#the-dataset-is-live-params-containers-are-copies) |
+| Mutating `ev.params` containers in place | Mutates shared state | `iouThrs` and `recThrs` are read-only arrays and raise `ValueError`; a list such as `maxDets` is a copy, so the edit changes nothing — [assign back to apply](#the-dataset-is-live-params-containers-are-copies) |
+| Editing a record through `anns`, `imgs`, `imgToAnns`, or `loadAnns()` | Edits the dataset: each holds the same dict | Not read back: each is a copy. Edit `dataset`, or call [`update_anns`](../api/coco.md#update_anns) |
+| Evaluating a detection with no `score` | Raises `KeyError` in `evaluate()` | `evaluate()` and `confusion_matrix()` raise `ValueError` naming the detection |
 | Evaluating a detection with a NaN score | Evaluates, with an undefined ranking | `load_res()` and `evaluate()` raise `ValueError` naming the detection |
 | `loadRes` of a `float32` array | Computes each box's area as a `float32` product | Computes it in `float64`, as pycocotools does for the same boxes as Python floats (`arr.tolist()`, which most frameworks pass). A box whose `w × h` is within `float32` rounding of `32²` or `96²` can land in the other area range |
 | `mask.decode` of RLEs of different sizes | Reads the size off the first RLE and returns a scrambled array | Raises `ValueError` naming the first that differs; see [`decode`](../api/mask.md#decode) |
@@ -146,7 +149,7 @@ data without copying it; an edit to that object, through `dataset` or
 
 ## Metric parity
 
-Every COCO metric matches pycocotools to floating-point precision — the measured differences on COCO val2017, and a script to check your own data, are in [Metric parity](../benchmarks.md#metric-parity).
+Every COCO metric matches pycocotools bit for bit on COCO val2017 — the measured figures, and a script to check your own data, are in [Metric parity](../benchmarks.md#metric-parity).
 
 ## Rust: module paths renamed in 1.0
 

@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "hotcoco"
 version = "1.4.0"
-description = "Perception evaluation toolkit — pycocotools-compatible detection metrics and panoptic quality in pure Rust, up to 133× faster"
+description = "Perception evaluation in pure Rust — pycocotools-compatible detection metrics up to 133× faster, plus panoptic, semantic segmentation, and tracking metrics"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Derek Allman", email = "derek.allman@yahoo.com" }]
@@ -116,6 +116,15 @@ testpaths = ["tests"]
 # one copy. Two tests also import the script whose oracle they check
 # (`gen_oid_fixtures`, `gen_obb_fixtures`).
 pythonpath = ["scripts"]
+# A hotcoco warning a test did not ask for fails it: a test that triggers one
+# on purpose catches it with `pytest.warns` or names it in a
+# `filterwarnings` mark, so a new warning stands out instead of joining a
+# summary of hundreds. The references' own deprecation notices are not ours.
+filterwarnings = [
+    "error::hotcoco.HotcocoWarning",
+    "ignore::DeprecationWarning:pycocotools",
+    "ignore::DeprecationWarning:lvis",
+]
 
 [tool.pyright]
 # Scoped to the shipped package only. `scripts/` and `tests/` are untyped dev

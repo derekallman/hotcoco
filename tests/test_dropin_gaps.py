@@ -6,6 +6,7 @@ pycocotools stats semantics, real Python warnings, and error types. None of
 them need the gitignored data/ directory.
 """
 
+import copy
 import enum
 import json
 import re
@@ -1066,7 +1067,8 @@ class TestLoadWarnings:
     def test_duplicate_ann_ids_are_reported(self):
         ds = tiny_dataset()
         ds["annotations"][1]["id"] = 1  # collide with the first
-        coco = COCO(ds)
+        with pytest.warns(hotcoco.DatasetWarning, match="duplicate annotation id"):
+            coco = COCO(ds)
         assert any("annotation" in w for w in coco.load_warnings)
 
     def test_corner_pair_boxes_are_reported(self):
@@ -1147,7 +1149,8 @@ class TestIssue5MissingCategoryName:
     def test_missing_name_gets_placeholder_and_warns(self):
         ds = tiny_dataset()
         ds["categories"][0] = {"id": 1}
-        coco = COCO(ds)
+        with pytest.warns(hotcoco.DatasetWarning, match="without a name"):
+            coco = COCO(ds)
         assert coco.loadCats(1)[0]["name"] == "cat_1"
         assert any("without a name" in w for w in coco.load_warnings)
 
@@ -1171,7 +1174,7 @@ class TestIssue5SummarizeOutput:
         self._evaluated().summarize()
         out = capsys.readouterr().out.splitlines()
         assert len(out) == 12
-        assert out[0].startswith(" Average Precision (AP) @[ IoU=0.50:0.95")
+        assert out[0].startswith(" Average Precision  (AP) @[ IoU=0.50:0.95")
 
     def test_param_warning_is_a_python_warning_only(self, capfd):
         ev = self._evaluated(max_dets=[1, 10, 500])
@@ -1345,3 +1348,54 @@ class TestMissingArea:
         ev.accumulate()
         ev.summary_lines()
         assert list(ev.stats) == derived
+
+
+# ---------------------------------------------------------------------------
+# The printed summary is pycocotools' text
+# ---------------------------------------------------------------------------
+
+
+def _pycocotools_summary(dataset, dts, iou_thrs):
+    """The `Average ...` lines pycocotools prints for this run."""
+    import contextlib
+    import io
+
+    pc_coco = pytest.importorskip("pycocotools.coco")
+    pc_eval = pytest.importorskip("pycocotools.cocoeval")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        gt = pc_coco.COCO()
+        gt.dataset = copy.deepcopy(dataset)
+        gt.createIndex()
+        ev = pc_eval.COCOeval(gt, gt.loadRes(copy.deepcopy(dts)), "bbox")
+        if iou_thrs is not None:
+            ev.params.iouThrs = np.array(iou_thrs)
+        ev.evaluate()
+        ev.accumulate()
+        ev.summarize()
+    return [line for line in out.getvalue().splitlines() if line.startswith(" Average")]
+
+
+@pytest.mark.parametrize("iou_thrs", [None, [0.5, 0.75]], ids=["default", "two-thresholds"])
+def test_the_summary_is_pycocotools_text(iou_thrs, capsys):
+    """Log parsers read pycocotools' table, and hotcoco printed `Average Precision (AP)`
+    with one space and `Average Recall (AR)    @[`, and labeled the IoU sweep
+    `0.50:0.95` whatever the thresholds were."""
+    dataset = tiny_dataset()
+    dts = [
+        {"image_id": 1, "category_id": 1, "bbox": [10, 10, 30, 30], "score": 0.9},
+        {"image_id": 2, "category_id": 2, "bbox": [52, 50, 20, 20], "score": 0.8},
+    ]
+    expected = _pycocotools_summary(dataset, dts, iou_thrs)
+    gt = COCO(copy.deepcopy(dataset))
+    ev = COCOeval(gt, gt.load_res(copy.deepcopy(dts)), "bbox")
+    if iou_thrs is not None:
+        ev.params.iouThrs = iou_thrs
+    ev.evaluate()
+    ev.accumulate()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", hotcoco.ReferenceDeviationWarning)
+        ev.summarize()
+        lines = ev.summary_lines()
+    assert capsys.readouterr().out.splitlines() == expected
+    assert lines == expected

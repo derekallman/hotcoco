@@ -234,6 +234,7 @@ impl COCOeval {
         );
 
         let mut lines = Vec::with_capacity(metrics.len() + 1);
+        let sweep = iou_sweep_label(&eval.params.iou_thrs);
 
         for (m, &val) in metrics.iter().zip(stats.iter()) {
             let val_str = Self::format_metric(val);
@@ -246,18 +247,16 @@ impl COCOeval {
                 } else {
                     "Average Recall"
                 };
-                let metric_short = if m.ap { "AP" } else { "AR" };
+                let metric_short = if m.ap { "(AP)" } else { "(AR)" };
                 let iou_str = match m.iou_thr {
                     Some(thr) => format!("{:.2}", thr),
-                    None => "0.50:0.95".to_string(),
+                    None => sweep.clone(),
                 };
+                // pycocotools' `iStr`, character for character: log parsers
+                // read this table.
                 lines.push(format!(
-                    " {:<22} @[ IoU={:<9} | area={:>6} | maxDets={:>3} ] = {}",
-                    format!("{} ({})", metric_name, metric_short),
-                    iou_str,
-                    m.area_lbl,
-                    m.max_det,
-                    val_str
+                    " {:<18} {} @[ IoU={:<9} | area={:>6} | maxDets={:>3} ] = {}",
+                    metric_name, metric_short, iou_str, m.area_lbl, m.max_det, val_str
                 ));
             }
         }
@@ -491,11 +490,20 @@ impl COCOeval {
         // Zipped straight against `stats`, which `metric_keys()` is parallel to.
         // Round-tripping through a map would need an `unwrap_or(-1.0)` default
         // that is indistinguishable from a real `-1.000`.
-        let Ok((_, stats)) = self.current_summary("print_results()") else {
+        let Ok((eval, stats)) = self.current_summary("print_results()") else {
             return Vec::new();
         };
-        self.metric_keys()
-            .iter()
+        let keys = self.metric_keys();
+        if self.eval_mode == EvalMode::Lvis {
+            let sweep = iou_sweep_label(&eval.params.iou_thrs);
+            let max_dets = eval.params.max_det();
+            return keys
+                .iter()
+                .zip(stats)
+                .map(|(&key, &val)| lvis_api_line(key, val, &sweep, max_dets))
+                .collect();
+        }
+        keys.iter()
             .zip(stats)
             .map(|(&key, &val)| format!(" {:>10} = {}", key, Self::format_metric(val)))
             .collect()
@@ -652,6 +660,51 @@ impl COCOeval {
 
         Ok(report)
     }
+}
+
+/// The IoU sweep as pycocotools and lvis-api label it: the first and last
+/// thresholds, `"0.50:0.95"` for the default grid.
+fn iou_sweep_label(iou_thrs: &[f64]) -> String {
+    match (iou_thrs.first(), iou_thrs.last()) {
+        (Some(first), Some(last)) => format!("{first:.2}:{last:.2}"),
+        _ => "none".to_string(),
+    }
+}
+
+/// One line of lvis-api's `print_results()` table, read off the metric's key
+/// as lvis-api reads it: a digit after `AP` is an IoU threshold, `r`/`c`/`f`
+/// a frequency group, `s`/`m`/`l` an area range.
+fn lvis_api_line(key: &str, val: f64, sweep: &str, max_dets: usize) -> String {
+    let (title, kind) = if key.contains("AP") {
+        ("Average Precision", "(AP)")
+    } else {
+        ("Average Recall", "(AR)")
+    };
+    let third = key.chars().nth(2);
+    let iou = match third {
+        Some(c) if c.is_ascii_digit() => key[2..]
+            .parse::<f64>()
+            .map_or_else(|_| sweep.to_string(), |pct| format!("{:.2}", pct / 100.0)),
+        _ => sweep.to_string(),
+    };
+    let group = match third {
+        Some(c @ ('r' | 'c' | 'f')) => c.to_string(),
+        _ => "all".to_string(),
+    };
+    let area = match third {
+        Some(c @ ('s' | 'm' | 'l')) => c.to_string(),
+        _ => "all".to_string(),
+    };
+    format!(
+        " {:<18} {} @[ IoU={:<9} | area={:>6} | maxDets={:>3} catIds={:>3}] = {}",
+        title,
+        kind,
+        iou,
+        area,
+        max_dets,
+        group,
+        COCOeval::format_metric(val)
+    )
 }
 
 #[cfg(test)]
